@@ -10,37 +10,10 @@ only** — they confirm crates.io auth is set up, never that a token is valid.
   changelog, `Cargo.toml`, and `Cargo.lock`. Merging that PR publishes the new version automatically.
 - **Local (escape hatch):** run the helper scripts by hand when CI is unavailable.
 
-## First release (manual)
-
-Trusted Publishing is configured on crates.io **against an already-existing crate**, so the very first
-version must be published manually:
-
-1. Create an API token at <https://crates.io/settings/tokens> — scope it to the exact crate name with
-   the `publish-new` endpoint scope (the first upload creates the crate) and the shortest expiry
-   offered.
-2. `cargo login` and paste the token (stored in `$CARGO_HOME/credentials.toml`).
-3. Validate: `./scripts/publish-dry`.
-4. Publish: `./scripts/publish`.
-5. Configure Trusted Publishing for this repo/workflow on the crate's crates.io settings page.
-6. Revoke the bootstrap token at <https://crates.io/settings/tokens> — CI mints short-lived OIDC
-   tokens from here on. Keep a long-lived token only if you deliberately want a local escape hatch.
-
-## Authentication setup
-
-### Trusted Publishing / OIDC (default for CI)
-
-Short-lived, no long-lived secret.
-
-- **With release-plz:** grant the job `permissions: id-token: write` and do **not** set
-  `CARGO_REGISTRY_TOKEN` — release-plz mints the OIDC-backed token itself, and it does **not** use
-  `rust-lang/crates-io-auth-action`.
-- **With a plain `cargo publish` workflow:** use `rust-lang/crates-io-auth-action` to mint a
-  short-lived token, then run `cargo publish`.
-
-### Token fallback
-
-When OIDC is unavailable, or for local publishing, use a long-lived token: `cargo login` locally, or a
-`CARGO_REGISTRY_TOKEN` secret in CI.
+First-time crates.io setup — creating a scoped `publish-new` token, `cargo login`, the first manual
+`cargo publish`, then configuring Trusted Publishing and revoking the token — is a **one-time manual
+requirement**, not part of routine maintenance. See the crates.io Trusted Publishing docs:
+<https://crates.io/docs/trusted-publishing>.
 
 ## SemVer policy
 
@@ -95,12 +68,21 @@ Footgun: with an SPDX `license` expression (e.g. `MIT`), Cargo does **not** auto
 10 MB limit; for a binary crate no consumer reads the tarball at all, so docs and tooling are pure
 waste.
 
-## Optional binary distribution
+## Binary distribution (cargo-dist)
 
-If this crate ships prebuilt binaries or installers, `dist` (cargo-dist) builds them and attaches them
-to GitHub releases. It is separate from crates.io publishing and configured in `dist-workspace.toml`.
-`dist` generates its own CI workflow — treat that YAML as an artifact: change `dist-workspace.toml`
-and run `dist generate`, never hand-edit it, and keep it as a separate file from the release workflow.
+nixvault is a CLI, so `dist` (cargo-dist) builds prebuilt binaries and attaches
+shell/PowerShell/Homebrew-tap installers to each GitHub Release; `cargo-binstall` then works
+automatically from those releases. It is separate from crates.io publishing and configured in
+`dist-workspace.toml`. `dist` generates its own workflow at `.github/workflows/release.yml` — a
+**distinct file** from the release-plz workflow (`release-plz.yml`), so the two never collide and the
+crates.io Trusted Publisher keeps matching the actual release-plz filename. Treat the generated YAML as
+an artifact: run `dist init` (first time) or `dist generate` after editing `dist-workspace.toml`, never
+hand-edit it. AUR, OBS/zypper, and Homebrew (beyond the generated tap) are downstream/manual channels
+that consume the tagged GitHub Release artifacts — not auto-generated pipelines.
+
+> **Outstanding follow-up.** `dist-workspace.toml` is present, but the `release.yml` workflow has not
+> been generated yet. Run `dist init` (then `dist generate` after config edits) to emit it before
+> binary distribution goes live.
 
 ## Manual release if CI is down
 
