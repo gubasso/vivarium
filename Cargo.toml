@@ -2,5 +2,27 @@
 name = "nixvault"
 version = "0.1.0"
 edition = "2024"
+description = "Nix-native tool that boots each project inside its own microVM, composed from reusable images and config pieces unified by a single manifest."
+license = "MIT"
+repository = "https://github.com/gubasso/nixvault"
+readme = "README.md"
+exclude = [
+  "/docs",
+  "/.github",
+  "/scripts",
+  "/release-plz.toml",
+  "/dist-workspace.toml",
+  "/flake.nix",
+  "/.envrc",
+  "/.editorconfig",
+  "/CLAUDE.md",
+  "/AGENTS.md",
+  "/rust-toolchain.toml",
+  "/.pre-commit-config.yaml",
+  "/justfile",
+]
+keywords = ["nix", "microvm", "isolation", "sandbox", "devenv"]
+categories = ["command-line-utilities", "virtualization", "development-tools"]
+authors = ["Gustavo Basso <gubasso@gmail.com>"]
 
 [dependencies]

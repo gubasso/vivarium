@@ -1,0 +1,44 @@
+# release-plz — automated crates.io publishing and release PRs.
+#
+# Publishing uses crates.io Trusted Publishing (OIDC): release-plz mints its own
+# short-lived registry token from the `id-token: write` permission below, so NO
+# CARGO_REGISTRY_TOKEN secret and NO separate auth action are required.
+#
+# Prerequisites:
+#   - Configure Trusted Publishing for this crate on crates.io (Settings ->
+#     Trusted Publishing), pointing at this repo + workflow.
+#   - The FIRST publish of a brand-new crate cannot use Trusted Publishing; run
+#     `cargo publish` once manually with a token, then let release-plz take over.
+#
+# Binary distribution is handled separately by dist's own release workflow
+# (generated via `dist generate` from dist-workspace.toml); it is intentionally
+# NOT merged into this file.
+name: release-plz
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-plz:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+      - name: Cache Nix store
+        uses: DeterminateSystems/flakehub-cache-action@main
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

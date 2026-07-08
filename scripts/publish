@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Publish a cargo crate to crates.io. Auth-gated: checks that crates.io auth is
+# CONFIGURED (never that a token is valid) and prints remediation if it is not.
+# The auth check lives here, in the project's own helper script — never in a skill
+# or in the cog CLI. It never echoes, logs, or inspects a token value.
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_root="$(cd -- "$script_dir/.." && pwd)"
+cd -- "$project_root"
+
+cargo_publish_auth_configured() {
+  local cred_home="${CARGO_HOME:-$HOME/.cargo}"
+  if [ -n "${CARGO_REGISTRY_TOKEN:-}" ] || [ -n "${CARGO_REGISTRIES_CRATES_IO_TOKEN:-}" ]; then
+    return 0
+  fi
+  if [ -f "$cred_home/credentials.toml" ] && grep -q 'token[[:space:]]*=' "$cred_home/credentials.toml"; then
+    return 0
+  fi
+  if [ -f "$cred_home/credentials" ] && grep -q 'token[[:space:]]*=' "$cred_home/credentials"; then
+    return 0
+  fi
+  return 1
+}
+
+if ! cargo_publish_auth_configured; then
+  printf '%s\n' \
+    "No crates.io auth configured." \
+    "" \
+    "Local publishing:" \
+    "  run 'cargo login' (or 'cargo login --registry crates-io') and paste an API token" \
+    "  from https://crates.io/settings/tokens — cargo stores it in \$CARGO_HOME/credentials.toml." \
+    "" \
+    "CI with release-plz (recommended):" \
+    "  grant 'permissions: id-token: write' and do NOT set CARGO_REGISTRY_TOKEN —" \
+    "  release-plz mints the short-lived OIDC token itself." \
+    "" \
+    "CI with plain 'cargo publish':" \
+    "  use rust-lang/crates-io-auth-action to mint a short-lived token." \
+    "" \
+    "The first publish is always manual. See PUBLISHING.md for full setup." \
+    "Dry runs need no auth: run ./scripts/publish-dry to validate." >&2
+  exit 1
+fi
+
+echo "==> cargo publish"
+cargo publish "$@"

@@ -1,0 +1,82 @@
+# cargo-nextest configuration: profiles for layered testing.
+#
+# Place this file at `.config/nextest.toml` in the repo root.
+# Reference: https://nexte.st/docs/configuration/reference/
+#
+# Output settings are tuned for token-efficient runs (AI coding agents,
+# CI logs): passing tests do not dump stdout/stderr; only failures and
+# the final summary appear. The relevant knobs are `status-level`,
+# `final-status-level`, `success-output`, and `failure-output`; see the
+# config reference above for valid values and trade-offs.
+#
+# IMPORTANT: every non-default profile is dead config unless the
+# invoking command passes `--profile <name>`. Wire pre-commit hooks
+# with `--profile pre-commit`, pre-push with `--profile pre-push`,
+# and CI with `--profile ci`.
+
+[profile.default]
+# Sane defaults for ad-hoc `cargo nextest run`.
+# `success-output = "never"` is the nextest default but is set explicitly
+# here as a guard against future upstream changes.
+status-level = "pass"
+final-status-level = "fail"
+success-output = "never"
+failure-output = "immediate-final"
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# Unit-test lane. Unit tests run at BOTH `pre-commit` (gate every commit)
+# and `pre-push` (gate every push — guards against rebases/amends bypassing
+# pre-commit).
+#
+# `kind(lib)` matches unit tests in library crates; `kind(bin)` matches
+# unit tests inside `[[bin]]` targets (binary-only crates with no [lib]).
+[profile.pre-commit]
+default-filter = "kind(lib) + kind(bin)"
+fail-fast = true
+slow-timeout = { period = "30s", terminate-after = 2 }
+status-level = "fail"
+final-status-level = "fail"
+success-output = "never"
+failure-output = "immediate-final"
+
+# Integration-test lane: tests/*.rs (kind=test). Wired to the `pre-push`
+# stage. These test the seams between components — argv contracts, config
+# layering, error surfacing — typically with the boundary stubbed or
+# faked. `kind(test)` matches every separate test binary Cargo compiles
+# from tests/*.rs.
+#
+# True E2E (real external systems, real subprocess, real network) is NOT
+# layered here; it runs in CI only.
+#
+# `fail-fast` is off so a single failure does not hide other regressions.
+[profile.pre-push]
+default-filter = "kind(test)"
+fail-fast = false
+slow-timeout = { period = "120s", terminate-after = 2 }
+status-level = "fail"
+final-status-level = "fail"
+success-output = "never"
+failure-output = "immediate-final"
+
+# CI lane: everything, with retry tolerance for known-flaky network tests.
+#
+# `status-level = "fail"` (not "pass"): in CI logs, per-test pass lines
+# are noise — they multiply output tokens without adding signal for
+# humans triaging a failure or for AI agents parsing the run. The final
+# roll-up still surfaces failures via `final-status-level = "fail"`.
+# Ref: https://nexte.st/docs/configuration/reference/ (status-level)
+#
+# Progress bars auto-disable on non-TTY runners (e.g. GitHub Actions).
+# If a runner emulates a TTY, set `NEXTEST_HIDE_PROGRESS_BAR=1` in the
+# workflow env — progress redraws bloat captured logs that agents later
+# read.
+# Ref: https://nexte.st/docs/running/
+[profile.ci]
+fail-fast = false
+slow-timeout = { period = "180s", terminate-after = 2 }
+retries = { backoff = "exponential", count = 2, delay = "1s", max-delay = "10s", jitter = true }
+status-level = "fail"
+final-status-level = "fail"
+success-output = "never"
+failure-output = "immediate-final"

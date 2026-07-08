@@ -33,3 +33,19 @@ today versus what is designed only.
 
 Start at [`docs/README.md`](docs/README.md) — an index into the decisions, product spec, guides, and
 architecture explanation.
+
+## Development shell
+
+nixvault ships a Nix flake devShell with its tooling pinned.
+
+```bash
+# Interactive: allow direnv to load the shell on cd
+direnv allow
+
+# Ad hoc: enter the devShell directly
+nix develop
+```
+
+## License
+
+nixvault is licensed under the terms described in the [LICENSE](LICENSE) file (MIT).

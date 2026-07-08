@@ -1,0 +1,15 @@
+# cargo-dist / dist configuration. See https://axodotdev.github.io/cargo-dist for
+# all options. Included only when this project ships prebuilt binaries, installers,
+# or GitHub-release artifacts; it is separate from crates.io library publishing.
+[workspace]
+members = ["cargo:."]
+
+[dist]
+ci = "github"
+installers = ["shell", "powershell"]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]

@@ -1,7 +1,8 @@
 # CLAUDE.md
 
 Project-specific guidance for working in the nixvault repository. These instructions override default
-behavior; follow them exactly.
+behavior; follow them exactly. [`AGENTS.md`](AGENTS.md) mirrors these non-negotiables for
+`AGENTS.md`-native tools; this file remains the authored source of truth.
 
 ## What nixvault is
 
