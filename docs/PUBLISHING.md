@@ -80,9 +80,11 @@ an artifact: run `dist init` (first time) or `dist generate` after editing `dist
 hand-edit it. AUR, OBS/zypper, and Homebrew (beyond the generated tap) are downstream/manual channels
 that consume the tagged GitHub Release artifacts — not auto-generated pipelines.
 
-> **Outstanding follow-up.** `dist-workspace.toml` is present, but the `release.yml` workflow has not
-> been generated yet. Run `dist init` (then `dist generate` after config edits) to emit it before
-> binary distribution goes live.
+The generated `.github/workflows/release.yml` fires on a pushed version tag (any tag carrying a
+semver, e.g. the `v0.1.0` tags release-plz creates), builds the configured targets, and attaches the
+installers to the GitHub Release. After editing
+`dist-workspace.toml`, regenerate it with `dist generate` and verify it is in sync with
+`dist generate --check`; never hand-edit the workflow.
 
 ## Manual release if CI is down
 

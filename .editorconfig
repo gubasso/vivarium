@@ -1,4 +1,4 @@
-# EditorConfig for Rust projects, shipped by the cog pre-commit skill.
+# EditorConfig for Rust projects.
 # Code indent aligns with rustfmt (4 spaces).
 root = true
 

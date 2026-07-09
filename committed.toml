@@ -1,8 +1,7 @@
 # Single source of truth for commit-message linting (crate-ci/committed).
 # Conventional Commits; full subject line <= 72 (GitHub-safe); body lines <= 72.
 #
-# This file is shared by every pre-commit template. The `pre-commit` skill copies
-# it to the project root, where `committed` discovers it automatically. Tune it
+# `committed` discovers this file at the repo root automatically. Tune it
 # per-project (e.g. add `allowed_scopes`) rather than editing the hook config.
 #
 # Length model (committed-specific): `line_length` caps EVERY line, incl. the

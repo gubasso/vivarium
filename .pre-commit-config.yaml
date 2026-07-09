@@ -112,10 +112,8 @@ repos:
   #
   # Requires:
   #   - `cargo nextest` on PATH (cargo install --locked cargo-nextest)
-  #   - `.config/nextest.toml` defining the `pre-commit` and `pre-push`
-  #     profiles. A canonical copy lives in this template at
-  #     `.config/nextest.toml`; the `/pre-commit` skill mirrors it into
-  #     `<repo>/.config/nextest.toml`.
+  #   - the sibling `.config/nextest.toml` at the repo root, defining the
+  #     `pre-commit` and `pre-push` profiles.
   - repo: local
     hooks:
       - id: cargo-nextest-unit

@@ -26,3 +26,8 @@ categories = ["command-line-utilities", "virtualization", "development-tools"]
 authors = ["Gustavo Basso <gubasso@gmail.com>"]
 
 [dependencies]
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
