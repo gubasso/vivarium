@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Local operator release helper for a cargo crate. CI (release-plz) is the normal
+# release path; this is the manual escape hatch. It performs no real publish by
+# default. Any future real-publish subcommand must reuse the script-local auth
+# gate in ./publish and must never move that logic into the cog CLI.
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_root="$(cd -- "$script_dir/.." && pwd)"
+cd -- "$project_root"
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: release <subcommand> [args]
+
+Subcommands:
+  release-plz-update       Update versions + changelog locally (release-plz update)
+  release-plz-pr           Open/refresh the release PR (release-plz release-pr)
+  cargo-release-dry LEVEL  Dry-run a cargo-release bump (cargo release LEVEL)
+  semver-check             Check public API compatibility (cargo semver-checks check-release)
+
+None of these publish to crates.io. Publishing happens on merge of the release PR
+(CI), or manually via ./publish once auth is configured. See PUBLISHING.md.
+USAGE
+}
+
+cmd="${1:-}"
+[ "$#" -gt 0 ] && shift || true
+
+case "$cmd" in
+  release-plz-update)
+    exec release-plz update "$@"
+    ;;
+  release-plz-pr)
+    exec release-plz release-pr "$@"
+    ;;
+  cargo-release-dry)
+    [ "$#" -ge 1 ] || {
+      echo "cargo-release-dry needs a level (e.g. patch, minor, major)" >&2
+      exit 1
+    }
+    level="$1"
+    shift
+    exec cargo release "$level" "$@"
+    ;;
+  semver-check)
+    exec cargo semver-checks check-release "$@"
+    ;;
+  -h | --help | "")
+    usage
+    [ -z "$cmd" ] && exit 1 || exit 0
+    ;;
+  *)
+    echo "unknown subcommand: $cmd" >&2
+    usage
+    exit 1
+    ;;
+esac

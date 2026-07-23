@@ -1,0 +1,48 @@
+# CI workflow — lint, test, build.
+# Every job reuses the project's Nix devshell (flake.nix) so CI runs the exact
+# toolchain pinned in rust-toolchain.toml, the same one local development uses.
+# Jobs invoke the justfile recipes through the devshell
+# (`nix develop --command just <recipe>`) so CI and local runs share one
+# definition of each task — the recipes themselves already wrap `cargo`.
+name: ci
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Cache Nix store
+        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
+      - name: Format
+        run: nix develop --command just fmt-check
+      - name: Clippy
+        run: nix develop --command just lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Cache Nix store
+        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
+      - name: Test
+        run: nix develop --command just test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Cache Nix store
+        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
+      - name: Build
+        run: nix develop --command just build

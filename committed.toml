@@ -1,0 +1,40 @@
+# Single source of truth for commit-message linting (crate-ci/committed).
+# Conventional Commits; full subject line <= 72 (GitHub-safe); body lines <= 72.
+#
+# `committed` discovers this file at the repo root automatically. Tune it
+# per-project (e.g. add `allowed_scopes`) rather than editing the hook config.
+#
+# Length model (committed-specific): `line_length` caps EVERY line, incl. the
+# subject line -> this is the real subject ceiling. `subject_length` only caps
+# the description text after `type(scope): ` (rarely the binding constraint).
+# Note: committed grants a one-trailing-word grace, so a subject a few chars over
+# 72 may still pass; clearly-over subjects (and body lines) are rejected. Aim for
+# <=72. (`hard_line_length` would be an absolute no-grace cap, but it also forbids
+# long unbreakable tokens like URLs in the body, so we leave it off.)
+style = "conventional"
+subject_length = 72 # description after `type(scope): `
+line_length = 72 # full subject line AND body lines (classic 50/72)
+subject_capitalized = false # CC convention: lowercase description after the colon
+subject_not_punctuated = true # no trailing period
+imperative_subject = false # heuristic mood check off -> avoids false positives
+allowed_types = [
+  "feat",
+  "fix",
+  "docs",
+  "style",
+  "refactor",
+  "perf",
+  "test",
+  "build",
+  "ci",
+  "chore",
+  "revert",
+]
+# Scope policy: the default subject form is `type(scope/subscope): summary`. The
+# scope is optional but encouraged (a lowercase kebab noun naming the area
+# changed); the subscope is optional, added only when it organizes the message
+# better, e.g. `feat(auth/login): ...`. Omit the scope for cross-cutting changes
+# (`chore: relicense`). allowed_scopes is intentionally unset -> every scope,
+# incl. hierarchical "a/b/c", passes. To restrict scopes per-project, list each
+# FULL scope string: committed does not split on "/", so "auth/login" must be
+# listed literally (listing "auth" alone would not admit "auth/login").

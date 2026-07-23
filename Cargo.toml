@@ -1,6 +1,54 @@
 [package]
-name = "nixvault"
+name = "vivarium"
 version = "0.1.0"
 edition = "2024"
+description = "Nix-native tool that boots each project inside its own microVM, composed from reusable images and config pieces unified by a single manifest."
+license = "MIT"
+repository = "https://github.com/gubasso/vivarium"
+readme = "README.md"
+exclude = [
+  "/docs",
+  "/.github",
+  "/scripts",
+  "/deny.toml",
+  "/release-plz.toml",
+  "/dist-workspace.toml",
+  "/flake.nix",
+  "/flake.lock",
+  "/.envrc",
+  "/.editorconfig",
+  "/CLAUDE.md",
+  "/AGENTS.md",
+  "/rust-toolchain.toml",
+  "/.pre-commit-config.yaml",
+  "/justfile",
+]
+keywords = ["nix", "microvm", "isolation", "sandbox", "devenv"]
+categories = ["command-line-utilities", "virtualization", "development-tools"]
+authors = ["Gustavo Basso <gu@gubasso.xyz>"]
+
+# The published crate is `vivarium`; the installed command is `viv`.
+[[bin]]
+name = "viv"
+path = "src/main.rs"
 
 [dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+todo = "deny"
+dbg_macro = "deny"
+unimplemented = "deny"
+panic = "deny"
+wildcard_imports = "deny"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

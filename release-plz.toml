@@ -1,0 +1,8 @@
+# release-plz configuration. See https://release-plz.dev/docs/config for all options.
+# Conservative defaults; a workspace maintainer can override per package with a
+# [[package]] table (e.g. to opt a member out of publishing).
+[workspace]
+changelog_update = true
+release_always = false
+publish = true
+semver_check = true

@@ -1,0 +1,208 @@
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+
+repos:
+  # --- Housekeeping (auto-fix where possible) ---
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-added-large-files
+        args: ['--maxkb=16384']
+      - id: check-case-conflict
+      - id: check-merge-conflict
+        args: ['--assume-in-merge']
+      - id: check-shebang-scripts-are-executable
+      - id: check-symlinks
+      - id: check-toml
+      - id: check-yaml
+      - id: check-xml
+      - id: destroyed-symlinks
+      - id: detect-private-key
+      # - id: no-commit-to-branch
+
+  - repo: https://github.com/maresb/check-json5
+    rev: v1.0.1
+    hooks:
+      - id: check-json5
+        exclude: '[-.]lock\.json$'
+
+  # --- JSON / JSONC formatter: dprint (comment-safe autofix) ---
+  #
+  # dprint's json plugin formats JSON and JSONC (comments + trailing commas),
+  # which the stdlib-based pretty-format-json cannot. check-json5 above stays the
+  # syntax gate; dprint owns formatting. Config in the sibling `./dprint.json`
+  # (plugin version pinned there). External dependency: dprint must be on PATH
+  # (`cargo install dprint` or your package manager). pre-commit only — git push
+  # may strip PATH, and formatting is already applied by commit time.
+  - repo: local
+    hooks:
+      - id: dprint
+        name: dprint fmt (json/jsonc)
+        entry: dprint fmt
+        language: system
+        files: '\.(json|jsonc|json5)$'
+        pass_filenames: true
+        stages: [pre-commit]
+
+  # --- EditorConfig ---
+  - repo: https://github.com/editorconfig-checker/editorconfig-checker
+    rev: v3.8.0
+    hooks:
+      - id: editorconfig-checker
+        alias: ec
+        args: [-disable-insert-final-newline, '-exclude', 'LICENSE']
+        # Markdown is excluded: editorconfig-checker can't parse it — it flags
+        # fenced-code-block interiors and the odd-width ordered-list
+        # continuations CommonMark/dprint use (e.g. `1. ` -> 3 spaces), and
+        # defaults to indent_size=4 even when unset. Markdown formatting is
+        # owned by dprint + markdownlint-cli2 when those hooks are layered in.
+        exclude: '\.md$'
+
+  # --- Rust: format & lint (auto-fix) ---
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: clippy-fix
+        name: clippy auto-fix
+        entry: cargo clippy --fix --allow-dirty --allow-staged --all-features -- -W clippy::all
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: clippy-strict
+        name: clippy gate
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: taplo-format
+        name: taplo format
+        entry: taplo format
+        language: system
+        types: [toml]
+
+  # --- Tests (layered per the CLI testing pyramid) ---
+  #
+  # Uses cargo-nextest because it produces deterministic, token-efficient
+  # output (suppresses stdout/stderr from passing tests by default) and
+  # supports per-profile `default-filter` for clean test-kind layering.
+  #
+  # Test classification (CLI testing pyramid):
+  #   - Unit:        `src/` inline `#[cfg(test)] mod tests`. One function
+  #                  or module in isolation. kind(lib) for library crates;
+  #                  kind(bin) when unit tests live inside a [[bin]] target
+  #                  (binary-only crates with no [lib]).
+  #   - Integration: `tests/*.rs`  (kind=test). Tests the *seam* between
+  #                  components. The defining property is "tests the
+  #                  interaction between things," NOT "touches real
+  #                  things." A wrapper CLI exercising its argv contract
+  #                  against a recording stub / faked child is integration.
+  #   - E2E:         The whole product against real external systems
+  #                  (real subprocess, real network, real container). E2E
+  #                  belongs in CI ONLY — never pre-commit or pre-push:
+  #                  too slow, too dependent on host state, too flaky to
+  #                  gate local commits. Do NOT add an E2E hook here.
+  #   - Doc tests:   `///` doctests in library items. NOT runnable by
+  #                  nextest — covered by the separate `cargo test --doc`
+  #                  hook below.
+  #
+  # Tier-to-hook mapping (matches 08-testing-strategy.md § CI essentials):
+  #   - pre-commit: unit only            (sub-second budget)
+  #   - pre-push:   unit + integration   (single-digit-seconds budget)
+  #   - CI:         everything + E2E     (live in .github/workflows)
+  #
+  # The unit hook is therefore wired to BOTH `pre-commit` and `pre-push`
+  # stages: it's nearly free and guards against committed-but-not-tested
+  # changes (rebases, amends) reaching the remote.
+  #
+  # Requires:
+  #   - `cargo nextest` on PATH (cargo install --locked cargo-nextest)
+  #   - the sibling `.config/nextest.toml` at the repo root, defining the
+  #     `pre-commit` and `pre-push` profiles.
+  - repo: local
+    hooks:
+      - id: cargo-nextest-unit
+        name: cargo nextest (unit tests)
+        entry: cargo nextest run --profile pre-commit --all-features
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: cargo-nextest-integration
+        name: cargo nextest (integration tests)
+        entry: cargo nextest run --profile pre-push --all-features
+        language: system
+        types_or: [rust, toml]
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: cargo-doc-tests
+        name: cargo test --doc (doctests)
+        entry: cargo test --doc --all-features
+        language: system
+        types_or: [rust, toml]
+        pass_filenames: false
+        stages: [pre-push]
+
+  # --- Spell check ---
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.48.0
+    hooks:
+      - id: typos
+
+  # --- Commit message linting (Rust-ecosystem; commit-msg stage) ---
+  - repo: https://github.com/crate-ci/committed
+    rev: v1.1.11
+    hooks:
+      - id: committed
+        stages: [commit-msg]
+
+  # --- Secret scanning (pre-commit, fast) ---
+  - repo: https://github.com/sirwart/ripsecrets
+    rev: v0.1.11
+    hooks:
+      - id: ripsecrets
+
+  # --- Heavy checks (pre-push only) ---
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        entry: gitleaks git --redact --verbose
+        pass_filenames: false
+        stages: [pre-push]
+
+  # --- Unused dependency detection ---
+  - repo: https://github.com/bnjbvr/cargo-machete
+    rev: v0.9.2
+    hooks:
+      - id: cargo-machete
+        stages: [pre-push]
+
+  - repo: local
+    hooks:
+      - id: cargo-audit
+        name: cargo audit
+        entry: cargo audit
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      # Note: licenses check omitted; requires deny.toml with an allow-list.
+      # Add `licenses` to the check list after creating deny.toml in your project.
+      - id: cargo-deny
+        name: cargo deny
+        entry: cargo deny check advisories bans sources
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

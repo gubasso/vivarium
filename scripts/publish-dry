@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Dry-run readiness check for a cargo crate; needs no crates.io token.
+# Runs `cargo publish --dry-run` then `cargo package --list` and prints a summary.
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_root="$(cd -- "$script_dir/.." && pwd)"
+cd -- "$project_root"
+
+echo "==> cargo publish --dry-run"
+cargo publish --dry-run "$@"
+
+echo "==> cargo package --list"
+cargo package --list
+
+echo "==> Dry-run readiness complete. No crates.io token was required."
