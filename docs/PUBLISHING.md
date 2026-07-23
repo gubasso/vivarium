@@ -6,9 +6,17 @@ only** — they confirm crates.io auth is set up, never that a token is valid.
 
 ## Publishing model
 
-- **CI-first (recommended):** `release-plz` opens a release PR that bumps the version and updates the
-  changelog, `Cargo.toml`, and `Cargo.lock`. Merging that PR publishes the new version automatically.
+- **CI-first (recommended):** `release-plz` runs on `develop` (the trunk) and opens a release PR
+  that bumps the version and updates the changelog, `Cargo.toml`, and `Cargo.lock`. Merging that PR
+  publishes the new version automatically and tags it; a `promote` job then fast-forwards `master`
+  onto that tag, so `master` holds only released commits.
 - **Local (escape hatch):** run the helper scripts by hand when CI is unavailable.
+
+The branch model: `develop` is the trunk **and the GitHub default branch** (release-plz bases the
+release PR on the default branch); `master` is never written by hand — CI fast-forwards it onto each
+release tag. If `master` is protected, its ruleset must let the `github-actions` bot bypass so the
+promote job's push succeeds. release-plz itself runs under a GitHub App token so its tag push
+retriggers binary builds (see [Binary distribution](#binary-distribution-cargo-dist)).
 
 First-time crates.io setup — creating a scoped `publish-new` token, `cargo login`, the first manual
 `cargo publish`, then configuring Trusted Publishing and revoking the token — is a **one-time manual
@@ -23,10 +31,15 @@ API to check but still follows semantic versioning for its releases.
 
 ## Routine automated release
 
-1. Merge feature work to the default branch.
-2. release-plz opens/updates the release PR (version bump + changelog).
-3. Review the PR; merge it.
-4. release-plz tags the release and publishes to crates.io.
+You never hand-create the tag; the only manual actions are two merges.
+
+1. Merge feature work (Conventional Commits) to `develop`.
+2. release-plz opens/updates the release PR on `develop` (version bump + changelog).
+3. Review the PR; merge it — the one human release decision.
+4. release-plz tags the release (`vX.Y.Z`) and publishes to crates.io over OIDC.
+5. The `promote` job (`needs: release-plz`) fast-forwards `master` onto that tag, and the tag push
+   (made with release-plz's GitHub App token) triggers the cargo-dist `release.yml` to build and
+   attach binaries — see [Binary distribution](#binary-distribution-cargo-dist).
 
 ## Local operator release
 
@@ -85,6 +98,12 @@ semver, e.g. the `v0.1.0` tags release-plz creates), builds the configured targe
 installers to the GitHub Release. After editing
 `dist-workspace.toml`, regenerate it with `dist generate` and verify it is in sync with
 `dist generate --check`; never hand-edit the workflow.
+
+Automatic trigger: release-plz runs with a **GitHub App token** (secrets `RELEASE_PLZ_APP_ID` /
+`RELEASE_PLZ_APP_PRIVATE_KEY`), so the tag it pushes retriggers `release.yml`. A tag pushed with the
+default `GITHUB_TOKEN` would **not** retrigger it — that is why the App token is required. Create a
+GitHub App with `contents` + `pull-requests` write, install it on the repo, and store its App ID and
+private key as those two secrets.
 
 ## Manual release if CI is down
 
