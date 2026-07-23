@@ -13,3 +13,7 @@
 # Nix devshell
 .direnv/
 /result
+
+# --- cog gitignore (rust) ---
+rustc-ice-*.txt
+**/mutants.out*/

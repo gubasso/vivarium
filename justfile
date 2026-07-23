@@ -52,3 +52,15 @@ publish *ARGS:
 # Local release helper (release-plz / cargo-release / semver-checks; see PUBLISHING.md).
 release *ARGS:
     nix develop --command scripts/release {{ARGS}}
+
+# Check public API compatibility (cargo semver-checks via the release helper).
+semver-check *ARGS:
+    nix develop --command scripts/release semver-check {{ARGS}}
+
+# Open/refresh the release PR (release-plz release-pr via the release helper).
+release-pr *ARGS:
+    nix develop --command scripts/release release-plz-pr {{ARGS}}
+
+# Update versions + changelog locally (release-plz update via the release helper).
+release-update *ARGS:
+    nix develop --command scripts/release release-plz-update {{ARGS}}

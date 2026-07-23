@@ -1,35 +1,63 @@
 # Agent Guidelines — vivarium
 
-This file is the cross-tool entry point for AI coding agents. The `AGENTS.md`-native tools (Codex,
-Cursor, Copilot, and others) read it, and Claude Code reads the same authored guidance through
-[`CLAUDE.md`](CLAUDE.md).
+This file is the authored source of truth for how AI coding agents work in the vivarium repository.
+The `AGENTS.md`-native tools (Codex, Cursor, Copilot, and others) read it directly; Claude Code reads
+the same guidance through a one-line `@AGENTS.md` import in [`CLAUDE.md`](CLAUDE.md). These
+instructions override default behavior; follow them exactly.
 
-`CLAUDE.md` is the authored source of truth for this project's rules — what vivarium is,
-self-contained documentation, the Diátaxis documentation zones, and the lean-ADR discipline. Read it
-first and follow it exactly. This file states the non-negotiables agents most often need and defers
-the detail to `CLAUDE.md` rather than restating it.
+## What vivarium is
+
+vivarium is a Nix-native tool that boots each project inside its own **microVM** — a separate guest
+kernel behind a hardware-virtualization boundary — described declaratively in Nix and composed from
+reusable **images** and **config pieces** unified by a single **manifest**. The command-line tool is
+a thin wrapper that resolves the manifest, builds the VM with `nix build`, and runs it; the guest
+kernel, isolation boundary, and configuration-merge semantics are provided by the underlying Nix and
+virtualization building blocks, not reimplemented here.
+
+The normative rules and guarantees the product must uphold live in
+[`docs/reference/spec/08-invariants-and-guarantees.md`](docs/reference/spec/08-invariants-and-guarantees.md).
+Read that file before changing runtime, build, or composition behavior.
 
 <!-- self-containment -->
 ## Self-Containment
 
 Non-negotiable: this project is self-contained. The docs describe **only** vivarium, and every fact
-must stand alone in this repository. An external reference is allowed only where it names *upstream*
-technology that is part of vivarium's own stack (Nix, microvm.nix, NixOS modules, direnv) — never as
-a load-bearing dependency on another *project*, tool, external shelf, or personal path. If external
-knowledge is required to understand, build, or operate vivarium, copy its essential substance into
-the repo. See `CLAUDE.md` § "Self-contained documentation" for the owning statement.
+must stand alone in this repository. Do not reference, cite, or link to any other project, tool, or
+external documentation shelf inside `docs/`, this file, or `README.md`. An external reference is
+allowed only where it names *upstream* technology that is part of vivarium's own stack (Nix,
+microvm.nix, NixOS modules, direnv) — never as a load-bearing dependency on another *project*, tool,
+external shelf, or personal path. If external knowledge is required to understand, build, or operate
+vivarium, copy its essential substance into the repo.
 
-## Decisions
+## Documentation Maintenance
 
-Non-negotiable: record every significant, hard-to-reverse decision as an ADR under `docs/decisions/`,
-one decision per file, using the five-section `template.md`. Keep each filled ADR at or below 350
-words with exactly one `## Status`. Accepted or implemented ADRs are never deleted — supersede or
-reject and link forward. See `CLAUDE.md` § "Documentation Maintenance" for the full rules.
+Documentation uses four Diátaxis zones under `docs/`, each a reader promise:
+
+- `docs/decisions/` — lean architecture decision records (the durable *why*).
+- `docs/guides/` — task walkthroughs (the *how-to*).
+- `docs/reference/` — exact lookup material, including the product spec under `reference/spec/`.
+- `docs/explanation/` — mental models and architecture (the *understanding*).
+
+Rules:
+
+- **Lean ADRs.** Record every significant, hard-to-reverse decision as an ADR under `docs/decisions/`,
+  one decision per file, using the five-section `docs/decisions/template.md`. Keep each filled ADR body
+  at or below **350 words**, with exactly one `## Status` from
+  `Proposed | Accepted | Implemented | Superseded | Rejected`.
+- **Never delete** an accepted or implemented decision. Supersede or reject it and link forward.
+- **Single source of truth.** Write each durable fact once at its owning home and cross-link with a
+  short reason phrase from everywhere else. Do not restate a fact that another file owns.
+- **No pasted trees.** Index files (`README.md`, this file) explain purpose per entry; they never
+  reproduce the directory tree — the filesystem owns structure.
+- **Drafts stay out of `docs/`.** Keep scratch material in the gitignored `/.draft/` workspace and
+  promote it into the right zone by rewriting, not moving.
+- **Semantic names, stable headings.** Filenames should reveal purpose before the file is opened.
+- Update docs only when a change affects durable behavior, operations, or decisions. Small local
+  rationale belongs in load-bearing code comments.
+
+See [`docs/README.md`](docs/README.md) for the zone index and entry points.
 
 ## Working Conventions
 
-- Follow the four Diátaxis documentation zones under `docs/`; keep drafts in the gitignored
-  `/.draft/` workspace, out of `docs/`.
 - Keep changes scoped and reversible; prefer editing existing files over adding new ones.
-- Keep index files free of pasted directory trees — the filesystem owns structure.
 - Run the project's own lint and test tasks before proposing changes.

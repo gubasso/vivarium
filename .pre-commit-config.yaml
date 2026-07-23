@@ -20,10 +20,6 @@ repos:
       - id: check-xml
       - id: destroyed-symlinks
       - id: detect-private-key
-      - id: pretty-format-json
-        args: ["--autofix", "--no-ensure-ascii", "--no-sort-keys", "--indent=2"]
-        exclude: >-
-          (?x)((^|/)devcontainer\.json$|[-.]lock\.json$)
       # - id: no-commit-to-branch
 
   - repo: https://github.com/maresb/check-json5
@@ -31,6 +27,24 @@ repos:
     hooks:
       - id: check-json5
         exclude: '[-.]lock\.json$'
+
+  # --- JSON / JSONC formatter: dprint (comment-safe autofix) ---
+  #
+  # dprint's json plugin formats JSON and JSONC (comments + trailing commas),
+  # which the stdlib-based pretty-format-json cannot. check-json5 above stays the
+  # syntax gate; dprint owns formatting. Config in the sibling `./dprint.json`
+  # (plugin version pinned there). External dependency: dprint must be on PATH
+  # (`cargo install dprint` or your package manager). pre-commit only — git push
+  # may strip PATH, and formatting is already applied by commit time.
+  - repo: local
+    hooks:
+      - id: dprint
+        name: dprint fmt (json/jsonc)
+        entry: dprint fmt
+        language: system
+        files: '\.(json|jsonc|json5)$'
+        pass_filenames: true
+        stages: [pre-commit]
 
   # --- EditorConfig ---
   - repo: https://github.com/editorconfig-checker/editorconfig-checker

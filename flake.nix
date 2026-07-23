@@ -21,6 +21,9 @@
         toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       in
       {
+        # `nix fmt` uses the RFC 166 formatter (also on PATH for the pre-commit hook).
+        formatter = pkgs.nixfmt-rfc-style;
+
         devShells.default = pkgs.mkShell {
           packages = [
             toolchain
@@ -29,7 +32,16 @@
             pkgs.cargo-audit
             pkgs.just
             pkgs.pre-commit
+            # Nix quality tools for the pre-commit `_nix` overlay hooks
+            # (nixfmt/statix/deadnix run as language:system off PATH).
+            pkgs.nixfmt-rfc-style
+            pkgs.statix
+            pkgs.deadnix
           ];
+          # native deps for -sys crates, uncomment as needed:
+          # buildInputs = [ pkgs.openssl ];
+          # nativeBuildInputs = [ pkgs.pkg-config ];
+          shellHook = ''echo "rust dev shell ready (toolchain from rust-toolchain.toml)"'';
         };
       }
     );

@@ -1,0 +1,14 @@
+{
+  "json": {
+    "trailingCommas": "never"
+  },
+  "includes": ["**/*.{json,jsonc}"],
+  "excludes": [
+    ".git",
+    "node_modules",
+    "**/*-lock.json",
+    "**/package-lock.json",
+    "**/*.jsonl"
+  ],
+  "plugins": ["https://plugins.dprint.dev/json-0.23.0.wasm"]
+}
