@@ -1,8 +1,8 @@
 # 00 — Goals and non-goals
 
-## What nixvault is
+## What vivarium is
 
-nixvault runs a project inside its own **microVM** — a separate guest kernel behind a
+vivarium runs a project inside its own **microVM** — a separate guest kernel behind a
 hardware-virtualization boundary — described declaratively in Nix. It provides the "boring parts" of
 a secure sandbox: resolving a project's configuration, building the VM reproducibly, mounting the
 working directory, and wiring the network. Users describe a sandbox by composing reusable **images**
@@ -34,7 +34,7 @@ already provide them.
 
 - **Not a shared-kernel container runtime.** The boundary is a VM, not namespaces; there is no
   shared-kernel mode.
-- **Not a general orchestrator.** nixvault manages per-user, per-project sandboxes, not clusters,
+- **Not a general orchestrator.** vivarium manages per-user, per-project sandboxes, not clusters,
   scheduling, or multi-tenant fleets.
 - **Not a replacement for a project's dev environment.** It runs that environment; it does not define
   or absorb it.

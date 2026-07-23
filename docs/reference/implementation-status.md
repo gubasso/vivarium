@@ -1,6 +1,6 @@
 # Implementation status
 
-The single source of truth for what nixvault **does today** versus what is **designed only**. The
+The single source of truth for what vivarium **does today** versus what is **designed only**. The
 specification under [`spec/`](spec/README.md) describes the intended design; this page records how
 much of it exists in code.
 
@@ -16,16 +16,16 @@ Every command below is **designed, not implemented**.
 
 | Command | Status |
 | ------- | ------ |
-| `nixvault init` | Designed |
-| `nixvault images list` | Designed |
-| `nixvault manifest list` / `manifest show` | Designed |
-| `nixvault up` | Designed |
-| `nixvault exec` | Designed |
-| `nixvault shell` | Designed |
-| `nixvault down` | Designed |
-| `nixvault show --resolved` | Designed |
-| `nixvault doctor` | Designed |
-| `nixvault config` | Designed |
+| `viv init` | Designed |
+| `viv images list` | Designed |
+| `viv manifest list` / `manifest show` | Designed |
+| `viv up` | Designed |
+| `viv exec` | Designed |
+| `viv shell` | Designed |
+| `viv down` | Designed |
+| `viv show --resolved` | Designed |
+| `viv doctor` | Designed |
+| `viv config` | Designed |
 
 ## How to update this page
 

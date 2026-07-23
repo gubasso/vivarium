@@ -1,11 +1,11 @@
-# nixvault documentation
+# vivarium documentation
 
 Index into the project's four documentation zones. Each zone is a reader promise, not a topic
 bucket. This page is only an index — it holds no canonical facts of its own.
 
 ## Zones
 
-- **[`reference/spec/`](reference/spec/README.md)** — the **product contract**: what nixvault is and
+- **[`reference/spec/`](reference/spec/README.md)** — the **product contract**: what vivarium is and
   does. Goals and non-goals, the command surface, the XDG config layout, the image/piece/manifest
   artifact model, composition and determinism, networking and egress, the workspace and inner project
   environment, secrets and config sharing, the normative invariants, and the glossary.

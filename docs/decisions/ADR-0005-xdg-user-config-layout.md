@@ -2,14 +2,14 @@
 
 ## Context and Problem Statement
 
-nixvault holds several kinds of state: the user's source of truth (images, pieces, manifests), pinned
+vivarium holds several kinds of state: the user's source of truth (images, pieces, manifests), pinned
 external module libraries, per-project runtime identity and logs, and derived build artifacts. These
 have different durability and backup needs and must not be conflated. The tool must also run entirely
 per-user, with no system-wide installation or root-owned state.
 
 ## Considered Options
 
-- **One directory for everything** — a single `~/.nixvault/` mixing config, runtime, and cache.
+- **One directory for everything** — a single `~/.vivarium/` mixing config, runtime, and cache.
 - **Four XDG roots by durability** — split across the standard config, data, state, and cache
   directories, each owning one class of content.
 

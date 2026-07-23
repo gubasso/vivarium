@@ -2,7 +2,7 @@
 
 ## Context and Problem Statement
 
-nixvault runs untrusted or semi-trusted code — including autonomous AI coding agents — against a
+vivarium runs untrusted or semi-trusted code — including autonomous AI coding agents — against a
 user's projects. The isolation boundary must resist a hostile process inside the sandbox escaping to
 the host. Shared-kernel isolation (namespaces, seccomp) exposes the entire host kernel as attack
 surface; a single kernel bug breaks containment.

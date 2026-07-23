@@ -1,6 +1,6 @@
-# nixvault specification
+# vivarium specification
 
-The product contract: what nixvault is and does. These pages are reference material — organized for
+The product contract: what vivarium is and does. These pages are reference material — organized for
 lookup, not narrative. They describe the intended design; for what is actually implemented today, see
 [`../implementation-status.md`](../implementation-status.md).
 
@@ -9,7 +9,7 @@ each page links to the ADRs that govern it rather than restating their reasoning
 
 ## Pages
 
-- [`00-goals-and-non-goals.md`](00-goals-and-non-goals.md) — what nixvault is for, what it is not,
+- [`00-goals-and-non-goals.md`](00-goals-and-non-goals.md) — what vivarium is for, what it is not,
   and who it serves.
 - [`01-command-surface.md`](01-command-surface.md) — the command-line verbs, flags, and exit
   behavior.

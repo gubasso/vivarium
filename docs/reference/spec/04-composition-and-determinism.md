@@ -8,7 +8,7 @@ reproducible. The decision to reuse the module system rather than build a merge 
 
 A manifest resolves to an image plus an ordered list of pieces (see
 [`03-artifact-model.md`](03-artifact-model.md)). The tool imports them as NixOS modules and the
-module system merges them. There is no separate nixvault merge engine.
+module system merges them. There is no separate vivarium merge engine.
 
 The merge is **priority-based, not order-based**:
 
@@ -20,14 +20,14 @@ The merge is **priority-based, not order-based**:
 
 ## The three-tier priority convention
 
-nixvault assigns roles to priorities so composition is predictable:
+vivarium assigns roles to priorities so composition is predictable:
 
 - **Base defaults** — images set overridable values with `mkDefault`.
 - **Project leaf** — the manifest's own settings use normal priority and so override base defaults.
 - **Hard floor** — pieces that must not be overridden (for example a security policy) use `mkForce`.
 
 This gives the ergonomics of layered overrides — "the project overrides the base, the security floor
-overrides everything" — without any custom ordering logic. `nixvault show --resolved` (see
+overrides everything" — without any custom ordering logic. `viv show --resolved` (see
 [`01-command-surface.md`](01-command-surface.md)) renders the merged result so users can see the
 effective configuration.
 

@@ -1,19 +1,19 @@
 # 02 — Config and XDG layout
 
-nixvault stores all state under standard per-user XDG directories, split by durability. The governing
+vivarium stores all state under standard per-user XDG directories, split by durability. The governing
 rule and rationale are in
 [`../../decisions/ADR-0005-xdg-user-config-layout.md`](../../decisions/ADR-0005-xdg-user-config-layout.md):
 **config is authored, cache is derived, state is runtime, data is pinned inputs.**
 
 ## The four roots
 
-- **Config root** (`$XDG_CONFIG_HOME/nixvault/`) — the user's source of truth. Holds the global
+- **Config root** (`$XDG_CONFIG_HOME/vivarium/`) — the user's source of truth. Holds the global
   config file, the `images/` library, the `pieces/` library, and the `manifests/` library. Everything
   here is hand-authored and may be version-controlled by the user.
-- **Data root** (`$XDG_DATA_HOME/nixvault/`) — pinned external module libraries pulled in as inputs.
-- **State root** (`$XDG_STATE_HOME/nixvault/`) — per-project runtime state: the built VM's store
+- **Data root** (`$XDG_DATA_HOME/vivarium/`) — pinned external module libraries pulled in as inputs.
+- **State root** (`$XDG_STATE_HOME/vivarium/`) — per-project runtime state: the built VM's store
   output reference, a stable VM identity that survives restarts, and logs.
-- **Cache root** (`$XDG_CACHE_HOME/nixvault/`) — derived, regenerable artifacts: Nix evaluation cache
+- **Cache root** (`$XDG_CACHE_HOME/vivarium/`) — derived, regenerable artifacts: Nix evaluation cache
   and built VM images. Safe to delete; the tool rebuilds it.
 
 The config, data, state, and cache roots hold, respectively, what the user edits, what is pinned as
@@ -31,9 +31,9 @@ without any file inside the repository.
 
 A project may instead name its manifest from within the repository:
 
-- **Committed pointer** (`.nixvault.toml`) — names the manifest and is intended to be committed and
+- **Committed pointer** (`.vivarium.toml`) — names the manifest and is intended to be committed and
   shared with a team.
-- **Personal override** (`.nixvault.local.toml`) — names a manifest for one user on one machine and
+- **Personal override** (`.vivarium.local.toml`) — names a manifest for one user on one machine and
   is gitignored; it overrides the committed pointer.
 
 ## Resolution precedence
@@ -43,8 +43,8 @@ The effective manifest is resolved highest-wins, per
 
 1. `--manifest` command-line flag.
 2. Environment variable override.
-3. Repository personal override (`.nixvault.local.toml`).
-4. Repository committed pointer (`.nixvault.toml`).
+3. Repository personal override (`.vivarium.local.toml`).
+4. Repository committed pointer (`.vivarium.toml`).
 5. Project-registry entry in the global config file.
 6. Configured default manifest.
 7. Otherwise, **fail closed**.

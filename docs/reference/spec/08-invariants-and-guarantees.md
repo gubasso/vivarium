@@ -44,7 +44,7 @@ page or decision that explains it. The keyword **must** marks a hard requirement
 
 ## Project environment
 
-- **N9 — Project files are never modified.** nixvault **must not** modify a project's own files,
+- **N9 — Project files are never modified.** vivarium **must not** modify a project's own files,
   including its development-environment configuration. The project's environment **must** work
   identically in or out of the sandbox. See
   [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md).

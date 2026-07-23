@@ -1,6 +1,6 @@
 # Architecture
 
-The mental model for how nixvault fits together. This page teaches the shape; for exact rules see the
+The mental model for how vivarium fits together. This page teaches the shape; for exact rules see the
 spec under [`../reference/spec/`](../reference/spec/README.md), and for the reasoning behind each
 choice see the decision records under [`../decisions/`](../decisions/).
 
@@ -8,13 +8,13 @@ choice see the decision records under [`../decisions/`](../decisions/).
 
 The central idea is a separation of two layers:
 
-- **The box** — the sandbox nixvault builds: a microVM with its own kernel, its mounts, its network,
-  and its security policy. nixvault owns this layer entirely.
+- **The box** — the sandbox vivarium builds: a microVM with its own kernel, its mounts, its network,
+  and its security policy. vivarium owns this layer entirely.
 - **What you do inside the box** — your project's own development environment, defined by the project
-  and run within the guest. nixvault does not own or touch this layer.
+  and run within the guest. vivarium does not own or touch this layer.
 
 Keeping these apart is what lets a project's environment stay portable — identical on bare metal, in
-CI, and inside a sandbox — while nixvault independently provides isolation around it. The full
+CI, and inside a sandbox — while vivarium independently provides isolation around it. The full
 rationale is in
 [`../decisions/ADR-0008-two-layer-separation.md`](../decisions/ADR-0008-two-layer-separation.md).
 
@@ -24,7 +24,7 @@ Because both layers are described in Nix, there are two evaluations, at differen
 different machines:
 
 - The **outer** evaluation runs on the host at build time. It takes a manifest, resolves it to an
-  image and pieces, merges them with the module system, and produces the VM. This is what `nixvault
+  image and pieces, merges them with the module system, and produces the VM. This is what `viv
   up` builds.
 - The **inner** evaluation runs inside the guest at shell time. When a shell enters the mounted
   workspace, the project's own environment evaluates and loads.
@@ -50,7 +50,7 @@ The outer path is a short pipeline:
 
 ## Where the tool stops
 
-nixvault does the orchestration — resolving, compiling, building, mounting, launching — and delegates
+vivarium does the orchestration — resolving, compiling, building, mounting, launching — and delegates
 the hard mechanisms to established building blocks: the virtualization backend provides the kernel
 and boundary, and the module system provides the merge. This is deliberate: the product's value is a
 clean, composable surface and sensible defaults over those mechanisms, not a reimplementation of

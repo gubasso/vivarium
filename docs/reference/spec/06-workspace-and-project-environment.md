@@ -1,6 +1,6 @@
 # 06 — Workspace and project environment
 
-nixvault distinguishes two layers: the **sandbox** it manages, and the **project's own development
+vivarium distinguishes two layers: the **sandbox** it manages, and the **project's own development
 environment** that runs inside it. The separation and its rationale are in
 [`../../decisions/ADR-0008-two-layer-separation.md`](../../decisions/ADR-0008-two-layer-separation.md).
 
@@ -22,7 +22,7 @@ files are present inside the VM. The mount is:
 
 A project may define its own development environment — a `flake.nix` with direnv, or an equivalent.
 That environment is the **inner layer**: it lives in the repository, is owned by the project, and
-must work identically whether or not the project runs inside a nixvault sandbox. nixvault never
+must work identically whether or not the project runs inside a vivarium sandbox. vivarium never
 modifies it.
 
 Two Nix evaluations therefore exist and must not be conflated:

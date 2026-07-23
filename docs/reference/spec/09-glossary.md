@@ -1,20 +1,20 @@
 # 09 — Glossary
 
-Defined terms used across the nixvault documentation. Each term is defined once here; other pages use
+Defined terms used across the vivarium documentation. Each term is defined once here; other pages use
 it without redefining it.
 
-- **Sandbox** — the isolated microVM nixvault builds and runs for a project: a guest kernel behind a
+- **Sandbox** — the isolated microVM vivarium builds and runs for a project: a guest kernel behind a
   hardware-virtualization boundary, plus its mounts, network, and configuration.
 
 - **Guest** — the operating system running inside the sandbox VM, distinct from the **host** it runs
   on.
 
-- **Host** — the machine on which nixvault and the virtualization backend run.
+- **Host** — the machine on which vivarium and the virtualization backend run.
 
 - **microVM** — a lightweight virtual machine with a minimal device model and its own kernel, used as
   the isolation unit.
 
-- **Isolation boundary** — the security boundary between guest and host. In nixvault it is hardware
+- **Isolation boundary** — the security boundary between guest and host. In vivarium it is hardware
   virtualization with a separate guest kernel, specified by capability class rather than a named tool
   (see [`08-invariants-and-guarantees.md`](08-invariants-and-guarantees.md)).
 
@@ -43,7 +43,7 @@ it without redefining it.
   location. See [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md).
 
 - **Inner environment** — the project's own development environment, owned by the repository and run
-  inside the sandbox, independent of nixvault.
+  inside the sandbox, independent of vivarium.
 
 - **Outer / inner evaluation** — the two Nix evaluations: the outer builds the sandbox from the
   manifest at build time; the inner builds the project's development environment inside the guest at

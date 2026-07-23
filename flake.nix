@@ -30,10 +30,6 @@
             pkgs.just
             pkgs.pre-commit
           ];
-          # native deps for -sys crates, uncomment as needed:
-          # buildInputs = [ pkgs.openssl ];
-          # nativeBuildInputs = [ pkgs.pkg-config ];
-          shellHook = ''echo "rust dev shell ready (toolchain from rust-toolchain.toml)"'';
         };
       }
     );

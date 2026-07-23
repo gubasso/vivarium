@@ -1,12 +1,12 @@
 # CLAUDE.md
 
-Project-specific guidance for working in the nixvault repository. These instructions override default
+Project-specific guidance for working in the vivarium repository. These instructions override default
 behavior; follow them exactly. [`AGENTS.md`](AGENTS.md) mirrors these non-negotiables for
 `AGENTS.md`-native tools; this file remains the authored source of truth.
 
-## What nixvault is
+## What vivarium is
 
-nixvault is a Nix-native tool that boots each project inside its own **microVM** — a separate guest
+vivarium is a Nix-native tool that boots each project inside its own **microVM** — a separate guest
 kernel behind a hardware-virtualization boundary — described declaratively in Nix and composed from
 reusable **images** and **config pieces** unified by a single **manifest**. The command-line tool is
 a thin wrapper that resolves the manifest, builds the VM with `nix build`, and runs it; the guest
@@ -19,10 +19,10 @@ Read that file before changing runtime, build, or composition behavior.
 
 ## Self-contained documentation
 
-The docs describe **only** nixvault. Do not reference, cite, or link to any other project, tool, or
+The docs describe **only** vivarium. Do not reference, cite, or link to any other project, tool, or
 external documentation shelf inside `docs/`, this file, or `README.md`. Every fact must stand alone
 in this repository. External *upstream* technology (Nix, microvm.nix, NixOS modules, direnv) may be
-named where it is part of nixvault's own stack; other *projects* may not.
+named where it is part of vivarium's own stack; other *projects* may not.
 
 ## Documentation Maintenance
 

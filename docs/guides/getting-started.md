@@ -1,11 +1,11 @@
 # Getting started
 
 > **Design-intent walkthrough — not yet working.** This guide describes the *target* experience.
-> None of these commands run today; nixvault is at the design stage. For what is actually
+> None of these commands run today; vivarium is at the design stage. For what is actually
 > implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md),
 > which is the source of truth for status. Read this as the north star the implementation aims at.
 
-This walkthrough follows a developer who wants to run a Rust project inside a nixvault sandbox. It
+This walkthrough follows a developer who wants to run a Rust project inside a vivarium sandbox. It
 touches the command surface in [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md)
 and the artifacts in [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md).
 
@@ -24,18 +24,18 @@ From the project directory:
 
 ```
 $ cd ~/src/my-rust-api
-$ nixvault init --manifest rust-web
+$ viv init --manifest rust-web
 ```
 
-This records the binding — a committed `.nixvault.toml` pointer or a user-registry entry — and
+This records the binding — a committed `.vivarium.toml` pointer or a user-registry entry — and
 scaffolds a gitignored personal-override file. How the binding resolves later is specified in
 [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md).
 
 ## 2. Inspect what will be built
 
 ```
-$ nixvault manifest show rust-web
-$ nixvault show --resolved
+$ viv manifest show rust-web
+$ viv show --resolved
 ```
 
 `manifest show` prints the resolved image and ordered pieces; `show --resolved` renders the fully
@@ -46,7 +46,7 @@ semantics are in
 ## 3. Boot the sandbox
 
 ```
-$ nixvault up
+$ viv up
 ```
 
 This compiles the manifest to a flake, builds the VM with Nix, and boots it — mounting your current
@@ -57,13 +57,13 @@ not built in, which is why the same manifest is reproducible across machines
 ## 4. Work inside the sandbox
 
 ```
-$ nixvault exec -- cargo build
-$ nixvault shell
+$ viv exec -- cargo build
+$ viv shell
 ```
 
 `exec` runs a single command in the guest and returns its exit status; `shell` opens an interactive
 session. Inside the workspace, your project's own development environment loads independently of
-nixvault — the inner layer described in
+vivarium — the inner layer described in
 [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md).
 
 By default the sandbox has open network access, so `cargo` can fetch crates with no setup. To restrict
@@ -73,7 +73,7 @@ egress, switch the manifest's egress mode to the allowlist; see
 ## 5. Stop
 
 ```
-$ nixvault down
+$ viv down
 ```
 
 This stops the VM while preserving persistent volumes such as build caches, so the next `up` is fast.

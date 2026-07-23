@@ -70,7 +70,7 @@ waste.
 
 ## Binary distribution (cargo-dist)
 
-nixvault is a CLI, so `dist` (cargo-dist) builds prebuilt binaries and attaches
+vivarium is a CLI, so `dist` (cargo-dist) builds prebuilt binaries and attaches
 shell/PowerShell/Homebrew-tap installers to each GitHub Release; `cargo-binstall` then works
 automatically from those releases. It is separate from crates.io publishing and configured in
 `dist-workspace.toml`. `dist` generates its own workflow at `.github/workflows/release.yml` — a

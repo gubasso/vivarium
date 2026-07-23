@@ -2,7 +2,7 @@
 
 ## Context and Problem Statement
 
-nixvault composes a sandbox from many layers — a base VM, language toolchains, and small config
+vivarium composes a sandbox from many layers — a base VM, language toolchains, and small config
 fragments. Something must merge those layers into one coherent configuration with predictable rules
 for overrides, list accumulation, and conflicts. Writing and maintaining a bespoke merge engine is
 costly and error-prone.
@@ -17,7 +17,7 @@ costly and error-prone.
 
 ## Decision Outcome
 
-Chosen option: **the NixOS module system** — because nixvault builds NixOS microVMs, the module
+Chosen option: **the NixOS module system** — because vivarium builds NixOS microVMs, the module
 system is already present and is a mature, well-specified merge engine. Reusing it deletes the entire
 custom-merge surface.
 

@@ -1,10 +1,10 @@
 [package]
-name = "nixvault"
+name = "vivarium"
 version = "0.1.0"
 edition = "2024"
 description = "Nix-native tool that boots each project inside its own microVM, composed from reusable images and config pieces unified by a single manifest."
 license = "MIT"
-repository = "https://github.com/gubasso/nixvault"
+repository = "https://github.com/gubasso/vivarium"
 readme = "README.md"
 exclude = [
   "/docs",
@@ -23,7 +23,12 @@ exclude = [
 ]
 keywords = ["nix", "microvm", "isolation", "sandbox", "devenv"]
 categories = ["command-line-utilities", "virtualization", "development-tools"]
-authors = ["Gustavo Basso <gubasso@gmail.com>"]
+authors = ["Gustavo Basso <gu@gubasso.xyz>"]
+
+# The published crate is `vivarium`; the installed command is `viv`.
+[[bin]]
+name = "viv"
+path = "src/main.rs"
 
 [dependencies]
 

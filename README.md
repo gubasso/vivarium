@@ -1,8 +1,8 @@
-# nixvault
+# vivarium
 
 Declarative, deterministic, composable **microVM sandboxes** for projects and AI coding agents.
 
-nixvault boots each project inside its own lightweight virtual machine — a separate guest kernel
+vivarium boots each project inside its own lightweight virtual machine — a separate guest kernel
 behind a hardware-virtualization boundary (VT-x/AMD-V) — instead of a shared-kernel container. The
 sandbox is described entirely in Nix: you compose reusable **images** and **config pieces** through a
 single **manifest**, and the same manifest produces the same VM on any machine.
@@ -20,7 +20,7 @@ the isolation boundary, and the merge semantics to well-established building blo
 - **Composable** — small images and config pieces combine through one manifest, the single source of
   truth for a project's sandbox.
 - **Your dev environment, untouched** — your project's own `flake.nix` / direnv setup runs *inside*
-  the sandbox, independent of nixvault.
+  the sandbox, independent of vivarium.
 - **User-based** — all state lives under standard per-user XDG directories.
 
 ## Status
@@ -36,7 +36,7 @@ architecture explanation.
 
 ## Development shell
 
-nixvault ships a Nix flake devShell with its tooling pinned.
+vivarium ships a Nix flake devShell with its tooling pinned.
 
 ```bash
 # Interactive: allow direnv to load the shell on cd
@@ -48,4 +48,4 @@ nix develop
 
 ## License
 
-nixvault is licensed under the terms described in the [LICENSE](LICENSE) file (MIT).
+vivarium is licensed under the terms described in the [LICENSE](LICENSE) file (MIT).

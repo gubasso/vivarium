@@ -1,6 +1,6 @@
 # 03 — Artifact model: images, pieces, manifests
 
-nixvault composes a sandbox from three artifact kinds. The rationale is in
+vivarium composes a sandbox from three artifact kinds. The rationale is in
 [`../../decisions/ADR-0003-images-pieces-manifests-model.md`](../../decisions/ADR-0003-images-pieces-manifests-model.md);
 this page specifies their shapes. All three live under the config root (see
 [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md)).

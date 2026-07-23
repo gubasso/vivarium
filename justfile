@@ -1,4 +1,4 @@
-# Justfile — nixvault task runner.
+# Justfile — vivarium task runner.
 # Recipes route through the pinned Nix devShell so tasks run in the same
 # environment CI and direnv provide.
 
