@@ -16,4 +16,4 @@
 /// ```
 /// assert_eq!(vivarium::stub_until_first_real_doctest(), ());
 /// ```
-pub fn stub_until_first_real_doctest() {}
+pub const fn stub_until_first_real_doctest() {}
