@@ -8,15 +8,16 @@ only** — they confirm crates.io auth is set up, never that a token is valid.
 
 - **CI-first (recommended):** `release-plz` runs on `develop` (the trunk) and opens a release PR
   that bumps the version and updates the changelog, `Cargo.toml`, and `Cargo.lock`. Merging that PR
-  publishes the new version automatically and tags it; a `promote` job then fast-forwards `master`
-  onto that tag, so `master` holds only released commits.
+  publishes the new version automatically and tags it; the tag-triggered `promote-to-master.yml`
+  workflow then fast-forwards `master` onto that tag, so `master` holds only released commits.
 - **Local (escape hatch):** run the helper scripts by hand when CI is unavailable.
 
 The branch model: `develop` is the trunk **and the GitHub default branch** (release-plz bases the
 release PR on the default branch); `master` is never written by hand — CI fast-forwards it onto each
 release tag. If `master` is protected, its ruleset must let the `github-actions` bot bypass so the
-promote job's push succeeds. release-plz itself runs under a GitHub App token so its tag push
-retriggers binary builds (see [Binary distribution](#binary-distribution-cargo-dist)).
+`promote-to-master.yml` push succeeds. release-plz itself runs under a GitHub App token so its tag
+push retriggers the tag-triggered workflows — both `promote-to-master.yml` and the cargo-dist binary
+builds (see [Binary distribution](#binary-distribution-cargo-dist)).
 
 First-time crates.io setup — creating a scoped `publish-new` token, `cargo login`, the first manual
 `cargo publish`, then configuring Trusted Publishing and revoking the token — is a **one-time manual
@@ -37,9 +38,9 @@ You never hand-create the tag; the only manual actions are two merges.
 2. release-plz opens/updates the release PR on `develop` (version bump + changelog).
 3. Review the PR; merge it — the one human release decision.
 4. release-plz tags the release (`vX.Y.Z`) and publishes to crates.io over OIDC.
-5. The `promote` job (`needs: release-plz`) fast-forwards `master` onto that tag, and the tag push
-   (made with release-plz's GitHub App token) triggers the cargo-dist `release.yml` to build and
-   attach binaries — see [Binary distribution](#binary-distribution-cargo-dist).
+5. The tag push (made with release-plz's GitHub App token) triggers two tag workflows: `promote-to-
+   master.yml` fast-forwards `master` onto that tag, and the cargo-dist `release.yml` builds and
+   attaches binaries — see [Binary distribution](#binary-distribution-cargo-dist).
 
 ## Local operator release
 

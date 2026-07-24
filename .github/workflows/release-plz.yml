@@ -1,9 +1,10 @@
-# release-plz — automated crates.io publishing, release PRs, and master promotion.
+# release-plz — automated crates.io publishing and release PRs.
 #
 # Branch model: `develop` is the trunk (and the GitHub default branch); `master`
 # holds only released commits. This workflow runs on `develop`: release-plz opens
-# the release PR and, when that PR merges, tags + publishes; the `promote` job
-# then fast-forwards `master` onto that exact release tag in the same run.
+# the release PR and, when that PR merges, tags + publishes. Fast-forwarding
+# `master` onto that exact release tag is handled separately by the tag-triggered
+# promote-to-master.yml workflow (kept out of this file on purpose).
 #
 # Publishing uses crates.io Trusted Publishing (OIDC): release-plz mints its own
 # short-lived registry token from the `id-token: write` permission below, so NO
@@ -16,13 +17,12 @@
 #     Trusted Publishing), pointing at this repo + this workflow filename.
 #   - The FIRST publish of a brand-new crate cannot use Trusted Publishing; run
 #     `cargo publish` once manually with a token, then let release-plz take over.
-#   - If `master` is protected, allow the `github-actions` bot to bypass the
-#     ruleset so the promote job can push (it uses the default GITHUB_TOKEN).
 #   - Create a GitHub App (contents + pull-requests: write), install it on this
 #     repo, and store its App ID and private key as the RELEASE_PLZ_APP_ID and
-#     RELEASE_PLZ_APP_PRIVATE_KEY secrets. release-plz runs with that App token
-#     so its tag push retriggers the cargo-dist release.yml (a tag pushed with
-#     the default GITHUB_TOKEN would not), giving fully automatic binary builds.
+#     RELEASE_PLZ_APP_PRIVATE_KEY secrets. release-plz runs with that App token so
+#     its tag push retriggers the tag-triggered workflows — both the cargo-dist
+#     release.yml (binaries) and promote-to-master.yml (master fast-forward). A tag
+#     pushed with the default GITHUB_TOKEN would not retrigger either.
 #
 # Binary distribution is handled separately by dist's own release workflow
 # (generated via `dist generate` from dist-workspace.toml); it is tag-triggered
@@ -45,11 +45,6 @@ jobs:
       contents: write
       pull-requests: write
       id-token: write
-    # Expose whether a release was cut (and its JSON) so `promote` can
-    # fast-forward master onto the exact release tag.
-    outputs:
-      releases_created: ${{ steps.release-plz.outputs.releases_created }}
-      releases: ${{ steps.release-plz.outputs.releases }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -59,7 +54,8 @@ jobs:
       - name: Cache Nix store
         uses: DeterminateSystems/flakehub-cache-action@v3.21.5
       # Mint a GitHub App token so release-plz's tag push retriggers tag
-      # workflows (cargo-dist's release.yml); the default GITHUB_TOKEN would not.
+      # workflows (cargo-dist's release.yml + promote-to-master.yml); the default
+      # GITHUB_TOKEN would not.
       - name: Mint GitHub App token
         id: app-token
         uses: actions/create-github-app-token@v3
@@ -71,49 +67,3 @@ jobs:
         uses: release-plz/action@v0.5
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-
-  # Promote master onto the exact tag release-plz just created. A tag pushed with
-  # the default GITHUB_TOKEN does not retrigger a standalone `on: push: tags`
-  # workflow, so promotion runs here as a `needs:` job in the same release run.
-  promote:
-    needs: release-plz
-    if: github.repository_owner == 'gubasso' && needs.release-plz.outputs.releases_created == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: Fast-forward master to the release tag
-        env:
-          RELEASES: ${{ needs.release-plz.outputs.releases }}
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # The tag release-plz just created is the canonical release marker.
-          tag="$(printf '%s' "$RELEASES" | jq -r '.[0].tag')"
-          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
-            echo "::error::could not determine the release tag from release-plz output." >&2
-            exit 1
-          fi
-
-          git fetch origin --tags
-          git fetch origin develop
-          tag_sha="$(git rev-parse "refs/tags/${tag}^{commit}")"
-
-          # Guard: the tagged commit must be reachable from develop.
-          if ! git merge-base --is-ancestor "$tag_sha" origin/develop; then
-            echo "::error::tag $tag ($tag_sha) is not on develop; refusing to promote master." >&2
-            exit 1
-          fi
-
-          if git rev-parse --verify --quiet origin/master >/dev/null; then
-            git checkout -B master origin/master
-            git merge --ff-only "$tag_sha"
-          else
-            # First release: master does not exist yet — create it at the tag.
-            git checkout -B master "$tag_sha"
-          fi
-          git push origin master
