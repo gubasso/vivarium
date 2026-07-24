@@ -33,7 +33,7 @@ page or decision that explains it. The keyword **must** marks a hard requirement
   [`../../decisions/ADR-0002-module-system-as-composition-engine.md`](../../decisions/ADR-0002-module-system-as-composition-engine.md).
 - **N7 — One manifest per project.** A project **must** resolve to exactly one manifest, selected by
   the fixed precedence, and resolution **must** fail closed when none applies. See
-  [`../../decisions/ADR-0006-manifest-binding-and-precedence.md`](../../decisions/ADR-0006-manifest-binding-and-precedence.md).
+  [`../../decisions/ADR-0011-config-read-only-binding-in-state.md`](../../decisions/ADR-0011-config-read-only-binding-in-state.md).
 
 ## Network
 
@@ -64,3 +64,13 @@ page or decision that explains it. The keyword **must** marks a hard requirement
   config is authored, data is pinned input, state is runtime, and cache is regenerable. No privileged
   or shared mutable state. See
   [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md).
+
+## Config
+
+- **N13 — Config is read-only to the tool.** vivarium **must not** write, create, or scaffold
+  anything under the config root as a side effect of running a command; it only reads config. Any
+  value the tool persists is state, data, or cache — never config. The one sanctioned write to a
+  user-owned surface is an explicit, user-directed action that names its target (`viv init --write`,
+  which targets the **state** registry, not config), is off by default, and is reversible. See
+  [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md) and
+  [`../../decisions/ADR-0011-config-read-only-binding-in-state.md`](../../decisions/ADR-0011-config-read-only-binding-in-state.md).

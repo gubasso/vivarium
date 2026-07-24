@@ -36,4 +36,8 @@ the binding files and registry shape.
 
 ## Status
 
-Accepted
+Superseded
+
+Superseded by [`ADR-0011-config-read-only-binding-in-state.md`](ADR-0011-config-read-only-binding-in-state.md),
+which drops the per-project pointer files and the default-manifest fallback, moves the registry to the
+state root, and collapses the precedence to `--manifest` → `VIVARIUM_MANIFEST` → registry → fail closed.

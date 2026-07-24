@@ -24,11 +24,13 @@ From the project directory:
 
 ```
 $ cd ~/src/my-rust-api
-$ viv init --manifest rust-web
+$ viv init --manifest rust-web         # preview the registry entry it would write
+$ viv init --manifest rust-web --write # record the binding
 ```
 
-This records the binding — a committed `.vivarium.toml` pointer or a user-registry entry — and
-scaffolds a gitignored personal-override file. How the binding resolves later is specified in
+`viv init` records the binding in your per-user project registry (state); it writes nothing into the
+project's own tree or into your config. Run it without `--write` to preview the exact entry first.
+How the binding resolves later is specified in
 [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md).
 
 ## 2. Inspect what will be built

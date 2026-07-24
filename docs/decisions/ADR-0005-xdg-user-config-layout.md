@@ -16,9 +16,10 @@ per-user, with no system-wide installation or root-owned state.
 ## Decision Outcome
 
 Chosen option: **four XDG roots by durability**. Config owns the user's source of truth (images,
-pieces, manifests, and the global config file). Data owns pinned external module libraries. State
-owns per-project VM identity and logs. Cache owns derived, regenerable build and evaluation
-artifacts. See [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md)
+pieces, manifests, and the global config file) and is read-only to the tool. Data owns pinned
+external module libraries. State owns per-project VM identity, the project→manifest registry, and
+logs. Cache owns derived, regenerable build and evaluation artifacts. See
+[`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md)
 for what each root contains.
 
 The split follows a single rule: **config is authored, cache is derived, state is runtime, data is
@@ -35,3 +36,7 @@ pinned inputs.** Anything the user edits is config; anything the tool can rebuil
 ## Status
 
 Accepted
+
+The four-class split stands. The project→manifest registry now lives in **state**, not the config
+file, and config is read-only to the tool — see
+[`ADR-0011-config-read-only-binding-in-state.md`](ADR-0011-config-read-only-binding-in-state.md).

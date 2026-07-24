@@ -10,11 +10,12 @@ and machine-specific paths are injected at launch, not built in (see
 
 Configuration divides into two classes:
 
-- **Shared** — portable, safe to commit: images, pieces, the committed manifest pointer, and the
-  manifest itself. These contain no personal paths and no secrets.
-- **Personal / machine-local** — never committed: a user's resource overrides, machine identity, and
-  anything host-specific. These live in the gitignored personal-override file (see
-  [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md)) or the per-user config.
+- **Shared** — portable, safe to share in a config library: images, pieces, and the manifest itself.
+  These contain no personal paths and no secrets, so a team can track and distribute them together.
+- **Personal / machine-local** — never shared: a user's resource overrides, machine identity, and
+  anything host-specific. These live in the user's own per-user config and state (see
+  [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md)) and are injected at launch, never
+  written into a shared artifact.
 
 The guiding principle: **committed files describe the project; the machine and the user supply their
 own context at the edges.** A committed file that contains an absolute home path or an inline
@@ -45,6 +46,7 @@ encrypted-at-rest only.**
 ## Enforcing the split
 
 Because the working-directory path is never written to config and secrets are never built in, the
-shared class stays genuinely shareable. Tooling can guard the boundary by rejecting a committed file
-that contains an absolute home path or an inline secret, and by scaffolding the gitignored
-personal-override file at initialization so the personal class has a home from the start.
+shared class stays genuinely shareable. Tooling guards the boundary with **read-only checks** —
+rejecting a shared artifact that contains an absolute home path or an inline secret — never by writing
+into the user's config (N13). The personal class already has a home in the per-user config and state
+roots; vivarium does not scaffold it.

@@ -13,8 +13,8 @@ each page links to the ADRs that govern it rather than restating their reasoning
   and who it serves.
 - [`01-command-surface.md`](01-command-surface.md) — the command-line verbs, flags, and exit
   behavior.
-- [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md) — the four XDG roots, the global
-  config file, and the per-project binding files.
+- [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md) — the four XDG roots, the read-only
+  config, and the project→manifest registry in state.
 - [`03-artifact-model.md`](03-artifact-model.md) — images, pieces, and manifests, with example
   shapes.
 - [`04-composition-and-determinism.md`](04-composition-and-determinism.md) — how layers merge and

@@ -36,8 +36,9 @@ it without redefining it.
   normal priority and so override image defaults. See
   [`04-composition-and-determinism.md`](04-composition-and-determinism.md).
 
-- **Binding** — the association between a project and its manifest, resolved by a fixed precedence.
-  See [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md).
+- **Binding** — the association between a project and its manifest, recorded in the per-user project
+  registry (state) and resolved by a fixed precedence. See
+  [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md).
 
 - **Workspace** — the user's working directory, mounted read-write into the guest at a fixed
   location. See [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md).

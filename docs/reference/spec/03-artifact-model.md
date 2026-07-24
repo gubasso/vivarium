@@ -64,6 +64,15 @@ only where two layers set the same scalar at the same priority (see
 [`04-composition-and-determinism.md`](04-composition-and-determinism.md)). The optional `extends` key
 references a raw `.nix` module for advanced cases.
 
+## Authoring these artifacts
+
+vivarium never scaffolds these files into a user's config root (N13). Instead, the manifest's TOML
+surface is documented by **generated, self-documented examples** derived from the tool's own config
+types — an annotated `*.example.toml` plus a JSON Schema for editor validation — kept in sync by a
+pre-commit check. The user copies an example and edits it; the tool only ever reads the result. The
+inline sketches above are illustrative; the canonical, always-current examples are the generated ones.
+See [`../../decisions/ADR-0012-generate-config-examples-from-types.md`](../../decisions/ADR-0012-generate-config-examples-from-types.md).
+
 ## Relationship
 
 Images vary by toolchain, pieces by cross-cutting concern, manifests by the per-environment

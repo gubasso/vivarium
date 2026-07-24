@@ -11,7 +11,7 @@ All commands operate on the manifest bound to the current project, resolved by t
 
 | Command | Purpose |
 | ------- | ------- |
-| `viv init [--manifest <name>]` | Bind the current project to a manifest. Writes the repository pointer or a user-registry entry; scaffolds a gitignored personal-override file. |
+| `viv init [--manifest <name>] [--write] [--yes] [--json] [--no-input]` | Binding assistant for the current project. Default is read-only: it resolves the effective manifest, lists candidates, and prints the exact registry snippet it *would* record. It persists the project→manifest binding to the **state** registry only with `--write` (confirmed, or `--yes` to skip the prompt). It never writes config and never touches the project's own tree. |
 | `viv images list` | List the available images from the config library. |
 | `viv manifest list` | List the available manifests. |
 | `viv manifest show <name>` | Show a manifest's resolved image, ordered pieces, and policy knobs. |
@@ -26,11 +26,14 @@ All commands operate on the manifest bound to the current project, resolved by t
 ## Selection and overrides
 
 - `--manifest <name>` overrides the bound manifest for a single invocation and is the
-  highest-precedence source (see
+  highest-precedence source; `VIVARIUM_MANIFEST` is the next, a runtime override. Neither is
+  persisted. The only persisted binding is the state registry (see
   [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md)).
-- Where no manifest can be resolved, commands that require one **fail closed** with a message to run
-  `viv init`, per
-  [`../../decisions/ADR-0006-manifest-binding-and-precedence.md`](../../decisions/ADR-0006-manifest-binding-and-precedence.md).
+- Where no manifest can be resolved, commands that require one **fail closed** — never prompting —
+  and print a copy-pasteable snippet plus `viv init` guidance, per
+  [`../../decisions/ADR-0011-config-read-only-binding-in-state.md`](../../decisions/ADR-0011-config-read-only-binding-in-state.md).
+  Interactive prompting happens only in `viv init`, and only when stdin/stdout is a TTY and
+  `--no-input` is absent.
 
 ## Exit behavior
 
