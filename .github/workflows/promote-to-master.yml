@@ -11,27 +11,46 @@
 # is why the promote used to be inlined into release-plz.yml). It runs
 # concurrently with the cargo-dist release.yml and is independent of it.
 #
-# Token: the push to `master` only moves a branch pointer and retriggers nothing,
-# so it uses the default GITHUB_TOKEN. If `master` is protected, allow the
-# `github-actions` bot to bypass the ruleset so this push succeeds. This workflow
-# does NOT create the GitHub Release — cargo-dist's release.yml owns that.
+# Token: the push to `master` goes out under the GitHub App token (minted below),
+# not the default GITHUB_TOKEN. `master` is a protected branch whose only bypass
+# actor is this App — and on a personal account the default-token identity
+# (`github-actions[bot]`) can never be a ruleset bypass actor, so a default-token
+# push would be rejected. Pushing as the App matches the bypass actor and is
+# accepted. This workflow does NOT create the GitHub Release — cargo-dist's
+# release.yml owns that.
 name: promote-to-master
 
 on:
   push:
     tags: ['v*']
 
+# The push to `master` uses the App token (minted in the job), so the default
+# GITHUB_TOKEN needs no write scope — checkout and push both authenticate as the
+# App. Keep GITHUB_TOKEN read-only as least privilege.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   promote:
     if: github.repository_owner == 'gubasso'
     runs-on: ubuntu-latest
     steps:
+      # Mint the App token so the push to `master` is attributed to the App —
+      # the ruleset's bypass actor. (Same App as release-plz.yml.)
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_PLZ_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
+          # Scope the token to only what this job uses (the push to `master`).
+          # Without this, the token inherits every installation permission the
+          # shared App holds (including pull-requests: write).
+          permission-contents: write
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
       - name: Verify the tag is on develop
         run: |
           # Promotion targets the release TAG, not an arbitrary branch SHA.

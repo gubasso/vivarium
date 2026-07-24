@@ -14,8 +14,10 @@ only** — they confirm crates.io auth is set up, never that a token is valid.
 
 The branch model: `develop` is the trunk **and the GitHub default branch** (release-plz bases the
 release PR on the default branch); `master` is never written by hand — CI fast-forwards it onto each
-release tag. If `master` is protected, its ruleset must let the `github-actions` bot bypass so the
-`promote-to-master.yml` push succeeds. release-plz itself runs under a GitHub App token so its tag
+release tag. `master`'s ruleset bypass actor is the GitHub App, and `promote-to-master.yml` pushes
+`master` **under that App token** so the push is attributed to the bypass actor and accepted — on a
+personal account the default `GITHUB_TOKEN` identity (`github-actions[bot]`) cannot be a bypass actor,
+so a default-token push would be rejected. release-plz itself also runs under that App token so its tag
 push retriggers the tag-triggered workflows — both `promote-to-master.yml` and the cargo-dist binary
 builds (see [Binary distribution](#binary-distribution-cargo-dist)).
 
