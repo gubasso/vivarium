@@ -25,6 +25,11 @@ page or decision that explains it. The keyword **must** marks a hard requirement
 - **N5 — Launch-time workspace path.** The working-directory host path **must** be injected when the
   VM launches, never built in, so no host path appears in any configuration file or build output. See
   [`../../decisions/ADR-0009-launch-time-workspace-path-injection.md`](../../decisions/ADR-0009-launch-time-workspace-path-injection.md).
+- **N19 — Launch-channel data never enters the build.** Runtime declarations — mounts and runtime
+  environment, however declared — **must** be read by pure evaluation and applied at launch; no
+  build output may depend on them, and host-side variable expansion **must** happen only at launch.
+  See [`04-composition-and-determinism.md`](04-composition-and-determinism.md) and
+  [`../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md`](../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md).
 
 ## Composition
 
@@ -60,7 +65,9 @@ page or decision that explains it. The keyword **must** marks a hard requirement
   Secrets are runtime-injected or encrypted-at-rest only. See
   [`../../decisions/ADR-0010-secrets-never-in-nix-store.md`](../../decisions/ADR-0010-secrets-never-in-nix-store.md).
 - **N11 — Shared config is personal-data-free.** Committable configuration **must not** contain
-  personal paths or plaintext secrets; such data belongs to the gitignored personal class. See
+  literal personal paths or plaintext secrets; such data belongs to the gitignored personal class.
+  Unexpanded portable variables (`${HOME}`, `${XDG_*}`) are not personal paths — they are
+  machine-independent names resolved at launch. See
   [`07-secrets-and-config-sharing.md`](07-secrets-and-config-sharing.md).
 - **N17 — Guest environment is deny-by-default.** Host environment variables **must not** be
   forwarded wholesale into the guest; only the specified allowlist and explicit per-invocation

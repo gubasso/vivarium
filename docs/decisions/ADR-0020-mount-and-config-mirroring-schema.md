@@ -48,3 +48,9 @@ FOO_CONFIG = "~/.config/foo"       # runtime env injection (see 07)
 ## Status
 
 Accepted
+
+Amended by
+[`ADR-0021-typed-launch-channel-options-in-pieces.md`](ADR-0021-typed-launch-channel-options-in-pieces.md) —
+the schema stands; the piece-side declaration surface is now typed `vivarium.mounts`/`vivarium.env`
+NixOS options (the TOML above remains the manifest surface, compiled into the same options), and
+shared layers are restricted to portable variables in mount sources.

@@ -36,6 +36,32 @@ role. Example sketch of an egress-restriction piece:
 { sandbox.egress.mode = lib.mkForce "allowlist"; }
 ```
 
+A piece is the *whole* piece for its concern. Beyond guest config, it may declare the runtime
+mounts and environment its application needs through the tool-owned, typed `vivarium.*` options
+(`vivarium.mounts`, `vivarium.env`) — launch-channel data, extracted by pure evaluation and never
+a build input (see [`04-composition-and-determinism.md`](04-composition-and-determinism.md)). The
+module system type-checks these declarations; shared pieces reference the host only through
+portable variables (see [`07-secrets-and-config-sharing.md`](07-secrets-and-config-sharing.md)).
+Example sketch of a self-contained application piece, decided in
+[`../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md`](../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md):
+
+```nix
+{ pkgs, ... }:
+{
+  environment.systemPackages = with pkgs; [ foo ];
+
+  # Launch-channel data: applied at launch, never built in. The backslash keeps
+  # "${HOME}" unexpanded in Nix so the host resolves it at launch.
+  vivarium.mounts = [
+    { source = "\${HOME}/.config/foo"; target = "~/.config/foo"; readonly = true; }
+  ];
+  vivarium.env.FOO_CONFIG = "~/.config/foo";
+}
+```
+
+Adopting a piece therefore brings everything the concern needs — packages, guest config, mounts,
+and env — with no re-declaration in the manifest.
+
 ## Manifests
 
 A **manifest** is the unifier and the single source of truth a project binds to. It names one image,
@@ -71,6 +97,8 @@ surface is documented by **generated, self-documented examples** derived from th
 types — an annotated `*.example.toml` plus a JSON Schema for editor validation — kept in sync by a
 pre-commit check. The user copies an example and edits it; the tool only ever reads the result. The
 inline sketches above are illustrative; the canonical, always-current examples are the generated ones.
+The `vivarium.*` options available to pieces are declared by a tool-owned options module and follow
+the same rule — their reference documentation is generated from the option types.
 See [`../../decisions/ADR-0012-generate-config-examples-from-types.md`](../../decisions/ADR-0012-generate-config-examples-from-types.md).
 
 ## Relationship

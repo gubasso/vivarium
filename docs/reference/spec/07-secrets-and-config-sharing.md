@@ -11,7 +11,8 @@ and machine-specific paths are injected at launch, not built in (see
 Configuration divides into two classes:
 
 - **Shared** — portable, safe to share in a config library: images, pieces, and the manifest itself.
-  These contain no personal paths and no secrets, so a team can track and distribute them together.
+  These contain no literal personal paths and no secrets — host context appears only as portable
+  variables resolved at launch (see below) — so a team can track and distribute them together.
 - **Personal / machine-local** — never shared: a user's resource overrides, machine identity, and
   anything host-specific. These live in the user's own per-user config and state (see
   [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md)) and are injected at launch, never
@@ -45,20 +46,36 @@ encrypted-at-rest only.**
 
 ## Mirroring host configuration
 
-Personal config files and directories are mirrored into the guest through the declarative
-`[[mounts]]` schema
+Host config files and directories are mirrored into the guest through the declarative mount schema
 ([`../../decisions/ADR-0020-mount-and-config-mirroring-schema.md`](../../decisions/ADR-0020-mount-and-config-mirroring-schema.md),
+[`../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md`](../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md),
 [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md)): the host
 `source` expands host-side variables at launch, the guest `target` expands `~` to the guest home,
 and `readonly = true` marks identity files that must not be written. Because each side expands its
 own home, identity mounts (`~/.config/foo` → `~/.config/foo`) need no path translation even though
 the guest username differs from the host's.
 
-Mount declarations resolve at launch and are never build inputs (N5): an unset variable or missing
-host path fails before boot with a legible error, and no expanded path is ever recorded in a shared
-artifact (N11). One caveat: mirroring is transparent at the *path* layer only — a mirrored file
-whose contents embed a host-absolute path is not rewritten. Runtime environment values pass through
-the `[env]` table, subject to the deny-by-default rule (N17).
+Mount declarations travel the launch channel and are never build inputs (N5, N19,
+[`04-composition-and-determinism.md`](04-composition-and-determinism.md)): an unset variable or
+missing host path fails before boot with a legible error, and no expanded path is ever recorded in
+a shared artifact (N11). One caveat: mirroring is transparent at the *path* layer only — a mirrored
+file whose contents embed a host-absolute path is not rewritten. Runtime environment values pass
+through `vivarium.env` (pieces) or the manifest `[env]` table, subject to the deny-by-default rule
+(N17).
+
+### Portable variables — the sharing rule
+
+A shared layer references the host only through **portable variables**: `${HOME}` and the XDG
+directories (`${XDG_CONFIG_HOME}`, `${XDG_DATA_HOME}`, `${XDG_STATE_HOME}`, `${XDG_CACHE_HOME}`,
+`${XDG_RUNTIME_DIR}`). These are machine-independent names — every host resolves them — so a piece
+declaring `source = "${HOME}/.config/foo"` stays committable: nothing personal appears until launch
+expands it, and the expanded value never lands in an artifact. A **literal** personal path
+(`/home/alice/…`) in a shared piece or manifest fails validation before the build; literal paths
+belong to the personal/machine-local layer only.
+
+This rule is what keeps a piece *whole* and still shareable: an application piece carries the
+packages, guest config, runtime env, and host-config mounts its application needs, and adopting
+the piece brings all of it (see [`03-artifact-model.md`](03-artifact-model.md)).
 
 ## Enforcing the split
 

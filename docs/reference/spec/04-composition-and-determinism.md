@@ -31,6 +31,26 @@ overrides everything" — without any custom ordering logic. `viv show --resolve
 [`01-command-surface.md`](01-command-surface.md)) renders the merged result so users can see the
 effective configuration.
 
+## The build and launch channels
+
+The merged configuration divides into two channels, decided in
+[`../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md`](../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md):
+
+- **Build channel** — everything the guest system derivation depends on: packages, services,
+  policy. This is what `nix build` realizes into the immutable image.
+- **Launch channel** — runtime declarations under the tool-owned `vivarium.*` options
+  (`vivarium.mounts`, `vivarium.env`); the manifest's `[[mounts]]`/`[env]` tables compile into the
+  same options. The tool reads this channel by **pure evaluation** of the merged configuration and
+  applies it when the VM launches; no build output may depend on it (N19,
+  [`08-invariants-and-guarantees.md`](08-invariants-and-guarantees.md)).
+
+The split is what lets a shared piece carry host-facing declarations without breaking purity:
+host-side variables in mount sources stay unexpanded through evaluation and resolve against the
+host environment only at launch (see
+[`07-secrets-and-config-sharing.md`](07-secrets-and-config-sharing.md)). Typing lives in the
+options module: `vivarium.mounts` and `vivarium.env` are declared with module option types, so a
+malformed declaration fails evaluation with a precise error rather than at boot.
+
 ## Determinism
 
 A sandbox is a Nix build, and its inputs are pinned by a lockfile. Given the same manifest closure

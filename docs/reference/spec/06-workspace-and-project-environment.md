@@ -21,14 +21,20 @@ is the repository directory name, not the host absolute path. The mount is:
   [`12-exec-and-shell.md`](12-exec-and-shell.md).
 
 Manifests and pieces may declare additional runtime mounts at other guest paths — extra
-`/workspaces/<name>` repositories or mirrored host config files — through the `[[mounts]]` schema
-decided in
-[`../../decisions/ADR-0020-mount-and-config-mirroring-schema.md`](../../decisions/ADR-0020-mount-and-config-mirroring-schema.md):
+`/workspaces/<name>` repositories or mirrored host config files — through the mount schema decided
+in
+[`../../decisions/ADR-0020-mount-and-config-mirroring-schema.md`](../../decisions/ADR-0020-mount-and-config-mirroring-schema.md)
+and
+[`../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md`](../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md):
 a host `source` (host-side `${VAR}` expansion at launch), a guest `target` (`~` expands to the
-guest home), and an optional `readonly` flag; declarations concatenate across layers. These mounts
-follow the same rule as the primary workspace: host sources are launch-time or
-personal/machine-local inputs, never build inputs and never shared host-path facts. Config
-mirroring specifics live in [`07-secrets-and-config-sharing.md`](07-secrets-and-config-sharing.md).
+guest home), and an optional `readonly` flag. The manifest declares them as TOML `[[mounts]]`
+entries; a piece declares them as typed `vivarium.mounts` options
+([`03-artifact-model.md`](03-artifact-model.md)); both compile into one merged list — declarations
+concatenate across layers, and duplicate targets fail evaluation. These mounts follow the same
+rule as the primary workspace: sources resolve through the launch channel
+([`04-composition-and-determinism.md`](04-composition-and-determinism.md)), never as build inputs,
+and shared layers reference the host only through portable variables. Config mirroring specifics
+and the sharing rule live in [`07-secrets-and-config-sharing.md`](07-secrets-and-config-sharing.md).
 
 ## The independent inner environment
 

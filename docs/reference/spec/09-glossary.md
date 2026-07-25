@@ -67,6 +67,16 @@ it without redefining it.
   manifest at build time; the inner builds the project's development environment inside the guest at
   shell time.
 
+- **Launch channel** — the runtime portion of the merged configuration (mounts, runtime
+  environment, declared as `vivarium.*` options) that the tool extracts by pure evaluation and
+  applies when the VM launches; never a build input. See
+  [`04-composition-and-determinism.md`](04-composition-and-determinism.md).
+
+- **Portable variable** — an unexpanded, machine-independent host variable — `${HOME}` or an
+  `${XDG_*}` directory — the only host reference permitted in shared mount declarations; resolved
+  against the host environment at launch. See
+  [`07-secrets-and-config-sharing.md`](07-secrets-and-config-sharing.md).
+
 - **Egress** — outbound network traffic from the guest, governed by the `sandbox.egress.mode` knob.
   See [`05-networking-and-egress.md`](05-networking-and-egress.md).
 
