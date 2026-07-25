@@ -48,4 +48,5 @@ Accepted
 
 Adds invariant **N20** to
 [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md).
-The default-hypervisor selection is deferred to a follow-up ADR.
+The default-hypervisor selection deferred here is recorded in
+[`ADR-0025-default-hypervisor-cloud-hypervisor.md`](ADR-0025-default-hypervisor-cloud-hypervisor.md).

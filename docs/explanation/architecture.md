@@ -56,3 +56,28 @@ and boundary, and the module system provides the merge. This is deliberate: the 
 clean, composable surface and sensible defaults over those mechanisms, not a reimplementation of
 them. The capability classes that keep the backend swappable are fixed by
 [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md).
+
+## The boundary and its edges
+
+The isolation model is a **second wall**. Inside a shared-kernel sandbox, one kernel or runtime bug
+is a host compromise; behind the microVM boundary an attacker must chain a guest-kernel escape *and*
+a break of the virtual-machine monitor or the hardware boundary — a categorically harder exploit
+chain. That risk-class jump, not any single tool, is the reason the boundary is a microVM
+([`../decisions/ADR-0001-microvm-isolation-boundary.md`](../decisions/ADR-0001-microvm-isolation-boundary.md),
+[`../decisions/ADR-0024-backend-security-requirements.md`](../decisions/ADR-0024-backend-security-requirements.md)).
+
+A second wall is not zero risk, and knowing its edges is part of the mental model:
+
+- **The host-side helpers are trusted surface.** The VMM process and the shared-filesystem daemon
+  that serves the workspace both run on the host, so both are confined by construction — seccomp
+  plus capability drop (N20) — rather than trusted.
+- **Network reach is not escape.** Open egress lets a compromised agent exfiltrate what it can
+  already read; it does not weaken the boundary. That is why egress is a policy knob, not an
+  isolation setting (N8,
+  [`../decisions/ADR-0007-default-open-egress.md`](../decisions/ADR-0007-default-open-egress.md)).
+- **The boundary protects only what stays inside it.** Files the guest writes into the workspace are
+  later read on the host — by editors, hooks, CI, task runners. A hostile workspace file that a host
+  tool executes walks *around* the wall, not through it. vivarium never executes workspace content on
+  the host itself (N9); users should extend the same caution to their own host tooling.
+- **Out of scope.** CPU side channels and a hostile host are outside the threat model: the host is
+  trusted, the guest is not.

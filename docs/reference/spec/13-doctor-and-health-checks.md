@@ -48,12 +48,19 @@ failure is the most actionable.
 `kvm-device-present` and `kvm-device-accessible` are split because remediation differs: enable
 virtualization in firmware vs join the `kvm` group.
 
+For the shipped default backend — Cloud Hypervisor, per
+[`../../decisions/ADR-0025-default-hypervisor-cloud-hypervisor.md`](../../decisions/ADR-0025-default-hypervisor-cloud-hypervisor.md)
+— `backend-binary-present` resolves to the `cloud-hypervisor` binary plus the `virtiofsd`
+shared-filesystem daemon that serves the workspace share; the QEMU fallback resolves to the
+arch-specific `qemu-system-<arch>` binary. The default names a backend, never the contract — the
+isolation class stays backend-agnostic (N2).
+
 ### Soft — host scope
 
 | Id | Category | Warns when |
 | -- | -------- | ---------- |
 | `nix-store-disk-space` | disk | less than 10 GB free on the store filesystem (roughly one build cycle plus headroom) |
-| `backend-version` | tooling | the selected backend is older than the recommended version |
+| `backend-version` | tooling | the selected backend is older than the recommended version — for the default backend, the latest stable release at decision time (Cloud Hypervisor v53); the implementation pins the exact floor |
 | `kernel-version-supported` | virtualization | the host kernel is too old for the required virtio features |
 | `state-dir-writable` | permissions | the state root is not writable |
 | `cache-dir-writable` | permissions | the cache root is not writable |
