@@ -16,8 +16,8 @@ All commands operate on the manifest bound to the current project, resolved by t
 | `viv manifest list [--json]` | List the manifests in the config library (`manifests/`). Enumerates all *defined* manifests, not the one bound to the current project — the binding is shown by `viv config`. Empty/absent library lists zero rows and exits `0`. |
 | `viv manifest show <name> [--json]` | Show the named manifest's declared image, ordered pieces, and policy knobs, read from the config library. Takes exactly one `<name>`; an unknown name **fails closed** with a non-zero exit. Distinct from `show --resolved`, which evaluates the full module merge. |
 | `viv up [--rebuild \| --no-rebuild] [--generation <n>] [--attach] [--json] [--quiet] [-v\|-vv]` | Resolve the bound manifest, build the VM, and boot it with the working directory mounted. Detached by default (boots and returns); idempotent and non-destructive to a running VM. Full behavior in [`10-vm-lifecycle.md`](10-vm-lifecycle.md). |
-| `viv exec -- <cmd>` | Run a command inside the running VM (starting it first if needed). |
-| `viv shell` | Open an interactive shell inside the running VM (starting it first if needed). |
+| `viv exec [-t|--tty] [-T|--no-tty] [--env KEY[=VAL]]... -- <cmd> [args...]` | Run a command inside the project VM, starting it first if needed; `--` is required and all following args are guest argv. See [`12-exec-and-shell.md`](12-exec-and-shell.md). |
+| `viv shell` | Open a login-interactive PTY shell inside the project VM, starting it first if needed. See [`12-exec-and-shell.md`](12-exec-and-shell.md). |
 | `viv down` | Stop the current VM, preserving persistent volumes. |
 | `viv generations [--json]` | List the retained build generations for the project — number, timestamp, store path. See [`11-generations-and-build-history.md`](11-generations-and-build-history.md). |
 | `viv gc [--older-than <dur>] [--keep <n>]` | Prune old build generations under a retention policy, unlinking their GC roots. See [`11-generations-and-build-history.md`](11-generations-and-build-history.md). |
@@ -47,6 +47,9 @@ The stream and machine-output rules are the same for every command, specified in
   side-effect commands whose result is a running VM (`up`, `down`).
 - **stderr carries everything else** — progress, status, prompts, warnings, errors. Progress is shown
   only when stderr is a TTY, so `… --json 2>/dev/null | jq` is always clean.
+- `exec`/`shell` pass guest stdio transparently as specified in
+  [`12-exec-and-shell.md`](12-exec-and-shell.md); vivarium progress remains on stderr only so guest
+  stdout stays pipeable.
 - Color is human-only, honoring `NO_COLOR > FORCE_COLOR > isatty`; JSON and non-TTY output are never
   colored.
 
@@ -59,6 +62,8 @@ The stream and machine-output rules are the same for every command, specified in
   `viv doctor` probe catalog — and refuse **before any side effect**. Each failure reports
   what / where / why / hint plus a stable check id. See
   [`10-vm-lifecycle.md`](10-vm-lifecycle.md) for `viv up`'s preflight.
-- `viv exec` propagates the exit status of the command it ran inside the VM.
+- `viv exec` and `viv shell` use sysexits for vivarium-origin failures before a guest process starts;
+  after the guest command or shell starts, they return its exit status verbatim, with signal deaths
+  reported as `128+S`. See [`12-exec-and-shell.md`](12-exec-and-shell.md).
 - Diagnostics (`doctor`, `config`, `show --resolved`, `generations`) are read-only and never modify
   project or VM state.

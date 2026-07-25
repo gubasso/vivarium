@@ -48,6 +48,11 @@ page or decision that explains it. The keyword **must** marks a hard requirement
   including its development-environment configuration. The project's environment **must** work
   identically in or out of the sandbox. See
   [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md).
+- **N16 — Stable workspace mount.** The primary workspace **must** be mounted read-write at
+  `/workspaces/<repo>` inside the guest, never at a host-derived path; the host source remains
+  launch-time injected per N5. See
+  [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md) and
+  [`../../decisions/ADR-0017-workspace-mount-path-and-extra-mounts.md`](../../decisions/ADR-0017-workspace-mount-path-and-extra-mounts.md).
 
 ## Secrets and sharing
 
@@ -56,6 +61,10 @@ page or decision that explains it. The keyword **must** marks a hard requirement
   [`../../decisions/ADR-0010-secrets-never-in-nix-store.md`](../../decisions/ADR-0010-secrets-never-in-nix-store.md).
 - **N11 — Shared config is personal-data-free.** Committable configuration **must not** contain
   personal paths or plaintext secrets; such data belongs to the gitignored personal class. See
+  [`07-secrets-and-config-sharing.md`](07-secrets-and-config-sharing.md).
+- **N17 — Guest environment is deny-by-default.** Host environment variables **must not** be
+  forwarded wholesale into the guest; only the specified allowlist and explicit per-invocation
+  `--env` values may cross the boundary. See [`12-exec-and-shell.md`](12-exec-and-shell.md) and
   [`07-secrets-and-config-sharing.md`](07-secrets-and-config-sharing.md).
 
 ## State

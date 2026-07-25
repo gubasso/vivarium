@@ -6,8 +6,8 @@ environment** that runs inside it. The separation and its rationale are in
 
 ## The mounted workspace
 
-The tool mounts the user's working directory into the guest at a fixed location so that the project's
-files are present inside the VM. The mount is:
+The tool mounts the user's working directory into the guest at `/workspaces/<repo>`, where `<repo>`
+is the repository directory name, not the host absolute path. The mount is:
 
 - **Read-write.** The project builds, editors write, and tools generate output in place. (Read-only
   mounts are reserved for injected identity such as credential directories; see
@@ -17,6 +17,12 @@ files are present inside the VM. The mount is:
 - **Injected at launch time**, never built into the VM. The host path is supplied when the VM starts,
   which keeps the build pure and reproducible, per
   [`../../decisions/ADR-0009-launch-time-workspace-path-injection.md`](../../decisions/ADR-0009-launch-time-workspace-path-injection.md).
+- **Writable by the default guest user** used by `exec`/`shell`, as specified in
+  [`12-exec-and-shell.md`](12-exec-and-shell.md).
+
+Manifests/config may declare additional runtime mounts at other guest paths for multi-directory
+workflows. These mounts follow the same rule as the primary workspace: host sources are launch-time
+or personal/machine-local inputs, never build inputs and never shared host-path facts.
 
 ## The independent inner environment
 
@@ -39,6 +45,8 @@ different times.
 For the inner environment to work, the sandbox base must ship a working Nix toolchain (with flakes
 enabled) and direnv, so that entering the workspace loads the project's environment automatically.
 Installing these in the guest is a requirement of the two-layer design, not an optional convenience.
+`viv shell` enters the workspace as a login-interactive shell so direnv can load the inner
+environment; details are in [`12-exec-and-shell.md`](12-exec-and-shell.md).
 
 ## Persistent volumes and the store
 

@@ -1,0 +1,35 @@
+# ADR-0016: Guest control transport and exec contract
+
+## Context and Problem Statement
+
+`exec` and `shell` need a control path into an already-running or cold-started guest without
+depending on guest network egress. Scripts also need a clear boundary between vivarium failures and
+guest exit statuses.
+
+## Considered Options
+
+- In-guest agent over a vsock-class host-local transport.
+- Network service in the guest.
+- PID-file/process inspection plus ad-hoc command launch.
+
+## Decision Outcome
+
+Chosen option: **in-guest agent over a vsock-class host-local transport**.
+
+vivarium uses a small in-guest agent over a vsock-class, host-local, network-independent transport,
+multiplexed through a host Unix control socket in the per-project runtime directory. Running VMs are
+detected by authenticated control-socket ping plus boot metadata under a per-project `flock`; PID
+files are diagnostic only. Exit codes use the guest-process-start boundary: before start, vivarium
+uses BSD sysexits; after start, it propagates the guest status verbatim.
+
+## Consequences
+
+- Good: works with default-deny egress and keeps the VM lifecycle idempotent under concurrency.
+- Good: control behavior stays backend-agnostic and matches invariant N2.
+- Bad: requires a small guest agent and a future protocol spec for framing/auth/multiplexing.
+
+## Status
+
+Accepted
+
+Specified in [`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exec-and-shell.md).

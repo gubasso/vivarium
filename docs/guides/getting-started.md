@@ -22,7 +22,7 @@ and the artifacts in [`../reference/spec/03-artifact-model.md`](../reference/spe
 
 From the project directory:
 
-```
+```console
 $ cd ~/src/my-rust-api
 $ viv init --manifest rust-web         # preview the registry entry it would write
 $ viv init --manifest rust-web --write # record the binding
@@ -35,7 +35,7 @@ How the binding resolves later is specified in
 
 ## 2. Inspect what will be built
 
-```
+```console
 $ viv manifest show rust-web
 $ viv show --resolved
 ```
@@ -47,13 +47,13 @@ semantics are in
 
 ## 3. Boot the sandbox
 
-```
+```console
 $ viv up
 ```
 
 This compiles the manifest to a flake, builds the VM with Nix, and boots it — mounting your current
-directory read-write inside the guest. The working-directory path is supplied at this launch step,
-not built in, which is why the same manifest is reproducible across machines
+project read-write at `/workspaces/<repo>` inside the guest. The working-directory path is supplied
+at this launch step, not built in, which is why the same manifest is reproducible across machines
 ([`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md)).
 
 `up` boots the sandbox in the background and returns; running it again on an unchanged project is a
@@ -64,15 +64,23 @@ boot with `viv up --generation <n>` — see
 
 ## 4. Work inside the sandbox
 
-```
+```console
 $ viv exec -- cargo build
+$ viv exec -t -- cargo test
 $ viv shell
 ```
 
-`exec` runs a single command in the guest and returns its exit status; `shell` opens an interactive
-session. Inside the workspace, your project's own development environment loads independently of
-vivarium — the inner layer described in
+`exec` runs one command with transparent stdio and returns the guest status. It defaults to no PTY, so
+use `-t` for interactive terminal behavior.
+
+`shell` opens a login-interactive PTY shell. Multiple `exec`/`shell` sessions for the same project
+share the same VM and see the repository at `/workspaces/<repo>`.
+
+Inside the workspace, your project's own development environment loads independently of vivarium —
+the inner layer described in
 [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md).
+Detailed `exec`/`shell` behavior is specified in
+[`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exec-and-shell.md).
 
 By default the sandbox has open network access, so `cargo` can fetch crates with no setup. To restrict
 egress, switch the manifest's egress mode to the allowlist; see
@@ -80,7 +88,7 @@ egress, switch the manifest's egress mode to the allowlist; see
 
 ## 5. Stop
 
-```
+```console
 $ viv down
 ```
 

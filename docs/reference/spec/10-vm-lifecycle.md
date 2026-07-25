@@ -31,10 +31,16 @@ step (see *Preflight* below):
 4. **Ensure running** — boot the VM if one is not already up for this project, injecting the
    workspace host path at launch (N5) and mounting it read-write at the fixed guest path
    ([`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md)).
+   `exec`/`shell` add the control-socket liveness handshake specified in
+   [`12-exec-and-shell.md`](12-exec-and-shell.md).
 
 `up` is **idempotent**: on a fresh, already-running VM it is a no-op that exits `0` (N15). This
 "ensure running" step is the shared routine `viv exec` and `viv shell` reuse when they start the VM
 if needed.
+
+`exec` and `shell` call the same ensure-running routine. When the control-socket ping proves the VM
+is already running for the same project, they skip preflight/build/boot and attach a session. When
+they must cold-start, they run the same hard preflight subset as `up` before any build or launch.
 
 ## Freshness and staleness
 

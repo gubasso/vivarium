@@ -14,7 +14,8 @@ bucket. This page is only an index — it holds no canonical facts of its own.
   manifest format, the config layout, manifest binding, egress policy, layer separation, workspace
   path handling, secrets, config being read-only to the tool (binding in state), generating config
   examples from types, the VM lifecycle and `viv up` semantics, build generations pinned as GC roots,
-  and the CLI output-and-failure contract. `template.md` is the drop-in ADR shape.
+  the CLI output-and-failure contract, guest control transport and exec/shell exit boundary, and the
+  workspace mount path plus extra mounts. `template.md` is the drop-in ADR shape.
 - **[`reference/`](reference/)** — lookup material beyond the spec:
   [`implementation-status.md`](reference/implementation-status.md) is the single source of truth for
   what works today versus what is designed only.

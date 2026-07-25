@@ -32,3 +32,6 @@ each page links to the ADRs that govern it rather than restating their reasoning
   states, idempotency, staleness, preflight, and the Nix validation ladder.
 - [`11-generations-and-build-history.md`](11-generations-and-build-history.md) — the numbered history
   of a project's builds, pinned as GC roots so a past build can be booted or pruned.
+- [`12-exec-and-shell.md`](12-exec-and-shell.md) — how `viv exec` and `viv shell` enter a running or
+  newly-started guest: argv boundary, stdio/TTY behavior, control socket, workspace cwd,
+  environment, and exit-status boundary.

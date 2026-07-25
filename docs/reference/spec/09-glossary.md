@@ -22,6 +22,16 @@ it without redefining it.
   backend satisfying the boundary class is admissible; the specific backend is an implementation
   choice.
 
+- **Guest agent** — the small vivarium process inside the guest that receives control requests,
+  launches exec/shell sessions, allocates PTYs, forwards signals/window-size changes, and reports
+  exit status.
+
+- **Control socket** — the host-side Unix socket in the per-project runtime directory that vivarium
+  connects to for guest-agent sessions.
+
+- **vsock-class control transport** — a host-local, network-independent guest/host transport
+  capability used for control messages; the concrete backend device is an implementation detail.
+
 - **Image** — a composable VM base, expressed as a NixOS module, capturing a toolchain and base
   system. See [`03-artifact-model.md`](03-artifact-model.md).
 
@@ -42,6 +52,13 @@ it without redefining it.
 
 - **Workspace** — the user's working directory, mounted read-write into the guest at a fixed
   location. See [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md).
+
+- **Session** — one active `exec` command or interactive `shell` attached through the guest agent.
+
+- **Project identity key** — the stable key that scopes per-project state and runtime directories;
+  its exact derivation is decided separately. See
+  [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md) and
+  [`11-generations-and-build-history.md`](11-generations-and-build-history.md).
 
 - **Inner environment** — the project's own development environment, owned by the repository and run
   inside the sandbox, independent of vivarium.
