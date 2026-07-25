@@ -43,8 +43,13 @@ Rules:
 - **Lean ADRs.** Record every significant, hard-to-reverse decision as an ADR under `docs/decisions/`,
   one decision per file, using the five-section `docs/decisions/template.md`. Keep each filled ADR body
   at or below **350 words**, with exactly one `## Status` from
-  `Proposed | Accepted | Implemented | Superseded | Rejected`.
-- **Never delete** an accepted or implemented decision. Supersede or reject it and link forward.
+  `Proposed | Accepted | Implemented | Deprecated | Superseded | Rejected`.
+- **Never delete** an accepted or implemented decision — but keep old ADRs honest so no reader
+  follows dead rules. Replaced wholesale → mark **Superseded** and link the successor. No longer
+  applicable with no successor → mark **Deprecated** and say why. Changed only in part by a later
+  ADR while the decision still stands → keep the status and add an **"Amended by ADR-NNNN — <what
+  changed>"** line under `## Status`; edit the old body only where its wording would actively
+  mislead, never to rewrite history.
 - **Single source of truth.** Write each durable fact once at its owning home and cross-link with a
   short reason phrase from everywhere else. Do not restate a fact that another file owns.
 - **No pasted trees.** Index files (`README.md`, this file) explain purpose per entry; they never

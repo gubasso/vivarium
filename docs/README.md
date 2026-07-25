@@ -13,9 +13,11 @@ bucket. This page is only an index — it holds no canonical facts of its own.
   the isolation boundary, the module system as the composition engine, the artifact model, the
   manifest format, the config layout, manifest binding, egress policy, layer separation, workspace
   path handling, secrets, config being read-only to the tool (binding in state), generating config
-  examples from types, the VM lifecycle and `viv up` semantics, build generations pinned as GC roots,
-  the CLI output-and-failure contract, guest control transport and exec/shell exit boundary, and the
-  workspace mount path plus extra mounts. `template.md` is the drop-in ADR shape.
+  examples from types, the VM lifecycle and `viv start` semantics, build generations pinned as GC
+  roots, the CLI output-and-failure contract, guest control transport and exec/shell exit boundary,
+  the workspace mount path plus extra mounts, the lifecycle verbs and stop/destroy teardown
+  boundary, the persistent volume model, and the mount/config-mirroring schema. `template.md` is the
+  drop-in ADR shape.
 - **[`reference/`](reference/)** — lookup material beyond the spec:
   [`implementation-status.md`](reference/implementation-status.md) is the single source of truth for
   what works today versus what is designed only.

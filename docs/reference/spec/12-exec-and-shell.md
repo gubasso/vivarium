@@ -76,7 +76,7 @@ personal/machine-local config and must never enter the Nix build output or share
 4. If the socket exists but ping fails, check `vm.pid` only as diagnostic/staleness evidence: dead
    process means remove stale runtime files; live process with unreachable agent means wait within
    the boot timeout or fail EX_UNAVAILABLE (69).
-5. If no live VM is found, run the same hard preflight subset used by `viv up`, build or select the
+5. If no live VM is found, run the same hard preflight subset used by `viv start`, build or select the
    requested generation as needed, launch the VM, inject mounts, and wait for the guest agent
    readiness ping before releasing the lock.
 6. After startup, concurrent `exec` and `shell` sessions do not hold the startup lock; they multiplex

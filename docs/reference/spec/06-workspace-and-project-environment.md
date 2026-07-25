@@ -20,9 +20,15 @@ is the repository directory name, not the host absolute path. The mount is:
 - **Writable by the default guest user** used by `exec`/`shell`, as specified in
   [`12-exec-and-shell.md`](12-exec-and-shell.md).
 
-Manifests/config may declare additional runtime mounts at other guest paths for multi-directory
-workflows. These mounts follow the same rule as the primary workspace: host sources are launch-time
-or personal/machine-local inputs, never build inputs and never shared host-path facts.
+Manifests and pieces may declare additional runtime mounts at other guest paths — extra
+`/workspaces/<name>` repositories or mirrored host config files — through the `[[mounts]]` schema
+decided in
+[`../../decisions/ADR-0020-mount-and-config-mirroring-schema.md`](../../decisions/ADR-0020-mount-and-config-mirroring-schema.md):
+a host `source` (host-side `${VAR}` expansion at launch), a guest `target` (`~` expands to the
+guest home), and an optional `readonly` flag; declarations concatenate across layers. These mounts
+follow the same rule as the primary workspace: host sources are launch-time or
+personal/machine-local inputs, never build inputs and never shared host-path facts. Config
+mirroring specifics live in [`07-secrets-and-config-sharing.md`](07-secrets-and-config-sharing.md).
 
 ## The independent inner environment
 
@@ -48,9 +54,37 @@ Installing these in the guest is a requirement of the two-layer design, not an o
 `viv shell` enters the workspace as a login-interactive shell so direnv can load the inner
 environment; details are in [`12-exec-and-shell.md`](12-exec-and-shell.md).
 
-## Persistent volumes and the store
+## Persistent volumes
 
-Build caches (for example a language package cache) may be mounted as persistent volumes so they
-survive VM restarts, keeping rebuilds fast. The guest's Nix store may either be independent or share
-the host's store read-only for cache reuse; this is an implementation trade-off between isolation and
-speed, made below the level of this contract.
+The guest filesystem is three layers: the **immutable image** built from the store (rebuilt from
+the manifest, writes lost), an **ephemeral runtime layer** whose writes vanish at shutdown, and the
+**persistent volumes** — the project's mutable data, which survives `viv stop`, reboots, and
+rebuilds. The model is decided in
+[`../../decisions/ADR-0019-volume-model.md`](../../decisions/ADR-0019-volume-model.md):
+
+- The **default volume** always exists, has the reserved name `default`, and is mounted at the
+  guest user's home — so shell state, tool and language caches, dotfile state, and user-run data
+  under `$HOME` persist without declaration.
+- **Named volumes** are declared in the manifest (`[[volumes]]` with `name` and `mount`) or
+  contributed by pieces (declarations concatenate; the same name with conflicting mountpoints fails
+  evaluation). Each becomes its own disk, mounted at its declared guest path, with its own
+  lifecycle under `viv volume`.
+- **`[volume].persist`** lists extra guest paths (for example a system service's data directory)
+  bind-mounted from inside the default volume, so their writes persist without a separate disk.
+- Physically, each volume is one host-side disk image under the **state** root
+  (`projects/<project-id>/<target>/volumes/<name>.img`) attached as a block device — state, never
+  cache, because volume contents are user data and not regenerable
+  ([`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md)). Identity is
+  (project, target, name): manifests declare the shape, each bound project instantiates its own
+  private volumes, and reattachment on `viv start` is automatic.
+- **Anything written outside `$HOME`, a named volume's mountpoint, or a `persist` path is
+  ephemeral** and lost at shutdown.
+- Volumes are removed only on explicit request — `viv destroy` (all of them, unless
+  `--keep-volumes`) or `viv volume rm` (which refuses while the VM runs) — never by `stop` or a
+  rebuild (N18, [`08-invariants-and-guarantees.md`](08-invariants-and-guarantees.md)).
+
+## The store inside the guest
+
+The guest's Nix store may either be independent or share the host's store read-only for cache
+reuse; this is an implementation trade-off between isolation and speed, made below the level of
+this contract.

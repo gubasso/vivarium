@@ -1,8 +1,11 @@
-# 10 — VM lifecycle and `viv up`
+# 10 — VM lifecycle: `viv start`, `viv stop`, and teardown
 
-How `viv up` takes a project from nothing to a running sandbox, and the rules that make it safe to
-run twice. The decision and rationale are in
-[`../../decisions/ADR-0013-vm-lifecycle-and-up.md`](../../decisions/ADR-0013-vm-lifecycle-and-up.md);
+How `viv start` takes a project from nothing to a running sandbox, how `viv stop` and `viv destroy`
+bring it back down, and the rules that make each safe to run twice. The lifecycle decision and
+rationale are in
+[`../../decisions/ADR-0013-vm-lifecycle-and-up.md`](../../decisions/ADR-0013-vm-lifecycle-and-up.md)
+(which records `start` under its former name `up`) and
+[`../../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md`](../../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md);
 the output-stream and failure conventions used below are in
 [`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md).
 
@@ -17,9 +20,22 @@ A project's VM is in one of:
   matches what the running VM was booted from. Freshness is the store output path, never a separate
   digest (N4, [`04-composition-and-determinism.md`](04-composition-and-determinism.md)).
 
-## What `viv up` does
+**stopping** is a transitional state passed through by `viv stop` and `viv destroy`, never a
+resting state. The transitions:
 
-`viv up` drives the project toward **running**, in this order, failing closed at the first unmet
+```text
+absent | built ──start──▶ running
+running | stale ──stop──▶ (stopping) ──▶ built
+running | stale | built ──destroy──▶ built (store paths linger) ──gc──▶ absent
+```
+
+`stop` can only ever reach **built** — a stopped project's build output stays pinned. A project
+returns to **absent** only when `destroy` has unlinked its generations *and* a later collection has
+reclaimed the store paths ([`11-generations-and-build-history.md`](11-generations-and-build-history.md)).
+
+## What `viv start` does
+
+`viv start` drives the project toward **running**, in this order, failing closed at the first unmet
 step (see *Preflight* below):
 
 1. **Resolve** the bound manifest by the precedence in
@@ -34,17 +50,17 @@ step (see *Preflight* below):
    `exec`/`shell` add the control-socket liveness handshake specified in
    [`12-exec-and-shell.md`](12-exec-and-shell.md).
 
-`up` is **idempotent**: on a fresh, already-running VM it is a no-op that exits `0` (N15). This
+`start` is **idempotent**: on a fresh, already-running VM it is a no-op that exits `0` (N15). This
 "ensure running" step is the shared routine `viv exec` and `viv shell` reuse when they start the VM
 if needed.
 
 `exec` and `shell` call the same ensure-running routine. When the control-socket ping proves the VM
 is already running for the same project, they skip preflight/build/boot and attach a session. When
-they must cold-start, they run the same hard preflight subset as `up` before any build or launch.
+they must cold-start, they run the same hard preflight subset as `start` before any build or launch.
 
 ## Freshness and staleness
 
-When inputs changed, `up` builds the fresh output but is **non-destructive to a running VM**: it does
+When inputs changed, `start` builds the fresh output but is **non-destructive to a running VM**: it does
 **not** replace the running VM automatically. It warns that the running VM is stale and names how to
 apply the new build. This preserves work and long-lived processes inside the guest (N15).
 
@@ -60,13 +76,46 @@ apply the new build. This preserves work and long-lived processes inside the gue
 
 ## Attach vs detach
 
-By default `up` boots the VM as a **background resource and returns** — the VM is a persistent thing
-`exec`/`shell` connect to. `--attach` instead streams the VM console until it exits; `Ctrl-C`
+By default `start` boots the VM as a **background resource and returns** — the VM is a persistent
+thing `exec`/`shell` connect to. `--attach` instead streams the VM console until it exits; `Ctrl-C`
 **detaches** the console and leaves the VM running — it never stops the VM.
+
+## Stopping: `viv stop`
+
+`viv stop` drives a **running** (or **stale**) VM to **built** through the transitional
+**stopping** state, escalating only as needed:
+
+1. **Agent shutdown** — signal the in-guest agent over the control socket for an orderly guest
+   shutdown ([`12-exec-and-shell.md`](12-exec-and-shell.md)).
+2. **Backend soft-off** — if the agent is unreachable, fall back to the backend's ACPI-class power
+   signal.
+3. **Hard poweroff** — when `--timeout` expires (default 10 s; `-1` waits indefinitely), pull the
+   power. `--force` skips straight here (possible data loss) and conflicts with a nonzero
+   `--timeout` — that combination is a usage error.
+
+`stop` removes **nothing**: persistent volumes, build generations, and the project binding all
+survive (N18, [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md)).
+It is idempotent — nothing running is a no-op that exits `0`, and dead runtime files (stale pid,
+socket) are cleaned up on the way. A stop that cannot be confirmed even by hard poweroff reports
+the actual VM state and exits with the unavailable code rather than pretending success.
+
+## Teardown: `viv destroy`
+
+`viv destroy` is the explicit teardown — the only verb that removes data. It stops the VM (same
+ladder as `stop`), unlinks **all** of the project's generation GC roots, removes its persistent
+volumes (unless `--keep-volumes`), and deletes its runtime state. It prompts for confirmation on a
+TTY; non-interactive runs require `--yes`.
+
+`destroy` never touches the workspace, the config root, the project binding, or store contents:
+unlinking the GC roots only makes the store paths *reclaimable* — they are actually freed by a
+later `viv gc` ([`11-generations-and-build-history.md`](11-generations-and-build-history.md)).
+Because the build is reproducible from the manifest, `destroy` followed by `start` costs at most a
+rebuild; the only irreversible loss is volume data, which is why removal is guarded by the prompt
+and spared by `--keep-volumes`. `destroy` is idempotent — nothing to tear down exits `0`.
 
 ## Preflight (fail-fast)
 
-`up` runs the **hard subset** of the shared `viv doctor` probe catalog before any side effect — one
+`start` runs the **hard subset** of the shared `viv doctor` probe catalog before any side effect — one
 probe set, reused by `doctor` (whole catalog) and each command's guard (its subset), so they never
 drift. Checks run cheapest-and-most-fundamental first, so the earliest failure is the most
 actionable:
@@ -85,7 +134,7 @@ generic `1`. Exit codes and stream rules are specified in
 
 ## Nix validation ladder
 
-Before paying for a full build, `up` surfaces the cheapest failure class first:
+Before paying for a full build, `start` surfaces the cheapest failure class first:
 
 - **Parse** — pure syntax (`nix-instantiate --parse`); cheapest, local.
 - **Resolve / evaluate** — flake resolution and attribute/type errors without realisation
@@ -94,6 +143,7 @@ Before paying for a full build, `up` surfaces the cheapest failure class first:
 
 ## Output streams
 
-`up`'s result is a side effect (a booted VM), so on success **stdout is empty**; all progress and
-status go to **stderr**. Under `--json`, stdout carries one machine-readable record and nothing else.
-The full convention is in [`ADR-0015`](../../decisions/ADR-0015-cli-output-and-failure-contract.md).
+`start`'s result is a side effect (a booted VM), so on success **stdout is empty**; all progress and
+status go to **stderr**. `stop` and `destroy` follow the same rule — empty stdout on success, one
+record under `--json`. The full convention is in
+[`ADR-0015`](../../decisions/ADR-0015-cli-output-and-failure-contract.md).

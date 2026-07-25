@@ -49,9 +49,13 @@ own tree (N9); a project is bound by a registry entry, not by a committed or git
 Each project's runtime VM state lives under the state root at
 `projects/<project-id>/<target>/`, where `<project-id>` is the project-identity key that scopes all
 of a project's state. This holds the project's **build generations** — a per-project Nix profile
-whose numbered symlinks pin retained build outputs as garbage-collector roots. The layout and
+whose numbered symlinks pin retained build outputs as garbage-collector roots — and its
+**persistent volumes** (`volumes/<name>.img`, always including `default`). Volumes live under
+state, not cache, because their contents are user data and not regenerable. Generation layout and
 lifecycle are specified in
-[`11-generations-and-build-history.md`](11-generations-and-build-history.md).
+[`11-generations-and-build-history.md`](11-generations-and-build-history.md); the volume model in
+[`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md) and
+[`../../decisions/ADR-0019-volume-model.md`](../../decisions/ADR-0019-volume-model.md).
 
 ## Resolution precedence
 

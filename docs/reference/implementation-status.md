@@ -19,10 +19,14 @@ Every command below is **designed, not implemented**.
 | `viv init` | Designed |
 | `viv images list` | Designed |
 | `viv manifest list` / `manifest show` | Designed |
-| `viv up` | Designed |
+| `viv start` | Designed |
 | `viv exec` | Designed |
 | `viv shell` | Designed |
-| `viv down` | Designed |
+| `viv stop` | Designed |
+| `viv destroy` | Designed |
+| `viv generations` | Designed |
+| `viv gc` | Designed |
+| `viv volume` | Designed |
 | `viv show --resolved` | Designed |
 | `viv doctor` | Designed |
 | `viv config` | Designed |

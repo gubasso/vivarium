@@ -43,6 +43,23 @@ so build-time secrets are prohibited. Two safe channels replace them:
 The rule is: **build-time means in the store, which is wrong for secrets; secrets are runtime or
 encrypted-at-rest only.**
 
+## Mirroring host configuration
+
+Personal config files and directories are mirrored into the guest through the declarative
+`[[mounts]]` schema
+([`../../decisions/ADR-0020-mount-and-config-mirroring-schema.md`](../../decisions/ADR-0020-mount-and-config-mirroring-schema.md),
+[`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md)): the host
+`source` expands host-side variables at launch, the guest `target` expands `~` to the guest home,
+and `readonly = true` marks identity files that must not be written. Because each side expands its
+own home, identity mounts (`~/.config/foo` → `~/.config/foo`) need no path translation even though
+the guest username differs from the host's.
+
+Mount declarations resolve at launch and are never build inputs (N5): an unset variable or missing
+host path fails before boot with a legible error, and no expanded path is ever recorded in a shared
+artifact (N11). One caveat: mirroring is transparent at the *path* layer only — a mirrored file
+whose contents embed a host-absolute path is not rewritten. Runtime environment values pass through
+the `[env]` table, subject to the deny-by-default rule (N17).
+
 ## Enforcing the split
 
 Because the working-directory path is never written to config and secrets are never built in, the

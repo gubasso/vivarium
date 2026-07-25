@@ -77,14 +77,23 @@ page or decision that explains it. The keyword **must** marks a hard requirement
 ## Lifecycle and history
 
 - **N14 — Built generations are GC-pinned.** Every build output the tool retains **must** be pinned
-  by a garbage-collector root under the state root, so `viv up --no-rebuild` and
-  `viv up --generation <n>` targets survive `nix-collect-garbage`. See
+  by a garbage-collector root under the state root, so `viv start --no-rebuild` and
+  `viv start --generation <n>` targets survive `nix-collect-garbage`. See
   [`11-generations-and-build-history.md`](11-generations-and-build-history.md) and
   [`../../decisions/ADR-0014-build-generations-and-gc-roots.md`](../../decisions/ADR-0014-build-generations-and-gc-roots.md).
-- **N15 — `viv up` is idempotent and non-destructive.** A fresh, already-running VM re-ups to a
-  no-op; `viv up` **must not** stop or replace a running VM without an explicit `--rebuild`. See
-  [`10-vm-lifecycle.md`](10-vm-lifecycle.md) and
-  [`../../decisions/ADR-0013-vm-lifecycle-and-up.md`](../../decisions/ADR-0013-vm-lifecycle-and-up.md).
+- **N15 — `viv start` is idempotent and non-destructive.** A fresh, already-running VM re-starts to
+  a no-op; `viv start` **must not** stop or replace a running VM without an explicit `--rebuild`.
+  See [`10-vm-lifecycle.md`](10-vm-lifecycle.md) and
+  [`../../decisions/ADR-0013-vm-lifecycle-and-up.md`](../../decisions/ADR-0013-vm-lifecycle-and-up.md)
+  (which records the verb under its former name `up`; renamed by
+  [`../../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md`](../../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md)).
+- **N18 — Stop is non-destructive; volumes are removed only explicitly.** `viv stop` **must not**
+  remove volumes, generations, or state. A project's persistent volumes **must** survive stop,
+  reboot, and rebuild, and **must** be removed only by explicit request — `viv destroy` without
+  `--keep-volumes`, or `viv volume rm`. See
+  [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md),
+  [`10-vm-lifecycle.md`](10-vm-lifecycle.md), and
+  [`../../decisions/ADR-0019-volume-model.md`](../../decisions/ADR-0019-volume-model.md).
 
 ## Config
 

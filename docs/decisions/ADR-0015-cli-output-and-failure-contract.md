@@ -40,5 +40,10 @@ Chosen option: **one house contract**.
 
 Accepted
 
+Amended by
+[`ADR-0018-lifecycle-verbs-and-teardown-boundary.md`](ADR-0018-lifecycle-verbs-and-teardown-boundary.md) —
+the side-effect commands named above are now `start`/`stop`/`destroy` (formerly `up`/`down`); the
+contract itself is unchanged.
+
 Applied across [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md)
 and [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md).

@@ -34,5 +34,10 @@ and see the same mounts.
 
 Accepted
 
+Amended by
+[`ADR-0020-mount-and-config-mirroring-schema.md`](ADR-0020-mount-and-config-mirroring-schema.md) —
+the deferred mount declaration schema (the "Bad" consequence above) is now decided: declarative
+`[[mounts]]` entries with launch-time per-side expansion. The path model decided here stands.
+
 Specified in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md)
 and [`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exec-and-shell.md).

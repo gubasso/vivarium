@@ -38,5 +38,11 @@ to, and `up` is idempotent.
 
 Accepted
 
+Amended by
+[`ADR-0018-lifecycle-verbs-and-teardown-boundary.md`](ADR-0018-lifecycle-verbs-and-teardown-boundary.md) —
+the verbs were renamed `up` → `start` and `down` → `stop`, and teardown gained a separate
+`destroy`; every behavior decided here (detached-default, idempotency, non-destructive staleness,
+`--rebuild`/`--no-rebuild`) stands unchanged under the new names.
+
 Specified in [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md).
 Partially discharges the lifecycle-model work; the VM-identity key is decided separately.

@@ -7,7 +7,7 @@ rolled back to. The decision and rationale are in
 ## What a generation is
 
 A **generation** is a retained, numbered build output for a project's manifest. Each successful
-`viv up` build appends the next generation. Because a build's freshness key is its store output path
+`viv start` build appends the next generation. Because a build's freshness key is its store output path
 (N4, [`04-composition-and-determinism.md`](04-composition-and-determinism.md)), a generation is
 exactly a pinned pointer to one such output plus the metadata needed to identify it.
 
@@ -35,12 +35,21 @@ is fixed alongside the rest of the state-keying scheme.
 
 ## Commands
 
-- **`viv up --no-rebuild`** — boot the current generation without re-evaluating
+All generation management lives under the `viv generations` family
+([`../../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md`](../../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md)):
+
+- **`viv start --no-rebuild`** — boot the current generation without re-evaluating
   ([`10-vm-lifecycle.md`](10-vm-lifecycle.md)).
-- **`viv up --generation <n>`** — boot a specific retained generation.
-- **`viv generations`** — list generations for the project: number, timestamp, and store path.
-- **`viv gc`** — prune old generations under a retention policy (keep-last-N or `--older-than`),
-  unlinking their GC roots so Nix can later reclaim the store space.
+- **`viv start --generation <n>`** — boot a specific retained generation.
+- **`viv generations list`** — list generations for the project: number, timestamp, and store path.
+- **`viv generations activate` / `rollback`** — move the `current` pointer to another retained
+  generation.
+- **`viv generations prune`** — unlink old generations' GC roots under a retention policy
+  (`--keep <n>` or `--older-than <dur>`) so a later collection can reclaim the store space.
+- **`viv gc`** — run the store garbage collector. This is a **global, whole-store** sweep: it
+  reclaims every store path unreachable from any GC root on the machine, vivarium's or not, and
+  never removes anything still pinned. Unlinking (`generations prune`, `viv destroy`) and
+  reclaiming (`viv gc`) are deliberately separate steps.
 
 ## Normative notes
 
