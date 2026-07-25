@@ -27,9 +27,10 @@ Every command below is **designed, not implemented**.
 | `viv generations` | Designed |
 | `viv gc` | Designed |
 | `viv volume` | Designed |
-| `viv show --resolved` | Designed |
-| `viv doctor` | Designed |
 | `viv config` | Designed |
+| `viv config sources` | Designed |
+| `viv config eval` | Designed |
+| `viv doctor` | Designed |
 
 ## How to update this page
 

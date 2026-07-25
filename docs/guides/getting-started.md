@@ -37,12 +37,12 @@ How the binding resolves later is specified in
 
 ```console
 $ viv manifest show rust-web
-$ viv show --resolved
+$ viv config eval
 ```
 
-`manifest show` prints the resolved image and ordered pieces; `show --resolved` renders the fully
-merged configuration, so you can see the effective result of composition before booting. The merge
-semantics are in
+`manifest show` prints the resolved image and ordered pieces; `config eval` renders the fully
+merged configuration, so you can see the effective result of composition before booting (and
+`config sources` shows which layer each value came from). The merge semantics are in
 [`../reference/spec/04-composition-and-determinism.md`](../reference/spec/04-composition-and-determinism.md).
 
 ## 3. Boot the sandbox

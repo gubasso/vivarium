@@ -27,9 +27,9 @@ vivarium assigns roles to priorities so composition is predictable:
 - **Hard floor** — pieces that must not be overridden (for example a security policy) use `mkForce`.
 
 This gives the ergonomics of layered overrides — "the project overrides the base, the security floor
-overrides everything" — without any custom ordering logic. `viv show --resolved` (see
+overrides everything" — without any custom ordering logic. `viv config eval` (see
 [`01-command-surface.md`](01-command-surface.md)) renders the merged result so users can see the
-effective configuration.
+effective configuration; `viv config sources` shows which layer each value came from.
 
 ## The build and launch channels
 
