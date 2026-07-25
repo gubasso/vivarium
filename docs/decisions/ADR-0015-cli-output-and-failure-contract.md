@@ -45,5 +45,12 @@ Amended by
 the side-effect commands named above are now `start`/`stop`/`destroy` (formerly `up`/`down`); the
 contract itself is unchanged.
 
+Amended by
+[`ADR-0023-doctor-check-catalog-and-contract.md`](ADR-0023-doctor-check-catalog-and-contract.md) —
+the "never a generic `1`" rule gains one narrow exception: `viv doctor --strict` returns `1` when it
+promotes a soft warning to a failure. That is a policy signal for CI gates on a read-only command
+with no side effect, not an operational failure; all operational failures keep the sysexits
+taxonomy.
+
 Applied across [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md)
 and [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md).

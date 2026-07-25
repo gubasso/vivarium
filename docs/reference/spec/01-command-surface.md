@@ -26,7 +26,7 @@ All commands operate on the manifest bound to the current project, resolved by t
 | `viv config [--json]` | Inspection namespace for the bound project's configuration (ADR-0022). With no subcommand, shows the binding: the bound manifest and the effective config/state/data/cache paths. Read-only, no VM preflight. |
 | `viv config sources [--json]` | Provenance view: the declaring manifest and its ordered pieces in merge order, and which layer each effective value comes from — the home for how merge-priority conflicts and ties render. Read-only, no VM preflight. |
 | `viv config eval [--json]` | Render the fully merged, **evaluated** configuration for the bound manifest — the "what did my layers produce" view. Runs the module merge, so it guards on the hard preflight subset (Nix present); `65` (EX_DATAERR) if evaluation fails. Replaces the retired `viv show --resolved`. |
-| `viv doctor` | Diagnose the host from the shared probe catalog: virtualization availability, required tooling, and config sanity. A pure health checker (pass/warn/fail with sysexit codes); it never renders configuration — that is `viv config`'s job. `viv start`'s preflight runs the hard subset of this same catalog. |
+| `viv doctor [--json] [-v] [--strict] [--list] [--online]` | Diagnose the host and project setup from the shared probe catalog: virtualization, tooling, permissions, disk, and config sanity. A pure health checker (`pass`/`warn`/`fail`/`skipped` with sysexit codes); it never renders configuration — that is `viv config`'s job. Offline by default (`--online` adds network checks); `--strict` fails on warnings; `viv start`'s preflight runs the hard subset of this same catalog. Full contract in [`13-doctor-and-health-checks.md`](13-doctor-and-health-checks.md). |
 
 ## Selection and overrides
 
@@ -46,8 +46,8 @@ The stream and machine-output rules are the same for every command, specified in
 [`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md):
 
 - **stdout carries the result only** — a human table/line for data commands (`images list`,
-  `manifest show`, `generations list`, `volume list`, `config`/`config sources`/`config eval`), a
-  `--json` record in machine mode, and
+  `manifest show`, `generations list`, `volume list`, `config`/`config sources`/`config eval`,
+  `doctor`'s report), a `--json` record in machine mode, and
   **nothing** for side-effect commands whose result is a VM state change (`start`, `stop`,
   `destroy`).
 - **stderr carries everything else** — progress, status, prompts, warnings, errors. Progress is shown

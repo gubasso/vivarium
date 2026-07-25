@@ -12,6 +12,10 @@ page or decision that explains it. The keyword **must** marks a hard requirement
 - **N2 — Class, not tool.** The isolation boundary **must** be specified by capability class, not by
   a named virtual machine monitor. Any backend satisfying the class is admissible; none is part of
   the contract.
+- **N20 — VMM process sandbox.** The virtual-machine-monitor process **must** be launched under a
+  host-side sandbox — a seccomp syscall filter plus capability drop — so that even a compromised
+  VMM cannot reach the host beyond its sanctioned resources. See
+  [`../../decisions/ADR-0024-backend-security-requirements.md`](../../decisions/ADR-0024-backend-security-requirements.md).
 
 ## Build and determinism
 

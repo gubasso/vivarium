@@ -36,3 +36,6 @@ each page links to the ADRs that govern it rather than restating their reasoning
 - [`12-exec-and-shell.md`](12-exec-and-shell.md) — how `viv exec` and `viv shell` enter a running or
   newly-started guest: argv boundary, stdio/TTY behavior, control socket, workspace cwd,
   environment, and exit-status boundary.
+- [`13-doctor-and-health-checks.md`](13-doctor-and-health-checks.md) — the `viv doctor` contract:
+  the shared probe catalog, hard/soft severity and the preflight subset, statuses, flags, output
+  shapes, and exit codes.

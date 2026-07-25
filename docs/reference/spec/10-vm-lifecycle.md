@@ -117,19 +117,15 @@ and spared by `--keep-volumes`. `destroy` is idempotent — nothing to tear down
 
 `start` runs the **hard subset** of the shared `viv doctor` probe catalog before any side effect — one
 probe set, reused by `doctor` (whole catalog) and each command's guard (its subset), so they never
-drift. Checks run cheapest-and-most-fundamental first, so the earliest failure is the most
-actionable:
+drift. The catalog — stable check ids, categories, severities, and failure codes — is owned by
+[`13-doctor-and-health-checks.md`](13-doctor-and-health-checks.md); the hard subset is exactly its
+hard-severity checks, run cheapest-and-most-fundamental first so the earliest failure is the most
+actionable: `nix-present` → `nix-version` → `nix-flakes-enabled` → `kvm-device-present` →
+`kvm-device-accessible` → `hardware-virt-available` → `backend-binary-present`.
 
-1. `nix` present → `nix` meets the minimum version.
-2. Flakes enabled — `experimental-features` includes `nix-command flakes`.
-3. `/dev/kvm` present → `/dev/kvm` accessible to the user (split so remediation differs: enable
-   virtualization vs. join the `kvm` group).
-4. Hardware virtualization available.
-5. The selected backend binary is present.
-
-Each failing check reports **what / where / why / hint**, a stable check id, and a specific exit code
-from the sysexits taxonomy (for example `69` unavailable, `77` permission, `78` config) — never a
-generic `1`. Exit codes and stream rules are specified in
+Each failing check reports **what / where / why / hint**, its stable check id, and a specific exit
+code from the sysexits taxonomy (for example `69` unavailable, `77` permission, `78` config) — never
+a generic `1`. Exit codes and stream rules are specified in
 [`ADR-0015`](../../decisions/ADR-0015-cli-output-and-failure-contract.md).
 
 ## Nix validation ladder

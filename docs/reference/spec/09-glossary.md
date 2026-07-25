@@ -88,7 +88,12 @@ it without redefining it.
   store output because a layer changed. See [`10-vm-lifecycle.md`](10-vm-lifecycle.md).
 
 - **Preflight** — the hard subset of the shared `doctor` probe catalog a command runs at entry,
-  refusing before any side effect. See [`10-vm-lifecycle.md`](10-vm-lifecycle.md).
+  refusing before any side effect. See [`10-vm-lifecycle.md`](10-vm-lifecycle.md) and
+  [`13-doctor-and-health-checks.md`](13-doctor-and-health-checks.md).
+
+- **Hard / soft check** — the severity of a probe in the shared `doctor` catalog: hard checks form
+  the preflight subset and gate side-effect commands; soft checks only warn and never block. See
+  [`13-doctor-and-health-checks.md`](13-doctor-and-health-checks.md).
 
 - **Closure** — the complete set of store paths a build depends on; what ships with a built VM.
 
