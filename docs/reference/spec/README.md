@@ -28,3 +28,7 @@ each page links to the ADRs that govern it rather than restating their reasoning
 - [`08-invariants-and-guarantees.md`](08-invariants-and-guarantees.md) — the numbered normative
   guarantees the product must uphold.
 - [`09-glossary.md`](09-glossary.md) — defined terms used throughout the docs.
+- [`10-vm-lifecycle.md`](10-vm-lifecycle.md) — how `viv up` builds and boots the sandbox: lifecycle
+  states, idempotency, staleness, preflight, and the Nix validation ladder.
+- [`11-generations-and-build-history.md`](11-generations-and-build-history.md) — the numbered history
+  of a project's builds, pinned as GC roots so a past build can be booted or pruned.

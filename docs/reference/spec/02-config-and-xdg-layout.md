@@ -16,7 +16,8 @@ rule and rationale are in
 - **Data root** (`$XDG_DATA_HOME/vivarium/`) — pinned external module libraries pulled in as inputs.
 - **State root** (`$XDG_STATE_HOME/vivarium/`) — per-project runtime state the tool writes: the built
   VM's store output reference, a stable VM identity that survives restarts, the **project registry**
-  (the project→manifest binding — see below), and logs.
+  (the project→manifest binding — see below), the per-project **build generations** (see below), and
+  logs.
 - **Cache root** (`$XDG_CACHE_HOME/vivarium/`) — derived, regenerable artifacts: Nix evaluation cache
   and built VM images. Safe to delete; the tool rebuilds it.
 
@@ -42,6 +43,15 @@ a normal command.
 
 There are no per-project binding files inside the repository. vivarium writes nothing into a project's
 own tree (N9); a project is bound by a registry entry, not by a committed or gitignored pointer.
+
+## Per-project VM state
+
+Each project's runtime VM state lives under the state root at
+`projects/<project-id>/<target>/`, where `<project-id>` is the project-identity key that scopes all
+of a project's state. This holds the project's **build generations** — a per-project Nix profile
+whose numbered symlinks pin retained build outputs as garbage-collector roots. The layout and
+lifecycle are specified in
+[`11-generations-and-build-history.md`](11-generations-and-build-history.md).
 
 ## Resolution precedence
 

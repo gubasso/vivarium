@@ -56,6 +56,12 @@ directory read-write inside the guest. The working-directory path is supplied at
 not built in, which is why the same manifest is reproducible across machines
 ([`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md)).
 
+`up` boots the sandbox in the background and returns; running it again on an unchanged project is a
+no-op. Each successful build is kept as a numbered generation you can list with `viv generations` and
+boot with `viv up --generation <n>` — see
+[`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md) and
+[`../reference/spec/11-generations-and-build-history.md`](../reference/spec/11-generations-and-build-history.md).
+
 ## 4. Work inside the sandbox
 
 ```

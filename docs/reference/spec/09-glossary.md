@@ -53,6 +53,16 @@ it without redefining it.
 - **Egress** — outbound network traffic from the guest, governed by the `sandbox.egress.mode` knob.
   See [`05-networking-and-egress.md`](05-networking-and-egress.md).
 
+- **Generation** — a retained, numbered past build output for a project, pinned as a
+  garbage-collector root so it can be booted or rolled back to. See
+  [`11-generations-and-build-history.md`](11-generations-and-build-history.md).
+
+- **Stale** — the state of a running VM whose booted build no longer matches the current build's
+  store output because a layer changed. See [`10-vm-lifecycle.md`](10-vm-lifecycle.md).
+
+- **Preflight** — the hard subset of the shared `doctor` probe catalog a command runs at entry,
+  refusing before any side effect. See [`10-vm-lifecycle.md`](10-vm-lifecycle.md).
+
 - **Closure** — the complete set of store paths a build depends on; what ships with a built VM.
 
 - **Store** — the content-addressed Nix store holding build outputs. It is world-readable, which is

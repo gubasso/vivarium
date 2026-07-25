@@ -65,6 +65,18 @@ page or decision that explains it. The keyword **must** marks a hard requirement
   or shared mutable state. See
   [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md).
 
+## Lifecycle and history
+
+- **N14 — Built generations are GC-pinned.** Every build output the tool retains **must** be pinned
+  by a garbage-collector root under the state root, so `viv up --no-rebuild` and
+  `viv up --generation <n>` targets survive `nix-collect-garbage`. See
+  [`11-generations-and-build-history.md`](11-generations-and-build-history.md) and
+  [`../../decisions/ADR-0014-build-generations-and-gc-roots.md`](../../decisions/ADR-0014-build-generations-and-gc-roots.md).
+- **N15 — `viv up` is idempotent and non-destructive.** A fresh, already-running VM re-ups to a
+  no-op; `viv up` **must not** stop or replace a running VM without an explicit `--rebuild`. See
+  [`10-vm-lifecycle.md`](10-vm-lifecycle.md) and
+  [`../../decisions/ADR-0013-vm-lifecycle-and-up.md`](../../decisions/ADR-0013-vm-lifecycle-and-up.md).
+
 ## Config
 
 - **N13 — Config is read-only to the tool.** vivarium **must not** write, create, or scaffold

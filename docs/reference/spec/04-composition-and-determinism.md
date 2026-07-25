@@ -39,7 +39,8 @@ time. Two consequences follow:
 
 - **The store output hash is the freshness key.** Identical inputs produce an identical output path;
   the tool does not compute a separate content digest. A changed layer changes the inputs, which
-  changes the output path, which triggers a rebuild.
+  changes the output path, which triggers a rebuild. Each such output the tool retains is pinned as a
+  **generation** ([`11-generations-and-build-history.md`](11-generations-and-build-history.md)).
 - **The build must be pure.** No host-specific value may enter it. In particular, the working
   directory path is injected at launch time, never built in, per
   [`../../decisions/ADR-0009-launch-time-workspace-path-injection.md`](../../decisions/ADR-0009-launch-time-workspace-path-injection.md).
