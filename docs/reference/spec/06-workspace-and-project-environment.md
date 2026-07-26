@@ -36,6 +36,22 @@ rule as the primary workspace: sources resolve through the launch channel
 and shared layers reference the host only through portable variables. Config mirroring specifics
 and the sharing rule live in [`07-secrets-and-config-sharing.md`](07-secrets-and-config-sharing.md).
 
+### How shares are served and confined
+
+A project may declare **multiple writable paths** (extra `/workspaces/<name>` repositories) and
+**multiple additional bind mounts**, each chosen read-only or read-write through the mount schema's
+`readonly` flag. Every declared share — the primary workspace and each extra mount — is served by
+its **own unprivileged virtiofsd process**, confined under the N20 launch profile
+([`08-invariants-and-guarantees.md`](08-invariants-and-guarantees.md),
+[`../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md)):
+`--sandbox=namespace`, seccomp on, `cache=none`, with only that share's host path in its view, so
+one share can never reach another or the wider host filesystem.
+
+Read-only is enforced on both sides: the host source is exposed read-only **and** the guest mount is
+`ro,nodev,nosuid,noexec`, so a read-only mount can carry data but never executables or device nodes,
+and writes are confined to exactly the declared read-write paths. Guest scratch — `/tmp` and other
+non-persistent locations — is the per-VM ephemeral layer above, never a host mount.
+
 ## The independent inner environment
 
 A project may define its own development environment — a `flake.nix` with direnv, or an equivalent.

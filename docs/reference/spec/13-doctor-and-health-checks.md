@@ -62,6 +62,7 @@ isolation class stays backend-agnostic (N2).
 | `nix-store-disk-space` | disk | less than 10 GB free on the store filesystem (roughly one build cycle plus headroom) |
 | `backend-version` | tooling | the selected backend is older than the recommended version — for the default backend, the latest stable release at decision time (Cloud Hypervisor v53); the implementation pins the exact floor |
 | `kernel-version-supported` | virtualization | the host kernel is too old for the required virtio features |
+| `host-landlock-available` | virtualization | the kernel lacks Landlock — the VMM's seccomp + capability-drop sandbox (N20) still applies, but the launch profile's filesystem-path allowlist is skipped |
 | `state-dir-writable` | permissions | the state root is not writable |
 | `cache-dir-writable` | permissions | the cache root is not writable |
 | `data-dir-writable` | permissions | the data root is not writable |
@@ -93,7 +94,22 @@ it is policy, not a health defect (N8, [`05-networking-and-egress.md`](05-networ
 ### Guaranteed by construction (not probed)
 
 Two security properties are guarantees of how vivarium builds and launches, not host conditions a
-probe could observe: the separate guest kernel (N1) and the VMM process sandbox (N20). See
+probe could observe: the separate guest kernel (N1) and the host-side sandbox around the VMM and
+every virtiofsd (N20). vivarium's launch wrapper enacts N20 as a fixed **hardened launch profile**,
+so the confinement cannot be disabled at runtime
+([`../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md)):
+
+- **VMM (Cloud Hypervisor).** Launched unprivileged with `PR_SET_NO_NEW_PRIVS`, capabilities dropped
+  toward zero, built-in seccomp enabled (`--seccomp true`), a Landlock path allowlist where the
+  kernel supports it, and cgroup limits.
+- **virtiofsd (one process per share).** Launched unprivileged, `--sandbox=namespace`, seccomp on,
+  `cache=none`, with only its own share writable — never as root and never `--sandbox none`, the
+  configuration behind the guest-root-to-host-root escape CVE-2026-47243.
+- **QEMU fallback is documentation-only** — admissible under N2 but not hardened; use Cloud
+  Hypervisor for untrusted workloads.
+
+These are guarantees of construction; `viv doctor` probes only the host *prerequisites* (the
+soft-host checks, including `host-landlock-available`), never whether the sandbox "is on." See
 [`08-invariants-and-guarantees.md`](08-invariants-and-guarantees.md) and
 [`../../decisions/ADR-0024-backend-security-requirements.md`](../../decisions/ADR-0024-backend-security-requirements.md).
 

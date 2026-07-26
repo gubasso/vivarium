@@ -9,9 +9,12 @@ Egress is controlled by one declarative knob, `sandbox.egress.mode`, with two va
 
 - **`open`** (default) — unrestricted outbound network. The guest can reach anything the host's
   network can reach. No filtering is applied.
-- **`allowlist`** — default-deny outbound, permitting only named hosts. Enforcement is an in-guest
-  firewall configured from the allowlist that layers contribute (the list concatenates across pieces,
-  per [`04-composition-and-determinism.md`](04-composition-and-determinism.md)).
+- **`allowlist`** — default-deny outbound, permitting only named hosts. Enforcement is **host-side**,
+  on the host end of the guest's network path (for example a NAT/tap firewall), configured from the
+  allowlist that layers contribute (the list concatenates across pieces, per
+  [`04-composition-and-determinism.md`](04-composition-and-determinism.md)). It is host-side by
+  design: the guest is treated as adversarial and may hold guest-root, so a rule set *inside* the
+  guest could be torn down — the wall must sit outside it.
 
 The default is `open` so that package installs, repository clones, and agent research work with no
 setup. Switching to `allowlist` is a single knob, typically supplied by a restriction piece.
@@ -43,5 +46,7 @@ The choice of backend and networking mode is an implementation concern below the
 ## Address, DNS, and firewall
 
 In `open` mode the guest obtains its address and DNS from the backend's networking and applies no
-outbound firewall. In `allowlist` mode the same connectivity is present, but the in-guest firewall
-drops outbound traffic except to permitted hosts and the DNS needed to resolve them.
+outbound firewall. In `allowlist` mode the same connectivity is present, but a **host-side** firewall
+on the guest's network path drops outbound traffic except to permitted hosts and the DNS needed to
+resolve them. A blocked connection should surface to the guest as a legible denial rather than a
+silent timeout; the mechanism for that is left to implementation.

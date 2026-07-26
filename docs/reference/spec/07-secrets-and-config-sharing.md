@@ -37,9 +37,13 @@ so build-time secrets are prohibited. Two safe channels replace them:
 - **Encrypted-at-rest, for shared secrets.** Commit encrypted secret files that decrypt only at
   activation into a runtime-only location, never into the store. Only the public recipient
   identities are committed in clear.
-- **Runtime injection, for personal secrets.** Forward an authentication-agent socket into the guest,
-  bind-mount credential directories read-only, and pass tokens as runtime environment when the VM
-  launches. None of these involve the build.
+- **Runtime injection, for personal secrets.** The **primary channel is authentication-agent socket
+  forwarding** (SSH/GPG): the guest receives the forwarded socket, so a compromised guest can *use* a
+  key for the session but the private key material never crosses the boundary and cannot be
+  exfiltrated. Where a token is unavoidable, pass a **scoped, short-lived** one as runtime
+  environment — never a long-lived credential. Credential directories may be bind-mounted
+  **read-only** (`ro,nodev,nosuid,noexec`) for tools that read config files. None of these involve
+  the build.
 
 The rule is: **build-time means in the store, which is wrong for secrets; secrets are runtime or
 encrypted-at-rest only.**

@@ -53,3 +53,5 @@ Accepted
 
 Discharges the deferral in ADR-0024. The concrete binary map lives in
 [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md).
+The hardened launch profile it names (VMM + virtiofsd confinement) is enacted by
+[`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md).

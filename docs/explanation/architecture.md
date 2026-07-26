@@ -70,7 +70,10 @@ A second wall is not zero risk, and knowing its edges is part of the mental mode
 
 - **The host-side helpers are trusted surface.** The VMM process and the shared-filesystem daemon
   that serves the workspace both run on the host, so both are confined by construction — seccomp
-  plus capability drop (N20) — rather than trusted.
+  plus capability drop (N20) — rather than trusted. The concrete profile, and the
+  guest-root-to-host-root escape class it closes (an unconfined virtiofsd, CVE-2026-47243), are
+  fixed by
+  [`../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md).
 - **Network reach is not escape.** Open egress lets a compromised agent exfiltrate what it can
   already read; it does not weaken the boundary. That is why egress is a policy knob, not an
   isolation setting (N8,

@@ -50,3 +50,8 @@ Adds invariant **N20** to
 [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md).
 The default-hypervisor selection deferred here is recorded in
 [`ADR-0025-default-hypervisor-cloud-hypervisor.md`](ADR-0025-default-hypervisor-cloud-hypervisor.md).
+
+Amended by
+[`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md) —
+N20 is extended to cover host-side filesystem daemons (virtiofsd), and its confinement standard is
+enacted as a concrete by-construction launch profile.
