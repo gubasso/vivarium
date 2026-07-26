@@ -15,18 +15,18 @@ All commands operate on the manifest bound to the current project, resolved by t
 | `viv images list [--json]` | List the images in the config library (`$XDG_CONFIG_HOME/vivarium/images/`). Read-only enumeration; an empty or absent library lists zero rows and exits `0`, never an error. |
 | `viv manifest list [--json]` | List the manifests in the config library (`manifests/`). Enumerates all *defined* manifests, not the one bound to the current project — the binding is shown by `viv config`. Empty/absent library lists zero rows and exits `0`. |
 | `viv manifest show <name> [--json]` | Show the named manifest's declared image, ordered pieces, and policy knobs, read from the config library. Takes exactly one `<name>`; an unknown name **fails closed** with a non-zero exit. Distinct from `config eval`, which evaluates the full module merge. |
-| `viv start [--rebuild \| --no-rebuild] [--generation <n>] [--attach] [--json] [--quiet] [-v\|-vv]` | Resolve the bound manifest, build the VM, and boot it with the working directory mounted — "ensure built and running." Detached by default (boots and returns); idempotent and non-destructive to a running VM. Full behavior in [`10-vm-lifecycle.md`](10-vm-lifecycle.md). |
+| `viv start [--rebuild \| --no-rebuild] [--generation <n>] [--attach] [--json]` | Resolve the bound manifest, build the VM, and boot it with the working directory mounted — "ensure built and running." Detached by default (boots and returns); idempotent and non-destructive to a running VM. Full behavior in [`10-vm-lifecycle.md`](10-vm-lifecycle.md). |
 | `viv exec [-t|--tty] [-T|--no-tty] [--env KEY[=VAL]]... -- <cmd> [args...]` | Run a command inside the project VM, starting it first if needed; `--` is required and all following args are guest argv. See [`12-exec-and-shell.md`](12-exec-and-shell.md). |
 | `viv shell` | Open a login-interactive PTY shell inside the project VM, starting it first if needed. See [`12-exec-and-shell.md`](12-exec-and-shell.md). |
-| `viv stop [--force] [-t\|--timeout <secs>] [--json] [--quiet] [-v\|-vv]` | Gracefully stop the project VM (in-guest agent shutdown, falling back to hard poweroff after `--timeout`, default 10 s; `-1` waits indefinitely), preserving persistent volumes and build generations (N18). `--force` powers off immediately (possible data loss) and conflicts with a nonzero `--timeout` (usage error). Idempotent: nothing running → no-op, exit `0`. Full behavior in [`10-vm-lifecycle.md`](10-vm-lifecycle.md). |
-| `viv destroy [-f\|--yes] [--keep-volumes] [--json] [--quiet] [-v\|-vv]` | Tear the project down: graceful stop, unlink **all** build generations, remove **all** persistent volumes and runtime state. Prompts on a TTY; non-interactive runs require `--yes`. `--keep-volumes` preserves volumes. Store paths become reclaimable and are freed only by a later `viv gc`. Never touches the workspace, config, or project binding. Idempotent. See [`10-vm-lifecycle.md`](10-vm-lifecycle.md). |
+| `viv stop [--force] [-t\|--timeout <secs>] [--json]` | Gracefully stop the project VM (in-guest agent shutdown, falling back to hard poweroff after `--timeout`, default 10 s; `-1` waits indefinitely), preserving persistent volumes and build generations (N18). `--force` powers off immediately (possible data loss) and conflicts with a nonzero `--timeout` (usage error). Idempotent: nothing running → no-op, exit `0`. Full behavior in [`10-vm-lifecycle.md`](10-vm-lifecycle.md). |
+| `viv destroy [-f\|--yes] [--keep-volumes] [--json]` | Tear the project down: graceful stop, unlink **all** build generations, remove **all** persistent volumes and runtime state. Prompts on a TTY; non-interactive runs require `--yes`. `--keep-volumes` preserves volumes. Store paths become reclaimable and are freed only by a later `viv gc`. Never touches the workspace, config, or project binding. Idempotent. See [`10-vm-lifecycle.md`](10-vm-lifecycle.md). |
 | `viv generations <list\|activate\|rollback\|prune> [--json]` | Manage the retained build generations: `list` (number, timestamp, store path), `activate`/`rollback` the current pointer, `prune [--keep <n>] [--older-than <dur>]` under a retention policy, unlinking GC roots. See [`11-generations-and-build-history.md`](11-generations-and-build-history.md). |
 | `viv gc` | Run the store garbage collector — a **global, whole-store** sweep that reclaims store paths unreachable from any GC root, vivarium's or not. Project-scoped retention lives in `viv generations prune`. See [`11-generations-and-build-history.md`](11-generations-and-build-history.md). |
 | `viv volume <list\|rm> [--json]` | Manage the project's persistent volumes: `list` shows the default and named volumes with mountpoints, declaring layer, and orphans; `rm <name>` / `rm --all` remove volume data. Removal refuses while the VM runs (stop first). Creation is declarative only — volumes are declared in the manifest or pieces and materialized by `start`. See [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md). |
 | `viv config [--json]` | Inspection namespace for the bound project's configuration (ADR-0022). With no subcommand, shows the binding: the bound manifest and the effective config/state/data/cache paths. Read-only, no VM preflight. |
 | `viv config sources [--json]` | Provenance view: the declaring manifest and its ordered pieces in merge order, and which layer each effective value comes from — the home for how merge-priority conflicts and ties render. Read-only, no VM preflight. |
 | `viv config eval [--json]` | Render the fully merged, **evaluated** configuration for the bound manifest — the "what did my layers produce" view. Runs the module merge, so it guards on the hard preflight subset (Nix present); `65` (EX_DATAERR) if evaluation fails. Replaces the retired `viv show --resolved`. |
-| `viv doctor [--json] [-v] [--strict] [--list] [--online]` | Diagnose the host and project setup from the shared probe catalog: virtualization, tooling, permissions, disk, and config sanity. A pure health checker (`pass`/`warn`/`fail`/`skipped` with sysexit codes); it never renders configuration — that is `viv config`'s job. Offline by default (`--online` adds network checks); `--strict` fails on warnings; `viv start`'s preflight runs the hard subset of this same catalog. Full contract in [`13-doctor-and-health-checks.md`](13-doctor-and-health-checks.md). |
+| `viv doctor [--json] [--strict] [--list] [--online]` | Diagnose the host and project setup from the shared probe catalog: virtualization, tooling, permissions, disk, and config sanity. A pure health checker (`pass`/`warn`/`fail`/`skipped` with sysexit codes); it never renders configuration — that is `viv config`'s job. Offline by default (`--online` adds network checks); `--strict` fails on warnings; `viv start`'s preflight runs the hard subset of this same catalog. Full contract in [`13-doctor-and-health-checks.md`](13-doctor-and-health-checks.md). |
 
 ## Selection and overrides
 
@@ -39,6 +39,26 @@ All commands operate on the manifest bound to the current project, resolved by t
   [`../../decisions/ADR-0011-config-read-only-binding-in-state.md`](../../decisions/ADR-0011-config-read-only-binding-in-state.md).
   Interactive prompting happens only in `viv init`, and only when stdin/stdout is a TTY and
   `--no-input` is absent.
+
+## Global flags
+
+A small set of flags is **global** — accepted before or after any subcommand (`viv -v start` and
+`viv start -v` are equivalent) and handled uniformly, never redeclared per command
+([`../../decisions/ADR-0026-global-flags-and-config-precedence.md`](../../decisions/ADR-0026-global-flags-and-config-precedence.md)):
+
+- `-v` / `--verbose` — increase diagnostic verbosity on stderr; stackable (`-vv`, `-vvv` for trace).
+  Tunes stderr only; it never adds to or reshapes stdout data.
+- `-q` / `--quiet` — suppress non-error progress and status on stderr; it never suppresses errors.
+  `-v` and `-q` are mutually exclusive (last one wins).
+
+Machine output is deliberately **not** global: each data command owns its own `--json` flag (one
+JSON value on stdout), rather than a global `--format`/`-o`. This keeps every command's output
+schema independent and stable for automation and coding-agent consumers.
+
+Cross-cutting settings resolve by a single precedence rule — **flag > environment variable >
+default** (there is no user config file for these). `--manifest` / `VIVARIUM_MANIFEST` above obey
+it; color follows the env-only chain `NO_COLOR > FORCE_COLOR > isatty` with no `--color` flag
+(ADR-0015).
 
 ## Output streams
 

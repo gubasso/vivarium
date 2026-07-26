@@ -100,11 +100,13 @@ probe could observe: the separate guest kernel (N1) and the VMM process sandbox 
 ## Flags
 
 ```text
-viv doctor [--json] [-v|--verbose] [--strict] [--list] [--online]
+viv doctor [--json] [--strict] [--list] [--online]
 ```
 
 - `--json` — one machine record on stdout (shape below).
-- `-v` / `--verbose` — deeper per-check detail (observed versions, paths, permissions, free bytes).
+- `-v` / `--verbose` — the **global** verbosity flag (see
+  [`01-command-surface.md`](01-command-surface.md) "Global flags"); on `doctor` it surfaces deeper
+  per-check detail (observed versions, paths, permissions, free bytes).
 - `--strict` — any `warn` fails the run: exit `1` (the one sanctioned use of `1`, per the
   ADR-0023 amendment to ADR-0015). For CI gates.
 - `--list` — enumerate the catalog (id, category, scope, severity, title) **without running any

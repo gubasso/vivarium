@@ -52,5 +52,11 @@ promotes a soft warning to a failure. That is a policy signal for CI gates on a 
 with no side effect, not an operational failure; all operational failures keep the sysexits
 taxonomy.
 
+Amended by
+[`ADR-0026-global-flags-and-config-precedence.md`](ADR-0026-global-flags-and-config-precedence.md) —
+adds the global-flag taxonomy (`-v`/`-q` verbosity is global; `--json` stays per-command, with no
+global `--format`) and the `flag > environment variable > default` precedence standard; the env-only
+color model here is reaffirmed unchanged.
+
 Applied across [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md)
 and [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md).
