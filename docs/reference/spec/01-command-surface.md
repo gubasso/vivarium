@@ -155,3 +155,46 @@ command's concrete shape.
   normally-empty array of equal-priority ties. A tie is **not** an error — exit `0`, with the
   `[tie]` note on stderr so `… --json 2>/dev/null | jq` stays clean and scripts detect ties via
   `conflicts`.
+
+## Library inspection output
+
+The library readers (`images list`, `manifest list`, `manifest show`) obey the same stream and
+`--json` rules; this section fixes each command's concrete shape. Like the `config` family, each
+emits a **single keyed JSON object** with **no `schema_version`** — per-command stability is the
+versioning boundary (see the machine-output rule above), not a versioned envelope. That envelope is
+reserved for `doctor`, whose health-check protocol earns it
+([`13-doctor-and-health-checks.md`](13-doctor-and-health-checks.md)). Lists are wrapped in a named
+key (not a bare top-level array) so future metadata can be added without a breaking re-wrap.
+
+- **`viv images list`** — `--json` emits `{ "images": [ { "name", "path" } ] }`: `name` is the
+  kebab-case identifier used in a manifest's `image = "…"`; `path` is the absolute path to the image
+  module under the config root's `images/` ([`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md)).
+  An empty or absent library emits `{ "images": [] }` and exits `0`, never an error.
+
+- **`viv manifest list`** — `--json` emits `{ "manifests": [ { "name", "path", "image", "pieces" } ] }`,
+  one row per *defined* manifest (not the bound one — that is `viv config`). `pieces` is the ordered
+  piece list; `image` and `pieces` are included so the composition is visible without a follow-up
+  `show`. Empty/absent library emits `{ "manifests": [] }` and exits `0`.
+
+- **`viv manifest show <name>`** — `--json` emits the **declared** manifest, mirroring its TOML
+  authoring surface ([`03-artifact-model.md`](03-artifact-model.md)) — *not* the evaluated merge,
+  which is `config eval`'s job:
+
+  ```json
+  {
+    "manifest": "rust-web",
+    "path": "/home/alice/.config/vivarium/manifests/rust-web.toml",
+    "image": "rust",
+    "pieces": ["git", "ssh-agent", "direnv", "egress-open"],
+    "resources": { "mem_mib": 4096, "vcpu": 4 },
+    "egress": { "mode": "open", "allow": [] },
+    "extends": null
+  }
+  ```
+
+  `manifest` is the identity key (as in the `config` family). `resources.*` fields are `null` when
+  undeclared. `egress.mode` is `"open"` | `"allowlist"` (declared top-level `[egress]`, per
+  [`05-networking-and-egress.md`](05-networking-and-egress.md)); `egress.allow` is the allowlist
+  declared at this layer (empty under `open`). `extends` is the optional raw-`.nix` escape hatch,
+  `null` when unused. Unknown name fails closed `78`; bad arg arity `64` (see
+  [`14-exit-codes.md`](14-exit-codes.md)).
