@@ -91,8 +91,8 @@ $XDG_RUNTIME_DIR/vivarium/<project-id>/
   console.log
 ```
 
-`console.log` is optional. `<project-id>` is the still-open project-identity key; this page does not
-define its exact form. The control transport is vsock-class, host-local, and network-independent,
+`console.log` is optional. `<project-id>` is the project-identity key defined in
+[`15-project-identity.md`](15-project-identity.md). The control transport is vsock-class, host-local, and network-independent,
 bridged to a host Unix socket; the concrete device/backend is below this contract per N2. SSH is not
 the primary control plane, though it may exist as a debug fallback.
 
@@ -117,7 +117,6 @@ before-start not-found/not-executable cases; v1 uses the categories above.
 
 ## Deferred details
 
-- Exact `<project-id>` definition.
 - Exact control-socket wire framing/auth/multiplex protocol.
 - Credential/agent forwarding.
 - Implementation backend/device.

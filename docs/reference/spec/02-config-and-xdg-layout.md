@@ -41,14 +41,18 @@ keyed by the project's absolute path. The tool writes it only on an explicit, us
 (`viv init --write`, see [`01-command-surface.md`](01-command-surface.md)), never as a side effect of
 a normal command.
 
-There are no per-project binding files inside the repository. vivarium writes nothing into a project's
-own tree (N9); a project is bound by a registry entry, not by a committed or gitignored pointer.
+The manifest **binding** has no file inside the repository: a project is bound by a registry entry,
+not by a committed or gitignored pointer. The one thing vivarium does write into a project's own tree
+is its self-ignored `.vivarium/` **identity** marker — which carries the `<project-id>` only, never
+the binding (N9, N21; [`15-project-identity.md`](15-project-identity.md)). Identity is tracked in a
+separate state-root index, distinct from this `--write`-gated binding.
 
 ## Per-project VM state
 
 Each project's runtime VM state lives under the state root at
 `projects/<project-id>/<target>/`, where `<project-id>` is the project-identity key that scopes all
-of a project's state. This holds the project's **build generations** — a per-project Nix profile
+of a project's state, defined in [`15-project-identity.md`](15-project-identity.md). This holds the
+project's **build generations** — a per-project Nix profile
 whose numbered symlinks pin retained build outputs as garbage-collector roots — and its
 **persistent volumes** (`volumes/<name>.img`, always including `default`). Volumes live under
 state, not cache, because their contents are user data and not regenerable. Generation layout and

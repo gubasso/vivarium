@@ -30,8 +30,8 @@ $XDG_STATE_HOME/vivarium/projects/<project-id>/<target>/
   metadata/<n>.json                                 # store path, flake-lock rev, manifest, backend, built_at
 ```
 
-`<project-id>` is the project-identity key that also scopes the project's other state; its exact form
-is fixed alongside the rest of the state-keying scheme.
+`<project-id>` is the project-identity key that also scopes the project's other state; its form is
+defined in [`15-project-identity.md`](15-project-identity.md).
 
 ## Commands
 

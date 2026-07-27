@@ -57,7 +57,9 @@ non-persistent locations — is the per-VM ephemeral layer above, never a host m
 A project may define its own development environment — a `flake.nix` with direnv, or an equivalent.
 That environment is the **inner layer**: it lives in the repository, is owned by the project, and
 must work identically whether or not the project runs inside a vivarium sandbox. vivarium never
-modifies it.
+modifies it. The sole thing vivarium writes into the project tree is its own self-ignored
+`.vivarium/` identity marker (N9, N21), which is inert to this inner layer; see
+[`15-project-identity.md`](15-project-identity.md).
 
 Two Nix evaluations therefore exist and must not be conflated:
 
@@ -98,7 +100,8 @@ rebuilds. The model is decided in
   cache, because volume contents are user data and not regenerable
   ([`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md)). Identity is
   (project, target, name): manifests declare the shape, each bound project instantiates its own
-  private volumes, and reattachment on `viv start` is automatic.
+  private volumes, and reattachment on `viv start` is automatic. The `<project-id>` component is
+  defined in [`15-project-identity.md`](15-project-identity.md).
 - **Anything written outside `$HOME`, a named volume's mountpoint, or a `persist` path is
   ephemeral** and lost at shutdown.
 - Volumes are removed only on explicit request — `viv destroy` (all of them, unless

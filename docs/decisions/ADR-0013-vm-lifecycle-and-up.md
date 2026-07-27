@@ -45,4 +45,5 @@ the verbs were renamed `up` → `start` and `down` → `stop`, and teardown gain
 `--rebuild`/`--no-rebuild`) stands unchanged under the new names.
 
 Specified in [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md).
-Partially discharges the lifecycle-model work; the VM-identity key is decided separately.
+Partially discharges the lifecycle-model work; the project-identity key is decided in
+[`ADR-0029-project-identity-and-marker.md`](ADR-0029-project-identity-and-marker.md).

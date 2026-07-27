@@ -57,10 +57,18 @@ page or decision that explains it. The keyword **must** marks a hard requirement
 
 ## Project environment
 
-- **N9 — Project files are never modified.** vivarium **must not** modify a project's own files,
-  including its development-environment configuration. The project's environment **must** work
-  identically in or out of the sandbox. See
+- **N9 — User files are never modified.** vivarium **must not** modify a project's own
+  user-authored files, including its development-environment configuration; the project's environment
+  **must** work identically in or out of the sandbox. The **sole exception** is the self-ignored,
+  vivarium-owned `.vivarium/` identity marker (N21), which is inert to the dev environment. See
   [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md).
+  Amended by [`../../decisions/ADR-0029-project-identity-and-marker.md`](../../decisions/ADR-0029-project-identity-and-marker.md).
+- **N21 — Project identity is name-based and marker-anchored.** `<project-id>` **must** be the
+  sanitized project-directory name (suffixed only on a live collision), persisted in a gitignored,
+  vivarium-owned `.vivarium/` marker so identity survives a directory move or rename and copies
+  self-disambiguate. The marker carries identity only, never the manifest binding (N7). See
+  [`15-project-identity.md`](15-project-identity.md) and
+  [`../../decisions/ADR-0029-project-identity-and-marker.md`](../../decisions/ADR-0029-project-identity-and-marker.md).
 - **N16 — Stable workspace mount.** The primary workspace **must** be mounted read-write at
   `/workspaces/<repo>` inside the guest, never at a host-derived path; the host source remains
   launch-time injected per N5. See

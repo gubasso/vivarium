@@ -37,3 +37,7 @@ are present and load normally. See
 ## Status
 
 Accepted
+
+Amended by [`ADR-0029-project-identity-and-marker.md`](ADR-0029-project-identity-and-marker.md) —
+vivarium may manage a self-ignored `.vivarium/` runtime marker in the project tree; it carries
+project identity only and is inert to the inner dev environment, so the two-layer separation stands.

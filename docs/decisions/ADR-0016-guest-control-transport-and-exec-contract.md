@@ -32,4 +32,6 @@ uses BSD sysexits; after start, it propagates the guest status verbatim.
 
 Accepted
 
-Specified in [`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exec-and-shell.md).
+Specified in [`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exec-and-shell.md). The
+per-project `flock` and control-socket paths are keyed by the project-identity key
+([`ADR-0029-project-identity-and-marker.md`](ADR-0029-project-identity-and-marker.md)).

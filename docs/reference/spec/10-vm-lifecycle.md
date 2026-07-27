@@ -55,7 +55,9 @@ step (see *Preflight* below):
 if needed.
 
 `exec` and `shell` call the same ensure-running routine. When the control-socket ping proves the VM
-is already running for the same project, they skip preflight/build/boot and attach a session. When
+is already running for the same project — identified by the key in
+[`15-project-identity.md`](15-project-identity.md) — they skip preflight/build/boot and attach a
+session. When
 they must cold-start, they run the same hard preflight subset as `start` before any build or launch.
 
 ## Freshness and staleness

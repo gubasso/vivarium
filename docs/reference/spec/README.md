@@ -42,3 +42,6 @@ each page links to the ADRs that govern it rather than restating their reasoning
 - [`14-exit-codes.md`](14-exit-codes.md) — the single source of truth for exit codes: the
   program-wide sysexits legend, the guest pass-through boundary, the append-only stability guarantee,
   and the per-command exit-code matrix.
+- [`15-project-identity.md`](15-project-identity.md) — the single source of truth for the
+  project-identity key: the name-based derivation, the gitignored `.vivarium/` marker, and the
+  resolution algorithm that keeps identity stable across moves, renames, copies, and clones.

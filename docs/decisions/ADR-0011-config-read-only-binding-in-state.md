@@ -40,5 +40,9 @@ Chosen option: **config read-only; binding in state**.
 
 Accepted
 
+Amended by [`ADR-0029-project-identity-and-marker.md`](ADR-0029-project-identity-and-marker.md) — a
+gitignored `.vivarium/` marker is permitted, but it carries project **identity** only; the manifest
+**binding** still lives in the state registry and stays gated behind `viv init --write`.
+
 Supersedes [`ADR-0006-manifest-binding-and-precedence.md`](ADR-0006-manifest-binding-and-precedence.md).
 Refines the registry placement of [`ADR-0005-xdg-user-config-layout.md`](ADR-0005-xdg-user-config-layout.md).
