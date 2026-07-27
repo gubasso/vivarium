@@ -11,27 +11,40 @@ the output-stream and failure conventions used below are in
 
 ## Lifecycle states
 
-A project's VM is in one of:
+A project's VM is in one of six states, surfaced by `viv status`
+([`01-command-surface.md`](01-command-surface.md)):
 
-- **absent** — never built.
-- **built** — a sandbox output exists in the store but no VM is running.
-- **running** — a VM is up for this project.
-- **stale** — a VM is running, but a layer changed so the current build's store output no longer
-  matches what the running VM was booted from. Freshness is the store output path, never a separate
-  digest (N4, [`04-composition-and-determinism.md`](04-composition-and-determinism.md)).
+- **absent** — never built: no store output and no runtime state.
+- **built** — a sandbox output exists in the store but no VM is running. A clean `viv stop` lands
+  here; this *is* the "stopped" state.
+- **starting** — the VMM has been launched but the guest is not yet live (the control-socket
+  liveness handshake does not answer yet). Transitional; observable in the detached window between
+  launch and ready (see *Attach vs detach*).
+- **running** — a VM is up for this project and answering. It carries a **`stale`** condition — a
+  boolean, not a separate state — true when a layer changed so the current build's store output no
+  longer matches what the running VM was booted from. Freshness is the store output path, never a
+  separate digest (N4, [`04-composition-and-determinism.md`](04-composition-and-determinism.md)); a
+  stale VM is still **running**, only drifted.
+- **stopping** — transitional, passed through by `viv stop` and `viv destroy`; never a resting state.
+- **failed** — vivarium cannot treat the VM as healthy: boot failed, the VMM or guest exited
+  abnormally, or a runtime record is broken. The specific cause is carried as a *reason*
+  (`crashed`, `boot-timeout`, `socket-lost`, …), not a separate state.
 
-**stopping** is a transitional state passed through by `viv stop` and `viv destroy`, never a
-resting state. The transitions:
+The transitions:
 
 ```text
-absent | built ──start──▶ running
-running | stale ──stop──▶ (stopping) ──▶ built
-running | stale | built ──destroy──▶ built (store paths linger) ──gc──▶ absent
+absent | built ──start──▶ (starting) ──▶ running
+running ──stop──▶ (stopping) ──▶ built
+running | built | failed ──destroy──▶ built (store paths linger) ──gc──▶ absent
+running | starting ──abnormal exit──▶ failed
 ```
 
-`stop` can only ever reach **built** — a stopped project's build output stays pinned. A project
-returns to **absent** only when `destroy` has unlinked its generations *and* a later collection has
-reclaimed the store paths ([`11-generations-and-build-history.md`](11-generations-and-build-history.md)).
+`stop` can only ever reach **built** — a stopped project's build output stays pinned. A clean
+`stop`/`destroy` **tears down the runtime markers** (stale pid, socket), so "markers present but the
+process is dead" is exactly what separates **failed** from **built** — the invariant `viv status`
+relies on to report a crash rather than a clean stop. A project returns to **absent** only when
+`destroy` has unlinked its generations *and* a later collection has reclaimed the store paths
+([`11-generations-and-build-history.md`](11-generations-and-build-history.md)).
 
 ## What `viv start` does
 
@@ -84,7 +97,7 @@ thing `exec`/`shell` connect to. `--attach` instead streams the VM console until
 
 ## Stopping: `viv stop`
 
-`viv stop` drives a **running** (or **stale**) VM to **built** through the transitional
+`viv stop` drives a **running** VM (fresh or stale) to **built** through the transitional
 **stopping** state, escalating only as needed:
 
 1. **Agent shutdown** — signal the in-guest agent over the control socket for an orderly guest

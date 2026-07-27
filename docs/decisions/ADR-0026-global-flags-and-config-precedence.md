@@ -27,8 +27,9 @@ Chosen option: **cross-cutting global, data-shaping per-command**.
 - **Precedence standard: `flag > environment variable > default`** for every cross-cutting concern
   (there is no user config file yet). Color stays env-only — `NO_COLOR > FORCE_COLOR > isatty`, no
   `--color` flag — reaffirming ADR-0015.
-- **`--log-format` is dropped** from the surface, deferred to a future `viv logs` subsystem (then a
-  `VIV_LOG`-style env var, not a flag). **`--keep-generated` is removed** — retention is the
+- **`--log-format` is dropped** from the surface here, and later specified by ADR-0031 — an
+  active-by-default log file controlled by `--log-format`/`VIV_LOG_FORMAT` and the other `--log-*`
+  flags, with no `viv logs` command. **`--keep-generated` is removed** — retention is the
   generations model's job (ADR-0014), not a cross-cutting flag.
 
 ## Consequences
@@ -42,6 +43,10 @@ Chosen option: **cross-cutting global, data-shaping per-command**.
 ## Status
 
 Accepted
+
+Amended by [`ADR-0031-logging-and-observability.md`](ADR-0031-logging-and-observability.md) — the
+`--log-format` deferral is discharged: logging is specified as an active-by-default log file with
+`--log-*` flags and `VIV_LOG*` env vars.
 
 Amends
 [`ADR-0015-cli-output-and-failure-contract.md`](ADR-0015-cli-output-and-failure-contract.md) — adds

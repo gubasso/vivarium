@@ -45,3 +45,6 @@ each page links to the ADRs that govern it rather than restating their reasoning
 - [`15-project-identity.md`](15-project-identity.md) — the single source of truth for the
   project-identity key: the name-based derivation, the gitignored `.vivarium/` marker, and the
   resolution algorithm that keeps identity stable across moves, renames, copies, and clones.
+- [`16-logging-and-diagnostics.md`](16-logging-and-diagnostics.md) — the diagnostic logging model:
+  the three output faces (stdout/stderr/file), the always-on log file and its XDG-state path, levels,
+  `logfmt`/`json` format, and the `--log-*` flags and `VIV_LOG*` env vars.

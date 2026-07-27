@@ -26,6 +26,7 @@ All commands operate on the manifest bound to the current project, resolved by t
 | `viv config [--json]` | Inspection namespace for the bound project's configuration (ADR-0022). With no subcommand, shows the binding: the bound manifest and the effective config/state/data/cache paths. Read-only, no VM preflight. |
 | `viv config sources [--json]` | Provenance view: the declaring manifest and its ordered pieces in merge order, and which layer each effective value comes from — the home for how merge-priority conflicts and ties render. Read-only, no VM preflight. |
 | `viv config eval [--json]` | Render the fully merged, **evaluated** configuration for the bound manifest — the "what did my layers produce" view. Runs the module merge, so it guards on the hard preflight subset (Nix present); `65` (EX_DATAERR) if evaluation fails. Replaces the retired `viv show --resolved`. |
+| `viv status [--json] [-g\|--global]` | Report the operational state of the project's VM — one of `absent`, `built`, `starting`, `running` (with a `stale` flag), `stopping`, `failed` ([`10-vm-lifecycle.md`](10-vm-lifecycle.md)). Project-local by default; `-g`/`--global` (scoped to `status`) enumerates every project in the state registry. Pure read-only; never mutates state and runs no build or preflight. Any reported state — including `failed` — exits `0`; the state is data. Distinct from `doctor` (host/prereq health) and `config` (configuration). |
 | `viv doctor [--json] [--strict] [--list] [--online]` | Diagnose the host and project setup from the shared probe catalog: virtualization, tooling, permissions, disk, and config sanity. A pure health checker (`pass`/`warn`/`fail`/`skipped` with sysexit codes); it never renders configuration — that is `viv config`'s job. Offline by default (`--online` adds network checks); `--strict` fails on warnings; `viv start`'s preflight runs the hard subset of this same catalog. Full contract in [`13-doctor-and-health-checks.md`](13-doctor-and-health-checks.md). |
 
 ## Selection and overrides
@@ -50,6 +51,10 @@ A small set of flags is **global** — accepted before or after any subcommand (
   Tunes stderr only; it never adds to or reshapes stdout data.
 - `-q` / `--quiet` — suppress non-error progress and status on stderr; it never suppresses errors.
   `-v` and `-q` are mutually exclusive (last one wins).
+- `--log-file <path>` / `--log-level <level>` / `--log-format <logfmt|json>` / `--no-log` — control
+  the always-on diagnostic **log file** (the machine/debug face). Verbosity (`-v`/`-q`) tunes the
+  **stderr** face; these tune the **file** face, independently. Full contract in
+  [`16-logging-and-diagnostics.md`](16-logging-and-diagnostics.md).
 
 Machine output is deliberately **not** global: each data command owns its own `--json` flag (one
 JSON value on stdout), rather than a global `--format`/`-o`. This keeps every command's output
@@ -67,11 +72,14 @@ The stream and machine-output rules are the same for every command, specified in
 
 - **stdout carries the result only** — a human table/line for data commands (`images list`,
   `manifest show`, `generations list`, `volume list`, `config`/`config sources`/`config eval`,
-  `doctor`'s report), a `--json` record in machine mode, and
+  `status`, `doctor`'s report), a `--json` record in machine mode, and
   **nothing** for side-effect commands whose result is a VM state change (`start`, `stop`,
   `destroy`).
 - **stderr carries everything else** — progress, status, prompts, warnings, errors. Progress is shown
   only when stderr is a TTY, so `… --json 2>/dev/null | jq` is always clean.
+- **A diagnostic log file is written by default** — a third, structured face separate from stdout and
+  stderr, invisible during normal use. It is the machine/debug channel, fully specified in
+  [`16-logging-and-diagnostics.md`](16-logging-and-diagnostics.md).
 - `exec`/`shell` pass guest stdio transparently as specified in
   [`12-exec-and-shell.md`](12-exec-and-shell.md); vivarium progress remains on stderr only so guest
   stdout stays pipeable.
@@ -93,7 +101,7 @@ The stream and machine-output rules are the same for every command, specified in
 - `viv exec` and `viv shell` use sysexits for vivarium-origin failures before a guest process starts;
   after the guest command or shell starts, they return its exit status verbatim, with signal deaths
   reported as `128+S`. See [`12-exec-and-shell.md`](12-exec-and-shell.md).
-- Diagnostics (`doctor`, `config`, `config sources`, `config eval`, `generations list`,
+- Diagnostics (`doctor`, `config`, `config sources`, `config eval`, `status`, `generations list`,
   `volume list`) are read-only and never modify project or VM state.
 
 ## Config inspection output
@@ -198,3 +206,45 @@ key (not a bare top-level array) so future metadata can be added without a break
   declared at this layer (empty under `open`). `extends` is the optional raw-`.nix` escape hatch,
   `null` when unused. Unknown name fails closed `78`; bad arg arity `64` (see
   [`14-exit-codes.md`](14-exit-codes.md)).
+
+## Status output
+
+`viv status` reports operational VM state (the lifecycle states in
+[`10-vm-lifecycle.md`](10-vm-lifecycle.md)); it obeys the same stream and `--json` rules and, like
+the readers above, emits a **single keyed JSON object** with **no `schema_version`**. It runs no
+build or preflight.
+
+- **`viv status`** (project-local) — human output names the bound manifest and the current state, and
+  when running adds the generation, store path, uptime, and declared resources; a **stale** running
+  VM is flagged with the remedy (`viv start --rebuild`). `--json` emits one record:
+
+  ```json
+  {
+    "manifest": "rust-web",
+    "state": "running",
+    "stale": true,
+    "generation": 42,
+    "store_path": "/nix/store/…-vivarium",
+    "uptime_seconds": 8100,
+    "resources": { "mem_mib": 4096, "vcpu": 4 }
+  }
+  ```
+
+  `manifest` is the identity key (as in the `config` family). `state` is one of `absent`, `built`,
+  `starting`, `running`, `stopping`, `failed`. `stale` is meaningful only while `running`. When
+  `state` is `failed`, a `reason` field carries the cause (`crashed`, `boot-timeout`, …) and the
+  liveness fields (`generation` aside) are `null`. Any reported state — including `failed` — exits
+  `0`; the state is *data*, not a command failure. No manifest bound fails closed `78`; a state that
+  cannot be confirmed (backend unreachable) is `69` ([`14-exit-codes.md`](14-exit-codes.md)).
+
+- **`viv status -g` / `--global`** — enumerate every project in the state registry
+  ([`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md)). `-g` is scoped to `status`, not a
+  global flag (nothing else enumerates). `--json` wraps the list under a named key, matching
+  `images`/`manifests`:
+
+  ```json
+  { "projects": [ { "manifest": "rust-web", "project_path": "/home/alice/backend",
+                    "state": "running", "stale": false, "generation": 42 } ] }
+  ```
+
+  An empty registry emits `{ "projects": [] }` and exits `0`; a registry I/O failure is `74`.

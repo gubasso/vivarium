@@ -84,8 +84,10 @@ Every command returns `0` on success. The columns a command can also return on f
 | `config` |  |  |  |  |  |  |  | ✓ | no manifest resolves → `78` (fails closed) |
 | `config sources` |  |  |  | ✓ |  |  |  | ✓ | provenance read fault → `70`; no manifest → `78` |
 | `config eval` |  | ✓ | ✓ | ✓ |  |  | ✓ | ✓ | irreconcilable merge → `65`; Nix preflight → `69`/`77`; eval fault → `70`; no manifest → `78` |
+| `status` | ✓ |  | ✓ |  |  |  |  | ✓ | any reported state (incl. `failed`) is `0` — state is data; no manifest bound → `78`; state unconfirmable → `69`; bad arity → `64` |
+| `status -g` | ✓ |  | ✓ |  | ✓ |  |  |  | enumerate the project registry; empty registry is `0`; registry I/O → `74`; unreadable/corrupt → `69`; bad arity → `64` |
 | `doctor` |  |  | ✓ | ✓ |  |  | ✓ | ✓ | first failing hard check decides (`69`/`77`/`78`); internal fault → `70`; `--strict` warn → `1` |
 
-Read-only diagnostics (`doctor`, `config`, `config sources`, `config eval`, `generations list`,
-`volume list`, `images list`, `manifest list/show`) never mutate project or VM state, whatever they
-return.
+Read-only diagnostics (`doctor`, `config`, `config sources`, `config eval`, `status`,
+`generations list`, `volume list`, `images list`, `manifest list/show`) never mutate project or VM
+state, whatever they return.

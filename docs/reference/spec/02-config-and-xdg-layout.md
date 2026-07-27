@@ -17,7 +17,8 @@ rule and rationale are in
 - **State root** (`$XDG_STATE_HOME/vivarium/`) — per-project runtime state the tool writes: the built
   VM's store output reference, a stable VM identity that survives restarts, the **project registry**
   (the project→manifest binding — see below), the per-project **build generations** (see below), and
-  logs.
+  the diagnostic **log** (`logs/vivarium.log`, written by default — see
+  [`16-logging-and-diagnostics.md`](16-logging-and-diagnostics.md)).
 - **Cache root** (`$XDG_CACHE_HOME/vivarium/`) — derived, regenerable artifacts: Nix evaluation cache
   and built VM images. Safe to delete; the tool rebuilds it.
 
