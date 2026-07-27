@@ -105,6 +105,10 @@ rebuilds. The model is decided in
   `--keep-volumes`) or `viv volume rm` (which refuses while the VM runs) — never by `stop` or a
   rebuild (N18, [`08-invariants-and-guarantees.md`](08-invariants-and-guarantees.md)).
 
+Exit codes for `viv volume list` / `rm` follow the per-command matrix in
+[`14-exit-codes.md`](14-exit-codes.md) — notably `75` when `rm` refuses because the VM is still
+running (stop first).
+
 ## The store inside the guest
 
 The guest's Nix store may either be independent or share the host's store read-only for cache

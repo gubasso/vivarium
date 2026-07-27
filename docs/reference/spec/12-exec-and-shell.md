@@ -98,25 +98,22 @@ the primary control plane, though it may exist as a debug fallback.
 
 ## Exit status and failures
 
-Before the guest process starts, vivarium-origin failures use BSD sysexits:
+Exit codes follow the program-wide taxonomy and per-command matrix in
+[`14-exit-codes.md`](14-exit-codes.md); the `exec` / `shell` row there names the categories these
+commands can return. What is specific here is the **guest-process-start boundary**:
 
-- **EX_USAGE (64):** bad CLI, missing `--`, empty argv, `-t` when stdin is not a terminal.
-- **EX_CONFIG (78):** no/invalid manifest or incompatible generation metadata.
-- **EX_SOFTWARE (70):** Nix evaluation/build failure before boot.
-- **EX_UNAVAILABLE (69):** backend unavailable, running VM/agent unreachable, boot timeout, or guest
-  command path unavailable before process start.
-- **EX_NOPERM (77):** host permission failure such as `/dev/kvm`, filesystem permission failure, or
-  agent-reported not-executable/permission failure before process start.
-- **EX_TEMPFAIL (75):** transient lock/startup race.
-- **EX_IOERR (74):** control-socket I/O failure.
+- **Before** the guest process starts, vivarium-origin failures use the sysexits categories: usage
+  (`64`, incl. missing `--`, empty argv, `-t` when stdin is not a terminal), no/invalid manifest or
+  incompatible generation metadata (`78`), Nix eval/build fault before boot (`70`), backend/agent
+  unavailable or boot timeout (`69`), host or agent-reported permission failure (`77`), transient
+  lock/startup race (`75`), and control-socket I/O (`74`).
+- **After** it starts, return the guest status verbatim for `0..255`; a guest killed by signal `S`
+  yields `128+S`. If the transport dies after guest start before the status is known, return `74`
+  (EX_IOERR) with a stderr diagnostic and do not guess a guest code. A guest may itself exit a value
+  such as `69`; that is still the guest's result, because the boundary is guest-process start.
 
-Once the guest command or shell process starts, return its exit status verbatim for 0..255. If it
-dies by signal S, return `128+S`. If the transport dies after guest start before status is known,
-return EX_IOERR (74) with a stderr diagnostic and do not guess a guest code. A guest process may
-itself exit with a value such as 69; that value is still the guest result because the boundary is
-guest-process start. For v1, command-not-found/not-executable before process start uses sysexits as
-above; `127` for not found and `126` for not executable are valid future alternatives, not adopted in
-v1.
+`127` (not found) and `126` (not executable) stay reserved for a future refinement of the
+before-start not-found/not-executable cases; v1 uses the categories above.
 
 ## Deferred details
 

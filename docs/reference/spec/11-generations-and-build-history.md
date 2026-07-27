@@ -51,6 +51,9 @@ All generation management lives under the `viv generations` family
   never removes anything still pinned. Unlinking (`generations prune`, `viv destroy`) and
   reclaiming (`viv gc`) are deliberately separate steps.
 
+Exit codes for the `generations` family and `viv gc` follow the per-command matrix in
+[`14-exit-codes.md`](14-exit-codes.md).
+
 ## Normative notes
 
 - A build with only a bare `result` / `--out-link` symlink is **not** durable history: such links are

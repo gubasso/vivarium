@@ -124,8 +124,9 @@ actionable: `nix-present` → `nix-version` → `nix-flakes-enabled` → `kvm-de
 `kvm-device-accessible` → `hardware-virt-available` → `backend-binary-present`.
 
 Each failing check reports **what / where / why / hint**, its stable check id, and a specific exit
-code from the sysexits taxonomy (for example `69` unavailable, `77` permission, `78` config) — never
-a generic `1`. Exit codes and stream rules are specified in
+code from the program-wide sysexits taxonomy — never a generic `1`. The full legend and the
+per-command matrix (including `start`, `stop`, and `destroy`) are in
+[`14-exit-codes.md`](14-exit-codes.md); the stream rules are
 [`ADR-0015`](../../decisions/ADR-0015-cli-output-and-failure-contract.md).
 
 ## Nix validation ladder

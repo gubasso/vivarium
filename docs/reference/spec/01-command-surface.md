@@ -80,9 +80,12 @@ The stream and machine-output rules are the same for every command, specified in
 
 ## Failure and preflight
 
-- Commands return zero on success and a **specific** non-zero code on failure, from the BSD sysexits
-  taxonomy (never a generic `1`), per
-  [`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md).
+- Commands return zero on success and a **specific** non-zero code on failure, from the program-wide
+  BSD sysexits taxonomy (never a generic `1`). The complete legend and the per-command exit-code
+  matrix are in [`14-exit-codes.md`](14-exit-codes.md); the contract is
+  [`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md)
+  as amended by
+  [`../../decisions/ADR-0028-exit-code-taxonomy-and-stability.md`](../../decisions/ADR-0028-exit-code-taxonomy-and-stability.md).
 - Commands that need host prerequisites run a **preflight guard** — the hard subset of the shared
   `viv doctor` probe catalog — and refuse **before any side effect**. Each failure reports
   what / where / why / hint plus a stable check id. See
@@ -101,7 +104,8 @@ command's concrete shape.
 - **`viv config`** (the binding) — human output lists the bound manifest and the effective
   config/state/data/cache paths, one per line. `--json` emits one binding record:
   `{ "manifest": <name|null>, "source": "flag|env|registry", "paths": { "config", "state", "data",
-  "cache" } }`. When no manifest resolves it **fails closed** (`69`), never an empty record.
+  "cache" } }`. When no manifest resolves it **fails closed** (`78`, no manifest — see
+  [`14-exit-codes.md`](14-exit-codes.md)), never an empty record.
 
 - **`viv config eval`** (the merged, evaluated config) — human output is **TOML-shaped**, mirroring
   the `.vivarium.toml` authoring surface so the merged result reads in the same language it was

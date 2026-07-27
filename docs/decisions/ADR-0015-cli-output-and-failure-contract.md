@@ -58,5 +58,11 @@ adds the global-flag taxonomy (`-v`/`-q` verbosity is global; `--json` stays per
 global `--format`) and the `flag > environment variable > default` precedence standard; the env-only
 color model here is reaffirmed unchanged.
 
+Amended by
+[`ADR-0028-exit-code-taxonomy-and-stability.md`](ADR-0028-exit-code-taxonomy-and-stability.md) —
+makes the sysexits taxonomy program-wide (codes name the failure kind, not the command), moves the
+canonical legend and per-command mapping into a central matrix, and adds an append-only stability
+guarantee; the sysexits basis here is unchanged.
+
 Applied across [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md)
 and [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md).

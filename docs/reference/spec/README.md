@@ -39,3 +39,6 @@ each page links to the ADRs that govern it rather than restating their reasoning
 - [`13-doctor-and-health-checks.md`](13-doctor-and-health-checks.md) — the `viv doctor` contract:
   the shared probe catalog, hard/soft severity and the preflight subset, statuses, flags, output
   shapes, and exit codes.
+- [`14-exit-codes.md`](14-exit-codes.md) — the single source of truth for exit codes: the
+  program-wide sysexits legend, the guest pass-through boundary, the append-only stability guarantee,
+  and the per-command exit-code matrix.

@@ -134,10 +134,13 @@ per-command color flag.
 
 ## Exit codes
 
+Codes draw from the program-wide taxonomy in [`14-exit-codes.md`](14-exit-codes.md); `doctor` maps
+its outcomes onto it as:
+
 | Outcome | Exit |
 | ------- | ---- |
 | No hard check failed (warns and skips allowed) | `0` |
-| Hard failure(s) — first failing check in catalog order decides | that check's code: `69` unavailable, `77` permission, `78` config |
+| Hard failure(s) — first failing check in catalog order decides | that check's code (`69` / `77` / `78`) |
 | `--strict` and at least one `warn` (no hard failure) | `1` |
 | Internal error in `doctor` itself | `70` |
 
