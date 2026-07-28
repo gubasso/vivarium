@@ -1,5 +1,4 @@
-Copy this file to create a new decision record. Filled ADRs must stay at or below 350 words. Keep
-each field brief; split separate decisions into separate ADRs.
+Copy this file to create a new decision record. Filled ADRs must stay at or below 350 words. Keep each field brief; split separate decisions into separate ADRs.
 
 # ADR-NNNN: {Short Title}
 
@@ -26,7 +25,4 @@ Chosen option: **{Option 1}** — {one sentence: why}.
 
 {Proposed | Accepted | Implemented | Deprecated | Superseded | Rejected}
 
-{If Implemented: link to the code that enacts it. If Superseded: link to the successor. If
-Deprecated: say why it no longer applies. If a later ADR changes part of a decision that still
-stands, keep the status and add "Amended by ADR-NNNN — <what changed>" here, so no reader follows a
-stale detail.}
+{If Implemented: link to the code that enacts it. If Superseded: link to the successor. If Deprecated: say why it no longer applies. If a later ADR changes part of a decision that still stands, keep the status and add "Amended by ADR-NNNN — <what changed>" here, so no reader follows a stale detail.}

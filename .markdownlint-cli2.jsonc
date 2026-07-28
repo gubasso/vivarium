@@ -67,7 +67,11 @@
     // --- end fixable-OFF block ---
 
     // --- structural rules kept ON via default: MD001 (heading-increment),
-    //     MD025 (single top-level H1), MD041 (first-line H1) enforce doc discipline ---
+    //     MD025 (single top-level H1) enforce doc discipline ---
+    // MD041 (first-line H1) is OFF: this repo has legitimate non-heading first
+    // lines — CLAUDE.md is the mandated one-line `@AGENTS.md` import stub, and
+    // docs/decisions/template.md opens with copy instructions, not a title.
+    "MD041": false, // first-line H1 — import stubs + templates legitimately lack one
     "MD013": false, // line length — dprint unwraps prose to one physical line
     "MD024": { "siblings_only": true }, // dup headings OK across sections, not within
     "MD033": false, // inline HTML — needed for badges, <details>, <kbd>

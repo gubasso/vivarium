@@ -2,10 +2,7 @@
 
 ## Context and Problem Statement
 
-`viv up --no-rebuild` boots the last build, and users want to list past builds and boot a specific
-one, like `home-manager generations`. But an unreferenced Nix store output is removed by
-`nix-collect-garbage`, so "the last build" is not durable unless something pins it. We need a
-retrievable, garbage-collection-safe history of a project's built sandboxes.
+`viv up --no-rebuild` boots the last build, and users want to list past builds and boot a specific one, like `home-manager generations`. But an unreferenced Nix store output is removed by `nix-collect-garbage`, so "the last build" is not durable unless something pins it. We need a retrievable, garbage-collection-safe history of a project's built sandboxes.
 
 ## Considered Options
 
@@ -17,12 +14,7 @@ retrievable, garbage-collection-safe history of a project's built sandboxes.
 
 Chosen option: **per-project Nix profile under the state root**.
 
-Each successful `up` build appends a numbered generation to the project's profile. Every generation
-symlink is a garbage-collector root, so retained builds survive `nix-collect-garbage` with no extra
-bookkeeping (N14). The profile gives listing and rollback semantics directly:
-`viv up --no-rebuild` boots the current generation, `viv up --generation <n>` a specific one,
-`viv generations` lists them, and `viv gc` prunes under a retention policy. Generations live under
-`state/vivarium/projects/<project-id>/<target>/`, never in the project tree (N9).
+Each successful `up` build appends a numbered generation to the project's profile. Every generation symlink is a garbage-collector root, so retained builds survive `nix-collect-garbage` with no extra bookkeeping (N14). The profile gives listing and rollback semantics directly: `viv up --no-rebuild` boots the current generation, `viv up --generation <n>` a specific one, `viv generations` lists them, and `viv gc` prunes under a retention policy. Generations live under `state/vivarium/projects/<project-id>/<target>/`, never in the project tree (N9).
 
 ## Consequences
 
@@ -35,5 +27,4 @@ bookkeeping (N14). The profile gives listing and rollback semantics directly:
 
 Accepted
 
-Specified in
-[`../reference/spec/11-generations-and-build-history.md`](../reference/spec/11-generations-and-build-history.md).
+Specified in [`../reference/spec/11-generations-and-build-history.md`](../reference/spec/11-generations-and-build-history.md).

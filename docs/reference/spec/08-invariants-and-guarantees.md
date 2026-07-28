@@ -1,129 +1,51 @@
 # 08 — Invariants and guarantees
 
-The normative rules the product must uphold. Each is a guarantee callers and reviewers may rely on;
-changing runtime, build, or composition behavior must preserve them. Each invariant links to the
-page or decision that explains it. The keyword **must** marks a hard requirement.
+The normative rules the product must uphold. Each is a guarantee callers and reviewers may rely on; changing runtime, build, or composition behavior must preserve them. Each invariant links to the page or decision that explains it. The keyword **must** marks a hard requirement.
 
 ## Isolation
 
-- **N1 — Separate-kernel boundary.** A workspace **must** run behind a hardware-virtualization
-  boundary with its own guest kernel; there is no shared-kernel mode. See
-  [`../../decisions/ADR-0001-microvm-isolation-boundary.md`](../../decisions/ADR-0001-microvm-isolation-boundary.md).
-- **N2 — Class, not tool.** The isolation boundary **must** be specified by capability class, not by
-  a named virtual machine monitor. Any backend satisfying the class is admissible; none is part of
-  the contract.
-- **N20 — VMM and host-daemon sandbox.** The virtual-machine-monitor process **must** be launched
-  under a host-side sandbox — a seccomp syscall filter plus capability drop — so that even a
-  compromised VMM cannot reach the host beyond its sanctioned resources. The **same standard applies
-  to every host-side helper daemon that processes guest-controlled data**, notably the
-  shared-filesystem daemon (virtiofsd), which is itself an escape vector when unconfined. See
-  [`../../decisions/ADR-0024-backend-security-requirements.md`](../../decisions/ADR-0024-backend-security-requirements.md)
-  and the enactment in
-  [`../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md).
+- **N1 — Separate-kernel boundary.** A workspace **must** run behind a hardware-virtualization boundary with its own guest kernel; there is no shared-kernel mode. See [`../../decisions/ADR-0001-microvm-isolation-boundary.md`](../../decisions/ADR-0001-microvm-isolation-boundary.md).
+- **N2 — Class, not tool.** The isolation boundary **must** be specified by capability class, not by a named virtual machine monitor. Any backend satisfying the class is admissible; none is part of the contract.
+- **N20 — VMM and host-daemon sandbox.** The virtual-machine-monitor process **must** be launched under a host-side sandbox — a seccomp syscall filter plus capability drop — so that even a compromised VMM cannot reach the host beyond its sanctioned resources. The **same standard applies to every host-side helper daemon that processes guest-controlled data**, notably the shared-filesystem daemon (virtiofsd), which is itself an escape vector when unconfined. See [`../../decisions/ADR-0024-backend-security-requirements.md`](../../decisions/ADR-0024-backend-security-requirements.md) and the enactment in [`../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md).
 
 ## Build and determinism
 
-- **N3 — Pure build.** The sandbox build **must not** take any host-specific value as input. Given
-  the same manifest closure and lockfile, it **must** evaluate to the same store output on any
-  machine and at any later time. See
-  [`04-composition-and-determinism.md`](04-composition-and-determinism.md).
-- **N4 — Output hash is the freshness key.** Freshness **must** be derived from the build's store
-  output, not a separately computed content digest. Changing any layer changes the inputs and thus
-  the output.
-- **N5 — Launch-time workspace path.** The working-directory host path **must** be injected when the
-  VM launches, never built in, so no host path appears in any configuration file or build output. See
-  [`../../decisions/ADR-0009-launch-time-workspace-path-injection.md`](../../decisions/ADR-0009-launch-time-workspace-path-injection.md).
-- **N19 — Launch-channel data never enters the build.** Runtime declarations — mounts and runtime
-  environment, however declared — **must** be read by pure evaluation and applied at launch; no
-  build output may depend on them, and host-side variable expansion **must** happen only at launch.
-  See [`04-composition-and-determinism.md`](04-composition-and-determinism.md) and
-  [`../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md`](../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md).
+- **N3 — Pure build.** The sandbox build **must not** take any host-specific value as input. Given the same manifest closure and lockfile, it **must** evaluate to the same store output on any machine and at any later time. See [`04-composition-and-determinism.md`](./04-composition-and-determinism.md).
+- **N4 — Output hash is the freshness key.** Freshness **must** be derived from the build's store output, not a separately computed content digest. Changing any layer changes the inputs and thus the output.
+- **N5 — Launch-time workspace path.** The working-directory host path **must** be injected when the VM launches, never built in, so no host path appears in any configuration file or build output. See [`../../decisions/ADR-0009-launch-time-workspace-path-injection.md`](../../decisions/ADR-0009-launch-time-workspace-path-injection.md).
+- **N19 — Launch-channel data never enters the build.** Runtime declarations — mounts and runtime environment, however declared — **must** be read by pure evaluation and applied at launch; no build output may depend on them, and host-side variable expansion **must** happen only at launch. See [`04-composition-and-determinism.md`](./04-composition-and-determinism.md) and [`../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md`](../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md).
 
 ## Composition
 
-- **N6 — No custom merge engine.** Layer composition **must** be performed by the NixOS module
-  system, not a bespoke merge implementation. See
-  [`../../decisions/ADR-0002-module-system-as-composition-engine.md`](../../decisions/ADR-0002-module-system-as-composition-engine.md).
-- **N7 — One manifest per project.** A project **must** resolve to exactly one manifest, selected by
-  the fixed precedence, and resolution **must** fail closed when none applies. See
-  [`../../decisions/ADR-0011-config-read-only-binding-in-state.md`](../../decisions/ADR-0011-config-read-only-binding-in-state.md).
+- **N6 — No custom merge engine.** Layer composition **must** be performed by the NixOS module system, not a bespoke merge implementation. See [`../../decisions/ADR-0002-module-system-as-composition-engine.md`](../../decisions/ADR-0002-module-system-as-composition-engine.md).
+- **N7 — One manifest per project.** A project **must** resolve to exactly one manifest, selected by the fixed precedence, and resolution **must** fail closed when none applies. See [`../../decisions/ADR-0011-config-read-only-binding-in-state.md`](../../decisions/ADR-0011-config-read-only-binding-in-state.md).
 
 ## Network
 
-- **N8 — Egress defaults to open.** Egress **must** default to unrestricted, with a single
-  declarative knob to switch to a default-deny allowlist. Open egress **must not** be described as
-  weakening the isolation boundary. See
-  [`05-networking-and-egress.md`](05-networking-and-egress.md).
+- **N8 — Egress defaults to open.** Egress **must** default to unrestricted, with a single declarative knob to switch to a default-deny allowlist. Open egress **must not** be described as weakening the isolation boundary. See [`05-networking-and-egress.md`](./05-networking-and-egress.md).
 
 ## Project environment
 
-- **N9 — User files are never modified.** vivarium **must not** modify a project's own
-  user-authored files, including its development-environment configuration; the project's environment
-  **must** work identically in or out of the sandbox. The **sole exception** is the self-ignored,
-  vivarium-owned `.vivarium/` identity marker (N21), which is inert to the dev environment. See
-  [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md).
-  Amended by [`../../decisions/ADR-0029-project-identity-and-marker.md`](../../decisions/ADR-0029-project-identity-and-marker.md).
-- **N21 — Project identity is name-based and marker-anchored.** `<project-id>` **must** be the
-  sanitized project-directory name (suffixed only on a live collision), persisted in a gitignored,
-  vivarium-owned `.vivarium/` marker so identity survives a directory move or rename and copies
-  self-disambiguate. The marker carries identity only, never the manifest binding (N7). See
-  [`15-project-identity.md`](15-project-identity.md) and
-  [`../../decisions/ADR-0029-project-identity-and-marker.md`](../../decisions/ADR-0029-project-identity-and-marker.md).
-- **N16 — Stable workspace mount.** The primary workspace **must** be mounted read-write at
-  `/workspaces/<repo>` inside the guest, never at a host-derived path; the host source remains
-  launch-time injected per N5. See
-  [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md) and
-  [`../../decisions/ADR-0017-workspace-mount-path-and-extra-mounts.md`](../../decisions/ADR-0017-workspace-mount-path-and-extra-mounts.md).
+- **N9 — User files are never modified.** vivarium **must not** modify a project's own user-authored files, including its development-environment configuration; the project's environment **must** work identically in or out of the sandbox. The **sole exception** is the self-ignored, vivarium-owned `.vivarium/` identity marker (N21), which is inert to the dev environment. See [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md). Amended by [`../../decisions/ADR-0029-project-identity-and-marker.md`](../../decisions/ADR-0029-project-identity-and-marker.md).
+- **N21 — Project identity is name-based and marker-anchored.** `<project-id>` **must** be the sanitized project-directory name (suffixed only on a live collision), persisted in a gitignored, vivarium-owned `.vivarium/` marker so identity survives a directory move or rename and copies self-disambiguate. The marker carries identity only, never the manifest binding (N7). See [`15-project-identity.md`](./15-project-identity.md) and [`../../decisions/ADR-0029-project-identity-and-marker.md`](../../decisions/ADR-0029-project-identity-and-marker.md).
+- **N16 — Stable workspace mount.** The primary workspace **must** be mounted read-write at `/workspaces/<repo>` inside the guest, never at a host-derived path; the host source remains launch-time injected per N5. See [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md) and [`../../decisions/ADR-0017-workspace-mount-path-and-extra-mounts.md`](../../decisions/ADR-0017-workspace-mount-path-and-extra-mounts.md).
 
 ## Secrets and sharing
 
-- **N10 — No secrets in the store.** A secret **must never** enter the build or the Nix store.
-  Secrets are runtime-injected or encrypted-at-rest only. See
-  [`../../decisions/ADR-0010-secrets-never-in-nix-store.md`](../../decisions/ADR-0010-secrets-never-in-nix-store.md).
-- **N11 — Shared config is personal-data-free.** Committable configuration **must not** contain
-  literal personal paths or plaintext secrets; such data belongs to the gitignored personal class.
-  Unexpanded portable variables (`${HOME}`, `${XDG_*}`) are not personal paths — they are
-  machine-independent names resolved at launch. See
-  [`07-secrets-and-config-sharing.md`](07-secrets-and-config-sharing.md).
-- **N17 — Guest environment is deny-by-default.** Host environment variables **must not** be
-  forwarded wholesale into the guest; only the specified allowlist and explicit per-invocation
-  `--env` values may cross the boundary. See [`12-exec-and-shell.md`](12-exec-and-shell.md) and
-  [`07-secrets-and-config-sharing.md`](07-secrets-and-config-sharing.md).
+- **N10 — No secrets in the store.** A secret **must never** enter the build or the Nix store. Secrets are runtime-injected or encrypted-at-rest only. See [`../../decisions/ADR-0010-secrets-never-in-nix-store.md`](../../decisions/ADR-0010-secrets-never-in-nix-store.md).
+- **N11 — Shared config is personal-data-free.** Committable configuration **must not** contain literal personal paths or plaintext secrets; such data belongs to the gitignored personal class. Unexpanded portable variables (`${HOME}`, `${XDG_*}`) are not personal paths — they are machine-independent names resolved at launch. See [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md).
+- **N17 — Guest environment is deny-by-default.** Host environment variables **must not** be forwarded wholesale into the guest; only the specified allowlist and explicit per-invocation `--env` values may cross the boundary. See [`12-exec-and-shell.md`](./12-exec-and-shell.md) and [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md).
 
 ## State
 
-- **N12 — User-based state.** All state **must** live under per-user XDG directories, split so that
-  config is authored, data is pinned input, state is runtime, and cache is regenerable. No privileged
-  or shared mutable state. See
-  [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md).
+- **N12 — User-based state.** All state **must** live under per-user XDG directories, split so that config is authored, data is pinned input, state is runtime, and cache is regenerable. No privileged or shared mutable state. See [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md).
 
 ## Lifecycle and history
 
-- **N14 — Built generations are GC-pinned.** Every build output the tool retains **must** be pinned
-  by a garbage-collector root under the state root, so `viv start --no-rebuild` and
-  `viv start --generation <n>` targets survive `nix-collect-garbage`. See
-  [`11-generations-and-build-history.md`](11-generations-and-build-history.md) and
-  [`../../decisions/ADR-0014-build-generations-and-gc-roots.md`](../../decisions/ADR-0014-build-generations-and-gc-roots.md).
-- **N15 — `viv start` is idempotent and non-destructive.** A fresh, already-running VM re-starts to
-  a no-op; `viv start` **must not** stop or replace a running VM without an explicit `--rebuild`.
-  See [`10-vm-lifecycle.md`](10-vm-lifecycle.md) and
-  [`../../decisions/ADR-0013-vm-lifecycle-and-up.md`](../../decisions/ADR-0013-vm-lifecycle-and-up.md)
-  (which records the verb under its former name `up`; renamed by
-  [`../../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md`](../../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md)).
-- **N18 — Stop is non-destructive; volumes are removed only explicitly.** `viv stop` **must not**
-  remove volumes, generations, or state. A project's persistent volumes **must** survive stop,
-  reboot, and rebuild, and **must** be removed only by explicit request — `viv destroy` without
-  `--keep-volumes`, or `viv volume rm`. See
-  [`06-workspace-and-project-environment.md`](06-workspace-and-project-environment.md),
-  [`10-vm-lifecycle.md`](10-vm-lifecycle.md), and
-  [`../../decisions/ADR-0019-volume-model.md`](../../decisions/ADR-0019-volume-model.md).
+- **N14 — Built generations are GC-pinned.** Every build output the tool retains **must** be pinned by a garbage-collector root under the state root, so `viv start --no-rebuild` and `viv start --generation <n>` targets survive `nix-collect-garbage`. See [`11-generations-and-build-history.md`](./11-generations-and-build-history.md) and [`../../decisions/ADR-0014-build-generations-and-gc-roots.md`](../../decisions/ADR-0014-build-generations-and-gc-roots.md).
+- **N15 — `viv start` is idempotent and non-destructive.** A fresh, already-running VM re-starts to a no-op; `viv start` **must not** stop or replace a running VM without an explicit `--rebuild`. See [`10-vm-lifecycle.md`](./10-vm-lifecycle.md) and [`../../decisions/ADR-0013-vm-lifecycle-and-up.md`](../../decisions/ADR-0013-vm-lifecycle-and-up.md) (which records the verb under its former name `up`; renamed by [`../../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md`](../../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md)).
+- **N18 — Stop is non-destructive; volumes are removed only explicitly.** `viv stop` **must not** remove volumes, generations, or state. A project's persistent volumes **must** survive stop, reboot, and rebuild, and **must** be removed only by explicit request — `viv destroy` without `--keep-volumes`, or `viv volume rm`. See [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md), [`10-vm-lifecycle.md`](./10-vm-lifecycle.md), and [`../../decisions/ADR-0019-volume-model.md`](../../decisions/ADR-0019-volume-model.md).
 
 ## Config
 
-- **N13 — Config is read-only to the tool.** vivarium **must not** write, create, or scaffold
-  anything under the config root as a side effect of running a command; it only reads config. Any
-  value the tool persists is state, data, or cache — never config. The one sanctioned write to a
-  user-owned surface is an explicit, user-directed action that names its target (`viv init --write`,
-  which targets the **state** registry, not config), is off by default, and is reversible. See
-  [`02-config-and-xdg-layout.md`](02-config-and-xdg-layout.md) and
-  [`../../decisions/ADR-0011-config-read-only-binding-in-state.md`](../../decisions/ADR-0011-config-read-only-binding-in-state.md).
+- **N13 — Config is read-only to the tool.** vivarium **must not** write, create, or scaffold anything under the config root as a side effect of running a command; it only reads config. Any value the tool persists is state, data, or cache — never config. The one sanctioned write to a user-owned surface is an explicit, user-directed action that names its target (`viv init --write`, which targets the **state** registry, not config), is off by default, and is reversible. See [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md) and [`../../decisions/ADR-0011-config-read-only-binding-in-state.md`](../../decisions/ADR-0011-config-read-only-binding-in-state.md).
