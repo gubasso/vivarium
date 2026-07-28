@@ -9,10 +9,14 @@
   };
 
   outputs =
+    # `...` is required: Nix always applies `outputs (inputs // { self = …; })`,
+    # so a closed attrset breaks the flake the moment `self` is unused and gets
+    # dropped (deadnix flags it). Keep it even when no extra arg is consumed.
     {
       nixpkgs,
       rust-overlay,
       flake-utils,
+      ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
