@@ -1,0 +1,28 @@
+# Keep a project clean with a global registry binding
+
+> **Design-intent walkthrough — not yet working.** This guide describes the _target_ experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
+
+Use this flow when the repository should carry no vivarium configuration. The [XDG layout and registry](../reference/spec/02-config-and-xdg-layout.md) specify where authored configuration and machine-local bindings belong, and the [command surface](../reference/spec/01-command-surface.md) specifies the binding assistant.
+
+## Bind without adding project configuration
+
+```console
+$ viv init --manifest clean-registry --no-input
+$ viv init --manifest clean-registry --write --yes
+$ viv config --json
+```
+
+Review the project tree after each command, then use `viv config --json` to inspect the public binding view instead of relying on private state files.
+
+## Start the project
+
+```console
+$ viv start
+$ viv status
+```
+
+The [project identity specification](../reference/spec/15-project-identity.md) explains how separate projects with the same directory name remain distinct.
+
+## Acceptance coverage
+
+Two gated trials in [`user_workflows.rs`](../../tests/user_workflows.rs) cover this: `workflow_02_clean_repo_global_registry_only` checks the clean-tree and registry flow, and `workflow_02_identity_collision_suffix` checks how a second project with the same name gets its identity.

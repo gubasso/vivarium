@@ -111,6 +111,10 @@ repos:
   #                  belongs in CI ONLY — never pre-commit or pre-push:
   #                  too slow, too dependent on host state, too flaky to
   #                  gate local commits. Do NOT add an E2E hook here.
+  #                  Deliberate exception: the user-workflow acceptance
+  #                  binary remains in the pre-push kind(test) lane because
+  #                  its runtime viv/Nix/KVM gates make it inert on hosts
+  #                  without a usable microVM backend.
   #   - Doc tests:   `///` doctests in library items. NOT runnable by
   #                  nextest — covered by the separate `cargo test --doc`
   #                  hook below.

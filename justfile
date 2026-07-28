@@ -16,6 +16,18 @@ build:
 test:
     nix develop --command cargo nextest run
 
+# Run the pre-commit unit-test profile.
+test-pre-commit:
+    nix develop --command cargo nextest run --profile pre-commit
+
+# Run the pre-push integration-test profile.
+test-pre-push:
+    nix develop --command cargo nextest run --profile pre-push
+
+# Run the complete CI profile.
+test-ci:
+    nix develop --command cargo nextest run --profile ci
+
 # Type-check without producing binaries.
 typecheck:
     nix develop --command cargo check

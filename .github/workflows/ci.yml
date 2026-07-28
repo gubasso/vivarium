@@ -34,7 +34,7 @@ jobs:
       - name: Cache Nix store
         uses: DeterminateSystems/flakehub-cache-action@v3.21.5
       - name: Test
-        run: nix develop --command just test
+        run: nix develop --command just test-ci
 
   build:
     runs-on: ubuntu-latest

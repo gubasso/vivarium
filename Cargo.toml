@@ -32,6 +32,11 @@ authors = ["Gustavo Basso <gu@gubasso.xyz>"]
 name = "viv"
 path = "src/main.rs"
 
+[[test]]
+name = "user_workflows"
+path = "tests/user_workflows.rs"
+harness = false
+
 [dependencies]
 
 [lints.rust]
@@ -52,3 +57,6 @@ wildcard_imports = "deny"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[dev-dependencies]
+libtest-mimic = "0.8.2"

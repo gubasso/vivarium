@@ -46,8 +46,13 @@ failure-output = "immediate-final"
 # faked. `kind(test)` matches every separate test binary Cargo compiles
 # from tests/*.rs.
 #
-# True E2E (real external systems, real subprocess, real network) is NOT
-# layered here; it runs in CI only.
+# The user-workflow acceptance harness is the deliberate exception to the
+# E2E-at-CI-only policy: its runtime gates keep it inert until viv, Nix, and
+# KVM are available, so it remains skipped on developer hosts without KVM.
+# Ignored trials are hidden by `cargo nextest list`; pass
+# `--run-ignored=all` to see them. If all matching trials are ignored,
+# nextest exits 4, so `harness_self_check` must remain ungated. At nextest
+# 0.9.138, `no-tests` is not a profile key; only `--no-tests=pass` is valid.
 #
 # `fail-fast` is off so a single failure does not hide other regressions.
 [profile.pre-push]
