@@ -1,0 +1,81 @@
+// markdownlint-cli2 config — generic profile for a code project's docs/READMEs.
+// Rule reference: https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+//
+// Stricter than the free-form knowledge-base profile: prose line length stays off
+// (dprint unwraps to one physical line), but structural discipline a code repo's
+// docs benefit from — single top-level H1, first-line H1, ordered heading levels —
+// is left ON via `default: true`.
+//
+// Single source of truth: this .jsonc is the ONLY markdownlint config. Do not add
+// a `.markdownlint.{yaml,json,...}` — when both exist, the `.markdownlint.*` rules
+// win and silently override the `config` block below.
+//
+// Tooling split (researched): markdownlint is a LINTER with surgical per-span
+// autofixes, NOT a formatter. It cannot reflow/unwrap prose, normalize GFM table
+// padding, or format fenced code — so it cannot replace dprint. dprint owns ALL
+// canonical formatting; this config gates on what dprint can't normalize AND
+// autofixes the one thing dprint can't: ordered-list renumbering (MD029). Refs:
+//   - MD029 rule:    https://github.com/DavidAnson/markdownlint/blob/main/doc/md029.md
+//   - linter≠fmt:    https://github.com/DavidAnson/markdownlint/blob/main/doc/Prettier.md
+//   - dprint md cfg: https://dprint.dev/plugins/markdown/config/
+//
+// "fix": true enables autofix — but it is GLOBAL (no per-rule fix toggle). To keep
+// fix-mode from fighting dprint or auto-editing content, every OTHER fixable rule
+// is disabled below, leaving MD029 as the only rule fix-mode can act on.
+// Non-fixable rules are unaffected and still gate (report-only).
+{
+  "fix": true,
+  "config": {
+    "default": true,
+
+    // Ordered-list numbering: 1.→2.→3. (one=1/1/1, ordered=1/2/3, zero=0/0/0).
+    // The ONLY rule left fixable, so this is the only autofix that ever fires.
+    "MD029": { "style": "ordered" },
+
+    // Relative-link integrity (custom rule `relative-links`; report-only gate).
+    // Complements the pygrep explicit-form guard in .pre-commit-config.yaml:
+    // the pygrep hooks forbid the ambiguous BARE form ([x](file.md)); this rule
+    // verifies the explicit target actually resolves to a real file on disk, and
+    // its #fragment to a real heading. The two are orthogonal — form vs. existence.
+    "relative-links": true,
+
+    // --- fixable rules OFF: isolate fix-mode to MD029 only (dprint owns formatting) ---
+    // Each is owned by dprint, by another hook, or would auto-edit content.
+    "MD004": false, // ul-style              (dprint owns list markers)
+    "MD005": false, // list-indent           (dprint owns)
+    "MD007": false, // ul-indent             (dprint owns)
+    "MD009": false, // trailing-spaces       (trailing-whitespace hook + dprint own)
+    "MD010": false, // hard-tabs             (dprint owns)
+    "MD011": false, // reversed-link-syntax  (would auto-edit content)
+    "MD014": false, // $-before-commands     (would auto-edit content)
+    "MD018": false, // no-space-atx          (dprint owns heading spacing)
+    "MD019": false, // multiple-space-atx    (dprint owns)
+    "MD020": false, // no-space-closed-atx   (dprint owns)
+    "MD023": false, // heading-start-left    (dprint owns)
+    "MD026": false, // heading-trailing-punct(would auto-edit content)
+    "MD027": false, // multiple-space-bq     (dprint owns blockquote spacing)
+    "MD030": false, // list-marker-space     (dprint owns)
+    "MD037": false, // spaces-in-emphasis    (dprint owns)
+    "MD038": false, // spaces-in-code-span   (dprint owns)
+    "MD039": false, // spaces-in-links       (dprint owns)
+    "MD044": false, // proper-names          (would auto-edit content)
+    "MD047": false, // single-trailing-nl    (end-of-file-fixer + dprint own)
+    "MD049": false, // emphasis-style        (dprint owns)
+    "MD050": false, // strong-style          (dprint owns)
+    "MD051": false, // link-fragments        (would auto-edit)
+    "MD054": false, // link/image-style      (would auto-edit content)
+    // --- end fixable-OFF block ---
+
+    // --- structural rules kept ON via default: MD001 (heading-increment),
+    //     MD025 (single top-level H1), MD041 (first-line H1) enforce doc discipline ---
+    "MD013": false, // line length — dprint unwraps prose to one physical line
+    "MD024": { "siblings_only": true }, // dup headings OK across sections, not within
+    "MD033": false, // inline HTML — needed for badges, <details>, <kbd>
+    "MD046": { "style": "fenced" } // require fenced code blocks
+  },
+  "customRules": ["markdownlint-rule-relative-links"],
+  "ignores": [
+    "node_modules/",
+    "draft*"
+  ]
+}

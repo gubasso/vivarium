@@ -1,0 +1,4 @@
+# statix anti-pattern lint config. The pre-commit hook passes no filenames, so
+# statix walks the tree itself — scope generated/vendored trees out here.
+# https://github.com/oppiliappan/statix
+ignore = [".direnv", "result"]

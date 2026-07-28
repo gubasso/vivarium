@@ -206,3 +206,105 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+
+  # --- Nix: format (auto-fix) + lint (gate) ---
+  #
+  # Every project carries a per-project flake devShell, so these run against its
+  # Nix sources. Tools come from that devShell (nix develop / direnv) and run as
+  # system hooks off PATH, like dprint/cargo-fmt. nixfmt (RFC 166, the
+  # nixpkgs-standard formatter) rewrites in place; statix and deadnix are
+  # report-only gates — fix by hand or allowlist. statix walks the tree itself,
+  # so its scope/ignore lives in the sibling `./statix.toml`. `nix flake check`
+  # evaluates the flake and is scoped to Nix changes, at the pre-push stage.
+  - repo: local
+    hooks:
+      - id: nixfmt
+        name: nixfmt (format)
+        entry: nixfmt
+        language: system
+        types: [nix]
+        stages: [pre-commit]
+      - id: statix
+        name: statix (nix anti-patterns)
+        entry: statix check
+        language: system
+        types: [nix]
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: deadnix
+        name: deadnix (dead code)
+        entry: deadnix --fail
+        language: system
+        types: [nix]
+        stages: [pre-commit]
+      - id: nix-flake-check
+        name: nix flake check (eval)
+        entry: nix flake check
+        language: system
+        files: '\.nix$'
+        pass_filenames: false
+        stages: [pre-push]
+
+  # --- Markdown: canonical format (dprint) + style gate (markdownlint) ---
+  #
+  # Universal overlay: every project carries docs/READMEs, so its markdown is
+  # formatted and linted everywhere — the same model as the shared Nix overlay.
+  # dprint owns canonical formatting; `markdown.textWrap: "never"` (in the sibling
+  # ./dprint.markdown.json) unwraps every soft-wrapped paragraph to one continuous
+  # physical line for small diffs and predictable LLM tokens. Explicit hard breaks
+  # (two trailing spaces / trailing `\`) are preserved, fenced code blocks are left
+  # unreflowed, and tables stay intact. markdownlint-cli2 gates style beyond what
+  # dprint enforces and autofixes the one thing dprint can't — ordered-list
+  # renumbering (MD029); rules live in the sibling ./.markdownlint-cli2.jsonc.
+  #
+  # A dedicated ./dprint.markdown.json + `--config` keeps this invocation
+  # independent of the type's own JSON dprint.json, and the `dprint-markdown` id
+  # never collides with the type's `dprint` hook.
+  #
+  # External dependency: dprint must be on PATH (`cargo install dprint` or your
+  # package manager), the same model as the json/nix hooks. pre-commit only —
+  # git push may strip PATH and the format is already applied by commit time.
+  - repo: local
+    hooks:
+      - id: dprint-markdown
+        name: dprint fmt (markdown)
+        entry: dprint fmt --config dprint.markdown.json
+        language: system
+        files: '\.(md|markdown)$'
+        pass_filenames: true
+        stages: [pre-commit]
+
+  # --- Explicit relative links (ambiguity guard; pre-commit, local) ---
+  #
+  # A bare-filename relative link like [x](runbook.md) is ambiguous: the same
+  # basename can exist in many directories, so neither humans nor tools can tell
+  # which file is meant, and the link silently rots when a file moves. Require an
+  # explicit prefix: ./name, ../dir/name, or a multi-segment path dir/name.
+  # Fragment-only (#...), root-absolute (/...), and URL links pass. pygrep is
+  # built into pre-commit — no external dependency, no companion file.
+  - repo: local
+    hooks:
+      - id: no-bare-relative-links
+        name: inline markdown links must be explicit (./, ../, or a path)
+        language: pygrep
+        types: [markdown]
+        entry: '\]\((?!https?://|ftp://|mailto:|tel:|/|#|\.\.?/)[^)/\s:]+\.[A-Za-z0-9]+(?:#[^)]*)?\)'
+      - id: no-bare-relative-link-defs
+        name: markdown link definitions must be explicit (./, ../, or a path)
+        language: pygrep
+        types: [markdown]
+        entry: '^\s*\[[^\]]+\]:\s+(?!https?://|ftp://|mailto:|tel:|/|#|\.\.?/|<)[^\s/:#]+\.[A-Za-z0-9]+'
+
+  # --- Markdown lint (style gate + ordered-list renumber autofix) ---
+  #
+  # markdownlint-cli2 runs AFTER dprint. dprint owns all formatting; markdownlint
+  # flags issues dprint can't normalize (heading hierarchy, link integrity) AND
+  # autofixes ordered-list renumbering (MD029). The custom `relative-links` rule
+  # (report-only) verifies an explicit relative target actually resolves on disk,
+  # complementing the pygrep FORM guards above (form vs. existence). Configure via
+  # the sibling ./.markdownlint-cli2.jsonc. Uses the node variant.
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.22.1
+    hooks:
+      - id: markdownlint-cli2
+        additional_dependencies: ['markdownlint-rule-relative-links']
