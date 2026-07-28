@@ -41,7 +41,7 @@ Mount semantics are owned by [`06-workspace-and-project-environment.md`](./06-wo
 
 ## Ensure running and control socket
 
-1. Take the per-project `flock` under `$XDG_RUNTIME_DIR/vivarium/<project-id>/lock`.
+1. Take the per-target `flock` under `$XDG_RUNTIME_DIR/vivarium/<project-id>/<target>/lock`.
 2. If `control.sock` exists, send the guest agent a cheap authenticated `Ping`.
 3. If `Ping` succeeds and `boot.json` matches the project identity, running generation/store path, backend, and workspace host path expected for this invocation, reuse the running VM and skip preflight/build/boot.
 4. If the socket exists but ping fails, check `vm.pid` only as diagnostic/staleness evidence: dead process means remove stale runtime files; live process with unreachable agent means wait within the boot timeout or fail EX_UNAVAILABLE (69).
@@ -49,7 +49,7 @@ Mount semantics are owned by [`06-workspace-and-project-environment.md`](./06-wo
 6. After startup, concurrent `exec` and `shell` sessions do not hold the startup lock; they multiplex over the control socket.
 
 ```text
-$XDG_RUNTIME_DIR/vivarium/<project-id>/
+$XDG_RUNTIME_DIR/vivarium/<project-id>/<target>/
   lock
   vm.pid
   control.sock
@@ -57,7 +57,19 @@ $XDG_RUNTIME_DIR/vivarium/<project-id>/
   console.log
 ```
 
-`console.log` is optional. `<project-id>` is the project-identity key defined in [`15-project-identity.md`](./15-project-identity.md). The control transport is vsock-class, host-local, and network-independent, bridged to a host Unix socket; the concrete device/backend is below this contract per N2. SSH is not the primary control plane, though it may exist as a debug fallback.
+`console.log` is optional. `<project-id>` is the project-identity key and `<target>` the VM instance within the project, both defined in [`15-project-identity.md`](./15-project-identity.md); the runtime layout mirrors the state layout in [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md) component for component. The control transport is vsock-class, host-local, and network-independent, bridged to a host Unix socket; the concrete device/backend is below this contract per N2. SSH is not the primary control plane, though it may exist as a debug fallback.
+
+### One connection per session
+
+The multiplexing in step 6 is the **transport's**, not vivarium's. `control.sock` is a listening socket: each `viv exec` and each `viv shell` opens **its own connection** to it and performs the transport's per-connection session handshake, and the transport carries the resulting streams independently. Session state — the PTY, the argv, the environment, the exit status — is per connection.
+
+Three things therefore do **not** exist, and adding any of them would be a defect rather than an enhancement:
+
+- No framing protocol layering many sessions over one stream.
+- No socket created per session, and no port allocated per session.
+- No session registry the host must keep in sync with the guest.
+
+Sessions are counted, not tracked: `viv status` reports the number of live connections ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)). Several sessions attached to one VM is the ordinary case — one project, many terminals — and it is unrelated to `<target>`, which names VM instances, not sessions.
 
 ## Exit status and failures
 
@@ -70,6 +82,6 @@ Exit codes follow the program-wide taxonomy and per-command matrix in [`14-exit-
 
 ## Deferred details
 
-- Exact control-socket wire framing/auth/multiplex protocol.
+- Exact control-socket wire framing and auth handshake for a single session. Session **multiplexing** is not deferred — it is the transport's, specified above.
 - Credential/agent forwarding.
 - Implementation backend/device.

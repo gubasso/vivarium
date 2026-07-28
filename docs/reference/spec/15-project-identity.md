@@ -63,6 +63,17 @@ Either source can be rebuilt from the other: a deleted marker is recovered from 
 | Marker deleted                                              | recovered from the identity index for the path |
 | Identity-index entry lost                                   | re-adopted from the marker                     |
 
+## The target component
+
+Per-project state and runtime paths carry a second component after `<project-id>`: `<target>`, **the named VM instance within a project**. A project has exactly **one target, named `default`**, in this version — there is no flag that selects another and no manifest key that declares one, so `<target>` is `default` in every path today.
+
+The component exists in the paths anyway, deliberately. It is the one thing that cannot be added later without relocating every project's state: generations, volumes, and runtime files would all have to move. Reserving the segment now costs one directory level and keeps a future second VM per project (a variant with different resources, say) a purely additive change.
+
+Two rules follow, and they are what keep the affordance honest:
+
+- **State and runtime paths use `<target>` symmetrically.** `projects/<project-id>/<target>/` under the state root ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)) and `vivarium/<project-id>/<target>/` under the runtime root ([`12-exec-and-shell.md`](./12-exec-and-shell.md)). A path that keyed one and not the other would silently cap the project at one running VM regardless of what the state layout allows.
+- **Multiple sessions are not multiple targets.** Several `exec`/`shell` sessions attach to one target's VM; they never create one ([`12-exec-and-shell.md`](./12-exec-and-shell.md)).
+
 ## Teardown
 
 `viv destroy` ([`10-vm-lifecycle.md`](./10-vm-lifecycle.md)) removes the project's state under `projects/<project-id>/`, clears its identity-index entry, **and** removes the `.vivarium/` marker, so the next `viv start` in that directory is a clean first run. The manifest binding is left untouched — `destroy` never removes it ([`10-vm-lifecycle.md`](./10-vm-lifecycle.md)).

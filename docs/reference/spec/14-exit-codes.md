@@ -6,17 +6,17 @@ A code names the **kind** of failure, not the command that raised it: `78` means
 
 ## Legend
 
-| Code | Name             | Meaning                                                                                                                                   |
-| ---- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `0`  | success          | Success, including an idempotent no-op (already running, nothing to remove).                                                              |
-| `64` | `EX_USAGE`       | Bad invocation: unknown flag, wrong arg arity, mutually-exclusive flags, missing `--`, `-t` when stdin is not a terminal.                 |
-| `65` | `EX_DATAERR`     | The evaluated/merged configuration is irreconcilable (e.g. one volume name bound to two mountpoints).                                     |
-| `69` | `EX_UNAVAILABLE` | A required backend, VM, agent, or store is unavailable: backend missing, running VM/agent unreachable, boot timeout, store sweep failure. |
-| `70` | `EX_SOFTWARE`    | Nix evaluation/build fault, or an internal error vivarium itself is responsible for.                                                      |
-| `74` | `EX_IOERR`       | I/O failure on a channel vivarium owns: control socket, the state registry, volume/state removal.                                         |
-| `75` | `EX_TEMPFAIL`    | Transient, retryable: a startup lock/race, or a precondition that clears on retry (a volume still in use by a running VM).                |
-| `77` | `EX_NOPERM`      | Host permission failure: `/dev/kvm`, a filesystem path, or an agent-reported permission denial before the guest process starts.           |
-| `78` | `EX_CONFIG`      | No manifest resolves for a command that needs one, an unknown/invalid manifest, or incompatible generation metadata.                      |
+| Code | Name             | Meaning                                                                                                                                                                                                |
+| ---- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `0`  | success          | Success, including an idempotent no-op (already running, nothing to remove).                                                                                                                           |
+| `64` | `EX_USAGE`       | Bad invocation: unknown flag, wrong arg arity, mutually-exclusive flags, missing `--`, `-t` when stdin is not a terminal.                                                                              |
+| `65` | `EX_DATAERR`     | The evaluated/merged configuration is irreconcilable (e.g. one volume name bound to two mountpoints).                                                                                                  |
+| `69` | `EX_UNAVAILABLE` | A required backend, VM, agent, or store is unavailable: backend missing, running VM/agent unreachable, boot timeout, store sweep failure.                                                              |
+| `70` | `EX_SOFTWARE`    | Nix evaluation/build fault, or an internal error vivarium itself is responsible for.                                                                                                                   |
+| `74` | `EX_IOERR`       | I/O failure on a channel vivarium owns: control socket, the state registry, volume/state removal.                                                                                                      |
+| `75` | `EX_TEMPFAIL`    | Transient: a startup lock/race, or a **VM-state precondition the user can clear in one step** — a volume still in use by a running VM (stop first), or a running VM required and absent (start first). |
+| `77` | `EX_NOPERM`      | Host permission failure: `/dev/kvm`, a filesystem path, or an agent-reported permission denial before the guest process starts.                                                                        |
+| `78` | `EX_CONFIG`      | No manifest resolves for a command that needs one, an unknown/invalid manifest, or incompatible generation metadata.                                                                                   |
 
 Two codes sit outside the sysexits set, each with a single owner:
 
@@ -44,27 +44,29 @@ The codes above are a **permanent API**:
 
 Every command returns `0` on success. The columns a command can also return on failure:
 
-| Command                             | `64` | `65` | `69` | `70` | `74` | `75` | `77` | `78` | Notes                                                                                                                              |
-| ----------------------------------- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `init`                              | ✓    |      |      |      | ✓    |      | ✓    | ✓    | `--write` registry I/O (`74`) / permission (`77`); unknown `--manifest` → `78`                                                     |
-| `images list`                       |      |      |      |      |      |      |      |      | read-only; empty/absent library is `0`, never an error                                                                             |
-| `manifest list`                     |      |      |      |      |      |      |      |      | read-only; empty/absent library is `0`, never an error                                                                             |
-| `manifest show`                     | ✓    |      |      |      |      |      |      | ✓    | unknown name → `78`; bad arg arity → `64`                                                                                          |
-| `start`                             | ✓    |      | ✓    | ✓    |      | ✓    | ✓    | ✓    | preflight → `69`/`77`/`78`; Nix build → `70`; boot timeout → `69`; lock race → `75`                                                |
-| `exec` / `shell`                    | ✓    |      | ✓    | ✓    | ✓    | ✓    | ✓    | ✓    | before guest start only; after start → guest status verbatim (`0..255`, `128+S`)                                                   |
-| `stop`                              | ✓    |      | ✓    |      |      |      |      |      | `--force` with a nonzero `--timeout` → `64`; state unconfirmable → `69`                                                            |
-| `destroy`                           | ✓    |      | ✓    |      | ✓    |      | ✓    |      | non-interactive without `--yes` → `64`; teardown I/O → `74` / permission → `77`                                                    |
-| `generations list`                  |      |      |      |      |      |      |      | ✓    | read-only; no manifest bound → `78`                                                                                                |
-| `generations activate` / `rollback` | ✓    |      |      |      | ✓    |      |      | ✓    | unknown generation → `64`; profile-switch I/O → `74`; no manifest → `78`                                                           |
-| `generations prune`                 | ✓    |      |      |      | ✓    |      |      | ✓    | bad `--keep` / `--older-than` → `64`                                                                                               |
-| `gc`                                |      |      | ✓    | ✓    |      |      | ✓    |      | store sweep failure → `69`/`70`; permission → `77`; global, needs no manifest                                                      |
-| `volume list`                       |      |      |      |      |      |      |      | ✓    | read-only; no manifest bound → `78`                                                                                                |
-| `volume rm`                         | ✓    |      |      |      | ✓    | ✓    | ✓    | ✓    | VM running → `75` (stop first); removal I/O → `74` / permission → `77`; unknown name → `78`                                        |
-| `config`                            |      |      |      |      |      |      |      | ✓    | no manifest resolves → `78` (fails closed)                                                                                         |
-| `config sources`                    |      |      |      | ✓    |      |      |      | ✓    | provenance read fault → `70`; no manifest → `78`                                                                                   |
-| `config eval`                       |      | ✓    | ✓    | ✓    |      |      | ✓    | ✓    | irreconcilable merge → `65`; Nix preflight → `69`/`77`; eval fault → `70`; no manifest → `78`                                      |
-| `status`                            | ✓    |      | ✓    |      |      |      |      | ✓    | any reported state (incl. `failed`) is `0` — state is data; no manifest bound → `78`; state unconfirmable → `69`; bad arity → `64` |
-| `status -g`                         | ✓    |      | ✓    |      | ✓    |      |      |      | enumerate the project registry; empty registry is `0`; registry I/O → `74`; unreadable/corrupt → `69`; bad arity → `64`            |
-| `doctor`                            |      |      | ✓    | ✓    |      |      | ✓    | ✓    | first failing hard check decides (`69`/`77`/`78`); internal fault → `70`; `--strict` warn → `1`                                    |
+| Command                             | `64` | `65` | `69` | `70` | `74` | `75` | `77` | `78` | Notes                                                                                                                                          |
+| ----------------------------------- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init`                              | ✓    |      |      |      | ✓    |      | ✓    | ✓    | `--write` registry I/O (`74`) / permission (`77`); unknown `--manifest` → `78`                                                                 |
+| `images list`                       |      |      |      |      |      |      |      |      | read-only; empty/absent library is `0`, never an error                                                                                         |
+| `manifest list`                     |      |      |      |      |      |      |      |      | read-only; empty/absent library is `0`, never an error                                                                                         |
+| `manifest show`                     | ✓    |      |      |      |      |      |      | ✓    | unknown name → `78`; bad arg arity → `64`                                                                                                      |
+| `start`                             | ✓    |      | ✓    | ✓    |      | ✓    | ✓    | ✓    | preflight → `69`/`77`/`78`; admission below the host reserve → `69` (a warn proceeds); Nix build → `70`; boot timeout → `69`; lock race → `75` |
+| `exec` / `shell`                    | ✓    |      | ✓    | ✓    | ✓    | ✓    | ✓    | ✓    | before guest start only; after start → guest status verbatim (`0..255`, `128+S`)                                                               |
+| `stop`                              | ✓    |      | ✓    |      |      |      |      |      | `--force` with a nonzero `--timeout` → `64`; state unconfirmable → `69`; `--all` needs no manifest and reports the first failure               |
+| `trim`                              | ✓    |      | ✓    |      | ✓    | ✓    |      | ✓    | VM not running → `75` (start first); agent/backend unreachable → `69`; control-socket I/O → `74`; no manifest bound → `78`                     |
+| `destroy`                           | ✓    |      | ✓    |      | ✓    |      | ✓    |      | non-interactive without `--yes` → `64`; teardown I/O → `74` / permission → `77`                                                                |
+| `generations list`                  |      |      |      |      |      |      |      | ✓    | read-only; no manifest bound → `78`                                                                                                            |
+| `generations activate` / `rollback` | ✓    |      |      |      | ✓    |      |      | ✓    | unknown generation → `64`; profile-switch I/O → `74`; no manifest → `78`                                                                       |
+| `generations prune`                 | ✓    |      |      |      | ✓    |      |      | ✓    | bad `--keep` / `--older-than` → `64`                                                                                                           |
+| `gc`                                |      |      | ✓    | ✓    |      |      | ✓    |      | store sweep failure → `69`/`70`; permission → `77`; global, needs no manifest                                                                  |
+| `volume list`                       |      |      |      |      |      |      |      | ✓    | read-only; no manifest bound → `78`                                                                                                            |
+| `volume rm`                         | ✓    |      |      |      | ✓    | ✓    | ✓    | ✓    | VM running → `75` (stop first); removal I/O → `74` / permission → `77`; unknown name → `78`                                                    |
+| `volume trim`                       | ✓    |      | ✓    |      | ✓    | ✓    |      | ✓    | VM not running → `75` (start first); agent unreachable → `69`; trim I/O → `74`; unknown name / no manifest → `78`                              |
+| `config`                            |      |      |      |      |      |      |      | ✓    | no manifest resolves → `78` (fails closed)                                                                                                     |
+| `config sources`                    |      |      |      | ✓    |      |      |      | ✓    | provenance read fault → `70`; no manifest → `78`                                                                                               |
+| `config eval`                       |      | ✓    | ✓    | ✓    |      |      | ✓    | ✓    | irreconcilable merge → `65`; Nix preflight → `69`/`77`; eval fault → `70`; no manifest → `78`                                                  |
+| `status`                            | ✓    |      | ✓    |      |      |      |      | ✓    | any reported state (incl. `failed`) is `0` — state is data; no manifest bound → `78`; state unconfirmable → `69`; bad arity → `64`             |
+| `status -g`                         | ✓    |      | ✓    |      | ✓    |      |      |      | enumerate the project registry; empty registry is `0`; registry I/O → `74`; unreadable/corrupt → `69`; bad arity → `64`                        |
+| `doctor`                            |      |      | ✓    | ✓    |      |      | ✓    | ✓    | first failing hard check decides (`69`/`77`/`78`); internal fault → `70`; `--strict` warn → `1`                                                |
 
 Read-only diagnostics (`doctor`, `config`, `config sources`, `config eval`, `status`, `generations list`, `volume list`, `images list`, `manifest list/show`) never mutate project or VM state, whatever they return.

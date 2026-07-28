@@ -36,6 +36,8 @@ Defined terms used across the vivarium documentation. Each term is defined once 
 
 - **Project identity key** — the stable key that scopes per-project state and runtime directories; its exact derivation is decided separately. See [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md) and [`11-generations-and-build-history.md`](./11-generations-and-build-history.md).
 
+- **Target** — the named VM instance within a project, the `<target>` component of every per-project state and runtime path. A project has exactly one target, named `default`, in this version. See [`15-project-identity.md`](./15-project-identity.md).
+
 - **Inner environment** — the project's own development environment, owned by the repository and run inside the sandbox, independent of vivarium.
 
 - **Outer / inner evaluation** — the two Nix evaluations: the outer builds the sandbox from the manifest at build time; the inner builds the project's development environment inside the guest at shell time.
@@ -57,3 +59,17 @@ Defined terms used across the vivarium documentation. Each term is defined once 
 - **Closure** — the complete set of store paths a build depends on; what ships with a built VM.
 
 - **Store** — the content-addressed Nix store holding build outputs. It is world-readable, which is why secrets must never enter it (see [`../../decisions/ADR-0010-secrets-never-in-nix-store.md`](../../decisions/ADR-0010-secrets-never-in-nix-store.md)).
+
+- **Ceiling** — the most a sandbox may use of a resource, as distinct from a reservation: nothing is committed to the sandbox up front, and the host pays only for what is used (N22). Every `[resources]` figure and every volume size is a ceiling. See [`17-resources-and-capacity.md`](./17-resources-and-capacity.md).
+
+- **Free page reporting** — the guest's cooperative return of memory: the guest tells the host which pages it has finished with, and the host reclaims them, so a sandbox's resident cost tracks its working set instead of climbing to its ceiling. It requires no host action and takes nothing from the guest.
+
+- **Balloon** — the guest device through which memory can be handed back on demand. vivarium runs it at zero size purely to enable free page reporting; the only time it is inflated is the bounded, user-invoked `viv trim`.
+
+- **Trim** — reclaiming memory or volume space that a sandbox is holding but no longer needs. Memory is reclaimed only on explicit request (`viv trim`), never automatically (N23); volume space is also reclaimed by a periodic in-guest trim, with `viv volume trim` as the on-demand path. See [`17-resources-and-capacity.md`](./17-resources-and-capacity.md).
+
+- **Admission control** — the host-capacity check `viv start` runs before building or booting: refuse below a minimum free-memory reserve, warn when the running fleet's measured use makes the new sandbox a risk (N23). See [`17-resources-and-capacity.md`](./17-resources-and-capacity.md).
+
+- **Resource scope** — the host-side accounting group holding every process vivarium runs for one sandbox: the VMM, each per-share filesystem daemon, and launch helpers. It is what makes "what this sandbox costs" a single readable figure and what makes teardown one operation.
+
+- **Apparent / allocated size** — a sparse volume image's declared virtual size against the space it actually occupies on the host. `viv status` and `viv volume list` report both.

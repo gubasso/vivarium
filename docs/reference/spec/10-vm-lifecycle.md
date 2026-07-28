@@ -30,8 +30,9 @@ running | starting ──abnormal exit──▶ failed
 
 1. **Resolve** the bound manifest by the precedence in [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md). None resolves → fail closed (N7).
 2. **Preflight** the host — refuse before any build or launch if a hard prerequisite is missing.
-3. **Evaluate and build** the outer flake to a store output. Identical inputs reuse the cached output (N4); the result is recorded as a **generation** ([`11-generations-and-build-history.md`](./11-generations-and-build-history.md)).
-4. **Ensure running** — boot the VM if one is not already up for this project, injecting the workspace host path at launch (N5) and mounting it read-write at the fixed guest path ([`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)). `exec`/`shell` add the control-socket liveness handshake specified in [`12-exec-and-shell.md`](./12-exec-and-shell.md).
+3. **Admit** — check host capacity against the measured cost of the VMs already running: refuse below the minimum free-memory reserve, warn and continue when the fleet makes this VM a risk (N23, [`17-resources-and-capacity.md`](./17-resources-and-capacity.md)). Like preflight, this runs **before any build**, so a host that cannot hold the VM never pays for one.
+4. **Evaluate and build** the outer flake to a store output. Identical inputs reuse the cached output (N4); the result is recorded as a **generation** ([`11-generations-and-build-history.md`](./11-generations-and-build-history.md)).
+5. **Ensure running** — boot the VM if one is not already up for this project, injecting the workspace host path at launch (N5) and mounting it read-write at the fixed guest path ([`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)). Host-derived resource ceilings are resolved and applied at this moment for the same reason the workspace path is (N3, N19), and every process launched for the VM is placed in the target's host resource scope. `exec`/`shell` add the control-socket liveness handshake specified in [`12-exec-and-shell.md`](./12-exec-and-shell.md).
 
 `start` is **idempotent**: on a fresh, already-running VM it is a no-op that exits `0` (N15). This "ensure running" step is the shared routine `viv exec` and `viv shell` reuse when they start the VM if needed.
 
@@ -59,6 +60,8 @@ By default `start` boots the VM as a **background resource and returns** — the
 2. **Backend soft-off** — if the agent is unreachable, fall back to the backend's ACPI-class power signal.
 3. **Hard poweroff** — when `--timeout` expires (default 10 s; `-1` waits indefinitely), pull the power. `--force` skips straight here (possible data loss) and conflicts with a nonzero `--timeout` — that combination is a usage error.
 
+`stop` releases the target's host resource scope, so the VMM, every per-share filesystem daemon, and any launch helper go away together — no daemon outlives the VM it served ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)).
+
 `stop` removes **nothing**: persistent volumes, build generations, and the project binding all survive (N18, [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)). It is idempotent — nothing running is a no-op that exits `0`, and dead runtime files (stale pid, socket) are cleaned up on the way. A stop that cannot be confirmed even by hard poweroff reports the actual VM state and exits with the unavailable code rather than pretending success.
 
 ## Teardown: `viv destroy`
@@ -69,7 +72,9 @@ By default `start` boots the VM as a **background resource and returns** — the
 
 ## Preflight (fail-fast)
 
-`start` runs the **hard subset** of the shared `viv doctor` probe catalog before any side effect — one probe set, reused by `doctor` (whole catalog) and each command's guard (its subset), so they never drift. The catalog — stable check ids, categories, severities, and failure codes — is owned by [`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md); the hard subset is exactly its hard-severity checks, run cheapest-and-most-fundamental first so the earliest failure is the most actionable: `nix-present` → `nix-version` → `nix-flakes-enabled` → `kvm-device-present` → `kvm-device-accessible` → `hardware-virt-available` → `backend-binary-present`.
+`start` runs the **hard subset** of the shared `viv doctor` probe catalog before any side effect — one probe set, reused by `doctor` (whole catalog) and each command's guard (its subset), so they never drift. The catalog — stable check ids, categories, severities, and failure codes — is owned by [`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md); the hard subset is exactly its hard-severity checks, run cheapest-and-most-fundamental first so the earliest failure is the most actionable: `nix-present` → `nix-version` → `nix-flakes-enabled` → `kvm-device-present` → `kvm-device-accessible` → `hardware-virt-available` → `backend-binary-present` → `host-userns-available`.
+
+The **admission check** (step 3 above) is a separate gate, not a catalog probe: preflight asks whether this host _can_ run a VM at all, admission asks whether it can run _another one right now_. Its thresholds and its warning are owned by [`17-resources-and-capacity.md`](./17-resources-and-capacity.md); `viv doctor` reports the same host readings as ordinary soft checks.
 
 Each failing check reports **what / where / why / hint**, its stable check id, and a specific exit code from the program-wide sysexits taxonomy — never a generic `1`. The full legend and the per-command matrix (including `start`, `stop`, and `destroy`) are in [`14-exit-codes.md`](./14-exit-codes.md); the stream rules are [`ADR-0015`](../../decisions/ADR-0015-cli-output-and-failure-contract.md).
 

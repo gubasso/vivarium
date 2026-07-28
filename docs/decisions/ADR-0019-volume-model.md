@@ -30,3 +30,5 @@ Chosen option: **default home volume plus project-scoped named volumes** — per
 ## Status
 
 Accepted
+
+Amended by **ADR-0037** — each volume image is sparse raw, created lazily on first `start`, and its declared size is a virtual ceiling reclaimed by trim rather than a preallocated amount. The model above is unchanged.

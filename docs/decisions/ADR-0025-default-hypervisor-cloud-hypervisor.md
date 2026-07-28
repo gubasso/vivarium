@@ -35,4 +35,6 @@ QEMU's microvm machine type **remains admissible** under N2 as the fallback; the
 
 Accepted
 
+Amended by **ADR-0035** — the launch profile additionally requires the backend arguments that make guest memory elastic: shared guest memory (a prerequisite of filesystem sharing), a zero-size balloon with free page reporting and deflate-on-OOM, and a per-VM control socket so `viv trim` can act on a running VM. The backend version floor in spec/13 also covers block-device discard, which [`ADR-0037-volume-disk-format-and-reclamation.md`](./ADR-0037-volume-disk-format-and-reclamation.md) depends on.
+
 Discharges the deferral in ADR-0024. The concrete binary map lives in [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md). The hardened launch profile it names (VMM + virtiofsd confinement) is enacted by [`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](./ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md).

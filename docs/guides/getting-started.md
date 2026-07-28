@@ -57,13 +57,31 @@ Inside the workspace, your project's own development environment loads independe
 
 By default the sandbox has open network access, so `cargo` can fetch crates with no setup. To restrict egress, switch the manifest's egress mode to the allowlist; see [`../reference/spec/05-networking-and-egress.md`](../reference/spec/05-networking-and-egress.md).
 
-## 5. Stop
+## 5. Run several projects at once
+
+Nothing about the above is one-project-at-a-time. Repeat steps 1 and 3 in another repository and you have a second sandbox; each has its own kernel, its own home volume, and as many attached terminals as you care to open. `viv status -g` shows them all:
+
+```console
+$ viv status -g
+PROJECT          STATE     MEM (used/ceiling)   VCPU  DISK (alloc/virtual)  SESS  UP
+my-rust-api      running    2.1 GiB / 8 GiB      8     4.2 GiB / 32 GiB      3    3h12m
+web-frontend     running    5.8 GiB / 8 GiB      8    11.7 GiB / 32 GiB      1    1h04m
+data-pipeline    running    1.4 GiB / 8 GiB      8     2.9 GiB / 32 GiB      2      22m
+
+host: 9.6 GiB available of 31.2 GiB - memory pressure (60s): 0.4%
+```
+
+Read that table once and the resource model explains itself: **the ceiling is what a project may use, the used column is what it actually costs.** Three projects declaring 8 GiB each are not holding 24 GiB. You never set those numbers — vivarium derives them from the host — and if you start a fourth project when memory is genuinely tight, `viv start` says so and lets you decide rather than deciding for you. The full model is in [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md).
+
+If a long-running project has accumulated cached memory you want back, `viv trim` reclaims it on the spot. Nothing reclaims automatically.
+
+## 6. Stop
 
 ```console
 $ viv stop
 ```
 
-This gracefully stops the VM while preserving persistent volumes — your home directory in the guest, with its caches and tool state — so the next `start` is fast and warm. To erase the project instead (build history, volumes, runtime state), use `viv destroy`; see [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md).
+This gracefully stops the VM while preserving persistent volumes — your home directory in the guest, with its caches and tool state — so the next `start` is fast and warm. `viv stop --all` does the same for every running project at once. To erase the project instead (build history, volumes, runtime state), use `viv destroy`; see [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md).
 
 ## Where to go next
 

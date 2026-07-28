@@ -14,9 +14,9 @@ ADR-0024 made N20 normative — the VMM must run under a host-side seccomp plus 
 
 Chosen option: **a by-construction launch profile**.
 
-- The **launch wrapper is the enforcement layer** (not the guest, not a probe): unprivileged execution, `PR_SET_NO_NEW_PRIVS`, capability drop toward zero, a seccomp filter, and cgroup limits, applied before `exec`.
+- The **launch wrapper is the enforcement layer** (not the guest, not a probe): unprivileged execution, `PR_SET_NO_NEW_PRIVS`, capability drop toward zero, a seccomp filter, and cgroup placement, applied before `exec`.
 - **Cloud Hypervisor** runs with built-in seccomp enabled and a Landlock path allowlist; the concrete flags live in spec/13.
-- **N20 extends to virtiofsd:** each per-share daemon runs unprivileged, `--sandbox=namespace`, seccomp on, `cache=none`, one process per share, with only that share writable. CVE-2026-47243 is the negative spec.
+- **N20 extends to virtiofsd:** each per-share daemon runs unprivileged, `--sandbox=namespace`, seccomp on, one process per share, with only that share writable. CVE-2026-47243 is the negative spec. (Cache mode was listed here originally; it is coherency, not confinement — see [`ADR-0039-share-cache-policy.md`](./ADR-0039-share-cache-policy.md).)
 - **QEMU is documentation-only:** admissible under N2 but unhardened; Cloud Hypervisor is the one shipped hardened path.
 
 ## Consequences
@@ -28,5 +28,9 @@ Chosen option: **a by-construction launch profile**.
 ## Status
 
 Accepted
+
+Amended by **ADR-0036** — the profile's "cgroup limits" are a per-VM systemd scope used for accounting, weighting, and teardown, with no limit on a VM or on the fleet slice.
+
+Amended by **ADR-0039** — filesystem-share cache mode is removed from this profile; it is a coherency setting, not a confinement mechanism, and the mode originally named is not a value the shipped daemon accepts. Every other element of the profile stands unchanged.
 
 Extends **N20** ([`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md)) to host-side filesystem daemons and enacts ADR-0024 / ADR-0025's confinement standard. The concrete recipe and prerequisite probes live in [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md); QEMU stays admissible under N2.

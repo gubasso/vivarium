@@ -15,9 +15,23 @@ Manifests and pieces may declare additional runtime mounts at other guest paths 
 
 ### How shares are served and confined
 
-A project may declare **multiple writable paths** (extra `/workspaces/<name>` repositories) and **multiple additional bind mounts**, each chosen read-only or read-write through the mount schema's `readonly` flag. Every declared share — the primary workspace and each extra mount — is served by its **own unprivileged virtiofsd process**, confined under the N20 launch profile ([`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md), [`../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md)): `--sandbox=namespace`, seccomp on, `cache=none`, with only that share's host path in its view, so one share can never reach another or the wider host filesystem.
+A project may declare **multiple writable paths** (extra `/workspaces/<name>` repositories) and **multiple additional bind mounts**, each chosen read-only or read-write through the mount schema's `readonly` flag. Every declared share — the primary workspace and each extra mount — is served by its **own unprivileged virtiofsd process**, confined under the N20 launch profile ([`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md), [`../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md)): `--sandbox=namespace`, seccomp on, with only that share's host path in its view, so one share can never reach another or the wider host filesystem.
 
 Read-only is enforced on both sides: the host source is exposed read-only **and** the guest mount is `ro,nodev,nosuid,noexec`, so a read-only mount can carry data but never executables or device nodes, and writes are confined to exactly the declared read-write paths. Guest scratch — `/tmp` and other non-persistent locations — is the per-VM ephemeral layer above, never a host mount.
+
+### Cache policy per share
+
+A share's **cache mode governs coherency, not confinement** — it decides how long the guest may trust its own view of a share, and it is deliberately no part of the N20 profile ([`../../decisions/ADR-0039-share-cache-policy.md`](../../decisions/ADR-0039-share-cache-policy.md)). Each share takes the policy its content justifies:
+
+| Share                                          | Cache policy                 | Why                                                                                                                        |
+| ---------------------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| The read-only guest store share (below)        | cache aggressively           | Content-addressed and immutable, so there is no stale view to guard against — a proof, not a trade-off                     |
+| The primary workspace and any read-write mount | the daemon's bounded default | Host-side edits become visible in the guest within the timeout, which is what "edit on the host, build in the guest" needs |
+| Read-only mirrored config                      | the daemon's bounded default | Changes rarely; the bounded default is more than sufficient                                                                |
+
+Caching is never disabled outright on the workspace. This workload is dominated by directory walks and small-file metadata, and forbidding client caching turns every path lookup into a round trip.
+
+**Keep regenerable caches off the share.** Language and package-manager caches, dependency trees, and build output directories belong on a persistent volume rather than under the workspace share: a volume is a local block device to the guest, while a share pays a round trip per file. Where a toolchain insists on writing them inside the repository, `[volume].persist` (below) is the mechanism.
 
 ## The independent inner environment
 
@@ -41,7 +55,8 @@ The guest filesystem is three layers: the **immutable image** built from the sto
 - The **default volume** always exists, has the reserved name `default`, and is mounted at the guest user's home — so shell state, tool and language caches, dotfile state, and user-run data under `$HOME` persist without declaration.
 - **Named volumes** are declared in the manifest (`[[volumes]]` with `name` and `mount`) or contributed by pieces (declarations concatenate; the same name with conflicting mountpoints fails evaluation). Each becomes its own disk, mounted at its declared guest path, with its own lifecycle under `viv volume`.
 - **`[volume].persist`** lists extra guest paths (for example a system service's data directory) bind-mounted from inside the default volume, so their writes persist without a separate disk.
-- Physically, each volume is one host-side disk image under the **state** root (`projects/<project-id>/<target>/volumes/<name>.img`) attached as a block device — state, never cache, because volume contents are user data and not regenerable ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)). Identity is (project, target, name): manifests declare the shape, each bound project instantiates its own private volumes, and reattachment on `viv start` is automatic. The `<project-id>` component is defined in [`15-project-identity.md`](./15-project-identity.md).
+- Physically, each volume is one host-side disk image under the **state** root (`projects/<project-id>/<target>/volumes/<name>.img`) attached as a block device — state, never cache, because volume contents are user data and not regenerable ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)). Identity is (project, target, name): manifests declare the shape, each bound project instantiates its own private volumes, and reattachment on `viv start` is automatic. The `<project-id>` and `<target>` components are defined in [`15-project-identity.md`](./15-project-identity.md).
+- Each image is **sparse and raw**, created lazily on the first `viv start` that needs it, and its declared size is a **virtual ceiling**: the image occupies what its contents occupy, and space freed inside the guest is returned to the host by periodic and on-demand trim (N22, [`../../decisions/ADR-0037-volume-disk-format-and-reclamation.md`](../../decisions/ADR-0037-volume-disk-format-and-reclamation.md)). A volume's ceiling may be raised between boots; it is never lowered in place. Sizes, defaults, and the allocated-against-virtual reporting are in [`17-resources-and-capacity.md`](./17-resources-and-capacity.md).
 - **Anything written outside `$HOME`, a named volume's mountpoint, or a `persist` path is ephemeral** and lost at shutdown.
 - Volumes are removed only on explicit request — `viv destroy` (all of them, unless `--keep-volumes`) or `viv volume rm` (which refuses while the VM runs) — never by `stop` or a rebuild (N18, [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md)).
 
@@ -49,4 +64,9 @@ Exit codes for `viv volume list` / `rm` follow the per-command matrix in [`14-ex
 
 ## The store inside the guest
 
-The guest's Nix store may either be independent or share the host's store read-only for cache reuse; this is an implementation trade-off between isolation and speed, made below the level of this contract.
+The guest reads the **host's Nix store, shared read-only**, decided in [`../../decisions/ADR-0038-guest-store-sharing.md`](../../decisions/ADR-0038-guest-store-sharing.md). This is contract, not an implementation detail, because it is what makes each additional running project nearly free: no per-VM store image is built, no store bytes are duplicated, and one host page cache serves every guest.
+
+- The store share is read-only on both sides and served by its own confined daemon, exactly like every other share, with the aggressive cache policy justified above.
+- A **writable overlay** sits above it inside the guest, so `nix build` and the project's own inner environment work normally ([`04-composition-and-determinism.md`](./04-composition-and-determinism.md)); writes land in the overlay, never in the host store.
+- The trade is stated rather than hidden: a guest can enumerate every path in the host store. The store is world-readable by construction and never holds secrets (N10, [`../../decisions/ADR-0010-secrets-never-in-nix-store.md`](../../decisions/ADR-0010-secrets-never-in-nix-store.md)), and the boundary protects against escape, not against a guest learning which packages the host has built.
+- An independent per-VM store remains admissible for a future hardened profile; it is not the default, and choosing it costs a store image per VM per generation.

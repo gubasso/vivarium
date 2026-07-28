@@ -34,6 +34,19 @@ The outer path is a short pipeline:
 
 vivarium does the orchestration — resolving, compiling, building, mounting, launching — and delegates the hard mechanisms to established building blocks: the virtualization backend provides the kernel and boundary, and the module system provides the merge. This is deliberate: the product's value is a clean, composable surface and sensible defaults over those mechanisms, not a reimplementation of them. The capability classes that keep the backend swappable are fixed by [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md).
 
+## Why several boxes fit on one machine
+
+A separate kernel per project sounds like it should cost a machine's worth of memory per project. It does not, and the reason is worth holding in mind, because it is what makes running four or five projects at once ordinary rather than exotic.
+
+Nothing a sandbox declares is taken from the host up front. A VM's memory figure is a **ceiling** — the most it may use — and guest memory is faulted in only as the guest actually touches it. The guest then hands back what it finishes with, so the host's bill tracks the working set rather than climbing to the ceiling and staying there. Volume images work the same way: a large declared size is virtual, and the file grows with its contents. vCPUs are threads the host schedules, not cores set aside. So the sum of what your projects _may_ use will exceed your machine, and the sum of what they _do_ use is the number that matters.
+
+This is why vivarium sizes VMs for you and expects you never to touch the numbers ([`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md)).
+
+Two consequences shape the design more than they first appear:
+
+- **The tool measures and reports; it does not arbitrate.** There is no background process deciding which sandbox deserves memory. Squeezing a running guest from the host turns memory pressure into a page-fault storm that every process inside feels, so vivarium refuses to do it automatically: `viv start` warns before you overcommit, `viv status` shows used against ceiling, and reclaiming is an explicit `viv trim`. The decision about which project matters stays with the person who knows.
+- **The overhead that remains is real and bounded.** A guest kernel, a monitor process, and one filesystem daemon per share are the price of the second wall below, per project. Elasticity removes the _variable_ cost, not the fixed one — which is precisely the trade [`../decisions/ADR-0001-microvm-isolation-boundary.md`](../decisions/ADR-0001-microvm-isolation-boundary.md) accepted.
+
 ## The boundary and its edges
 
 The isolation model is a **second wall**. Inside a shared-kernel sandbox, one kernel or runtime bug is a host compromise; behind the microVM boundary an attacker must chain a guest-kernel escape _and_ a break of the virtual-machine monitor or the hardware boundary — a categorically harder exploit chain. That risk-class jump, not any single tool, is the reason the boundary is a microVM ([`../decisions/ADR-0001-microvm-isolation-boundary.md`](../decisions/ADR-0001-microvm-isolation-boundary.md), [`../decisions/ADR-0024-backend-security-requirements.md`](../decisions/ADR-0024-backend-security-requirements.md)).
