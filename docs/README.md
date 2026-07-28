@@ -16,8 +16,9 @@ bucket. This page is only an index — it holds no canonical facts of its own.
   examples from types, the VM lifecycle and `viv start` semantics, build generations pinned as GC
   roots, the CLI output-and-failure contract, guest control transport and exec/shell exit boundary,
   the workspace mount path plus extra mounts, the lifecycle verbs and stop/destroy teardown
-  boundary, the persistent volume model, and the mount/config-mirroring schema. `template.md` is the
-  drop-in ADR shape.
+  boundary, the persistent volume model, the mount/config-mirroring schema, and the CLI
+  implementation baseline (the dependency choices, error/exit-code realization, and the logging
+  stack). `template.md` is the drop-in ADR shape.
 - **[`reference/`](reference/)** — lookup material beyond the spec:
   [`implementation-status.md`](reference/implementation-status.md) is the single source of truth for
   what works today versus what is designed only.
