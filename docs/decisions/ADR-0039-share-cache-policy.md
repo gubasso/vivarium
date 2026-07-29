@@ -29,4 +29,6 @@ Chosen option: **per-share policy, outside the hardening profile**.
 
 Accepted
 
-Amends [`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](./ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md) — removing cache mode from the N20 profile without touching any other element of it. The concrete per-share table lives in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md); the launch recipe and its probe are in [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md).
+Amended by **ADR-0049** — the daemon that accepts or rejects a cache policy is a member of the built runner's closure, so a policy it does not accept is an evaluation-time assertion, not the `doctor` probe this decision originally named.
+
+Amends [`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](./ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md) — removing cache mode from the N20 profile without touching any other element of it. The concrete per-share table lives in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md); the launch recipe is in [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md).

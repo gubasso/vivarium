@@ -31,4 +31,6 @@ Chosen option: **one rule** — a merged configuration that vivarium's own rules
 
 Accepted
 
+Amended by **ADR-0049** — a third class qualifies for `65`: a composition that fails one of vivarium's own evaluation-time assertions, such as a guest kernel without the balloon driver or a share naming a cache policy the shipped daemon rejects. One seam is worth stating rather than papering over: these assertions are not per-key merge conflicts, so `viv config sources` surfaces them as check-shaped messages rather than provenance rows.
+
 Amends [`ADR-0002-module-system-as-composition-engine.md`](./ADR-0002-module-system-as-composition-engine.md), [`ADR-0021-typed-launch-channel-options-in-pieces.md`](./ADR-0021-typed-launch-channel-options-in-pieces.md), and [`ADR-0022-config-inspection-namespace.md`](./ADR-0022-config-inspection-namespace.md). Specified in [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md), [`../reference/spec/04-composition-and-determinism.md`](../reference/spec/04-composition-and-determinism.md), [`../reference/spec/07-secrets-and-config-sharing.md`](../reference/spec/07-secrets-and-config-sharing.md), [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md), and [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md).

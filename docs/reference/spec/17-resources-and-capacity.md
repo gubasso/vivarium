@@ -13,9 +13,9 @@ Every resource figure vivarium accepts or computes is a **ceiling**: the most a 
 
 The consequence users feel: the sum of ceilings across running projects may exceed the host's memory and disk. The sum of _measured_ use may not — and that is what admission control and `viv status` report on.
 
-The limits of the model are stated plainly, because they are the two ways a user can still be surprised:
+The limits of the model are stated plainly, because they are where a user can still be surprised:
 
-- Free-page reporting returns large blocks of genuinely free guest memory. It does **not** return the guest's page cache, which a build or a repository-wide search fills. Resident size therefore drifts upward over a long session; `viv trim` is the answer, and it is never automatic.
+- **Resident size drifts upward over a long session, for two reasons that are not symmetric.** The guest's page cache — which a build or a repository-wide search fills — is not free memory at all, so reporting never returns it, and no memory-elasticity mechanism can: only the guest can decide to drop it. Separately, reporting returns free memory only in large contiguous runs, so memory that is genuinely free but fragmented below that unit stays held. The second cause the guest handles itself, by compacting; the first is what `viv trim` answers.
 - A ceiling is real. A guest can exhaust its own ceiling while the host has memory free. That is the price of a bounded VM, and it is why the default ceiling is generous.
 
 ## Auto-sizing
@@ -73,7 +73,7 @@ This is the whole arbitration story. vivarium reports pressure and lets the user
 
 ## Reclaiming memory: `viv trim`
 
-`viv trim [--to <MiB>]` is the one command that reclaims memory on demand, and it exists because free-page reporting cannot return page cache. It briefly asks the guest to give back memory down to the target, then immediately restores the guest's headroom, and reports what the host got back. It is bounded, synchronous, and always user-invoked.
+`viv trim [--to <MiB>]` is the one command that reclaims memory on demand, and it exists because free-page reporting cannot return page cache. It briefly asks the guest to give back memory down to the target, then immediately restores the guest's headroom, and reports what the host got back. It is bounded, synchronous, and **never arbitrated by the host**: the guest reclaims its own free memory continuously, by reporting and by compacting, and `trim` is the user-invoked escalation on top of that — the part that costs something, so the person who knows decides (N23).
 
 - With no `--to`, the target is the VM's measured working set with headroom — enough to drop cache, not enough to disturb running work.
 - It requires a running VM; on a stopped one it exits `75`, the same "stop first / start first" category `volume rm` uses ([`14-exit-codes.md`](./14-exit-codes.md)).
@@ -116,5 +116,7 @@ Guest memory overcommit stays at the kernel default. Strict accounting with no s
 ## Capacity in practice
 
 The design target is a single developer workstation running **four or five project VMs at once**, each with several attached sessions. At that scale the fixed per-VM overhead — a guest kernel, the monitor process, one filesystem daemon per share — is real but small against the working sets, and elasticity does the rest.
+
+**Guest memory is never deduplicated across VMs**, and no design choice can change that. Sharing a host directory into the guest requires the guest's memory to be a mapping the host shares with the filesystem daemons, and the host's same-page merging works only on private anonymous memory — so identical pages in two projects' guests are two host pages, permanently. Five near-identical guests each pay for their own copy of what they read. That is precisely why the model is elasticity rather than deduplication: what a VM does not need, it gives back. What several VMs do share is the host page cache behind the read-only store share, which is one more reason that share is the default ([`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)).
 
 This is deliberately not a fleet scheduler. vivarium is not an orchestrator ([`00-goals-and-non-goals.md`](./00-goals-and-non-goals.md)); at a scale where automatic arbitration between dozens of guests would be required, the honest answer is to stop a project rather than to squeeze one.

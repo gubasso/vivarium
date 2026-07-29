@@ -29,4 +29,6 @@ Chosen option: **full checker contract, without `--ignore`**.
 
 Accepted
 
+Amended by **ADR-0049** — adds the membership criterion this contract never had. It fixes the shape of a catalog entry, not the catalog's membership; ADR-0049 supplies the rule that decides membership: a probe exists for a host condition, and anything the lockfile determines is an evaluation-time assertion instead. Stable ids remain stable, but the catalog is not append-only the way the exit-code taxonomy is.
+
 Amends [`ADR-0015-cli-output-and-failure-contract.md`](./ADR-0015-cli-output-and-failure-contract.md) — adds the `--strict` exit-`1` exception. Specified in [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md) and [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md).

@@ -23,7 +23,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 15] = [
+const WORKFLOWS: [WorkflowSpec; 16] = [
     (
         "workflow_01_first_time_bind_usage",
         GateLevel::Cli,
@@ -88,6 +88,11 @@ const WORKFLOWS: [WorkflowSpec; 15] = [
         "workflow_07_stop_restart_preserving_volumes",
         GateLevel::Virtualization,
         workflow_07_warmth,
+    ),
+    (
+        "workflow_07_stop_completes_within_budget",
+        GateLevel::Virtualization,
+        workflow_07_shutdown_bounded,
     ),
     (
         "workflow_08_destroy_usage_surface",
@@ -936,6 +941,42 @@ fn workflow_07_warmth() -> Result<(), Failed> {
         &viv(&tp, &["exec", "--", "sh", "-lc", "test -f \"$HOME/warm\""])?,
         0,
     ))
+}
+
+/// How long a clean `viv stop` may take before the shutdown counts as hung. The guest's
+/// store is the host's, shared read-only (ADR-0038), so everything the guest needs in
+/// order to shut down — the unmount tooling included — lives on a share the shutdown
+/// transaction must not try to release first. spec/06 states that ordering as a contract,
+/// and a violation of it does not fail, it hangs: a bounded wall clock is the only
+/// falsifier. Generous on purpose, because a deadlock burns the whole stop timeout and
+/// then the hard-poweroff ladder behind it (spec/10), so it cannot land under the budget.
+const SHUTDOWN_BUDGET: Duration = Duration::from_secs(45);
+
+/// Guide: docs/guides/stop-restart-preserving-volumes.md. Split from `workflow_07_warmth`
+/// because it asserts a *bound*, not a result — folding it in would let a shutdown that
+/// merely took four minutes still report the trial as passing.
+fn workflow_07_shutdown_bounded() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("volume-project").map_err(io_failed)?;
+    arrange_manifest(&tp, "volumes", "", VOLUME_TAIL)?;
+    bind(&tp, "volumes")?;
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+
+    let started = Instant::now();
+    let stopped = viv(&tp, &["stop"])?;
+    let elapsed = started.elapsed();
+    check(expect_code(&stopped, 0))?;
+    if elapsed > SHUTDOWN_BUDGET {
+        return fail(format!(
+            concat!(
+                "viv stop took {:?}, over the {:?} budget - the guest store share's ",
+                "mount is likely inside the ordinary shutdown ordering (spec/06)"
+            ),
+            elapsed, SHUTDOWN_BUDGET
+        ));
+    }
+    let status = viv(&tp, &["status", "--json"])?;
+    check(expect_code(&status, 0))?;
+    check(expect_json_string(&status, "state", "built"))
 }
 
 const VOLUME_TAIL: &str = "\n[[volumes]]\nname = \"cache\"\nmount = \"/var/cache/project\"\n";

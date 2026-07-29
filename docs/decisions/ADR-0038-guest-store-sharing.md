@@ -14,7 +14,7 @@
 
 Chosen option: **the host store, shared read-only**, is the default.
 
-- Each additional VM then costs **no duplicated store bytes and no store image to build**. With an independent store, N VMs hold N near-identical copies of the same closure, rebuilt whenever any layer changes, and cached N times in guest memory — precisely the cost that makes running five projects expensive.
+- Each additional VM then costs **no duplicated store bytes and no store image to build**. With an independent store, N VMs hold N near-identical copies of the same closure, rebuilt whenever any layer changes — precisely the cost that makes running five projects expensive.
 - The share is read-only on both sides and served by its own confined daemon, like every other share ([`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](./ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md)).
 - A **writable overlay** above it keeps in-guest builds working, so the two-layer design (ADR-0008) is unaffected.
 - **The trade is stated, not hidden**: the guest can read every path in the host store. The store is world-readable by construction and never holds secrets (N10, ADR-0010), and the threat model is escape, not enumeration — so this is an information exposure about which packages the host has, not a weakening of the boundary (N1).
@@ -23,12 +23,16 @@ Chosen option: **the host store, shared read-only**, is the default.
 ## Consequences
 
 - Good: marginal disk per VM approaches zero and boot skips a store-image build.
-- Good: one host page cache serves every guest.
+- Good: one host page cache serves every guest's store reads.
 - Bad: a guest can enumerate the host's installed closure.
 - Bad: adds a second high-traffic share to keep confined and correct.
 
 ## Status
 
 Accepted
+
+The page-cache saving is host-side only, and the original wording overstated it. There is no cross-VM deduplication of guest memory — a structural consequence of sharing any host directory into a guest, not of this decision — so each guest still caches what it reads. `spec/17` states that constraint; the clause claiming N-times guest-memory caching as a cost of the rejected option has been struck, because that cost is unavoidable either way.
+
+Amended by **ADR-0048** — the store share's guest mount and the daemon that serves it are vivarium's to configure, which is what lets its shutdown ordering be stated as a contract in spec/06.
 
 Discharges the deferral in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md), which owns the resulting contract. The cache policy for this share is fixed by [`ADR-0039-share-cache-policy.md`](./ADR-0039-share-cache-policy.md).

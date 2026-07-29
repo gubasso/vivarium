@@ -30,4 +30,6 @@ Chosen option: **sparse raw with discard-based reclamation** — disk behaves ex
 
 Accepted
 
+Amended by **ADR-0049** — the backend version whose block device passes discard through to the host image is settled by the lockfile, so it is an evaluation-time assertion rather than the `doctor` probe this decision originally relied on.
+
 Amends [`ADR-0019-volume-model.md`](./ADR-0019-volume-model.md), which keeps ownership of the volume model itself. Applied in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md) and [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md).

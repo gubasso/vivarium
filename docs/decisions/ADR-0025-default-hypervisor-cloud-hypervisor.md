@@ -35,6 +35,10 @@ QEMU's microvm machine type **remains admissible** under N2 as the fallback; the
 
 Accepted
 
-Amended by **ADR-0035** — the launch profile additionally requires the backend arguments that make guest memory elastic: shared guest memory (a prerequisite of filesystem sharing), a zero-size balloon with free page reporting and deflate-on-OOM, and a per-VM control socket so `viv trim` can act on a running VM. The backend version floor in spec/13 also covers block-device discard, which [`ADR-0037-volume-disk-format-and-reclamation.md`](./ADR-0037-volume-disk-format-and-reclamation.md) depends on.
+Amended by **ADR-0035** — the launch profile additionally requires the backend arguments that make guest memory elastic: shared guest memory (a prerequisite of filesystem sharing), a zero-size balloon with free page reporting and deflate-on-OOM, and a per-VM control socket so `viv trim` can act on a running VM.
 
-Discharges the deferral in ADR-0024. The concrete binary map lives in [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md). The hardened launch profile it names (VMM + virtiofsd confinement) is enacted by [`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](./ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md).
+Amended by **ADR-0049** — the backend is a member of the built runner's closure, not a host binary, so its version is settled by the lockfile rather than probed. The feature floors this default must meet are therefore evaluation-time assertions: free page reporting on the balloon device (ADR-0035), Landlock in the hardened profile (ADR-0027), and block-device discard with sparse images ([`ADR-0037-volume-disk-format-and-reclamation.md`](./ADR-0037-volume-disk-format-and-reclamation.md)). The recommended version named in spec/13 was always a tested baseline, never the first release carrying any of them.
+
+Amended by **ADR-0048** — vivarium generates this backend's launch arguments itself rather than consuming the upstream runner package.
+
+Discharges the deferral in ADR-0024. The binaries this default resolves to are named in [`ADR-0049-backend-is-a-closure-member.md`](./ADR-0049-backend-is-a-closure-member.md). The hardened launch profile it names (VMM + virtiofsd confinement) is enacted by [`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](./ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md).

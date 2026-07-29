@@ -26,12 +26,11 @@ Stable kebab-case ids; catalog order is cheapest-and-most-fundamental first, so 
 | `kvm-device-present`      | virtualization | `/dev/kvm` exists                                                                                                                   | `69`         |
 | `kvm-device-accessible`   | permissions    | the user can read and write `/dev/kvm`                                                                                              | `77`         |
 | `hardware-virt-available` | virtualization | CPU virtualization extensions are present and enabled                                                                               | `69`         |
-| `backend-binary-present`  | tooling        | the hypervisor binary the launch will use — the selected backend, resolved to its binary name — is on `$PATH`                       | `69`         |
 | `host-userns-available`   | permissions    | unprivileged user namespaces are available — the per-share filesystem daemon's namespace sandbox (N20) cannot be built without them | `69`         |
 
 `kvm-device-present` and `kvm-device-accessible` are split because remediation differs: enable virtualization in firmware vs join the `kvm` group. `host-userns-available` is **hard** rather than soft because the N20 profile is by-construction and unwaivable: a host that cannot provide the namespace sandbox cannot launch at all, and failing at preflight is far more actionable than failing mid-launch.
 
-For the shipped default backend — Cloud Hypervisor, per [`../../decisions/ADR-0025-default-hypervisor-cloud-hypervisor.md`](../../decisions/ADR-0025-default-hypervisor-cloud-hypervisor.md) — `backend-binary-present` resolves to the `cloud-hypervisor` binary plus the `virtiofsd` shared-filesystem daemon that serves the workspace share; the QEMU fallback resolves to the arch-specific `qemu-system-<arch>` binary. The default names a backend, never the contract — the isolation class stays backend-agnostic (N2).
+**Nix is the only tool this catalog looks for on the host.** The hypervisor, its control client, and every filesystem daemon arrive in the built runner's closure, pinned by the project's lockfile, so their presence and version are settled at build time rather than probed ([`../../decisions/ADR-0049-backend-is-a-closure-member.md`](../../decisions/ADR-0049-backend-is-a-closure-member.md)). That decision draws the line this catalog now follows: **`viv doctor` probes host conditions only; anything the lockfile determines is an evaluation-time assertion, not a check.**
 
 ### Soft — host scope
 
@@ -41,8 +40,7 @@ For the shipped default backend — Cloud Hypervisor, per [`../../decisions/ADR-
 | `state-dir-free-space`     | disk           | free space on the **state** filesystem is below the headroom the project's volumes could still claim — a sparse volume that meets host exhaustion surfaces inside the guest as an I/O error                                                                                                                                 |
 | `host-memory-headroom`     | capacity       | available host memory is below the minimum reserve, or below the ceiling of the bound project — the same reading `viv start`'s admission check acts on ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md))                                                                                                   |
 | `host-cgroup2-delegation`  | permissions    | the user's cgroup hierarchy does not have the memory and CPU controllers delegated, so per-VM cost reporting and CPU weighting are unavailable and admission falls back to host-level readings — **soft**, because the model degrades rather than breaks ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)) |
-| `backend-version`          | tooling        | the selected backend is older than the recommended version — for the default backend, the latest stable release at decision time (Cloud Hypervisor v53); the implementation pins the exact floor                                                                                                                            |
-| `volume-discard-supported` | disk           | the selected backend is older than the version whose block device passes discard through to the host image, so volume trim cannot reclaim space                                                                                                                                                                             |
+| `host-fd-limit-sufficient` | permissions    | the host's file-descriptor ceiling is below what a large workspace share will need — each per-share filesystem daemon holds one open descriptor per referenced inode and, running unprivileged, cannot raise its own limit, so a large tree can exhaust it mid-session                                                      |
 | `kernel-version-supported` | virtualization | the host kernel is too old for the required virtio features                                                                                                                                                                                                                                                                 |
 | `host-landlock-available`  | virtualization | the kernel lacks Landlock — the VMM's seccomp + capability-drop sandbox (N20) still applies, but the launch profile's filesystem-path allowlist is skipped                                                                                                                                                                  |
 | `state-dir-writable`       | permissions    | the state root is not writable                                                                                                                                                                                                                                                                                              |
@@ -57,8 +55,8 @@ For the shipped default backend — Cloud Hypervisor, per [`../../decisions/ADR-
 | `config-parses`               | config         | the bound manifest does not parse. Parse only — `doctor` never evaluates or renders the merge; that is `viv config eval`                                                                                                                                                                                                                                                                                                                                                                                               |
 | `manifest-resolves`           | config         | the binding does not resolve to exactly one defined manifest                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `shared-layer-paths-portable` | config         | a shared image or piece in the resolved composition declares a literal personal path where a portable variable belongs (N11, [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)). A **textual** lint over the declarations — like `config-parses` it never evaluates, so it is only an early warning; the authoritative check runs at evaluation and returns `65` ([`../../decisions/ADR-0042-evaluation-time-content-defects.md`](../../decisions/ADR-0042-evaluation-time-content-defects.md)) |
-| `guest-balloon-supported`     | virtualization | the guest kernel this project would boot lacks the balloon driver, and with it the free-page reporting that makes declared memory a ceiling rather than a reservation (N22). Probes the driver only — the declared figure is launch-channel and never a build input (N19)                                                                                                                                                                                                                                              |
-| `share-cache-policy-valid`    | config         | any share in the project's launch profile names a cache policy the shipped filesystem daemon does not accept ([`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md))                                                                                                                                                                                                                                                                                                                  |
+
+Two properties of the project's own guest are deliberately absent from this table: whether the guest kernel carries the balloon driver that makes declared memory a ceiling (N22), and whether each share names a cache policy the shipped daemon accepts. Both are settled by the composition and the lockfile, so both are evaluation-time assertions returning `65`, not probes ([`../../decisions/ADR-0049-backend-is-a-closure-member.md`](../../decisions/ADR-0049-backend-is-a-closure-member.md), [`../../decisions/ADR-0042-evaluation-time-content-defects.md`](../../decisions/ADR-0042-evaluation-time-content-defects.md)). Neither ever reads the declared memory figure, which is launch-channel and never a build input (N19).
 
 When no manifest is bound, `doctor` still runs every host-scope check, notes once on stderr that project-scope checks are skipped (with `viv init` guidance), and marks each as `skipped` / `no-manifest-bound`. All host checks passing still exits `0`.
 
@@ -67,7 +65,6 @@ When no manifest is bound, `doctor` still runs every host-scope check, notes onc
 | Id                         | Category | Warns when                                                                                                                                                                                                                                                                           |
 | -------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `nix-version-currency`     | network  | the installed Nix trails the latest stable release                                                                                                                                                                                                                                   |
-| `backend-version-currency` | network  | the selected backend trails its latest release                                                                                                                                                                                                                                       |
 | `substituter-reachability` | network  | a configured substituter is unreachable                                                                                                                                                                                                                                              |
 | `egress-allowlist-dns`     | network  | an **allowlisted** hostname does not resolve — probed only when the bound manifest sets `sandbox.egress.mode = "allowlist"` (also project scope). Distinct from a _denied_ host, whose fail-fast contract is owned by [`05-networking-and-egress.md`](./05-networking-and-egress.md) |
 
@@ -75,10 +72,10 @@ The default run is fully offline. Open egress is **not** a check and never rende
 
 ### Guaranteed by construction (not probed)
 
-Two security properties are guarantees of how vivarium builds and launches, not host conditions a probe could observe: the separate guest kernel (N1) and the host-side sandbox around the VMM and every virtiofsd (N20). vivarium's launch wrapper enacts N20 as a fixed **hardened launch profile**, so the confinement cannot be disabled at runtime ([`../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md)):
+Some facts about a launch are settled by how vivarium builds and launches, not by any host condition a probe could observe — the boundary [`../../decisions/ADR-0049-backend-is-a-closure-member.md`](../../decisions/ADR-0049-backend-is-a-closure-member.md) draws for the whole catalog. Two of them are security properties: the separate guest kernel (N1) and the host-side sandbox around the VMM and every virtiofsd (N20). vivarium's launch wrapper enacts N20 as a fixed **hardened launch profile**, so the confinement cannot be disabled at runtime ([`../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md)):
 
 - **VMM (Cloud Hypervisor).** Launched unprivileged with `PR_SET_NO_NEW_PRIVS`, capabilities dropped toward zero, built-in seccomp enabled (`--seccomp true`), a Landlock path allowlist where the kernel supports it, and placement in the target's host resource scope ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)). The memory arguments the elastic model requires — shared guest memory, a zero-size balloon with free page reporting and deflate-on-OOM, and a per-VM control socket — are part of the same fixed profile.
-- **virtiofsd (one process per share).** Launched unprivileged, `--sandbox=namespace`, seccomp on, with only its own share writable — never as root and never `--sandbox none`, the configuration behind the guest-root-to-host-root escape CVE-2026-47243. Every daemon joins the same scope as the VMM, so a stopped VM leaves none behind. A share's **cache policy is coherency, not confinement**, and is set per share in [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md); it is probed for validity (`share-cache-policy-valid`) but is no part of this guarantee.
+- **virtiofsd (one process per share).** Launched unprivileged, `--sandbox=namespace`, seccomp enabled with the **killing** action — a logging or trapping action would leave the filter advisory and void N20 — with only its own share writable, never as root and never `--sandbox none`, the configuration behind the guest-root-to-host-root escape CVE-2026-47243. Unprivileged execution also costs each daemon the capability that would let it reference inodes by handle, so it falls back to holding one open descriptor per referenced inode against a limit it cannot raise for itself; the wrapper therefore sets the daemons' descriptor limit before `exec` (`host-fd-limit-sufficient` warns when the host ceiling is too low). Every daemon joins the same scope as the VMM, so a stopped VM leaves none behind. A share's **cache policy is coherency, not confinement**, and is set per share in [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md); it is asserted at evaluation but is no part of this guarantee.
 - **QEMU fallback is documentation-only** — admissible under N2 but not hardened; use Cloud Hypervisor for untrusted workloads.
 
 These are guarantees of construction; `viv doctor` probes only the host _prerequisites_ (the soft-host checks, including `host-landlock-available`), never whether the sandbox "is on." See [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md) and [`../../decisions/ADR-0024-backend-security-requirements.md`](../../decisions/ADR-0024-backend-security-requirements.md).
@@ -116,10 +113,10 @@ Human output groups by category, uses bracketed word markers — never unicode g
 
 ```text
 tooling
-  [pass]     nix-present              nix 2.34 on PATH
+  [pass]     nix-present              nix 2.18 on PATH
+  [fail]     nix-version              nix 2.18, minimum 2.34
+                 hint: upgrade nix to 2.34 or newer, then re-run viv doctor
   [pass]     nix-flakes-enabled       nix-command flakes
-  [fail]     backend-binary-present   backend binary not found on PATH
-                 hint: install the selected backend, then re-run viv doctor
 
 disk
   [warn]     nix-store-disk-space     8.3 GB free (warn under 10 GB)
@@ -138,14 +135,14 @@ config
   "status": "fail",
   "checks": [
     {
-      "id": "backend-binary-present",
+      "id": "nix-version",
       "category": "tooling",
       "scope": "host",
       "severity": "hard",
       "status": "fail",
-      "message": "backend binary not found on PATH",
-      "hint": "install the selected backend, then re-run viv doctor",
-      "doc_url": "/doctor/checks/backend-binary-present"
+      "message": "nix 2.18, minimum 2.34",
+      "hint": "upgrade nix to 2.34 or newer, then re-run viv doctor",
+      "doc_url": "/doctor/checks/nix-version"
     },
     {
       "id": "manifest-resolves",

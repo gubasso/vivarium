@@ -24,11 +24,15 @@ Chosen option: **fixed ceiling plus free page reporting** — the guest hands un
 ## Consequences
 
 - Good: concurrent VMs cost their working sets; the user never sizes a VM.
-- Bad: reporting returns large free blocks, not guest page cache, so resident size still drifts upward — which is what `viv trim` answers.
+- Bad: resident size still drifts upward, for two reasons: the guest page cache is not free memory, so reporting never returns it; and reporting yields only large blocks, so fragmented free pages stay held. `viv trim` answers the first.
 - Bad: the ceiling is real, so a guest can exhaust it while the host has memory free.
 
 ## Status
 
 Accepted
+
+Amended by **ADR-0049** — the balloon-driver requirement is an evaluation-time assertion on the guest vivarium builds, not a `doctor` probe, and the backend version floor that free page reporting needs is settled by the lockfile rather than checked at runtime.
+
+The guest kernel's page-reporting granularity is an explicit setting of vivarium's own base image rather than an inherited default, and the guest compacts proactively so that fragmented free memory becomes reportable without host involvement — which is guest self-reclamation under N22, not the host arbitration N23 forbids.
 
 Discharges the resource-knob mapping left open by [`ADR-0025-default-hypervisor-cloud-hypervisor.md`](./ADR-0025-default-hypervisor-cloud-hypervisor.md), which it amends with the required backend memory arguments. Adds **N22** to [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md); the policy, verbs, and status surface live in [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md).

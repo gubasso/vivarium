@@ -25,3 +25,5 @@ This preserves the core determinism guarantee: identical manifest and lockfile p
 ## Status
 
 Accepted
+
+Amended by **ADR-0048** — states how the injection is achieved. vivarium generates the launch itself rather than consuming the upstream runner package, because that package writes each share's host source path into the build output, which is exactly what this decision forbids.
