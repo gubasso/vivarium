@@ -26,4 +26,6 @@ The marker carries **identity only**. The manifest binding still lives in the st
 
 Accepted
 
+Amended by [`ADR-0043-identity-marker-lifecycle.md`](./ADR-0043-identity-marker-lifecycle.md) — the marker's lifecycle is assigned: `viv start` and a cold-starting `exec`/`shell` write it, `viv destroy` removes it, and every other command resolves the identity without persisting it. The derivation and resolution algorithm above are unchanged.
+
 Amends **N9** ([`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md)) — vivarium may manage a self-ignored `.vivarium/` runtime marker in the project tree (identity only). Amends [`ADR-0008-two-layer-separation.md`](./ADR-0008-two-layer-separation.md) and [`ADR-0011-config-read-only-binding-in-state.md`](./ADR-0011-config-read-only-binding-in-state.md). Specified in [`../reference/spec/15-project-identity.md`](../reference/spec/15-project-identity.md).

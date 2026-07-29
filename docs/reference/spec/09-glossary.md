@@ -26,7 +26,7 @@ Defined terms used across the vivarium documentation. Each term is defined once 
 
 - **Manifest** — the unifier that names one image plus an ordered set of pieces and policy knobs; the single source of truth a project binds to. Authored as TOML, compiled to a generated flake. See [`03-artifact-model.md`](./03-artifact-model.md).
 
-- **Leaf** — the highest-specificity layer in a composition: the manifest's own settings, which use normal priority and so override image defaults. See [`04-composition-and-determinism.md`](./04-composition-and-determinism.md).
+- **Leaf** — the highest-specificity layer in a composition: the manifest's own settings, which use normal priority and so override image and piece defaults. Because the manifest is the personal layer ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)), the leaf is where one user's own choices win. See [`04-composition-and-determinism.md`](./04-composition-and-determinism.md).
 
 - **Binding** — the association between a project and its manifest, recorded in the per-user project registry (state) and resolved by a fixed precedence. See [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md).
 
@@ -34,7 +34,7 @@ Defined terms used across the vivarium documentation. Each term is defined once 
 
 - **Session** — one active `exec` command or interactive `shell` attached through the guest agent.
 
-- **Project identity key** — the stable key that scopes per-project state and runtime directories; its exact derivation is decided separately. See [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md) and [`11-generations-and-build-history.md`](./11-generations-and-build-history.md).
+- **Project identity key** — the stable key that scopes per-project state and runtime directories; the `<project-id>` component of every per-project path. Its derivation is defined in [`15-project-identity.md`](./15-project-identity.md).
 
 - **Target** — the named VM instance within a project, the `<target>` component of every per-project state and runtime path. A project has exactly one target, named `default`, in this version. See [`15-project-identity.md`](./15-project-identity.md).
 
@@ -42,7 +42,7 @@ Defined terms used across the vivarium documentation. Each term is defined once 
 
 - **Outer / inner evaluation** — the two Nix evaluations: the outer builds the sandbox from the manifest at build time; the inner builds the project's development environment inside the guest at shell time.
 
-- **Launch channel** — the runtime portion of the merged configuration (mounts, runtime environment, declared as `vivarium.*` options) that the tool extracts by pure evaluation and applies when the VM launches; never a build input. See [`04-composition-and-determinism.md`](./04-composition-and-determinism.md).
+- **Launch channel** — the runtime portion of the merged configuration (mounts, runtime environment, and resource ceilings, declared as `vivarium.mounts`, `vivarium.env`, and `vivarium.resources`) that the tool extracts by pure evaluation and applies when the VM launches; never a build input. Membership is per option, not per namespace: `vivarium.volumes` is a tool-owned option that belongs to the build channel. See [`04-composition-and-determinism.md`](./04-composition-and-determinism.md).
 
 - **Portable variable** — an unexpanded, machine-independent host variable — `${HOME}` or an `${XDG_*}` directory — the only host reference permitted in shared mount declarations; resolved against the host environment at launch. See [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md).
 

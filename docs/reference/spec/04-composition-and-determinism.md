@@ -9,26 +9,31 @@ A manifest resolves to an image plus an ordered list of pieces (see [`03-artifac
 The merge is **priority-based, not order-based**:
 
 - **Lists concatenate.** Every layer that contributes to a list — package sets, mount lists, the egress allowlist — adds to it; the effective value is the union of all layers.
-- **Scalars resolve by priority.** A scalar set with `mkDefault` yields to a normally-set scalar, which yields to one set with `mkForce`. Position in the `pieces` list does not decide the winner; priority does.
+- **Scalars resolve by priority.** A scalar set with `mkDefault` yields to a normally-set scalar, which yields to one set with `mkForce`. Position in the `pieces` list does not decide the winner; priority does — and it never breaks a tie either. Two definitions surviving at the same priority are a content defect that fails evaluation with `65`, not an order-resolved win (see [`../../decisions/ADR-0042-evaluation-time-content-defects.md`](../../decisions/ADR-0042-evaluation-time-content-defects.md)).
 
-## The three-tier priority convention
+## The priority convention
 
-vivarium assigns roles to priorities so composition is predictable:
+vivarium assigns roles to priorities so composition is predictable. Three priorities carry four roles:
 
 - **Base defaults** — images set overridable values with `mkDefault`.
-- **Project leaf** — the manifest's own settings use normal priority and so override base defaults.
-- **Hard floor** — pieces that must not be overridden (for example a security policy) use `mkForce`.
+- **Piece proposals** — a shared piece that merely suggests a value uses `mkDefault` too, so the user's manifest can still decide. This is what lets two independently-authored pieces be adopted together: at normal priority they would collide instead.
+- **Personal leaf** — the manifest's own settings use normal priority and so override every default. The manifest is the **personal** layer ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)), so this tier is where one user's own choices win.
+- **Hard floor** — a shared piece that must not be overridden (for example a security policy) uses `mkForce`. This is how a team makes a guarantee unwaivable: it lives in a shared piece, and no personal manifest outranks it.
 
-This gives the ergonomics of layered overrides — "the project overrides the base, the security floor overrides everything" — without any custom ordering logic. `viv config eval` (see [`01-command-surface.md`](./01-command-surface.md)) renders the merged result so users can see the effective configuration; `viv config sources` shows which layer each value came from.
+Two disagreeing `mkDefault` proposals are only a conflict while nothing stronger is set; the moment the manifest sets the value itself, its normal-priority definition outranks both and the conflict disappears. That is the reason proposals belong at `mkDefault`.
+
+This gives the ergonomics of layered overrides — "your manifest overrides the defaults, the security floor overrides everything" — without any custom ordering logic. `viv config eval` (see [`01-command-surface.md`](./01-command-surface.md)) renders the merged result so users can see the effective configuration; `viv config sources` shows which layer each value came from.
 
 ## The build and launch channels
 
 The merged configuration divides into two channels, decided in [`../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md`](../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md):
 
 - **Build channel** — everything the guest system derivation depends on: packages, services, policy. This is what `nix build` realizes into the immutable image.
-- **Launch channel** — runtime declarations under the tool-owned `vivarium.*` options (`vivarium.mounts`, `vivarium.env`); the manifest's `[[mounts]]`/`[env]` tables compile into the same options. The tool reads this channel by **pure evaluation** of the merged configuration and applies it when the VM launches; no build output may depend on it (N19, [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md)).
+- **Launch channel** — runtime declarations under the tool-owned options `vivarium.mounts`, `vivarium.env`, and `vivarium.resources`; the manifest's `[[mounts]]`, `[env]`, and `[resources]` tables compile into the same options. The tool reads this channel by **pure evaluation** of the merged configuration and applies it when the VM launches; no build output may depend on it (N19, [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md)).
 
-The split is what lets a shared piece carry host-facing declarations without breaking purity: host-side variables in mount sources stay unexpanded through evaluation and resolve against the host environment only at launch (see [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)). Typing lives in the options module: `vivarium.mounts` and `vivarium.env` are declared with module option types, so a malformed declaration fails evaluation with a precise error rather than at boot.
+Membership is decided per option by what depends on the value, not by the `vivarium.*` prefix ([`../../decisions/ADR-0041-resource-and-volume-channel-classification.md`](../../decisions/ADR-0041-resource-and-volume-channel-classification.md)). `vivarium.volumes` is the exception that proves it: a volume's guest mountpoint is guest system configuration, so it belongs to the **build** channel and adding a volume rebuilds. Only its host image path and virtual size resolve at launch.
+
+The split is what lets a shared piece carry host-facing declarations without breaking purity: host-side variables in mount sources stay unexpanded through evaluation and resolve against the host environment only at launch (see [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)). Typing lives in the options module: `vivarium.mounts`, `vivarium.env`, `vivarium.resources`, and `vivarium.volumes` are all declared with module option types, so a malformed declaration fails evaluation with a precise error rather than at boot.
 
 ## Determinism
 

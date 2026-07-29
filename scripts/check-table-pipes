@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Reject an unescaped `|` inside a code span in a markdown table row.
+
+GFM splits a table row on every bare `|`, including one inside a code span, so
+`| ``viv exec [-t|--tty]`` | purpose |` parses as three cells under a two-cell
+header. dprint then re-pads the row down to the header's column count and drops
+the overflow: the row becomes syntactically valid and the surplus text is gone
+for good. That is not hypothetical — it deleted the whole Purpose cell of the
+`viv exec` row in docs/reference/spec/01-command-surface.md.
+
+This must therefore run *before* dprint. markdownlint's MD056 finds the same
+defect, but only while the row is still over-wide, which is no longer true once
+dprint has touched the file.
+
+The scan is deliberately narrow: it looks only at table rows, tracks code-span
+state so an ordinary cell separator between two code spans is not mistaken for a
+pipe inside one, and honours a preceding backslash. Fenced blocks are skipped.
+"""
+
+from __future__ import annotations
+
+import sys
+
+FENCE_PREFIXES = ("```", "~~~")
+
+
+def violations(lines: list[str]) -> list[tuple[int, int, str]]:
+    """Return (line_no, column, line) for each offending row, both 1-indexed."""
+    found: list[tuple[int, int, str]] = []
+    fence: str | None = None
+
+    for line_no, line in enumerate(lines, start=1):
+        stripped = line.lstrip()
+
+        # Fenced blocks may legitimately contain pipes and backticks.
+        if fence is not None:
+            if stripped.startswith(fence):
+                fence = None
+            continue
+        for prefix in FENCE_PREFIXES:
+            if stripped.startswith(prefix):
+                fence = prefix
+                break
+        if fence is not None:
+            continue
+
+        # Only table rows can lose content this way.
+        if not stripped.startswith("|"):
+            continue
+
+        in_span = False
+        index = 0
+        while index < len(line):
+            char = line[index]
+            if char == "\\":
+                index += 2  # the escape consumes whatever follows, `|` included
+                continue
+            if char == "`":
+                in_span = not in_span
+            elif char == "|" and in_span:
+                found.append((line_no, index + 1, line.rstrip("\n")))
+                break
+            index += 1
+
+    return found
+
+
+def main(paths: list[str]) -> int:
+    failed = False
+
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                lines = handle.readlines()
+        except (OSError, UnicodeDecodeError) as error:
+            print(f"{path}: cannot read ({error})", file=sys.stderr)
+            failed = True
+            continue
+
+        for line_no, column, text in violations(lines):
+            failed = True
+            print(f"{path}:{line_no}:{column}: unescaped `|` inside a code span in a table row", file=sys.stderr)
+            print(f"  {text.strip()}", file=sys.stderr)
+            print("  fix: write it as \\| — GFM splits the row on a bare pipe and the", file=sys.stderr)
+            print("       formatter then discards every cell past the header's count.", file=sys.stderr)
+
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

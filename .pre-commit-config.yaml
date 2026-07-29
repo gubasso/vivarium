@@ -268,6 +268,31 @@ repos:
   # External dependency: dprint must be on PATH (`cargo install dprint` or your
   # package manager), the same model as the json/nix hooks. pre-commit only —
   # git push may strip PATH and the format is already applied by commit time.
+
+  # --- Table pipe integrity (MUST run before dprint) ---
+  #
+  # An unescaped `|` inside a code span in a table row makes GFM split that row
+  # into more cells than the header declares. dprint then re-pads the row down to
+  # the header's column count and DISCARDS the overflow, leaving a syntactically
+  # valid row with content silently deleted — which is how the `viv exec` Purpose
+  # cell was lost from docs/reference/spec/01-command-surface.md.
+  #
+  # Nothing downstream can catch this. markdownlint's MD056 (table-column-count)
+  # detects the over-wide row, but only while it is still over-wide — and dprint
+  # has already normalized it away by then. Reordering markdownlint ahead of dprint
+  # does not work either: `--config` sets only the global config and the directory
+  # .markdownlint-cli2.jsonc still merges over it, so a table-only rule set cannot
+  # be isolated. Hence a dedicated guard that runs first and checks exactly one
+  # thing. Fix a violation by escaping the pipe as `\|`, never by reflowing.
+  - repo: local
+    hooks:
+      - id: markdown-table-pipes
+        name: table-row code spans must escape `|` as `\|`
+        entry: scripts/check-table-pipes
+        language: system
+        types: [markdown]
+        stages: [pre-commit]
+
   - repo: local
     hooks:
       - id: dprint-markdown

@@ -17,7 +17,7 @@ Chosen option: **default home volume plus project-scoped named volumes** — per
 - The guest filesystem is three layers: immutable image, ephemeral runtime layer, persistent volumes. The workspace remains a share (ADR-0009/0017), outside this model.
 - Every volume is one host-side disk image attached as a block device, stored under the **state** root at `projects/<project-id>/<target>/volumes/<name>.img` — state, never cache, because volume contents are user data and not regenerable.
 - The **default volume** always exists, reserved name `default`, mounted at the guest user's home.
-- **Named volumes** are declared in the manifest (`[[volumes]]` with `name`, `mount`) or contributed by pieces through the module merge (lists concatenate). The same name declared with conflicting mountpoints fails evaluation; `viv volume list` names each volume's declaring layer.
+- **Named volumes** are declared in the manifest (`[[volumes]]` with `name`, `mount`) or contributed by pieces through the module merge (lists concatenate); the piece-side option is named by ADR-0041. The same name declared with conflicting mountpoints fails evaluation; `viv volume list` names each volume's declaring layer.
 - `[volume].persist` lists extra guest paths bind-mounted from inside the default volume.
 - Identity is (project, target, name); manifests declare the shape, each bound project instantiates privately, and reattachment on `start` is automatic. No cross-project sharing.
 - CLI is lifecycle-only: `viv volume list | rm <name> | rm --all`; creation is declarative. Removal refuses while the VM runs; absent targets are a no-op exit `0`.
@@ -32,3 +32,5 @@ Chosen option: **default home volume plus project-scoped named volumes** — per
 Accepted
 
 Amended by **ADR-0037** — each volume image is sparse raw, created lazily on first `start`, and its declared size is a virtual ceiling reclaimed by trim rather than a preallocated amount. The model above is unchanged.
+
+Amended by [`ADR-0041-resource-and-volume-channel-classification.md`](./ADR-0041-resource-and-volume-channel-classification.md) — the piece-side declaration surface is the `vivarium.volumes` option, and volume declarations are classified **build-channel**: the guest mountpoint is guest system configuration, so adding a volume rebuilds. The model above is unchanged.

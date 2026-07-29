@@ -4,7 +4,7 @@ Why you never size a VM, what a running VM actually costs the host, and what hap
 
 ## Ceilings, not reservations
 
-Every resource figure vivarium accepts or computes is a **ceiling**: the most a VM may use, not an amount taken from the host on its behalf (N22, [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md)). This holds whether the value was declared in `[resources]` ([`03-artifact-model.md`](./03-artifact-model.md)) or filled in by the policy below.
+Every resource figure vivarium accepts or computes is a **ceiling**: the most a VM may use, not an amount taken from the host on its behalf (N22, [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md)). This holds whether the value was declared in the manifest's `[resources]` table, proposed by a piece through the equivalent `vivarium.resources` option ([`03-artifact-model.md`](./03-artifact-model.md)), or filled in by the policy below.
 
 - **Memory** is demand-faulted. A VM declared 8 GiB starts at a fraction of that and grows toward it only as the guest actually touches pages.
 - **Memory is returned.** The guest reports pages it has finished with, and the host reclaims them, so resident size tracks the working set rather than ratcheting to the ceiling.
@@ -30,7 +30,7 @@ The limits of the model are stated plainly, because they are the two ways a user
 
 Half of host memory is safe _because_ it is a ceiling. The lower clamp keeps a real toolchain from thrashing on a small host; the upper clamp stops one runaway project from being able to consume a large host by itself. A declared value always wins and is still a ceiling.
 
-These are **launch-time** values derived from the host, so they are never build inputs (N3, N19, [`04-composition-and-determinism.md`](./04-composition-and-determinism.md)). Two hosts running the same manifest build the same VM and boot it with different ceilings.
+These are **launch-time** values derived from the host, so they are never build inputs (N3, N19, [`04-composition-and-determinism.md`](./04-composition-and-determinism.md)); the option carrying them, `vivarium.resources`, is classified launch-channel for exactly this reason ([`../../decisions/ADR-0041-resource-and-volume-channel-classification.md`](../../decisions/ADR-0041-resource-and-volume-channel-classification.md)). Two hosts running the same manifest build the same VM and boot it with different ceilings.
 
 ## What a VM costs the host
 
@@ -108,7 +108,7 @@ The `--json` shape adds a `runtime` object beside the existing declared `resourc
 
 Two guest defaults follow from the model and are part of the base image, not user knobs:
 
-- **A small compressed in-memory swap device.** A session that briefly overshoots compresses cold pages instead of losing a process. Compressed pages remain guest memory, so nothing reaches host storage.
+- **A small compressed in-memory swap device.** A session that briefly overshoots compresses cold pages instead of losing a process. Compressed pages remain guest memory, so nothing reaches host storage. It is sized from the RAM the guest observes at boot, never from `resources.mem_mib`: sizing it from the declaration would make a launch-channel value a build input and break N19.
 - **No disk-backed swap in the guest.** It would convert guest memory pressure into block I/O into host page cache — the worst of both, multiplied by the number of running VMs.
 
 Guest memory overcommit stays at the kernel default. Strict accounting with no swap would spuriously fail the large, short-lived allocations that toolchains and language servers make constantly.

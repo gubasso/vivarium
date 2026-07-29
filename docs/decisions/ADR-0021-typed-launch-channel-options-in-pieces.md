@@ -16,7 +16,7 @@ Chosen option: **typed `vivarium.*` options inside the piece module** — one fi
 
 - A tool-owned options module declares `vivarium.mounts` (`listOf` submodule `source`/`target`/ `readonly`) and `vivarium.env` (`attrsOf str`); the module system validates shapes and merges lists/attrsets — no bespoke engine (N6). Manifest `[[mounts]]`/`[env]` compile into the same options.
 - These options are **launch-channel data**: the tool reads `config.vivarium.*` by pure evaluation and applies it at launch; no build output may depend on it (new invariant N19). Host-side `${VAR}` expansion happens only at launch (N5).
-- **Portable variables only in shared layers:** mount sources in shared pieces and manifests may use `${HOME}` and `${XDG_*}` — unexpanded, machine-independent — never literal personal paths; validation rejects literals before the build. Literal paths remain allowed in the personal/machine-local layer (N11, refined).
+- **Portable variables only in shared layers:** mount sources in shared images and pieces may use `${HOME}` and `${XDG_*}` — unexpanded, machine-independent — never literal personal paths; validation rejects literals before the build. Literal paths remain allowed in the personal/machine-local layer (N11, refined).
 
 ## Consequences
 
@@ -27,5 +27,9 @@ Chosen option: **typed `vivarium.*` options inside the piece module** — one fi
 ## Status
 
 Accepted
+
+Amended by [`ADR-0040-manifest-is-the-personal-layer.md`](./ADR-0040-manifest-is-the-personal-layer.md) — the manifest moved to the personal class, so the portable-variable rule binds shared images and pieces only; literal paths are legal in a user's own manifest.
+
+Amended by [`ADR-0041-resource-and-volume-channel-classification.md`](./ADR-0041-resource-and-volume-channel-classification.md) — the option surface above is not the whole set: `vivarium.resources` joins the launch channel and `vivarium.volumes` is build-channel, so this ADR's title over-generalizes. Channel membership is decided per option, not by the `vivarium.*` prefix.
 
 Amends [`ADR-0020-mount-and-config-mirroring-schema.md`](./ADR-0020-mount-and-config-mirroring-schema.md). Specified in [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md), [`../reference/spec/04-composition-and-determinism.md`](../reference/spec/04-composition-and-determinism.md), [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md), [`../reference/spec/07-secrets-and-config-sharing.md`](../reference/spec/07-secrets-and-config-sharing.md), and [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md).

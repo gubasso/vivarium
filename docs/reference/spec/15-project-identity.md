@@ -12,7 +12,7 @@ Every per-project artifact vivarium writes is scoped by a single **project-ident
 
 ## The marker
 
-So that identity survives a directory move or rename, vivarium anchors it in a marker it owns inside the project tree:
+So that identity survives a directory move or rename, vivarium anchors it in a marker it owns inside the project tree. The marker is created by the commands that start a VM, never by a read-only one — see [Resolving the identity](#resolving-the-identity) — and removed by `viv destroy`:
 
 ```text
 <project>/.vivarium/
@@ -28,31 +28,39 @@ Because the marker is gitignored, it never travels through `git`: a fresh clone 
 
 The marker carries **identity only** — the `<project-id>`. It is **not** the manifest binding. The project→manifest binding still lives exclusively in the per-user state registry, written only on an explicit `viv init --write`, and resolution precedence is unchanged (`--manifest` → `VIVARIUM_MANIFEST` → registry → fail closed; N7, [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), [`../../decisions/ADR-0011-config-read-only-binding-in-state.md`](../../decisions/ADR-0011-config-read-only-binding-in-state.md)).
 
-Identity is tracked separately. vivarium keeps an **identity index** under the state root that maps each assigned `id` to the **live canonical path** it currently occupies. This index is ordinary tool-managed runtime state — written automatically like generations and runtime files, not gated behind `--write` — and it exists independently of the binding, so a project run through a `--manifest`/`VIVARIUM_MANIFEST` override (no registry entry) still has a stable identity. The index is what makes the resolution below deterministic.
+Identity is tracked separately. vivarium keeps an **identity index** under the state root that maps each assigned `id` to the **live canonical path** it currently occupies. This index is ordinary tool-managed runtime state — written automatically like generations and runtime files, not gated behind `--write`, and only by the commands that mint (see below) — and it exists independently of the binding, so a project run through a `--manifest`/`VIVARIUM_MANIFEST` override (no registry entry) still has a stable identity. The index is what makes the resolution below deterministic.
 
 ## Resolving the identity
 
-On every invocation, for the project directory at canonical (symlink-resolved) path `P` with sanitized basename `N`, vivarium resolves `<project-id>` as follows.
+**Resolution always runs; persistence does not.** Every invocation resolves `<project-id>` — a read-only `viv status` needs it to locate the project's state just as much as `viv start` does. But only the shared **ensure-running routine** persists one: `viv start`, and `exec`/`shell` when they cold-start ([`10-vm-lifecycle.md`](./10-vm-lifecycle.md)). Every other command resolves in memory and writes nothing, which is what makes the read-only guarantee in [`14-exit-codes.md`](./14-exit-codes.md) literally true. Steps marked **persist** below are simply skipped when the caller does not mint; the resolved value is returned either way.
+
+`viv init --write` does not mint either, despite writing. The project registry is keyed by the project's **absolute path**, not by `<project-id>` ([`../../decisions/ADR-0011-config-read-only-binding-in-state.md`](../../decisions/ADR-0011-config-read-only-binding-in-state.md)), so recording a binding needs no identity at all.
+
+For the project directory at canonical (symlink-resolved) path `P` with sanitized basename `N`, vivarium resolves `<project-id>` as follows.
 
 **If the marker `.vivarium/id` exists** (its value is `M`):
 
-- No index entry for `M` → re-adopt it (record `M → P`).
-- The index says `M` lives at `P` → use `M` (the ordinary in-place run).
-- The index says `M` lives at a path that **still exists** and is not `P` → this directory is a **copy**; mint the smallest free suffix of `N`, rewrite the marker, and record it.
-- The index says `M` lives at a path that **no longer exists** → this is a **move or rename**; re-point `M → P` and use `M`.
+- No index entry for `M` → use `M`; **persist** the record `M → P`.
+- The index says `M` lives at `P` → use `M` (the ordinary in-place run); nothing to persist.
+- The index says `M` lives at a path that **still exists** and is not `P` → this directory is a **copy**; resolve to the smallest free suffix of `N`, and **persist** it by rewriting the marker and recording it.
+- The index says `M` lives at a path that **no longer exists** → this is a **move or rename**; use `M` and **persist** the re-pointing `M → P`.
 
 **If there is no marker:**
 
-- The index already has an entry for path `P` → re-adopt its id and rewrite the marker (this recovers a marker the user deleted).
-- Otherwise assign `N` — suffixed if `N` is held by a different, still-existing project — write the marker, and record it.
+- The index already has an entry for path `P` → use its id and **persist** by rewriting the marker (this recovers a marker the user deleted).
+- Otherwise resolve to `N` — suffixed if `N` is held by a different, still-existing project — and **persist** by writing the marker and recording it.
 
 Either source can be rebuilt from the other: a deleted marker is recovered from the index entry for `P`, and a lost index entry is re-adopted from the marker. Assigning a brand-new id takes a short global lock on the identity index before the per-project `flock` ([`12-exec-and-shell.md`](./12-exec-and-shell.md)), so two concurrent first-time `viv start`s cannot mint divergent suffixes for the same directory.
 
+One consequence is worth stating plainly: a resolved-but-unpersisted id is deterministic, not stable over time. Two copies of a project both resolve to `api-2` until one of them starts; once that one mints, the other resolves to `api-3`. Only minting settles a suffix, so a read-only command run in an unstarted copy may report a different id later.
+
 ## Behavior by scenario
+
+Every row assumes the id is being **minted** — that is, the command is `viv start` or a cold-starting `exec`/`shell`. A read-only command resolves to the same value but leaves no marker and no index entry behind.
 
 | Scenario                                                    | Resulting `<project-id>`                       |
 | ----------------------------------------------------------- | ---------------------------------------------- |
-| First run in `~/work/api`                                   | `api`                                          |
+| First `start` in `~/work/api`                               | `api`                                          |
 | Re-run in place                                             | `api` (unchanged)                              |
 | Move keeping the name (`~/work/api` → `~/archive/api`)      | `api` — state reattaches                       |
 | Leaf-rename (`~/work/api` → `~/work/api2`)                  | `api` — the marker keeps the identity          |

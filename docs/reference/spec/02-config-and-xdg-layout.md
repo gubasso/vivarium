@@ -13,7 +13,11 @@ The config, data, state, and cache roots hold, respectively, what the user edits
 
 ## Global config file
 
-The config root holds one global config file (TOML) carrying user-wide defaults. It is hand-authored and read-only to the tool. It does **not** hold the project→manifest binding: that binding is machine-specific, non-portable runtime state, so it lives in the state root, not here.
+The config root holds one global config file, `config.toml`, carrying user-wide defaults. It is hand-authored and read-only to the tool; [`../../decisions/ADR-0012-generate-config-examples-from-types.md`](../../decisions/ADR-0012-generate-config-examples-from-types.md) governs the annotated example a user copies from.
+
+It carries defaults for **cross-cutting concerns** — the settings that apply to every command rather than to one project. Today that is the logging family specified in [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md); each later cross-cutting knob joins the same chain. It sits one rung below the environment in the precedence standard, which is **flag > environment variable > global config file > built-in default** ([`../../decisions/ADR-0046-global-config-file-and-precedence.md`](../../decisions/ADR-0046-global-config-file-and-precedence.md), amending [`../../decisions/ADR-0026-global-flags-and-config-precedence.md`](../../decisions/ADR-0026-global-flags-and-config-precedence.md)).
+
+Two things it deliberately does not carry. It does **not** hold the project→manifest binding: that binding is machine-specific, non-portable runtime state, so it lives in the state root, not here — and manifest selection keeps its own chain (below), because a per-project binding has no meaningful user-wide default. It does **not** hold a colour setting: colour follows the environment-only chain `NO_COLOR > FORCE_COLOR > isatty` with no flag and no file key ([`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md)).
 
 ## Project registry (state)
 
@@ -37,3 +41,13 @@ The effective manifest is resolved highest-wins, per [`../../decisions/ADR-0011-
 ## The libraries
 
 `images/`, `pieces/`, and `manifests/` under the config root hold the composable artifacts. Their shapes are specified in [`03-artifact-model.md`](./03-artifact-model.md). Images and pieces are Nix modules; manifests are TOML that the tool compiles, per [`../../decisions/ADR-0004-toml-manifest-compiles-to-flake.md`](../../decisions/ADR-0004-toml-manifest-compiles-to-flake.md).
+
+A manifest names its layers by bare identifier — `image = "rust"`, `pieces = [ "git" ]` — and the tool resolves each identifier to one file in the matching library. A **name** is kebab-case: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`. Resolution tries the flat form first and the directory form second, using the library's extension — `.nix` for `images/` and `pieces/`, `.toml` for `manifests/`:
+
+| Library      | Tried first             | Tried second                    |
+| ------------ | ----------------------- | ------------------------------- |
+| `images/`    | `images/<name>.nix`     | `images/<name>/default.nix`     |
+| `pieces/`    | `pieces/<name>.nix`     | `pieces/<name>/default.nix`     |
+| `manifests/` | `manifests/<name>.toml` | `manifests/<name>/default.toml` |
+
+The directory form exists so a multi-file artifact can keep its helper modules beside it; an image that imports a shared base is the motivating case ([`03-artifact-model.md`](./03-artifact-model.md)). Anything in a library directory that is not a member by these rules — a helper module, a README, a nested name that is not kebab-case — is invisible to the readers and never enumerated. Both spellings of one name present is an ambiguity, not a precedence question: resolution fails closed naming both paths ([`14-exit-codes.md`](./14-exit-codes.md)). The resolved path is what `viv images list`, `viv manifest list`, and `viv manifest show` report as `path` ([`01-command-surface.md`](./01-command-surface.md)). Decided in [`../../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md`](../../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md).

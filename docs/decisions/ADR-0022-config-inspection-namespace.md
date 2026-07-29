@@ -15,8 +15,8 @@ Three read-only verbs overlapped: `viv show --resolved` (render the merged, eval
 Chosen option: **retire `show`; `config` owns config inspection; `doctor` stays a pure checker** — it splits the overlap into two honest domains: _inspect config_ vs _diagnose health_.
 
 - `viv config` (no subcommand) — the binding: bound manifest + effective config/state/data/cache paths.
-- `viv config sources [--json]` — provenance: declaring manifest and ordered pieces in merge order; the home for how merge-priority conflicts and ties render.
-- `viv config eval [--json]` — the fully merged, **evaluated** config. Replaces `show --resolved`; `eval` names the semantic Nix step (echoes `nix eval`) instead of the meaningless `show`. Guards on the hard preflight subset (Nix present) since it evaluates; `config`/`config sources` are pure metadata reads.
+- `viv config sources [--json]` — provenance: declaring manifest and ordered pieces in merge order; the home for how merge-priority conflicts and content defects render.
+- `viv config eval [--json]` — the fully merged, **evaluated** config. Replaces `show --resolved`; `eval` names the semantic Nix step (echoes `nix eval`) instead of the meaningless `show`. Guards on the hard preflight subset (Nix present) since it evaluates; `config` is a pure metadata read.
 - `viv doctor` is unchanged: a checker with pass/warn/fail and sysexit codes, never a config renderer.
 
 Grounded in dominant CLI precedent: `nix config show`, `npm config list`, `terraform show`, `kubectl config view` render config, while `nix doctor`, `npm doctor`, `brew doctor`, `flutter doctor` only diagnose — the two are never one verb. All three `config*` paths are read-only (N13); exit codes follow ADR-0015.
@@ -30,5 +30,7 @@ Grounded in dominant CLI precedent: `nix config show`, `npm config list`, `terra
 ## Status
 
 Accepted
+
+Amended by [`ADR-0042-evaluation-time-content-defects.md`](./ADR-0042-evaluation-time-content-defects.md) — `config sources` is not a pure metadata read: rendering per-key winners and priorities requires the module system's definition list, so it guards on the Nix preflight subset too. It renders content defects and still exits `0`.
 
 Amends [`ADR-0015-cli-output-and-failure-contract.md`](./ADR-0015-cli-output-and-failure-contract.md) — retires `show`, adds the `config` inspection namespace. Specified in [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md) and [`../reference/spec/04-composition-and-determinism.md`](../reference/spec/04-composition-and-determinism.md).

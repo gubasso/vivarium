@@ -26,3 +26,5 @@ Merge is **priority-based, not order-based**: a base layer sets `mkDefault`, a p
 ## Status
 
 Accepted
+
+Amended by [`ADR-0042-evaluation-time-content-defects.md`](./ADR-0042-evaluation-time-content-defects.md) — priority-not-order is now unqualified: declaration order does not break an equal-priority tie either. Two definitions surviving at the same priority fail evaluation with `65` rather than resolving to the first declared.

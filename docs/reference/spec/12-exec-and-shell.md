@@ -37,7 +37,7 @@ Host environment passthrough is deny-by-default. The default allowlist is `TERM`
 
 ## Workspace mounts
 
-Mount semantics are owned by [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md). The primary workspace is mounted read-write at `/workspaces/<repo>`, and additional mounts may be declared for other guest paths. All host paths for primary and extra mounts are launch-time inputs or personal/machine-local config and must never enter the Nix build output or shared manifest facts.
+Mount semantics are owned by [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md). The primary workspace is mounted read-write at `/workspaces/<repo>`, and additional mounts may be declared for other guest paths. All host paths for primary and extra mounts are launch-time inputs or personal/machine-local config and must never enter the Nix build output or a shared image or piece.
 
 ## Ensure running and control socket
 
@@ -75,7 +75,7 @@ Sessions are counted, not tracked: `viv status` reports the number of live conne
 
 Exit codes follow the program-wide taxonomy and per-command matrix in [`14-exit-codes.md`](./14-exit-codes.md); the `exec` / `shell` row there names the categories these commands can return. What is specific here is the **guest-process-start boundary**:
 
-- **Before** the guest process starts, vivarium-origin failures use the sysexits categories: usage (`64`, incl. missing `--`, empty argv, `-t` when stdin is not a terminal), no/invalid manifest or incompatible generation metadata (`78`), Nix eval/build fault before boot (`70`), backend/agent unavailable or boot timeout (`69`), host or agent-reported permission failure (`77`), transient lock/startup race (`75`), and control-socket I/O (`74`).
+- **Before** the guest process starts, vivarium-origin failures use the sysexits categories: usage (`64`, incl. missing `--`, empty argv, `-t` when stdin is not a terminal), no/invalid manifest or incompatible generation metadata (`78`), a merged-configuration content defect on a cold start (`65`, see [`../../decisions/ADR-0042-evaluation-time-content-defects.md`](../../decisions/ADR-0042-evaluation-time-content-defects.md)), Nix eval/build fault before boot (`70`), backend/agent unavailable or boot timeout (`69`), host or agent-reported permission failure (`77`), transient lock/startup race (`75`), and control-socket I/O (`74`).
 - **After** it starts, return the guest status verbatim for `0..255`; a guest killed by signal `S` yields `128+S`. If the transport dies after guest start before the status is known, return `74` (EX_IOERR) with a stderr diagnostic and do not guess a guest code. A guest may itself exit a value such as `69`; that is still the guest's result, because the boundary is guest-process start.
 
 `127` (not found) and `126` (not executable) stay reserved for a future refinement of the before-start not-found/not-executable cases; v1 uses the categories above.

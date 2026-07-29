@@ -15,7 +15,7 @@ $ viv init --manifest rust-web --write --yes
 $ viv config --json
 ```
 
-The preview lets you check the selection without changing the binding. Use the configuration lookup to confirm the recorded result.
+The preview lets you check the selection without changing the binding. Use the configuration lookup to confirm the recorded result. Nothing is persisted until `--write`, and nothing lands in the project tree at all — [the decision keeping the config library read-only and the binding in state](../decisions/ADR-0011-config-read-only-binding-in-state.md) explains where the record goes instead.
 
 ## Start and inspect the sandbox
 
@@ -25,7 +25,7 @@ $ viv status
 $ viv shell
 ```
 
-Use [exec and shell](../reference/spec/12-exec-and-shell.md) for the interactive boundary and [exit codes](../reference/spec/14-exit-codes.md) when automating this flow.
+Starting is detached, idempotent, and non-destructive, so a second `viv start` is safe — see [the decision that fixed those semantics](../decisions/ADR-0013-vm-lifecycle-and-up.md). The first start is also what mints the project's identity marker, per [the marker-lifecycle decision](../decisions/ADR-0043-identity-marker-lifecycle.md). Use [exec and shell](../reference/spec/12-exec-and-shell.md) for the interactive boundary and [exit codes](../reference/spec/14-exit-codes.md) when automating this flow.
 
 ## Acceptance coverage
 

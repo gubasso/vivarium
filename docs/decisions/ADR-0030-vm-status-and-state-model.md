@@ -29,4 +29,6 @@ Chosen option: **a small vivarium-owned state set**, surfaced by `viv status`.
 
 Accepted
 
+`starting` stands, but its justification narrowed when [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md) fixed `start`'s post-condition: since `start` returns only once the guest answers, `starting` is observable to a **concurrent** `status` racing another process's boot, not in a detached window after one's own `start` returned.
+
 Applied in [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md), [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md), and [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md).

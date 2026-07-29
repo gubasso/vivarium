@@ -2,14 +2,17 @@ mod support;
 
 use std::fs;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use support::{
     EX_CONFIG, EX_DATAERR, EX_USAGE, GateLevel, TempProject, VivOutput, expect_code,
-    expect_json_keys, expect_marker_absent, expect_marker_id, expect_no_project_binding_files,
-    expect_no_volume_images, expect_nonzero, expect_registry_binding_visible,
-    expect_stderr_mentions, expect_stdout_lacks, expect_stdout_mentions, expect_tree_unchanged,
-    expect_volume_image, gate, run_viv, snapshot_tree, volume_image, write_file,
+    expect_json_array_items, expect_json_array_nonempty, expect_json_fields_at, expect_json_keys,
+    expect_json_map_entries, expect_json_string, expect_marker_absent, expect_marker_id,
+    expect_no_project_binding_files, expect_no_volume_images, expect_nonzero,
+    expect_registry_binding_visible, expect_stderr_mentions, expect_stdout_lacks,
+    expect_stdout_mentions, expect_tree_unchanged, expect_volume_image, gate, json, run_viv,
+    snapshot_tree, volume_image, write_file,
 };
 
 type WorkflowRunner = fn() -> Result<(), Failed>;
@@ -108,6 +111,13 @@ const GUEST_FETCH: &str = concat!(
     "else echo 'no fetch tool in guest image' >&2; exit 69; fi"
 );
 
+/// How long a denied fetch may take before the denial counts as a drop rather than a
+/// rejection (spec/05, ADR-0044). Generous on purpose: a rejected connection fails in
+/// milliseconds, while a dropped one burns through SYN retries for a minute or more, so
+/// anything in between still separates the two without making the trial flaky on a slow
+/// guest.
+const DENIAL_BUDGET: Duration = Duration::from_secs(20);
+
 fn main() -> std::process::ExitCode {
     let args = Arguments::from_args();
     let mut trials = vec![Trial::test("harness_self_check", harness_self_check)];
@@ -117,8 +127,13 @@ fn main() -> std::process::ExitCode {
     libtest_mimic::run(&args, trials).exit_code()
 }
 
+/// Whether the operator demanded that an unmet gate fail rather than skip.
+fn gate_required() -> bool {
+    std::env::var_os("VIVARIUM_TEST_REQUIRE").is_some_and(|value| value == "1")
+}
+
 fn gated_trial(name: &'static str, level: GateLevel, runner: fn() -> Result<(), Failed>) -> Trial {
-    let require = std::env::var_os("VIVARIUM_TEST_REQUIRE").is_some_and(|value| value == "1");
+    let require = gate_required();
     let decision = gate().result(level);
     let ignored = decision.is_err() && !require;
     if ignored && let Err(reason) = decision {
@@ -179,6 +194,107 @@ fn harness_self_check() -> Result<(), Failed> {
     if !gate().is_well_formed() {
         return fail("gate probe returned a malformed decision");
     }
+
+    check(harness_json_self_check())
+}
+
+/// The JSON assertions are the harness's only *structural* checks, and every trial that
+/// uses them is gated off until a real `viv` exists — so without this they would ship
+/// unexecuted. Each case below is one the substring scan they replaced got wrong.
+fn harness_json_self_check() -> Result<(), String> {
+    let envelope = br#"{"volumes":[{"name":"default","mount":"~"}],"state":"running"}"#;
+
+    if !json::missing_keys(envelope, &["volumes", "state"])?.is_empty() {
+        return Err("missing_keys did not find keys that are present".to_owned());
+    }
+    if json::missing_keys(envelope, &["conflicts"])? != vec!["conflicts".to_owned()] {
+        return Err("missing_keys did not report an absent key".to_owned());
+    }
+    // `name` is nested inside the array, not top-level. The substring scan could not
+    // tell the two apart, so an envelope assertion passed on the wrong shape.
+    if json::missing_keys(envelope, &["name"])?.is_empty() {
+        return Err("missing_keys accepted a nested key as top-level".to_owned());
+    }
+    if json::missing_keys(b"not json", &["state"]).is_ok() {
+        return Err("missing_keys accepted output that is not JSON".to_owned());
+    }
+
+    if !json::array_items_missing(envelope, "volumes", &["name", "mount"])?.is_empty() {
+        return Err("array_items_missing did not find fields that are present".to_owned());
+    }
+    if json::array_items_missing(envelope, "volumes", &["orphan"])?
+        != vec!["volumes[0].orphan".to_owned()]
+    {
+        return Err("array_items_missing did not report an absent field".to_owned());
+    }
+    if json::array_items_missing(envelope, "state", &["name"]).is_ok() {
+        return Err("array_items_missing accepted a non-array under the key".to_owned());
+    }
+
+    if json::string_field(envelope, "state")? != Some("running".to_owned()) {
+        return Err("string_field did not read a top-level string".to_owned());
+    }
+    if json::string_field(envelope, "volumes")?.is_some() {
+        return Err("string_field returned a value for a non-string field".to_owned());
+    }
+
+    harness_nested_json_self_check()
+}
+
+/// The specified envelopes nest — `config eval` puts the merged config under `config`,
+/// `config sources` keys `values` by option path — so the path- and map-aware assertions
+/// need the same self-check as the top-level one. Without them a trial would have to
+/// demand nested field names at the root, which a conforming implementation never emits.
+fn harness_nested_json_self_check() -> Result<(), String> {
+    let nested = br#"{
+        "config": { "sandbox": { "egress": { "mode": "allowlist", "allow": [] } } },
+        "values": {
+            "resources.mem_mib": { "effective": null, "winner": null, "contributors": [] }
+        },
+        "conflicts": [ { "kind": "tie", "key": "resources.mem_mib", "layers": ["a", "b"] } ]
+    }"#;
+
+    if !json::missing_at_path(nested, "config.sandbox.egress", &["mode", "allow"])?.is_empty() {
+        return Err("missing_at_path did not find nested fields that are present".to_owned());
+    }
+    if json::missing_at_path(nested, "config.sandbox.egress", &["proxy"])?
+        != vec!["config.sandbox.egress.proxy".to_owned()]
+    {
+        return Err("missing_at_path did not report an absent nested field".to_owned());
+    }
+    if json::missing_at_path(nested, "config.absent", &["mode"]).is_ok() {
+        return Err("missing_at_path accepted a path that does not exist".to_owned());
+    }
+    // The regression this whole helper exists to prevent: nested names are not root names.
+    if json::missing_keys(nested, &["mode"])?.is_empty() {
+        return Err("missing_keys accepted a deeply nested key as top-level".to_owned());
+    }
+
+    if !json::map_entries_missing(nested, "values", &["effective", "winner", "contributors"])?
+        .is_empty()
+    {
+        return Err("map_entries_missing did not find member fields that are present".to_owned());
+    }
+    if json::map_entries_missing(nested, "values", &["priority"])?
+        != vec!["values[\"resources.mem_mib\"].priority".to_owned()]
+    {
+        return Err("map_entries_missing did not report an absent member field".to_owned());
+    }
+    if json::map_entries_missing(nested, "conflicts", &["kind"]).is_ok() {
+        return Err("map_entries_missing accepted an array under the key".to_owned());
+    }
+
+    if json::array_len(nested, "conflicts")? != 1 {
+        return Err("array_len miscounted a populated array".to_owned());
+    }
+    if json::array_len(nested, "values").is_ok() {
+        return Err("array_len accepted a non-array under the key".to_owned());
+    }
+    // `"conflicts": []` is the shape a non-conforming defect report would emit, so the
+    // zero case has to be distinguishable from "the key is there".
+    if json::array_len(br#"{"conflicts":[]}"#, "conflicts")? != 0 {
+        return Err("array_len did not report an empty array as empty".to_owned());
+    }
     Ok(())
 }
 
@@ -217,27 +333,23 @@ fn workflow_01_boot() -> Result<(), Failed> {
     bind(&tp, "rust-web")?;
 
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
-    // TODO(spec): move marker checks to a cheaper gate when marker-minting verbs are specified.
+    // Marker assertions stay behind the virtualization gate permanently: `start` is
+    // the cheapest verb that mints one, because every read-only command resolves the
+    // identity in memory and persists nothing (spec/15, ADR-0043). There is no
+    // CLI-only vantage point from which to check this.
     check(expect_marker_id(tp.project(), "project"))?;
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
 
     let status = viv(&tp, &["status", "--json"])?;
     check(expect_code(&status, 0))?;
     check(expect_json_keys(&status, &["state", "stale"]))?;
-    let status_text = String::from_utf8_lossy(&status.stdout);
-    let allowed_states = [
-        "absent", "built", "starting", "running", "stopping", "failed",
-    ];
-    if !allowed_states
-        .iter()
-        .any(|state| status_text.contains(&format!("\"{state}\"")))
-    {
-        return fail("status did not report one of the six specified states");
-    }
-    if status_text.contains("\"failed\"") {
-        check(expect_json_keys(&status, &["reason"]))?;
-    }
-    Ok(())
+    // `start` without `--attach` exiting 0 guarantees `running` at the moment it
+    // returned (spec/10). This is the strongest check available from outside the
+    // process: it catches an implementation that returns early and leaves the VM
+    // `starting`, but not one that returns early and happens to settle before this
+    // separate `status` runs. Proving the return boundary itself needs a fixture that
+    // can hold the readiness handshake open, which arrives with the agent (section E).
+    check(expect_json_string(&status, "state", "running"))
 }
 
 // Guide: docs/guides/clean-repo-global-registry.md
@@ -293,22 +405,24 @@ fn workflow_02_identity() -> Result<(), Failed> {
     check(expect_marker_id(&second_project, "api-2"))
 }
 
-// Guide: docs/guides/team-shared-personal-overrides.md
+/// Guide: docs/guides/team-shared-personal-overrides.md
+///
+/// The workflow is "a team shares config, each person adjusts it" — so the fixture has
+/// to be **one shared piece and two different personal manifests**. Both manifests name
+/// the same piece and neither edits it, which is the whole point: the manifest is the
+/// personal layer (spec/07, ADR-0040), so a per-user value never touches the shared
+/// artifact. A single manifest listing a "team" and a "personal" piece would verify only
+/// that priority works, not that anything stays shareable.
 fn workflow_03() -> Result<(), Failed> {
     let tp = TempProject::new().map_err(io_failed)?;
-    arrange_manifest(
-        &tp,
-        "shared-personal",
-        "pieces = [ \"team\", \"personal\" ]\n",
-        "",
-    )?;
-    // Both layers set the same key to values that appear nowhere else in the fixture,
-    // so the assertions below cannot be satisfied by an incidental substring.
+    // The shared piece proposes with `mkDefault` so each manifest's normal-priority
+    // leaf outranks it — the convention that keeps independently-authored pieces
+    // adoptable together (spec/04).
     write_piece(
         &tp,
         "team",
         r#"{ lib, ... }: {
-    vivarium.env.WF3_OVERRIDE = lib.mkDefault "team-shadowed";
+    vivarium.env.WF3_TOOLCHAIN = lib.mkDefault "team-proposed";
     vivarium.mounts = [
         {
             source = "\${HOME}/.config/team";
@@ -319,53 +433,98 @@ fn workflow_03() -> Result<(), Failed> {
 }
 "#,
     )?;
-    write_piece(
-        &tp,
-        "personal",
-        "{ ... }: { vivarium.env.WF3_OVERRIDE = \"personal-wins\"; }\n",
-    )?;
-    bind(&tp, "shared-personal")?;
+    let shared_piece = tp.config().join("vivarium").join("pieces").join("team.nix");
+    let shared_before = fs::read(&shared_piece).map_err(io_failed)?;
 
-    let evaluated = viv(&tp, &["config", "eval", "--json"])?;
-    check(expect_code(&evaluated, 0))?;
+    // Two people, same piece, different manifests. Every value appears nowhere else in
+    // the fixture so no assertion can be satisfied by an incidental substring.
+    arrange_manifest(
+        &tp,
+        "ana-api",
+        "pieces = [ \"team\" ]\n\n[env]\nWF3_TOOLCHAIN = \"ana-decides\"\n",
+        "\n[resources]\nmem_mib = 4096\n",
+    )?;
+    arrange_manifest(
+        &tp,
+        "bruno-api",
+        "pieces = [ \"team\" ]\n\n[env]\nWF3_TOOLCHAIN = \"bruno-decides\"\n",
+        "\n[resources]\nmem_mib = 8192\n",
+    )?;
+
+    // Both manifests are defined, and both adopt the identical shared piece.
+    let library = viv(&tp, &["manifest", "list", "--json"])?;
+    check(expect_code(&library, 0))?;
+    check(expect_json_array_items(
+        &library,
+        "manifests",
+        &["name", "path", "image", "pieces"],
+    ))?;
+    check(expect_stdout_mentions(&library, "ana-api"))?;
+    check(expect_stdout_mentions(&library, "bruno-api"))?;
+
+    bind(&tp, "ana-api")?;
+    let ana = viv(&tp, &["config", "eval", "--json"])?;
+    check(expect_code(&ana, 0))?;
     check(expect_json_keys(
-        &evaluated,
+        &ana,
         &["manifest", "image", "pieces", "config"],
     ))?;
-    // The merged view carries the winner and *only* the winner.
-    check(expect_stdout_mentions(&evaluated, "personal-wins"))?;
-    check(expect_stdout_lacks(&evaluated, "team-shadowed"))?;
-    // Host-side variables in mount sources stay unexpanded through evaluation.
-    check(expect_stdout_mentions(&evaluated, "${HOME}"))?;
+    // The merged view carries this user's decision and neither the piece's proposal
+    // nor the other user's value.
+    check(expect_stdout_mentions(&ana, "ana-decides"))?;
+    check(expect_stdout_lacks(&ana, "team-proposed"))?;
+    check(expect_stdout_lacks(&ana, "bruno-decides"))?;
+    // Host-side variables in the shared piece's mount sources stay unexpanded through
+    // evaluation — which is what keeps that piece portable between the two of them.
+    check(expect_stdout_mentions(&ana, "${HOME}"))?;
 
     let sources = viv(&tp, &["config", "sources", "--json"])?;
     check(expect_code(&sources, 0))?;
     check(expect_json_keys(
         &sources,
-        &[
-            "manifest",
-            "image",
-            "pieces",
-            "values",
-            "conflicts",
-            "effective",
-            "winner",
-            "contributors",
-        ],
+        &["manifest", "image", "pieces", "values", "conflicts"],
     ))?;
-    // The provenance view is the mirror image: it must carry the shadowed
-    // contributor that `config eval` dropped.
-    check(expect_stdout_mentions(&sources, "personal-wins"))?;
-    check(expect_stdout_mentions(&sources, "team-shadowed"))?;
+    // `effective`, `winner`, and `contributors` belong to each *entry* of `values`, not
+    // to the envelope root (spec/01). Asserting them top-level would fail against a
+    // conforming implementation for the very reason it is conforming.
+    check(expect_json_map_entries(
+        &sources,
+        "values",
+        &["effective", "winner", "contributors"],
+    ))?;
+    // Provenance is the mirror image: it must carry the shadowed contributor that
+    // `config eval` dropped.
+    check(expect_stdout_mentions(&sources, "ana-decides"))?;
+    check(expect_stdout_mentions(&sources, "team-proposed"))?;
 
-    // A literal personal path in a shared layer fails validation before the build.
+    // Rebinding to the other person's manifest changes the result without any edit to
+    // the shared artifact.
+    bind(&tp, "bruno-api")?;
+    let bruno = viv(&tp, &["config", "eval", "--json"])?;
+    check(expect_code(&bruno, 0))?;
+    check(expect_stdout_mentions(&bruno, "bruno-decides"))?;
+    check(expect_stdout_lacks(&bruno, "ana-decides"))?;
+    check(expect_stdout_lacks(&bruno, "team-proposed"))?;
+    if fs::read(&shared_piece).map_err(io_failed)? != shared_before {
+        return fail("the shared piece changed while evaluating personal manifests");
+    }
+
+    workflow_03_literal_path(&tp)?;
+    workflow_03_tie(&tp)
+}
+
+/// A literal personal path in a **shared** layer is an N11 violation. Under ADR-0042 the
+/// two config verbs diverge deliberately, and asserting only the failing half would miss
+/// the point: `config eval` refuses with `65`, while `config sources` — the command a
+/// user reaches for *because* eval refused — still renders the defect and exits `0`.
+fn workflow_03_literal_path(tp: &TempProject) -> Result<(), Failed> {
     write_piece(
-        &tp,
+        tp,
         "team",
         r#"{ ... }: {
     vivarium.mounts = [
         {
-            source = "/home/alice/.config/team";
+            source = "/home/ana/.config/team";
             target = "~/.config/team";
             readonly = true;
         }
@@ -373,41 +532,57 @@ fn workflow_03() -> Result<(), Failed> {
 }
 "#,
     )?;
-    let invalid = viv(&tp, &["config", "eval", "--json"])?;
-    // TODO(spec): pin the validating command and its exit code.
-    check(expect_nonzero(&invalid))?;
-    check(expect_stderr_mentions(&invalid, "/home/alice"))?;
+    let invalid = viv(tp, &["config", "eval", "--json"])?;
+    check(expect_code(&invalid, EX_DATAERR))?;
+    check(expect_stderr_mentions(&invalid, "/home/ana"))?;
 
-    workflow_03_tie(&tp)
+    let still_readable = viv(tp, &["config", "sources", "--json"])?;
+    check(expect_code(&still_readable, 0))?;
+    // The defect must be *encoded*, not merely alluded to: `conflicts` carries a record
+    // naming the class, the key, and the declaring layers (spec/01). Checking only that
+    // the key exists would be satisfied by `"conflicts": []` — an implementation that
+    // renders the path in prose and reports no machine-readable defect at all.
+    check(expect_json_array_nonempty(
+        &still_readable,
+        "conflicts",
+        &["kind", "key", "layers"],
+    ))?;
+    check(expect_stdout_mentions(&still_readable, "literal-path"))?;
+    check(expect_stdout_mentions(&still_readable, "/home/ana"))
 }
 
-/// The equal-priority tie, built the way spec/01's own worked example builds it: one
-/// `resources.mem_mib` set at normal priority by a piece and by the manifest leaf.
-///
-/// TODO(spec): two unspecified things meet here. (1) The piece-side option path for
-/// `[resources]` is not named anywhere — ADR-0021 names only `vivarium.mounts` and
-/// `vivarium.env` — so `vivarium.resources.mem_mib` is this fixture's guess. (2) spec/01
-/// specifies a tie as exit `0` with an order-resolved winner, while spec/04 says the
-/// NixOS module system does the merging with no separate vivarium engine — under which
-/// an equal-priority scalar conflict is an evaluation error (`70`), not an ordered win.
-/// Those two need reconciling before this assertion can be trusted.
+/// The equal-priority tie. Under ADR-0040's convention a shared piece proposes with
+/// `mkDefault`, so the case that actually collides is **two pieces at normal priority** —
+/// not a piece against the manifest leaf, which the leaf simply wins. Under ADR-0042 the
+/// collision is a content defect: `config eval` returns `65`, and `config sources` reports
+/// it at exit `0` with the `[tie]` marker on stderr.
 fn workflow_03_tie(tp: &TempProject) -> Result<(), Failed> {
-    arrange_manifest(
+    arrange_manifest(tp, "tie-demo", "pieces = [ \"tie-a\", \"tie-b\" ]\n", "")?;
+    write_piece(
         tp,
-        "shared-personal-tie",
-        "pieces = [ \"tie\" ]\n",
-        "\n[resources]\nmem_mib = 8192\n",
+        "tie-a",
+        "{ ... }: { vivarium.resources.mem_mib = 4096; }\n",
     )?;
     write_piece(
         tp,
-        "tie",
-        "{ ... }: { vivarium.resources.mem_mib = 4096; }\n",
+        "tie-b",
+        "{ ... }: { vivarium.resources.mem_mib = 8192; }\n",
     )?;
-    bind(tp, "shared-personal-tie")?;
+    bind(tp, "tie-demo")?;
+
+    check(expect_code(
+        &viv(tp, &["config", "eval", "--json"])?,
+        EX_DATAERR,
+    ))?;
 
     let tie = viv(tp, &["config", "sources", "--json"])?;
     check(expect_code(&tie, 0))?;
-    check(expect_json_keys(&tie, &["conflicts"]))?;
+    check(expect_json_array_nonempty(
+        &tie,
+        "conflicts",
+        &["kind", "key", "layers"],
+    ))?;
+    check(expect_stdout_mentions(&tie, "\"tie\""))?;
     check(expect_stderr_mentions(&tie, "[tie]"))?;
     // The marker is stderr-only so `--json 2>/dev/null | jq` stays clean.
     check(expect_stdout_lacks(&tie, "[tie]"))
@@ -434,14 +609,18 @@ fn workflow_04_usage() -> Result<(), Failed> {
             "image",
             "pieces",
             "resources",
-            "mem_mib",
-            "vcpu",
             "egress",
-            "mode",
-            "allow",
             "extends",
         ],
     ))?;
+    // The knobs are nested under their own objects (spec/01), so they are addressed by
+    // path rather than demanded at the root.
+    check(expect_json_fields_at(
+        &show,
+        "resources",
+        &["mem_mib", "vcpu"],
+    ))?;
+    check(expect_json_fields_at(&show, "egress", &["mode", "allow"]))?;
     check(expect_code(
         &viv(&tp, &["manifest", "show", "missing"])?,
         EX_CONFIG,
@@ -454,9 +633,11 @@ fn workflow_04_usage() -> Result<(), Failed> {
 
     let list = viv(&tp, &["manifest", "list", "--json"])?;
     check(expect_code(&list, 0))?;
-    check(expect_json_keys(
+    check(expect_json_keys(&list, &["manifests"]))?;
+    check(expect_json_array_items(
         &list,
-        &["manifests", "name", "path", "image", "pieces"],
+        "manifests",
+        &["name", "path", "image", "pieces"],
     ))?;
     let empty = TempProject::new().map_err(io_failed)?;
     let empty_list = viv(&empty, &["manifest", "list", "--json"])?;
@@ -521,7 +702,14 @@ fn workflow_05_config() -> Result<(), Failed> {
     check(expect_code(&evaluated, 0))?;
     check(expect_json_keys(
         &evaluated,
-        &["sandbox", "egress", "mode", "allow"],
+        &["manifest", "image", "pieces", "config"],
+    ))?;
+    // `config eval --json` nests the merged config under `config` (spec/01), so the
+    // egress knobs are reached by path rather than expected at the envelope root.
+    check(expect_json_fields_at(
+        &evaluated,
+        "config.sandbox.egress",
+        &["mode", "allow"],
     ))?;
     // The piece's mkForce beats the image's mkDefault, so the merged view carries the
     // winner and not the shadowed default.
@@ -565,6 +753,7 @@ fn workflow_05_enforcement() -> Result<(), Failed> {
     // Deliberately omitted from both layers' `allow` lists. A `.invalid` host would not
     // work here: RFC 6761 guarantees an immediate negative response for that space, so
     // the denial arm would pass on an ordinary resolution error with no filter present.
+    let started = Instant::now();
     let denied = viv(
         &tp,
         &[
@@ -577,15 +766,30 @@ fn workflow_05_enforcement() -> Result<(), Failed> {
             "https://blocked.example",
         ],
     )?;
-    // TODO(spec): pin the denial surface when the networking backend lands. Enforcement
-    // is host-side by design, and no exit code is specified for a blocked connection —
-    // after guest-process start `exec` returns the guest program's own status verbatim.
-    // Asserting only non-zero keeps this to the guest program's own pass-through status
-    // rather than inventing a vivarium code, while refusing a fetch that quietly
-    // succeeded. The one thing the spec does require is that a denial be legible.
+    let elapsed = started.elapsed();
+    // No exit code describes a denial: enforcement is host-side but the failure is
+    // observed by a guest process, and after guest-process start `exec` returns that
+    // process's status verbatim. So the status assertion stays at "non-zero" rather
+    // than inventing a vivarium code.
     check(expect_nonzero(&denied))?;
-    if denied.stdout.is_empty() && denied.stderr.is_empty() {
-        return fail("egress denial was a silent timeout with no legible message");
+    // What spec/05 *does* fix is reject-not-drop: the attempt must fail promptly, never
+    // be silently discarded. Timing is the honest way to check that. Asserting on stderr
+    // content instead would test whichever fetch tool the image ships, not vivarium.
+    //
+    // TODO(spec): the enforcement mechanism is section E's to design
+    // (.draft/design-todo/todo.md, "Allowlist enforcement model"), and both arms above
+    // are waiting on it. `.example`
+    // is reserved documentation space with no delegation in the root zone, so neither
+    // host resolves: the allowed arm cannot reach a real endpoint, and the denied arm
+    // fails fast on NXDOMAIN whether or not a filter is in force. Section E owes this
+    // trial a guest-reachable controlled endpoint with two names differing only in
+    // allowlist membership; until then the budget below pins the contract's shape, not
+    // yet its enforcement.
+    if elapsed >= DENIAL_BUDGET {
+        return fail(format!(
+            "denied fetch took {elapsed:?}; a rejection must fail fast rather \
+            than hang on connect retries (spec/05, ADR-0044)"
+        ));
     }
     Ok(())
 }
@@ -693,7 +897,18 @@ fn workflow_07_warmth() -> Result<(), Failed> {
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
     let volumes = viv(&tp, &["volume", "list", "--json"])?;
     check(expect_code(&volumes, 0))?;
-    // TODO(spec): assert the volume list --json envelope once it is specified.
+    check(expect_json_array_items(
+        &volumes,
+        "volumes",
+        &[
+            "name",
+            "mount",
+            "declared_by",
+            "orphan",
+            "allocated_bytes",
+            "virtual_bytes",
+        ],
+    ))?;
     check(expect_stdout_mentions(&volumes, "default"))?;
     check(expect_stdout_mentions(&volumes, "cache"))?;
     check(expect_volume_image(&tp, "volume-project", "default"))?;
@@ -703,7 +918,9 @@ fn workflow_07_warmth() -> Result<(), Failed> {
     check(expect_code(&viv(&tp, &["stop"])?, 0))?;
     let status = viv(&tp, &["status", "--json"])?;
     check(expect_code(&status, 0))?;
-    check(expect_stdout_mentions(&status, "built"))?;
+    // A clean stop lands in `built`, never `absent` — the build output stays pinned
+    // (spec/10). Structural, so a `built` appearing elsewhere in the record cannot pass.
+    check(expect_json_string(&status, "state", "built"))?;
 
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
     check(expect_code(
@@ -866,7 +1083,17 @@ fn require_gate(level: GateLevel) -> Result<(), Failed> {
     gate()
         .result(level)
         .as_ref()
-        .map_err(|reason| Failed::from(format!("gate unmet but VIVARIUM_TEST_REQUIRE=1: {reason}")))
+        .map_err(|reason| {
+            // Reached either because the operator set VIVARIUM_TEST_REQUIRE=1, or because
+            // the trial was run despite its ignored flag (`--run-ignored`). Naming the
+            // wrong one sends the reader looking for a variable they never set.
+            let cause = if gate_required() {
+                "gate unmet but VIVARIUM_TEST_REQUIRE=1"
+            } else {
+                "gate unmet and the ignored flag was overridden"
+            };
+            Failed::from(format!("{cause}: {reason}"))
+        })
         .copied()
 }
 

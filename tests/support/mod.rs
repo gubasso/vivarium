@@ -6,8 +6,34 @@ use std::process::{Command, ExitStatus};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+// The sysexits categories from the spec/14 matrix, named once so a trial never
+// asserts a bare integer. The five below are unreachable until the commands that
+// can fail their way exist; each carries its own attribute so that the first
+// trial to use one is told to drop it.
 pub const EX_USAGE: i32 = 64;
 pub const EX_DATAERR: i32 = 65;
+#[expect(
+    dead_code,
+    reason = "no trial can reach a backend/VM failure until start launches one"
+)]
+pub const EX_UNAVAILABLE: i32 = 69;
+#[expect(
+    dead_code,
+    reason = "no trial can reach a Nix eval/build fault until composition exists"
+)]
+pub const EX_SOFTWARE: i32 = 70;
+#[expect(
+    dead_code,
+    reason = "no trial can reach a vivarium-owned I/O failure yet"
+)]
+pub const EX_IOERR: i32 = 74;
+#[expect(
+    dead_code,
+    reason = "no trial can reach a lock race or in-use volume yet"
+)]
+pub const EX_TEMPFAIL: i32 = 75;
+#[expect(dead_code, reason = "no trial can reach a host permission denial yet")]
+pub const EX_NOPERM: i32 = 77;
 pub const EX_CONFIG: i32 = 78;
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
@@ -326,16 +352,224 @@ pub fn expect_stdout_lacks(out: &VivOutput, needle: &str) -> Result<(), String> 
     Ok(())
 }
 
-pub fn expect_json_keys(out: &VivOutput, keys: &[&str]) -> Result<(), String> {
-    // TODO(green): tighten these coarse shape checks with serde_json once the CLI gate opens.
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    if keys
-        .iter()
-        .all(|key| stdout.contains(&format!("\"{key}\"")))
-    {
-        return Ok(());
+/// Structural JSON checks, kept separate from the `VivOutput` wrapper for two reasons.
+///
+/// They parse rather than scan: the substring check these replace could not tell a
+/// top-level key from the same text inside a value or from a nested one, so an
+/// envelope assertion passed against output of the wrong shape. And taking raw bytes
+/// rather than a `VivOutput` lets `harness_self_check` exercise them directly, without
+/// fabricating a process exit status — which matters because every gated trial that
+/// uses them is skipped until a real `viv` exists.
+pub mod json {
+    /// Names from `keys` that are absent from the top-level object.
+    pub fn missing_keys(stdout: &[u8], keys: &[&str]) -> Result<Vec<String>, String> {
+        missing_at_path(stdout, "", keys)
     }
-    Err(diagnostic(out, &format!("expected JSON keys {keys:?}")))
+
+    /// Names from `fields` absent from the object reached by the dot-separated `path`;
+    /// an empty `path` addresses the top-level object. The specified envelopes nest —
+    /// `config eval` puts the merged config under `config`, `manifest show` puts the
+    /// knobs under `resources`/`egress` — so a top-level-only check would demand that a
+    /// conforming implementation duplicate nested field names at the root.
+    pub fn missing_at_path(
+        stdout: &[u8],
+        path: &str,
+        fields: &[&str],
+    ) -> Result<Vec<String>, String> {
+        let value: serde_json::Value = serde_json::from_slice(stdout)
+            .map_err(|error| format!("expected stdout to be JSON: {error}"))?;
+        let mut cursor = &value;
+        for segment in path.split('.').filter(|segment| !segment.is_empty()) {
+            cursor = cursor
+                .get(segment)
+                .ok_or_else(|| format!("expected an object at {path:?}: {segment:?} is absent"))?;
+        }
+        let object = cursor.as_object().ok_or_else(|| {
+            if path.is_empty() {
+                "expected a JSON object at the top level".to_owned()
+            } else {
+                format!("expected a JSON object at {path:?}")
+            }
+        })?;
+        Ok(fields
+            .iter()
+            .filter(|field| !object.contains_key(**field))
+            .map(|field| {
+                if path.is_empty() {
+                    (*field).to_owned()
+                } else {
+                    format!("{path}.{field}")
+                }
+            })
+            .collect())
+    }
+
+    /// Fields absent from the member objects of the **map** under `key`, reported as
+    /// `key[<member>].field`. `config sources` keys `values` by option path rather than
+    /// listing it, so its per-key record cannot be reached by index.
+    pub fn map_entries_missing(
+        stdout: &[u8],
+        key: &str,
+        fields: &[&str],
+    ) -> Result<Vec<String>, String> {
+        let value: serde_json::Value = serde_json::from_slice(stdout)
+            .map_err(|error| format!("expected stdout to be JSON: {error}"))?;
+        let entries = value
+            .get(key)
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| format!("expected a top-level {key:?} object"))?;
+        let mut missing = Vec::new();
+        for (member, entry) in entries {
+            let Some(object) = entry.as_object() else {
+                missing.push(format!("{key}[{member:?}] is not an object"));
+                continue;
+            };
+            for field in fields {
+                if !object.contains_key(*field) {
+                    missing.push(format!("{key}[{member:?}].{field}"));
+                }
+            }
+        }
+        Ok(missing)
+    }
+
+    /// The number of items in the array under `key`.
+    pub fn array_len(stdout: &[u8], key: &str) -> Result<usize, String> {
+        let value: serde_json::Value = serde_json::from_slice(stdout)
+            .map_err(|error| format!("expected stdout to be JSON: {error}"))?;
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len)
+            .ok_or_else(|| format!("expected a top-level {key:?} array"))
+    }
+
+    /// The value of a top-level string field, or `None` when it is absent or not a string.
+    pub fn string_field(stdout: &[u8], key: &str) -> Result<Option<String>, String> {
+        let value: serde_json::Value = serde_json::from_slice(stdout)
+            .map_err(|error| format!("expected stdout to be JSON: {error}"))?;
+        Ok(value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned))
+    }
+
+    /// Fields absent from the objects in the array under `key`, reported as `key[i].field`.
+    /// An empty array passes: an envelope is still correct when it has nothing to carry.
+    pub fn array_items_missing(
+        stdout: &[u8],
+        key: &str,
+        fields: &[&str],
+    ) -> Result<Vec<String>, String> {
+        let value: serde_json::Value = serde_json::from_slice(stdout)
+            .map_err(|error| format!("expected stdout to be JSON: {error}"))?;
+        let items = value
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("expected a top-level {key:?} array"))?;
+        let mut missing = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            let Some(object) = item.as_object() else {
+                missing.push(format!("{key}[{index}] is not an object"));
+                continue;
+            };
+            for field in fields {
+                if !object.contains_key(*field) {
+                    missing.push(format!("{key}[{index}].{field}"));
+                }
+            }
+        }
+        Ok(missing)
+    }
+}
+
+pub fn expect_json_keys(out: &VivOutput, keys: &[&str]) -> Result<(), String> {
+    match json::missing_keys(&out.stdout, keys) {
+        Err(problem) => Err(diagnostic(out, &problem)),
+        Ok(missing) if missing.is_empty() => Ok(()),
+        Ok(missing) => Err(diagnostic(
+            out,
+            &format!("missing top-level JSON keys: {}", missing.join(", ")),
+        )),
+    }
+}
+
+/// Assert the object at a dot-separated `path` carries `fields`. The counterpart to
+/// `expect_json_keys` for the nested halves of the specified envelopes (spec/01).
+pub fn expect_json_fields_at(out: &VivOutput, path: &str, fields: &[&str]) -> Result<(), String> {
+    match json::missing_at_path(&out.stdout, path, fields) {
+        Err(problem) => Err(diagnostic(out, &problem)),
+        Ok(missing) if missing.is_empty() => Ok(()),
+        Ok(missing) => Err(diagnostic(
+            out,
+            &format!("missing JSON fields: {}", missing.join(", ")),
+        )),
+    }
+}
+
+/// Assert every member of the map under `key` carries `fields` — the `values` shape
+/// `viv config sources` emits, keyed by option path (spec/01).
+pub fn expect_json_map_entries(out: &VivOutput, key: &str, fields: &[&str]) -> Result<(), String> {
+    match json::map_entries_missing(&out.stdout, key, fields) {
+        Err(problem) => Err(diagnostic(out, &problem)),
+        Ok(missing) if missing.is_empty() => Ok(()),
+        Ok(missing) => Err(diagnostic(
+            out,
+            &format!("missing JSON fields: {}", missing.join(", ")),
+        )),
+    }
+}
+
+/// Assert the array under `key` carries **at least one** record, each with `fields`.
+/// Distinct from `expect_json_array_items`, which passes on an empty array: a defect
+/// report that merely has the key would otherwise be satisfied by `"conflicts": []`,
+/// letting an implementation that never encodes the defect pass (ADR-0042).
+pub fn expect_json_array_nonempty(
+    out: &VivOutput,
+    key: &str,
+    fields: &[&str],
+) -> Result<(), String> {
+    match json::array_len(&out.stdout, key) {
+        Err(problem) => return Err(diagnostic(out, &problem)),
+        Ok(0) => {
+            return Err(diagnostic(
+                out,
+                &format!("expected at least one record under {key:?}"),
+            ));
+        }
+        Ok(_) => {}
+    }
+    expect_json_array_items(out, key, fields)
+}
+
+/// Assert a top-level string field holds exactly `expected`. Structural, so a value
+/// that merely *contains* the word somewhere else in the record cannot satisfy it.
+pub fn expect_json_string(out: &VivOutput, key: &str, expected: &str) -> Result<(), String> {
+    match json::string_field(&out.stdout, key) {
+        Err(problem) => Err(diagnostic(out, &problem)),
+        Ok(Some(actual)) if actual == expected => Ok(()),
+        Ok(Some(actual)) => Err(diagnostic(
+            out,
+            &format!("expected {key:?} to be {expected:?}, got {actual:?}"),
+        )),
+        Ok(None) => Err(diagnostic(
+            out,
+            &format!("expected a top-level string field {key:?}"),
+        )),
+    }
+}
+
+/// Assert the `{ "<key>": [ { … } ] }` envelope shape the library and project-state
+/// readers share (spec/01), rather than grepping for field names in the raw text.
+pub fn expect_json_array_items(out: &VivOutput, key: &str, fields: &[&str]) -> Result<(), String> {
+    match json::array_items_missing(&out.stdout, key, fields) {
+        Err(problem) => Err(diagnostic(out, &problem)),
+        Ok(missing) if missing.is_empty() => Ok(()),
+        Ok(missing) => Err(diagnostic(
+            out,
+            &format!("missing JSON fields: {}", missing.join(", ")),
+        )),
+    }
 }
 
 pub fn expect_nonzero(out: &VivOutput) -> Result<(), String> {
@@ -433,14 +667,17 @@ pub fn expect_marker_absent(project: &Path) -> Result<(), String> {
 
 pub fn expect_registry_binding_visible(out: &VivOutput, manifest: &str) -> Result<(), String> {
     expect_code(out, 0)?;
-    expect_json_keys(
-        out,
-        &[
-            "manifest", "source", "paths", "config", "state", "data", "cache",
-        ],
-    )?;
+    // spec/01 "Config inspection output" nests the four roots under `paths`, so only
+    // three keys are top-level. Asserting all seven at the top level would demand that
+    // a conforming implementation duplicate the nested names at the root — the hazard
+    // `missing_at_path` exists to avoid.
+    expect_json_keys(out, &["manifest", "source", "paths"])?;
+    expect_json_fields_at(out, "paths", &["config", "state", "data", "cache"])?;
     expect_stdout_mentions(out, manifest)?;
-    expect_stdout_mentions(out, "registry")
+    // Every call site reaches this through `bind()`, which writes the registry and then
+    // reads it back with no `--manifest` override and a cleared environment, so the
+    // structural assertion is provable here and strictly stronger than a substring scan.
+    expect_json_string(out, "source", "registry")
 }
 
 pub fn expect_no_volume_images(tp: &TempProject) -> Result<(), String> {

@@ -8,7 +8,7 @@ A project's VM is in one of six states, surfaced by `viv status` ([`01-command-s
 
 - **absent** — never built: no store output and no runtime state.
 - **built** — a sandbox output exists in the store but no VM is running. A clean `viv stop` lands here; this _is_ the "stopped" state.
-- **starting** — the VMM has been launched but the guest is not yet live (the control-socket liveness handshake does not answer yet). Transitional; observable in the detached window between launch and ready (see _Attach vs detach_).
+- **starting** — the VMM has been launched but the guest is not yet live (the control-socket liveness handshake does not answer yet). Transitional. Because `start` returns only once the guest answers (see _What `viv start` does_), this state is observable to a **concurrent** `viv status` while another process holds the per-target `flock` and is still booting ([`12-exec-and-shell.md`](./12-exec-and-shell.md)) — never in the window after your own `start` returned.
 - **running** — a VM is up for this project and answering. It carries a **`stale`** condition — a boolean, not a separate state — true when a layer changed so the current build's store output no longer matches what the running VM was booted from. Freshness is the store output path, never a separate digest (N4, [`04-composition-and-determinism.md`](./04-composition-and-determinism.md)); a stale VM is still **running**, only drifted.
 - **stopping** — transitional, passed through by `viv stop` and `viv destroy`; never a resting state.
 - **failed** — vivarium cannot treat the VM as healthy: boot failed, the VMM or guest exited abnormally, or a runtime record is broken. The specific cause is carried as a _reason_ (`crashed`, `boot-timeout`, `socket-lost`, …), not a separate state.
@@ -32,7 +32,9 @@ running | starting ──abnormal exit──▶ failed
 2. **Preflight** the host — refuse before any build or launch if a hard prerequisite is missing.
 3. **Admit** — check host capacity against the measured cost of the VMs already running: refuse below the minimum free-memory reserve, warn and continue when the fleet makes this VM a risk (N23, [`17-resources-and-capacity.md`](./17-resources-and-capacity.md)). Like preflight, this runs **before any build**, so a host that cannot hold the VM never pays for one.
 4. **Evaluate and build** the outer flake to a store output. Identical inputs reuse the cached output (N4); the result is recorded as a **generation** ([`11-generations-and-build-history.md`](./11-generations-and-build-history.md)).
-5. **Ensure running** — boot the VM if one is not already up for this project, injecting the workspace host path at launch (N5) and mounting it read-write at the fixed guest path ([`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)). Host-derived resource ceilings are resolved and applied at this moment for the same reason the workspace path is (N3, N19), and every process launched for the VM is placed in the target's host resource scope. `exec`/`shell` add the control-socket liveness handshake specified in [`12-exec-and-shell.md`](./12-exec-and-shell.md).
+5. **Ensure running** — boot the VM if one is not already up for this project, injecting the workspace host path at launch (N5) and mounting it read-write at the fixed guest path ([`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)). Host-derived resource ceilings are resolved and applied at this moment for the same reason the workspace path is (N3, N19), and every process launched for the VM is placed in the target's host resource scope. This step also **persists the project's identity marker** if the project does not have one yet ([`15-project-identity.md`](./15-project-identity.md)). It then **waits for the guest to answer** the control-socket liveness handshake specified in [`12-exec-and-shell.md`](./12-exec-and-shell.md), which is what makes a boot timeout detectable as `69` ([`14-exit-codes.md`](./14-exit-codes.md)).
+
+**Post-condition.** `viv start` without `--attach`, exiting `0`, guarantees the VM was **running** at the moment it returned — never still `starting`. The guarantee is point-in-time, not durable: a guest that crashes immediately afterwards makes `failed` a correct next reading. `--attach` is excluded because it returns when the console stream ends rather than when the VM is ready (see _Attach vs detach_).
 
 `start` is **idempotent**: on a fresh, already-running VM it is a no-op that exits `0` (N15). This "ensure running" step is the shared routine `viv exec` and `viv shell` reuse when they start the VM if needed.
 
@@ -50,7 +52,7 @@ When inputs changed, `start` builds the fresh output but is **non-destructive to
 
 ## Attach vs detach
 
-By default `start` boots the VM as a **background resource and returns** — the VM is a persistent thing `exec`/`shell` connect to. `--attach` instead streams the VM console until it exits; `Ctrl-C` **detaches** the console and leaves the VM running — it never stops the VM.
+By default `start` boots the VM as a **background resource and returns once the guest answers** — the VM is a persistent thing `exec`/`shell` connect to, and the wait is what lets the post-condition above hold. `--attach` instead streams the VM console until it exits; `Ctrl-C` **detaches** the console and leaves the VM running — it never stops the VM. Because an attached `start` returns when the stream ends, a guest that powers itself off leaves `--attach` returning with no VM, which is why the post-condition excludes it.
 
 ## Stopping: `viv stop`
 
@@ -68,7 +70,7 @@ By default `start` boots the VM as a **background resource and returns** — the
 
 `viv destroy` is the explicit teardown — the only verb that removes data. It stops the VM (same ladder as `stop`), unlinks **all** of the project's generation GC roots, removes its persistent volumes (unless `--keep-volumes`), and deletes its runtime state. It prompts for confirmation on a TTY; non-interactive runs require `--yes`.
 
-`destroy` never touches the workspace, the config root, the project binding, or store contents: unlinking the GC roots only makes the store paths _reclaimable_ — they are actually freed by a later `viv gc` ([`11-generations-and-build-history.md`](./11-generations-and-build-history.md)). Because the build is reproducible from the manifest, `destroy` followed by `start` costs at most a rebuild; the only irreversible loss is volume data, which is why removal is guarded by the prompt and spared by `--keep-volumes`. `destroy` is idempotent — nothing to tear down exits `0`.
+Beyond the vivarium-owned identity marker, `destroy` never touches the workspace, and it never touches the config root, the project binding, or store contents. The marker is the one carve-out: `destroy` removes `.vivarium/` and clears the project's identity-index entry so the next `viv start` in that directory is a clean first run ([`15-project-identity.md`](./15-project-identity.md), [`../../decisions/ADR-0043-identity-marker-lifecycle.md`](../../decisions/ADR-0043-identity-marker-lifecycle.md)). Nothing user-authored is affected — the marker is vivarium's own file and inert to the project's tooling (N9, N21). Unlinking the GC roots only makes the store paths _reclaimable_ — they are actually freed by a later `viv gc` ([`11-generations-and-build-history.md`](./11-generations-and-build-history.md)). Because the build is reproducible from the manifest, `destroy` followed by `start` costs at most a rebuild; the only irreversible loss is volume data, which is why removal is guarded by the prompt and spared by `--keep-volumes`. `destroy` is idempotent — nothing to tear down exits `0`.
 
 ## Preflight (fail-fast)
 
@@ -85,6 +87,8 @@ Before paying for a full build, `start` surfaces the cheapest failure class firs
 - **Parse** — pure syntax (`nix-instantiate --parse`); cheapest, local.
 - **Resolve / evaluate** — flake resolution and attribute/type errors without realisation (`nix flake metadata`, a scoped `nix eval` of the VM attribute).
 - **Build** — derivation realisation (`nix build`); the expensive tier, gated behind the two above.
+
+The ladder's failure codes split by who recognized the fault. A **content defect vivarium's own rules name** — an irreconcilable merge, an equal-priority scalar tie, or a literal personal path in a shared image or piece — is `65`, and recognizing a tie means inspecting the module system's definitions before forcing the value. Anything else Nix rejects is `70`. See [`../../decisions/ADR-0042-evaluation-time-content-defects.md`](../../decisions/ADR-0042-evaluation-time-content-defects.md) and [`14-exit-codes.md`](./14-exit-codes.md).
 
 ## Output streams
 

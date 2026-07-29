@@ -30,4 +30,6 @@ Accepted
 
 Amended by [`ADR-0029-project-identity-and-marker.md`](./ADR-0029-project-identity-and-marker.md) — a gitignored `.vivarium/` marker is permitted, but it carries project **identity** only; the manifest **binding** still lives in the state registry and stays gated behind `viv init --write`.
 
+Amended by [`ADR-0040-manifest-is-the-personal-layer.md`](./ADR-0040-manifest-is-the-personal-layer.md) — the manifest is the personal layer, so the machine-local registry noted as a drawback above is the intended shape rather than a limitation to evolve away: a per-user binding pointing at a per-user manifest is what makes the shared images and pieces distributable unchanged.
+
 Supersedes [`ADR-0006-manifest-binding-and-precedence.md`](./ADR-0006-manifest-binding-and-precedence.md). Refines the registry placement of [`ADR-0005-xdg-user-config-layout.md`](./ADR-0005-xdg-user-config-layout.md).

@@ -2,7 +2,7 @@
 
 > **Design-intent walkthrough — not yet working.** This guide describes the _target_ experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
 
-Use this flow to review the declared manifest, effective merge, and value provenance without booting a VM. The [command surface](../reference/spec/01-command-surface.md) distinguishes these views.
+Use this flow to review the declared manifest, effective merge, and value provenance without booting a VM. The [command surface](../reference/spec/01-command-surface.md) distinguishes these views; [the decision that gathered them into one inspection namespace](../decisions/ADR-0022-config-inspection-namespace.md) explains why they are three commands rather than flags on one.
 
 ## Inspect the library and binding
 
@@ -21,7 +21,7 @@ $ viv config eval --json
 $ viv config sources --json
 ```
 
-Use [composition and determinism](../reference/spec/04-composition-and-determinism.md) to interpret priority and list merging. For automation, handle only the command-specific outcomes in the [exit-code matrix](../reference/spec/14-exit-codes.md).
+Use [composition and determinism](../reference/spec/04-composition-and-determinism.md) to interpret priority and list merging. The two views also diverge when the merge carries a defect — one refuses, the other still reports — which [the decision treating evaluation-time defects as hard errors](../decisions/ADR-0042-evaluation-time-content-defects.md) explains. For automation, handle only the command-specific outcomes in the [exit-code matrix](../reference/spec/14-exit-codes.md).
 
 ## Acceptance coverage
 

@@ -31,6 +31,7 @@ Rules:
 - **No pasted trees.** Index files (`README.md`, this file) explain purpose per entry; they never reproduce the directory tree — the filesystem owns structure.
 - **Drafts stay out of `docs/`.** Keep scratch material in the gitignored `/.draft/` workspace and promote it into the right zone by rewriting, not moving.
 - **Semantic names, stable headings.** Filenames should reveal purpose before the file is opened.
+- **The spec outranks the tests, but silence does not.** Acceptance tests encode the spec, so the two can disagree — and when they do, the resolution rule is: a shape a test **deliberately exercises** beats spec **silence**, and an **explicit spec line** beats an unargued assertion in a test helper. Where a test wins, promote the fact into the spec page that owns it in the same change, so the test exercises the contract rather than defining it. Where the spec wins, fix the test. Never leave the pair contradicting.
 - Update docs only when a change affects durable behavior, operations, or decisions. Small local rationale belongs in load-bearing code comments.
 
 See [`docs/README.md`](docs/README.md) for the zone index and entry points.

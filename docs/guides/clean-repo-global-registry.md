@@ -12,7 +12,7 @@ $ viv init --manifest clean-registry --write --yes
 $ viv config --json
 ```
 
-Review the project tree after each command, then use `viv config --json` to inspect the public binding view instead of relying on private state files.
+Review the project tree after each command, then use `viv config --json` to inspect the public binding view instead of relying on private state files. There is no per-project binding file to add or gitignore: [the decision that moved the binding into the state registry](../decisions/ADR-0011-config-read-only-binding-in-state.md) removed that concept entirely.
 
 ## Start the project
 
@@ -21,7 +21,7 @@ $ viv start
 $ viv status
 ```
 
-The [project identity specification](../reference/spec/15-project-identity.md) explains how separate projects with the same directory name remain distinct.
+The [project identity specification](../reference/spec/15-project-identity.md) explains how separate projects with the same directory name remain distinct; [the decision to key identity by name rather than by a path hash](../decisions/ADR-0029-project-identity-and-marker.md) explains why a project survives being moved or renamed.
 
 ## Acceptance coverage
 
