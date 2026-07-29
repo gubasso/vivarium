@@ -48,7 +48,7 @@ Cross-cutting settings resolve by a single precedence rule — **flag > environm
 
 The stream and machine-output rules are the same for every command, specified in [`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md):
 
-- **stdout carries the result only** — a human table/line for data commands (`images list`, `manifest show`, `generations list`, `volume list`, `config`/`config sources`/`config eval`, `status`, `doctor`'s report), a `--json` record in machine mode, and **nothing** for side-effect commands whose result is a VM state change (`start`, `stop`, `destroy`).
+- **stdout carries the result only** — a human table/line for data commands (`images list`, `manifest show`, `generations list`, `volume list`, `config`/`config sources`/`config eval`, `status`, `doctor`'s report), a `--json` record in machine mode, and **nothing** for side-effect commands whose result is a VM state change (`start`, `stop`, `destroy`). `trim` and `volume trim` are the exception that proves the rule: they act, but what a user runs them for is the measurement they return, so they print it (shape below).
 - **stderr carries everything else** — progress, status, prompts, warnings, errors. Progress is shown only when stderr is a TTY, so `… --json 2>/dev/null | jq` is always clean.
 - **A diagnostic log file is written by default** — a third, structured face separate from stdout and stderr, invisible during normal use. It is the machine/debug channel, fully specified in [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md).
 - `exec`/`shell` pass guest stdio transparently as specified in [`12-exec-and-shell.md`](./12-exec-and-shell.md); vivarium progress remains on stderr only so guest stdout stays pipeable.
@@ -134,6 +134,42 @@ The library readers (`images list`, `manifest list`, `manifest show`) obey the s
 - **`viv volume list`** — human output is a table of the default and named volumes. `--json` emits `{ "volumes": [ { "name", "mount", "declared_by", "orphan", "allocated_bytes", "virtual_bytes" } ] }`. `name` is the volume's identifier, `default` for the reserved home volume. `mount` is its guest path. `declared_by` names the layer that declared it — the manifest or a piece — and is `null` for the default volume, which always exists without declaration ([`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)). `orphan` is `true` for an image on disk that no current layer declares. `allocated_bytes` is what the sparse image actually occupies and `virtual_bytes` its declared ceiling; the two differ by design (N22, [`17-resources-and-capacity.md`](./17-resources-and-capacity.md)). A project whose volumes have never been created still lists its declared volumes with `allocated_bytes` of `0`.
 
 - **`viv generations list`** — `--json` emits `{ "generations": [ { "number", "current", "store_path", "manifest", "flake_lock_rev", "backend", "built_at" } ] }`, one row per retained generation, oldest first. The fields mirror the per-generation metadata recorded under the state root ([`11-generations-and-build-history.md`](./11-generations-and-build-history.md)); `current` is `true` for exactly the generation `current` points at, and `built_at` is an RFC 3339 timestamp. A project that has never been built emits `{ "generations": [] }` and exits `0`.
+
+## Reclamation output
+
+`viv trim` and `viv volume trim` mutate, but their result is a measurement rather than a state change ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)), so they print it. Both follow the conventions above: a single keyed JSON object, no `schema_version`, `_bytes` on every measured quantity, and a before/after pair so a consumer never has to trust a delta it cannot check.
+
+- **`viv trim [--to <MiB>]`** — human output is one line naming what the host got back. `--json` emits one record:
+
+  ```json
+  {
+    "manifest": "rust-web",
+    "target_mib": 3072,
+    "mem_used_before_bytes": 6442450944,
+    "mem_used_after_bytes": 3489660928,
+    "reclaimed_bytes": 2952790016
+  }
+  ```
+
+  `manifest` is the identity key (as in the `config` family). `target_mib` is the figure the guest was asked to reach — the `--to` value, or the working-set-plus-headroom target vivarium derives when `--to` is absent ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)) — and is never `null` for a completed run. `mem_used_before_bytes` and `mem_used_after_bytes` are the VM's scope memory, the same measurement `status` reports as `runtime.mem_used_bytes`, read immediately before and after the operation so the two commands are directly comparable. `reclaimed_bytes` is their difference floored at `0`: a guest that grew during the operation reports `0` rather than a negative number, because the command's promise is what the host got back, not a signed account. **A trim that reclaims nothing is a success and exits `0`** — it is a fact about the guest, not a failure. A stopped VM is `75` (start first); a running VM whose agent or backend is unreachable is `69` ([`14-exit-codes.md`](./14-exit-codes.md)).
+
+- **`viv volume trim [<name>]`** — the disk counterpart, carrying the same before/after pair with the rows under a named key:
+
+  ```json
+  {
+    "volumes": [
+      {
+        "name": "default",
+        "allocated_before_bytes": 12884901888,
+        "allocated_after_bytes": 4509715660,
+        "reclaimed_bytes": 8375186228
+      }
+    ],
+    "reclaimed_bytes": 8375186228
+  }
+  ```
+
+  With no `<name>` every volume is trimmed and every row appears; with a `<name>` the list holds exactly one row. `allocated_before_bytes`/`allocated_after_bytes` are the image's allocated size, the same measurement `volume list` reports as `allocated_bytes`, so the two are joinable; the top-level `reclaimed_bytes` is the sum of the rows, so the common question needs no client-side arithmetic. A project whose volumes have never been materialized emits `{ "volumes": [], "reclaimed_bytes": 0 }` and exits `0`.
 
 ## Status output
 

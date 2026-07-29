@@ -35,6 +35,8 @@ A share's **cache mode governs coherency, not confinement** — it decides how l
 
 Caching is never disabled outright on the workspace. This workload is dominated by directory walks and small-file metadata, and forbidding client caching turns every path lookup into a round trip.
 
+**The daemon's request concurrency is pinned, not inherited.** Each daemon's worker-pool size is set explicitly at launch rather than left to whatever default is in reach, because the defaults in play disagree with each other. The daemon itself ships with the pool disabled — one request thread per queue, which suits the small-file, metadata-dominated traffic a workspace generates. The surrounding guest-module ecosystem defaults instead to one worker per host core. And the backend's own guidance is that a share backed by very fast storage needs enough workers to approach native throughput. No single value is right for every share, which is precisely why it is stated rather than assumed: an unstated default is one an upstream bump can flip under a project that never asked for the change. Like cache mode, this is performance, not confinement ([`../../decisions/ADR-0039-share-cache-policy.md`](../../decisions/ADR-0039-share-cache-policy.md)), and it is no part of the N20 profile.
+
 **Keep regenerable caches off the share.** Language and package-manager caches, dependency trees, and build output directories belong on a persistent volume rather than under the workspace share: a volume is a local block device to the guest, while a share pays a round trip per file. Where a toolchain insists on writing them inside the repository, `[volume].persist` (below) is the mechanism.
 
 ## The independent inner environment

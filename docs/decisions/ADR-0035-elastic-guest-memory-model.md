@@ -35,4 +35,6 @@ Amended by **ADR-0049** — the balloon-driver requirement is an evaluation-time
 
 The guest kernel's page-reporting granularity is an explicit setting of vivarium's own base image rather than an inherited default, and the guest compacts proactively so that fragmented free memory becomes reportable without host involvement — which is guest self-reclamation under N22, not the host arbitration N23 forbids.
 
+Note on the rejected controller — the controller designs that outperform an explicit `viv trim` all decide from a per-guest **working-set** signal reported by the balloon driver, which tells the host _which_ pages are cold. vivarium's backend exposes no such signal. A controller here could act only on a pressure scalar, which is the shape that produces the fault storms this decision rejects.
+
 Discharges the resource-knob mapping left open by [`ADR-0025-default-hypervisor-cloud-hypervisor.md`](./ADR-0025-default-hypervisor-cloud-hypervisor.md), which it amends with the required backend memory arguments. Adds **N22** to [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md); the policy, verbs, and status surface live in [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md).
