@@ -2,14 +2,38 @@
 
 vivarium stores all state under standard per-user XDG directories, split by durability. The governing rule and rationale are in [`../../decisions/ADR-0005-xdg-user-config-layout.md`](../../decisions/ADR-0005-xdg-user-config-layout.md): **config is authored, cache is derived, state is runtime, data is pinned inputs.**
 
+## Where the roots live
+
+Each root is named by an XDG environment variable, and vivarium's own subtree is `vivarium/` under it. A variable that is unset, **empty, or not an absolute path** is treated as unset — a relative path is invalid and ignored rather than resolved against the working directory.
+
+| Root    | Variable           | When unset                       |
+| ------- | ------------------ | -------------------------------- |
+| Config  | `$XDG_CONFIG_HOME` | `~/.config`                      |
+| Data    | `$XDG_DATA_HOME`   | `~/.local/share`                 |
+| State   | `$XDG_STATE_HOME`  | `~/.local/state`                 |
+| Cache   | `$XDG_CACHE_HOME`  | `~/.cache`                       |
+| Runtime | `$XDG_RUNTIME_DIR` | **required — fail closed, `77`** |
+
+Where a default applies and `$HOME` cannot be resolved, the command fails `78` ([`14-exit-codes.md`](./14-exit-codes.md)) — a misconfigured environment, not a failing filesystem.
+
+The runtime root is the one row that refuses, and the asymmetry is deliberate: unlike the other four it has no literal default, because it is a session-scoped, `0700`, tmpfs-backed directory a login manager creates and removes. vivarium **requires** it rather than synthesizing a replacement — a host that has none also has no user session manager to place a VM's processes in, so a synthesized directory would only buy a launch that fails an invariant later ([`../../decisions/ADR-0055-runtime-directory-is-required.md`](../../decisions/ADR-0055-runtime-directory-is-required.md)). Every run that needs it validates it (absolute, owned by the user, not group- or world-accessible) and reports the specific fault, not a generic one; the check is `runtime-dir-usable` in [`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md).
+
 ## The four roots
 
-- **Config root** (`$XDG_CONFIG_HOME/vivarium/`) — the user's source of truth. Holds the global config file, the `images/` library, the `pieces/` library, and the `manifests/` library. Everything here is hand-authored and may be version-controlled by the user. **vivarium only reads the config root; it never writes, creates, or scaffolds anything here** (N13 in [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md) — config is read-only to the tool). The tool's own writes go to state, data, or cache only.
-- **Data root** (`$XDG_DATA_HOME/vivarium/`) — pinned external module libraries pulled in as inputs.
-- **State root** (`$XDG_STATE_HOME/vivarium/`) — per-project runtime state the tool writes: the built VM's store output reference, a stable VM identity that survives restarts, the **project registry** (`registry.toml` — the project→manifest binding — see below), the per-project **build generations** (see below), and the diagnostic **log** (`logs/vivarium.log`, written by default — see [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)).
-- **Cache root** (`$XDG_CACHE_HOME/vivarium/`) — derived, regenerable artifacts: Nix evaluation cache and built VM images. Safe to delete; the tool rebuilds it.
+The four **durable** roots — the durability split ADR-0005 draws. The runtime root is outside it by construction: it holds nothing that survives the session.
+
+- **Config root** — the user's source of truth. Holds the global config file, the `images/` library, the `pieces/` library, and the `manifests/` library. Everything here is hand-authored and may be version-controlled by the user. **vivarium only reads the config root; it never writes, creates, or scaffolds anything here** (N13 in [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md) — config is read-only to the tool). The tool's own writes go to state, data, or cache only.
+- **Data root** — pinned external module libraries pulled in as inputs.
+- **State root** — per-project runtime state the tool writes: the built VM's store output reference, a stable VM identity that survives restarts, the **project registry** (`registry.toml` — the project→manifest binding — see below), the per-project **build generations** (see below), and the diagnostic **log** (`logs/vivarium.log`, written by default — see [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)).
+- **Cache root** — derived, regenerable artifacts: Nix evaluation cache and built VM images. Safe to delete; the tool rebuilds it.
 
 The config, data, state, and cache roots hold, respectively, what the user edits, what is pinned as input, what a run produces, and what can be rebuilt. Any new artifact is placed by asking which of those four it is — and because config is read-only to the tool, anything the tool must write is by definition state, data, or cache, never config.
+
+## The runtime root
+
+`$XDG_RUNTIME_DIR/vivarium/<project-id>/<target>/` holds the files that exist only while a VM is running — the per-target `flock`, the control socket, the pid file, and the boot record. Their names and the ensure-running protocol that reads them are owned by [`12-exec-and-shell.md`](./12-exec-and-shell.md); the layout mirrors the state root's `projects/<project-id>/<target>/` component for component, for the reason [`15-project-identity.md`](./15-project-identity.md) gives.
+
+Nothing here is durable, so nothing here is ever swept: the directory is tmpfs-backed and torn down with the session that owns it. That is also why a VM does not outlive the user's final logout — the boundary is stated in [`10-vm-lifecycle.md`](./10-vm-lifecycle.md) and decided in [`../../decisions/ADR-0056-vm-lifetime-bounded-by-user-session.md`](../../decisions/ADR-0056-vm-lifetime-bounded-by-user-session.md).
 
 ## Global config file
 

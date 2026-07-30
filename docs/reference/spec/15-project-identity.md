@@ -6,7 +6,9 @@ Every per-project artifact vivarium writes is scoped by a single **project-ident
 
 `<project-id>` is the **sanitized name of the project directory**, not a hash of its path. It is human-readable (it appears in log lines and runtime paths), short enough to keep a Unix-socket path within its length limit, and assigned automatically — there is no flag and no manual step.
 
-**Sanitization.** Lowercase the directory basename, replace every character outside `[a-z0-9-]` with `-`, collapse runs of `-`, and trim leading/trailing `-`. If the result is empty, use `project`.
+**Sanitization.** Lowercase the directory basename, replace every character outside `[a-z0-9-]` with `-`, collapse runs of `-`, trim leading/trailing `-`, then **truncate to 48 characters** and trim again if the cut left a trailing `-`. If the result is empty, use `project`.
+
+The cap exists because the id is read, not just resolved: it appears in log lines ([`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)), in `viv status` output, in error messages, and in both the state and runtime paths — and a filesystem allows a basename several times longer than any of those stay legible at. It also keeps the control socket's absolute path clear of the operating system's Unix-socket length limit with room to spare, including for a `<target>` component longer than today's `default`. Two directories differing only past the cut sanitize to the same name; that is the ordinary collision above and takes the same suffix, because a truncation collision is indistinguishable from two identically-named directories.
 
 **Collision suffix.** When the sanitized name is already held by a _different, still-existing_ project, append the smallest free integer suffix: `api`, then `api-2`, `api-3`, and so on. The first holder keeps the bare name.
 

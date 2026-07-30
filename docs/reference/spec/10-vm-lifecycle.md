@@ -54,6 +54,12 @@ When inputs changed, `start` builds the fresh output but is **non-destructive to
 
 By default `start` boots the VM as a **background resource and returns once the guest answers** — the VM is a persistent thing `exec`/`shell` connect to, and the wait is what lets the post-condition above hold. `--attach` instead streams the VM console until it exits; `Ctrl-C` **detaches** the console and leaves the VM running — it never stops the VM. Because an attached `start` returns when the stream ends, a guest that powers itself off leaves `--attach` returning with no VM, which is why the post-condition excludes it.
 
+## Session boundary
+
+"Background resource" means it outlives the **command**, not the **login**. A running VM does **not** survive the user's final logout unless the host is configured to keep that user's session manager alive across it — every VM's processes live in a scope that manager owns ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)), so its exit takes them. Enabling that is a host action, not a vivarium feature or a flag; `viv doctor`'s soft `host-linger` check reports the setting while a VM is running ([`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md)). Decided in [`../../decisions/ADR-0056-vm-lifetime-bounded-by-user-session.md`](../../decisions/ADR-0056-vm-lifetime-bounded-by-user-session.md).
+
+A logout is therefore not a crash, and reads as one only if evidence of it survives. It does not: the runtime markers live in the session's own runtime root and go away with it ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)), so the "markers present but the process is dead" discriminator above finds nothing and the next login reports **built** — the same reading a clean `stop` leaves.
+
 ## Stopping: `viv stop`
 
 `viv stop` drives a **running** VM (fresh or stale) to **built** through the transitional **stopping** state, escalating only as needed:
@@ -74,7 +80,7 @@ Beyond the vivarium-owned identity marker, `destroy` never touches the workspace
 
 ## Preflight (fail-fast)
 
-`start` runs the **hard subset** of the shared `viv doctor` probe catalog before any side effect — one probe set, reused by `doctor` (whole catalog) and each command's guard (its subset), so they never drift. The catalog — stable check ids, categories, severities, and failure codes — is owned by [`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md); the hard subset is exactly its hard-severity checks, run cheapest-and-most-fundamental first so the earliest failure is the most actionable: `nix-present` → `nix-version` → `nix-flakes-enabled` → `kvm-device-present` → `kvm-device-accessible` → `hardware-virt-available` → `host-userns-available`. The backend is not among them: it arrives in the built runner's closure rather than from the host ([`../../decisions/ADR-0049-backend-is-a-closure-member.md`](../../decisions/ADR-0049-backend-is-a-closure-member.md)).
+`start` runs the **hard subset** of the shared `viv doctor` probe catalog before any side effect — one probe set, reused by `doctor` (whole catalog) and each command's guard (its subset), so they never drift. The catalog — stable check ids, categories, severities, and failure codes — is owned by [`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md); the hard subset is exactly its hard-severity checks, run cheapest-and-most-fundamental first so the earliest failure is the most actionable: `nix-present` → `nix-version` → `nix-flakes-enabled` → `kvm-device-present` → `kvm-device-accessible` → `hardware-virt-available` → `host-userns-available` → `runtime-dir-usable`. The backend is not among them: it arrives in the built runner's closure rather than from the host ([`../../decisions/ADR-0049-backend-is-a-closure-member.md`](../../decisions/ADR-0049-backend-is-a-closure-member.md)).
 
 The **admission check** (step 3 above) is a separate gate, not a catalog probe: preflight asks whether this host _can_ run a VM at all, admission asks whether it can run _another one right now_. Its thresholds and its warning are owned by [`17-resources-and-capacity.md`](./17-resources-and-capacity.md); `viv doctor` reports the same host readings as ordinary soft checks.
 
