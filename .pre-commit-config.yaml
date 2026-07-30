@@ -158,17 +158,29 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
-  # --- Spell check ---
-  - repo: https://github.com/crate-ci/typos
-    rev: v1.48.0
+  # --- Spell check + commit-message linting (both from the devShell) ---
+  # Both use `language: system` off the flake devShell, NOT the crate-ci repo
+  # hooks. Those are `language: python` and their wheels ship PREBUILT,
+  # dynamically-linked binaries whose interpreter is /lib64/ld-linux-x86-64.so.2.
+  # A dctl agents container has no FHS, so exec'ing one fails with
+  # `[Errno 2] No such file or directory` naming the binary that plainly exists.
+  # A Nix build of the same tool actually runs. Same pattern as
+  # nixfmt/statix/deadnix below; version parity is flake.nix's job, not a `rev:`.
+  - repo: local
     hooks:
       - id: typos
+        name: typos
+        entry: typos
+        args: [--write-changes, --force-exclude]
+        language: system
+        types: [text]
+        stages: [pre-commit, pre-merge-commit, pre-push, manual]
 
-  # --- Commit message linting (Rust-ecosystem; commit-msg stage) ---
-  - repo: https://github.com/crate-ci/committed
-    rev: v1.1.11
-    hooks:
       - id: committed
+        name: committed
+        entry: committed
+        args: [--fixup, --wip, --commit-file]
+        language: system
         stages: [commit-msg]
 
   # --- Secret scanning (pre-commit, fast) ---

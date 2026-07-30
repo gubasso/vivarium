@@ -45,6 +45,13 @@
             pkgs.nixfmt-rfc-style
             pkgs.statix
             pkgs.deadnix
+            # typos + committed also run as language:system off PATH. The
+            # crate-ci pre-commit hooks are `language: python` and their wheels
+            # ship prebuilt, dynamically-linked binaries, which cannot exec in a
+            # dctl agents container (no FHS: no /lib64/ld-linux-x86-64.so.2).
+            # A Nix build runs. See the hook comments in .pre-commit-config.yaml.
+            pkgs.typos
+            pkgs.committed
           ];
           # native deps for -sys crates, uncomment as needed:
           # buildInputs = [ pkgs.openssl ];
