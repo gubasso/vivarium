@@ -27,3 +27,5 @@ The rule is simple: **build-time means in the store, which is wrong for secrets;
 ## Status
 
 Accepted
+
+Amended by [`ADR-0058-generated-flake-is-a-materialized-cache-artifact.md`](./ADR-0058-generated-flake-is-a-materialized-cache-artifact.md) — compiling a manifest into the generated flake copies **the manifest's own text into the store**, so the prohibition above demonstrably reaches a value written in a manifest's `[env]` table, not only one read during the build — being launch-channel keeps that value out of every build output (N19), never out of the store. The rule is unchanged; its reach is now explicit, and stated in [`../reference/spec/07-secrets-and-config-sharing.md`](../reference/spec/07-secrets-and-config-sharing.md).

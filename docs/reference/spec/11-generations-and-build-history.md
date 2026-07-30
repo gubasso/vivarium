@@ -18,10 +18,13 @@ Under the state root ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout
 $XDG_STATE_HOME/vivarium/projects/<project-id>/<target>/
   current            -> generations/<n>
   generations/<n>    -> /nix/store/…-vivarium-vm   # GC root; survives garbage collection
-  metadata/<n>.json                                 # store path, flake-lock rev, manifest, backend, built_at
+  metadata/<n>.json                                 # store path, lock digest, manifest, backend, built_at
+  metadata/<n>.lock                                 # the lockfile this generation was built against
 ```
 
 `<project-id>` is the project-identity key that also scopes the project's other state; its form is defined in [`15-project-identity.md`](./15-project-identity.md).
+
+Each generation retains the **whole lockfile** it was built against, not merely a revision. A revision names where one input pointed; reproducing an evaluation needs the pinned graph, and the live lock under the data root has moved on by then ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), [`../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md)). The `lock_digest` in the metadata is the content digest of that snapshot, which is what `viv generations list` reports and what makes two generations comparable at a glance.
 
 ## Commands
 
@@ -31,7 +34,7 @@ All generation management lives under the `viv generations` family ([`../../deci
 - **`viv start --generation <n>`** — boot a specific retained generation.
 - **`viv generations list`** — list generations for the project: number, timestamp, and store path.
 - **`viv generations activate` / `rollback`** — move the `current` pointer to another retained generation.
-- **`viv generations prune`** — unlink old generations' GC roots under a retention policy (`--keep <n>` or `--older-than <dur>`) so a later collection can reclaim the store space.
+- **`viv generations prune`** — unlink old generations' GC roots under a retention policy (`--keep <n>` or `--older-than <dur>`) so a later collection can reclaim the store space. A pruned generation's metadata and lock snapshot go with it.
 - **`viv gc`** — run the store garbage collector. This is a **global, whole-store** sweep: it reclaims every store path unreachable from any GC root on the machine, vivarium's or not, and never removes anything still pinned. Unlinking (`generations prune`, `viv destroy`) and reclaiming (`viv gc`) are deliberately separate steps.
 
 Exit codes for the `generations` family and `viv gc` follow the per-command matrix in [`14-exit-codes.md`](./14-exit-codes.md).

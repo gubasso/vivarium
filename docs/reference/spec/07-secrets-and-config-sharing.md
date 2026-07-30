@@ -26,6 +26,12 @@ A secret embedded during the build lands in the world-readable store and ships w
 
 The rule is: **build-time means in the store, which is wrong for secrets; secrets are runtime or encrypted-at-rest only.**
 
+### Your manifest is compiled, so it is in the store too
+
+This reaches further than "do not read a credential during the build". The manifest is not just a name-list the tool consults — it is compiled into a module in the generated flake, and Nix realizes that flake ([`04-composition-and-determinism.md`](./04-composition-and-determinism.md), [`../../decisions/ADR-0058-generated-flake-is-a-materialized-cache-artifact.md`](../../decisions/ADR-0058-generated-flake-is-a-materialized-cache-artifact.md)). Every value written in a manifest therefore lands in the world-readable store, **including the launch-channel tables**: `[env]`, `[[mounts]]`, and `[resources]` are read by pure evaluation before they are applied at launch, so being launch-channel keeps a value out of every build _output_ (N19), never out of the _store_ the compiled text is copied into.
+
+So `[env] TOKEN = "…"` is a build-time secret, whatever the channel classification suggests. Being the personal layer buys nothing here either — N11 permits literal personal paths in your own manifest, and N10 still forbids a secret. A token reaches the guest as a runtime environment value injected at launch (`--env`, [`12-exec-and-shell.md`](./12-exec-and-shell.md)) or through one of the two channels above; it is never written into any file vivarium compiles.
+
 ## Mirroring host configuration
 
 Host config files and directories are mirrored into the guest through the declarative mount schema ([`../../decisions/ADR-0020-mount-and-config-mirroring-schema.md`](../../decisions/ADR-0020-mount-and-config-mirroring-schema.md), [`../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md`](../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md), [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)): the host `source` expands host-side variables at launch, the guest `target` expands `~` to the guest home, and `readonly = true` marks identity files that must not be written. Because each side expands its own home, identity mounts (`~/.config/foo` → `~/.config/foo`) need no path translation even though the guest username differs from the host's.

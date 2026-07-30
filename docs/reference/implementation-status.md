@@ -27,6 +27,7 @@ Nothing is at **Implemented** today.
 | `viv shell`                           | Acceptance test written (gated) | `workflow_01_first_time_bind_usage` (usage errors only; no interactive PTY coverage)          |
 | `viv stop`                            | Acceptance test written (gated) | `workflow_07_volume_list_requires_binding`, `workflow_07_stop_restart_preserving_volumes`     |
 | `viv destroy`                         | Acceptance test written (gated) | `workflow_08_destroy_usage_surface`, `workflow_08_destroy_cold_rebuild`                       |
+| `viv update`                          | Designed                        | —                                                                                             |
 | `viv generations`                     | Designed                        | —                                                                                             |
 | `viv gc`                              | Acceptance test written (gated) | `workflow_08_destroy_usage_surface` (reachability only; no store-sweep coverage)              |
 | `viv volume`                          | Acceptance test written (gated) | `workflow_07_volume_list_requires_binding`, `workflow_07_stop_restart_preserving_volumes`     |

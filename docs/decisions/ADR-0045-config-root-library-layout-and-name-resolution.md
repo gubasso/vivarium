@@ -31,4 +31,6 @@ Chosen option: **flat first, directory as a fallback** — flat keeps the common
 
 Accepted
 
+Amended by [`ADR-0061-examples-ship-not-a-second-namespace.md`](./ADR-0061-examples-ship-not-a-second-namespace.md) — the config root is the whole search path: an artifact bundled with vivarium is an example to copy and never participates in name resolution, so no shadowing rule joins the algorithm above.
+
 Specified in [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md) and [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md).

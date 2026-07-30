@@ -68,20 +68,77 @@ target   = "~/.config/foo"                          # guest path; ~ is the guest
 readonly = true                                     # default false
 
 [[volumes]]                                         # optional; repeatable
-name  = "cache"
-mount = "/var/cache/project"
+name     = "cache"
+mount    = "/var/cache/project"
+size_gib = 64                                       # optional; default 32, a virtual ceiling
 
 # Escape hatch for composition the TOML cannot express:
 # extends = "./rust-web.custom.nix"
 ```
 
-`image` is the only required key; every other table is optional, and an absent table is not the same as an empty one — an undeclared resource ceiling resolves from the host at launch rather than to zero ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)). The `[[mounts]]` and `[env]` shapes are owned by [`../../decisions/ADR-0020-mount-and-config-mirroring-schema.md`](../../decisions/ADR-0020-mount-and-config-mirroring-schema.md), `[[volumes]]` and `[volume].persist` by [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md). A manifest carries **no schema version**: the grammar evolves additively, and an unknown key fails closed rather than being ignored ([`../../decisions/ADR-0047-manifest-carries-no-schema-version.md`](../../decisions/ADR-0047-manifest-carries-no-schema-version.md)).
+### The key table
 
-The `pieces` list is ordered, but order never decides a scalar's value: merge is priority-based, and two layers setting one scalar at the same priority is a content defect that fails evaluation rather than an order-resolved win (see [`04-composition-and-determinism.md`](./04-composition-and-determinism.md)). Order is preserved because it is what readers follow and because concatenated lists keep it. The optional `extends` key references a raw `.nix` module for advanced cases.
+This is the complete authoring surface. Nothing outside it is accepted, and an unknown key fails closed naming the accepted keys and the CLI version — the manifest carries **no schema version**, because the grammar evolves additively and a key's meaning is never repurposed ([`../../decisions/ADR-0047-manifest-carries-no-schema-version.md`](../../decisions/ADR-0047-manifest-carries-no-schema-version.md)). The table and the validation boundary below it are decided in [`../../decisions/ADR-0057-manifest-grammar-and-validation-boundary.md`](../../decisions/ADR-0057-manifest-grammar-and-validation-boundary.md).
+
+| Key                    | Type                                               | Required | Default       | Channel |
+| ---------------------- | -------------------------------------------------- | -------- | ------------- | ------- |
+| `image`                | name                                               | **yes**  | —             | build   |
+| `pieces`               | array of names                                     | no       | `[]`          | build   |
+| `extends`              | relative path to a `.nix` module                   | no       | `null`        | build   |
+| `resources.mem_mib`    | integer ≥ 256                                      | no       | host-resolved | launch  |
+| `resources.vcpu`       | integer ≥ 1                                        | no       | host-resolved | launch  |
+| `egress.mode`          | `"open"` \| `"allowlist"`                          | no       | `"open"`      | build   |
+| `egress.allow`         | array of host names                                | no       | `[]`          | build   |
+| `env.<NAME>`           | string, `NAME` matching `^[A-Za-z_][A-Za-z0-9_]*$` | no       | `{}`          | launch  |
+| `[[mounts]].source`    | host path; `${VAR}` stays unexpanded               | in table | —             | launch  |
+| `[[mounts]].target`    | guest path; `~` is the guest home                  | in table | —             | launch  |
+| `[[mounts]].readonly`  | boolean                                            | no       | `false`       | launch  |
+| `[[volumes]].name`     | name; `default` is reserved                        | in table | —             | build   |
+| `[[volumes]].mount`    | absolute guest path                                | in table | —             | build   |
+| `[[volumes]].size_gib` | integer ≥ 1                                        | no       | `32`          | launch  |
+| `[volume].size_gib`    | integer ≥ 1                                        | no       | `32`          | launch  |
+| `[volume].persist`     | array of absolute guest paths                      | no       | `[]`          | build   |
+
+A **name** is the kebab-case identifier resolved against the config library ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)). "In table" means the key is required once its `[[…]]` entry exists, not that the table itself is required — every table here is optional. The **channel** column is the purity classification: a launch-channel value is read by pure evaluation and applied when the VM boots, and no build output may depend on it ([`04-composition-and-determinism.md`](./04-composition-and-determinism.md), [`../../decisions/ADR-0041-resource-and-volume-channel-classification.md`](../../decisions/ADR-0041-resource-and-volume-channel-classification.md)). An absent table is never the same as an empty one: an undeclared ceiling resolves from the host at launch rather than to zero ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)).
+
+Two conventions the table encodes. **Units live in key names** — `mem_mib`, `size_gib` — never in value suffixes, so there is no scale to disambiguate and no suffix grammar to learn. And **there is no `resources.disk`**: disk belongs to a volume, which already declares and reports its own ceiling. `[volume]` and `[[volumes]]` are deliberately different names because TOML forbids a table and an array of tables sharing one; the singular table configures the default home volume, which always exists without declaration.
+
+The `[[mounts]]` and `[env]` shapes are owned by [`../../decisions/ADR-0020-mount-and-config-mirroring-schema.md`](../../decisions/ADR-0020-mount-and-config-mirroring-schema.md), the volume keys by [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md).
+
+The `pieces` list is ordered, but order never decides a scalar's value: merge is priority-based, and two layers setting one scalar at the same priority is a content defect that fails evaluation rather than an order-resolved win (see [`04-composition-and-determinism.md`](./04-composition-and-determinism.md)). Order is preserved because it is what readers follow and because concatenated lists keep it.
+
+### Validation: what fails when
+
+A defect is reported at exactly one stage, under exactly one code:
+
+| Stage    | Defect                                                                                                                                            | Exit |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| parse    | malformed TOML; an unknown key; a wrong type; a value outside its domain (`mem_mib = 0`, `mode = "off"`, a non-kebab name)                        | `78` |
+| resolve  | a name with no matching file, or both spellings of one name present ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md))              | `78` |
+| evaluate | one volume name bound to two mountpoints, a duplicate mount target, an equal-priority scalar tie, a literal personal path in a shared layer (N11) | `65` |
+
+The dividing line is **what the manifest text alone can decide**. Everything else waits for the merge — including the duplicate-name and duplicate-target checks, which a single manifest can violate on its own. They still run only at evaluation, because a piece can contribute the colliding declaration and one defect must never carry two exit codes — the codes are a permanent API ([`14-exit-codes.md`](./14-exit-codes.md), [`../../decisions/ADR-0042-evaluation-time-content-defects.md`](../../decisions/ADR-0042-evaluation-time-content-defects.md)).
+
+### `extends`
+
+`extends` names **one raw `.nix` module** — the escape hatch for composition the TOML cannot express. Its semantics are fixed in [`../../decisions/ADR-0060-extends-is-one-local-module.md`](../../decisions/ADR-0060-extends-is-one-local-module.md):
+
+- **Exactly one value, never an array and never transitive.** A Nix module already has `imports`, which the module system evaluates; a list vivarium ordered itself would make declaration order decide again.
+- **Resolved relative to the manifest file's own directory**, and the result must canonicalize — after symlinks — to a path inside the config root. An escape, a missing file, or a non-module target is `78`.
+- **Its containing directory is copied into the generated flake**, so its own relative imports work and the module is a build input like any other layer (N3, [`04-composition-and-determinism.md`](./04-composition-and-determinism.md)).
+- **It merges at the same rank as a piece** and chooses its own priority — `mkDefault` to propose, `mkForce` to override a floor, which is what the tie hint in [`01-command-surface.md`](./01-command-surface.md) means by "override through extends".
+
+`extends` does **not** inherit another manifest. Manifest-to-manifest inheritance would require vivarium to publish, per key, whether a child value replaces or merges with its parent's — a merge engine of its own, which N6 forbids. A live team baseline is a shared **piece** instead: a piece carries packages, guest config, mounts, env, resources, and volumes, and may import an image, so adopting it brings the whole baseline and editing it reaches every teammate's next build ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)).
+
+### A manifest is compiled, so its text lands in the store
+
+The manifest does not merely name layers that get built — it is itself translated into a module in the generated flake, and that flake is realized by Nix ([`../../decisions/ADR-0058-generated-flake-is-a-materialized-cache-artifact.md`](../../decisions/ADR-0058-generated-flake-is-a-materialized-cache-artifact.md)). Every value written here therefore reaches the world-readable store, including the launch-channel tables. That is not a breach of N19: no build output depends on a launch-channel value, but the text declaring it is copied to the store like the rest of the manifest. Nothing secret belongs in a manifest — the rule and the channels that replace it are in [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md) (N10).
 
 ## Authoring these artifacts
 
 vivarium never scaffolds these files into a user's config root (N13). Instead, the manifest's TOML surface is documented by **generated, self-documented examples** derived from the tool's own config types — an annotated `*.example.toml` plus a JSON Schema for editor validation — kept in sync by a pre-commit check. The user copies an example and edits it; the tool only ever reads the result. The inline sketches above are illustrative; the canonical, always-current examples are the generated ones. The `vivarium.*` options available to pieces are declared by a tool-owned options module and follow the same rule — their reference documentation is generated from the option types. See [`../../decisions/ADR-0012-generate-config-examples-from-types.md`](../../decisions/ADR-0012-generate-config-examples-from-types.md).
+
+What vivarium ships alongside those generated examples is **hand-maintained example images and pieces to copy** — and nothing more. No bundled artifact resolves by name: the config root is the entire search path, so a name has exactly one meaning and no shadowing rule joins resolution ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), [`../../decisions/ADR-0061-examples-ship-not-a-second-namespace.md`](../../decisions/ADR-0061-examples-ship-not-a-second-namespace.md)). The tool-owned options module is the one thing that is not an example: it is non-optional, ships inside the generated flake, and is never copied into a library or listed by one.
 
 ## Relationship
 

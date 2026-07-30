@@ -26,3 +26,9 @@ For compositions the TOML cannot express, a manifest may reference a raw `.nix` 
 ## Status
 
 Accepted
+
+Amended by [`ADR-0058-generated-flake-is-a-materialized-cache-artifact.md`](./ADR-0058-generated-flake-is-a-materialized-cache-artifact.md) — the generated flake's location, contents, and inspection path are fixed there, closing the "intermediate artifact users may need to inspect" consequence above.
+
+Amended by [`ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](./ADR-0059-lockfile-is-tool-owned-in-the-data-root.md) — the flake the CLI emits reads a lockfile it does not own, staged in from the data root.
+
+Amended by [`ADR-0060-extends-is-one-local-module.md`](./ADR-0060-extends-is-one-local-module.md) — the raw-`.nix` escape hatch sanctioned above is exactly one local module, and never inheritance of another manifest.

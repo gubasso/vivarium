@@ -34,3 +34,5 @@ Accepted
 Amended by **ADR-0037** — each volume image is sparse raw, created lazily on first `start`, and its declared size is a virtual ceiling reclaimed by trim rather than a preallocated amount. The model above is unchanged.
 
 Amended by [`ADR-0041-resource-and-volume-channel-classification.md`](./ADR-0041-resource-and-volume-channel-classification.md) — the piece-side declaration surface is the `vivarium.volumes` option, and volume declarations are classified **build-channel**: the guest mountpoint is guest system configuration, so adding a volume rebuilds. The model above is unchanged.
+
+Amended by [`ADR-0057-manifest-grammar-and-validation-boundary.md`](./ADR-0057-manifest-grammar-and-validation-boundary.md) — the volume shape gains an optional `size_gib`, the key that expresses the raisable virtual ceiling ADR-0037 introduced, and the conflicting-mountpoint check above is fixed at evaluation time (`65`) rather than at parse. The model above is unchanged.

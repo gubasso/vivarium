@@ -28,3 +28,5 @@ Chosen option: **generate examples from the config types** (P3 — copy-don't-sc
 ## Status
 
 Accepted
+
+Amended by [`ADR-0061-examples-ship-not-a-second-namespace.md`](./ADR-0061-examples-ship-not-a-second-namespace.md) — names what the hand-maintained example modules cover, rules that none of them ever participates in name resolution, and separates them from the non-optional tool-owned options module, which is not an example and is never copied.

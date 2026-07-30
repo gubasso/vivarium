@@ -31,4 +31,6 @@ Chosen option: **reclassify** — it matches where manifests already live (the p
 
 Accepted
 
+Amended by [`ADR-0060-extends-is-one-local-module.md`](./ADR-0060-extends-is-one-local-module.md) — the consequence "no single file pins a team baseline … until `extends` is designed" is answered by a shared **piece**, which after ADR-0021 and ADR-0041 carries everything a manifest expresses except the image line and the piece list. `extends` is a single local module and never inherits another manifest, so it is not that mechanism. The reclassification above is unchanged.
+
 Amends [`ADR-0011-config-read-only-binding-in-state.md`](./ADR-0011-config-read-only-binding-in-state.md) and [`ADR-0021-typed-launch-channel-options-in-pieces.md`](./ADR-0021-typed-launch-channel-options-in-pieces.md). Specified in [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md), [`../reference/spec/04-composition-and-determinism.md`](../reference/spec/04-composition-and-determinism.md), [`../reference/spec/07-secrets-and-config-sharing.md`](../reference/spec/07-secrets-and-config-sharing.md), and [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md).

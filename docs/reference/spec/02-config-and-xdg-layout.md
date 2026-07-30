@@ -23,9 +23,9 @@ The runtime root is the one row that refuses, and the asymmetry is deliberate: u
 The four **durable** roots — the durability split ADR-0005 draws. The runtime root is outside it by construction: it holds nothing that survives the session.
 
 - **Config root** — the user's source of truth. Holds the global config file, the `images/` library, the `pieces/` library, and the `manifests/` library. Everything here is hand-authored and may be version-controlled by the user. **vivarium only reads the config root; it never writes, creates, or scaffolds anything here** (N13 in [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md) — config is read-only to the tool). The tool's own writes go to state, data, or cache only.
-- **Data root** — pinned external module libraries pulled in as inputs.
+- **Data root** — pinned inputs: the per-target **lockfile** that pins what a project's build resolves to (see below), and any external module library pulled in as an input.
 - **State root** — per-project runtime state the tool writes: the built VM's store output reference, a stable VM identity that survives restarts, the **project registry** (`registry.toml` — the project→manifest binding — see below), the per-project **build generations** (see below), and the diagnostic **log** (`logs/vivarium.log`, written by default — see [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)).
-- **Cache root** — derived, regenerable artifacts: Nix evaluation cache and built VM images. Safe to delete; the tool rebuilds it.
+- **Cache root** — derived, regenerable artifacts: the **generated flake** compiled from each manifest (see below), the Nix evaluation cache, and built VM images. Safe to delete; the tool rebuilds it.
 
 The config, data, state, and cache roots hold, respectively, what the user edits, what is pinned as input, what a run produces, and what can be rebuilt. Any new artifact is placed by asking which of those four it is — and because config is read-only to the tool, anything the tool must write is by definition state, data, or cache, never config.
 
@@ -91,6 +91,21 @@ A registry entry whose project directory has vanished is **warned about, never r
 
 Each project's runtime VM state lives under the state root at `projects/<project-id>/<target>/`, where `<project-id>` is the project-identity key that scopes all of a project's state and `<target>` names the VM instance within that project — both defined in [`15-project-identity.md`](./15-project-identity.md), which also explains why `<target>` is always `default` today. This holds the project's **build generations** — a per-project Nix profile whose numbered symlinks pin retained build outputs as garbage-collector roots — and its **persistent volumes** (`volumes/<name>.img`, always including `default`). Volumes live under state, not cache, because their contents are user data and not regenerable. Generation layout and lifecycle are specified in [`11-generations-and-build-history.md`](./11-generations-and-build-history.md); the volume model in [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md) and [`../../decisions/ADR-0019-volume-model.md`](../../decisions/ADR-0019-volume-model.md).
 
+## The generated flake and the lockfile
+
+Building a project produces two tool-owned artifacts outside the state root. They sit in different roots because they have different durability, and the split is the whole point: one is regenerable, the other is the pin that makes regeneration mean the same thing twice.
+
+```text
+$XDG_CACHE_HOME/vivarium/flakes/<project-id>/<target>/     # generated flake — regenerable
+$XDG_DATA_HOME/vivarium/projects/<project-id>/<target>/flake.lock   # pinned inputs — not regenerable
+```
+
+The **generated flake** is what `nix build` actually reads: the compiled manifest plus copies of the resolved image, pieces, and `extends` module ([`04-composition-and-determinism.md`](./04-composition-and-determinism.md), [`../../decisions/ADR-0058-generated-flake-is-a-materialized-cache-artifact.md`](../../decisions/ADR-0058-generated-flake-is-a-materialized-cache-artifact.md)). It is regenerated wholesale, written to a temporary sibling and renamed into place so a concurrent run never reads a partial tree, and never hand-edited. `viv config` prints its path, which is how a user inspects it ([`01-command-surface.md`](./01-command-surface.md)).
+
+The **lockfile** is data, not cache, because deleting it does not rebuild anything — it re-resolves, which is exactly what N3 forbids happening by accident. It is created on the first build, which reports what it pinned, and thereafter moves only under `viv update` ([`../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md)). One lock per target rather than one per user: a global lock would make updating one project an unannounced update to every other.
+
+A team that wants one shared pin places a read-only `flake.lock` in the **config root**. It wins over the per-target lock whenever it is present and is never written by the tool (N13) — the config root is where a team's shared guarantees already live ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)). Without it, two people building one manifest may resolve different inputs; that is the honest cost of a tool that may not write a project's own tree (N9).
+
 ## Resolution precedence
 
 The effective manifest is resolved highest-wins, per [`../../decisions/ADR-0011-config-read-only-binding-in-state.md`](../../decisions/ADR-0011-config-read-only-binding-in-state.md):
@@ -113,3 +128,5 @@ A manifest names its layers by bare identifier — `image = "rust"`, `pieces = [
 | `manifests/` | `manifests/<name>.toml` | `manifests/<name>/default.toml` |
 
 The directory form exists so a multi-file artifact can keep its helper modules beside it; an image that imports a shared base is the motivating case ([`03-artifact-model.md`](./03-artifact-model.md)). Anything in a library directory that is not a member by these rules — a helper module, a README, a nested name that is not kebab-case — is invisible to the readers and never enumerated. Both spellings of one name present is an ambiguity, not a precedence question: resolution fails closed naming both paths ([`14-exit-codes.md`](./14-exit-codes.md)). The resolved path is what `viv images list`, `viv manifest list`, and `viv manifest show` report as `path` ([`01-command-surface.md`](./01-command-surface.md)). Decided in [`../../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md`](../../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md).
+
+**The config root is the whole search path.** There is no bundled library behind it and no fallback: what vivarium ships is examples to copy, which resolve nowhere until a user places them here ([`03-artifact-model.md`](./03-artifact-model.md), [`../../decisions/ADR-0061-examples-ship-not-a-second-namespace.md`](../../decisions/ADR-0061-examples-ship-not-a-second-namespace.md)). So a name has exactly one meaning, a listing needs no provenance column, and an artifact is missing rather than silently satisfied from somewhere the user cannot edit.

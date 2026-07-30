@@ -27,4 +27,6 @@ Each successful `up` build appends a numbered generation to the project's profil
 
 Accepted
 
+Amended by [`ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](./ADR-0059-lockfile-is-tool-owned-in-the-data-root.md) — a generation retains a snapshot of the lockfile that built it plus its digest, replacing the bare lock revision in the per-generation record, because a revision alone does not reproduce an evaluation. The profile-and-GC-root mechanism is unchanged.
+
 Specified in [`../reference/spec/11-generations-and-build-history.md`](../reference/spec/11-generations-and-build-history.md).

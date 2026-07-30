@@ -22,11 +22,11 @@ The limits of the model are stated plainly, because they are where a user can st
 
 `resources.mem_mib` and `resources.vcpu` are optional and render as `null` when undeclared ([`01-command-surface.md`](./01-command-surface.md)). Undeclared does not mean unset — it means resolved at launch from the host:
 
-| Knob                | When undeclared                                                                    |
-| ------------------- | ---------------------------------------------------------------------------------- |
-| `resources.mem_mib` | half of host physical memory, rounded down to a whole GiB, clamped to **4–16 GiB** |
-| `resources.vcpu`    | the host's CPU count, capped at **8**                                              |
-| volume size         | **32 GiB** virtual per volume                                                      |
+| Knob                    | When undeclared                                                                    |
+| ----------------------- | ---------------------------------------------------------------------------------- |
+| `resources.mem_mib`     | half of host physical memory, rounded down to a whole GiB, clamped to **4–16 GiB** |
+| `resources.vcpu`        | the host's CPU count, capped at **8**                                              |
+| `size_gib` (per volume) | **32 GiB** virtual per volume                                                      |
 
 Half of host memory is safe _because_ it is a ceiling. The lower clamp keeps a real toolchain from thrashing on a small host; the upper clamp stops one runaway project from being able to consume a large host by itself. A declared value always wins and is still a ceiling.
 
