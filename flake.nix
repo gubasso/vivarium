@@ -52,6 +52,10 @@
             # A Nix build runs. See the hook comments in .pre-commit-config.yaml.
             pkgs.typos
             pkgs.committed
+            # dprint (the `dprint`/`dprint-markdown` hooks) is the same story:
+            # `language: system`, resolved off PATH, and a cargo-installed
+            # dprint is a prebuilt glibc ELF that cannot exec without FHS.
+            pkgs.dprint
           ];
           # native deps for -sys crates, uncomment as needed:
           # buildInputs = [ pkgs.openssl ];

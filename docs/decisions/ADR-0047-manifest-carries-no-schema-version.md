@@ -30,4 +30,6 @@ Chosen option: **no version key** — a hand-authored file's version declaration
 
 Accepted
 
+Amended by [`ADR-0052-state-root-file-layout-and-schema-visibility.md`](./ADR-0052-state-root-file-layout-and-schema-visibility.md) — the scope above ("this one governs what a user writes") now reaches the state registry as well as the manifest, because `viv init`'s pasted snippet makes the registry record something a user writes. No version key and unknown-keys-fail-closed apply there unchanged.
+
 Specified in [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md).

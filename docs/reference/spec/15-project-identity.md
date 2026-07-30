@@ -28,7 +28,15 @@ Because the marker is gitignored, it never travels through `git`: a fresh clone 
 
 The marker carries **identity only** — the `<project-id>`. It is **not** the manifest binding. The project→manifest binding still lives exclusively in the per-user state registry, written only on an explicit `viv init --write`, and resolution precedence is unchanged (`--manifest` → `VIVARIUM_MANIFEST` → registry → fail closed; N7, [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), [`../../decisions/ADR-0011-config-read-only-binding-in-state.md`](../../decisions/ADR-0011-config-read-only-binding-in-state.md)).
 
-Identity is tracked separately. vivarium keeps an **identity index** under the state root that maps each assigned `id` to the **live canonical path** it currently occupies. This index is ordinary tool-managed runtime state — written automatically like generations and runtime files, not gated behind `--write`, and only by the commands that mint (see below) — and it exists independently of the binding, so a project run through a `--manifest`/`VIVARIUM_MANIFEST` override (no registry entry) still has a stable identity. The index is what makes the resolution below deterministic.
+Identity is tracked separately. vivarium keeps an **identity index** under the state root — `identity.toml`, one file, in the registry's format ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)) — that maps each assigned `id` to the **live canonical path** it currently occupies:
+
+```toml
+[[identities]]
+id = "api-2"
+path = "/home/alice/work/api-fork"
+```
+
+One file rather than a directory per id, because minting is "the smallest free suffix" — a global invariant that needs a global lock however the file is sharded. Unlike the registry record this shape is **not** a supported interface: nothing prints it and nothing invites a user to write it ([`../../decisions/ADR-0052-state-root-file-layout-and-schema-visibility.md`](../../decisions/ADR-0052-state-root-file-layout-and-schema-visibility.md)). It records the mapping and nothing more — no minting timestamp, and in particular no cached liveness flag, because whether a path still exists is what decides move-versus-copy below and must be read live. This index is ordinary tool-managed runtime state — written automatically like generations and runtime files, not gated behind `--write`, and only by the commands that mint (see below) — and it exists independently of the binding, so a project run through a `--manifest`/`VIVARIUM_MANIFEST` override (no registry entry) still has a stable identity. The index is what makes the resolution below deterministic.
 
 ## Resolving the identity
 
@@ -50,7 +58,7 @@ For the project directory at canonical (symlink-resolved) path `P` with sanitize
 - The index already has an entry for path `P` → use its id and **persist** by rewriting the marker (this recovers a marker the user deleted).
 - Otherwise resolve to `N` — suffixed if `N` is held by a different, still-existing project — and **persist** by writing the marker and recording it.
 
-Either source can be rebuilt from the other: a deleted marker is recovered from the index entry for `P`, and a lost index entry is re-adopted from the marker. Assigning a brand-new id takes a short global lock on the identity index before the per-project `flock` ([`12-exec-and-shell.md`](./12-exec-and-shell.md)), so two concurrent first-time `viv start`s cannot mint divergent suffixes for the same directory.
+Either source can be rebuilt from the other: a deleted marker is recovered from the index entry for `P`, and a lost index entry is re-adopted from the marker. Assigning a brand-new id takes a short global lock on the identity index before the per-project `flock` ([`12-exec-and-shell.md`](./12-exec-and-shell.md)), so two concurrent first-time `viv start`s cannot mint divergent suffixes for the same directory. That edge is one link in the single total lock order specified in [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md) — registry before identity, identity before the per-target `flock` — and "short" is normative: the lock is released before any Nix build or VM boot ([`../../decisions/ADR-0053-state-file-atomicity-and-lock-ordering.md`](../../decisions/ADR-0053-state-file-atomicity-and-lock-ordering.md)).
 
 One consequence is worth stating plainly: a resolved-but-unpersisted id is deterministic, not stable over time. Two copies of a project both resolve to `api-2` until one of them starts; once that one mints, the other resolves to `api-3`. Only minting settles a suffix, so a read-only command run in an unstarted copy may report a different id later.
 

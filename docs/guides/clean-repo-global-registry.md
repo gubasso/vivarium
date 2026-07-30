@@ -12,7 +12,7 @@ $ viv init --manifest clean-registry --write --yes
 $ viv config --json
 ```
 
-Review the project tree after each command, then use `viv config --json` to inspect the public binding view instead of relying on private state files. There is no per-project binding file to add or gitignore: [the decision that moved the binding into the state registry](../decisions/ADR-0011-config-read-only-binding-in-state.md) removed that concept entirely.
+Review the project tree after each command, then use `viv config --json` to inspect the binding: it is the supported view, and unlike the file on disk it also reflects a `--manifest` or `VIVARIUM_MANIFEST` override in force. The registry's own `[[projects]]` record is a documented shape you may read or hand-edit if you prefer — `viv init` prints exactly that block, and names `--write` beside it if you would rather vivarium wrote it for you. The rest of the state root is private and unspecified; don't build on it. See [the state-root layout](../reference/spec/02-config-and-xdg-layout.md). There is no per-project binding file to add or gitignore: [the decision that moved the binding into the state registry](../decisions/ADR-0011-config-read-only-binding-in-state.md) removed that concept entirely.
 
 ## Start the project
 

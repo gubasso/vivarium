@@ -32,4 +32,6 @@ Amended by [`ADR-0029-project-identity-and-marker.md`](./ADR-0029-project-identi
 
 Amended by [`ADR-0040-manifest-is-the-personal-layer.md`](./ADR-0040-manifest-is-the-personal-layer.md) — the manifest is the personal layer, so the machine-local registry noted as a drawback above is the intended shape rather than a limitation to evolve away: a per-user binding pointing at a per-user manifest is what makes the shared images and pieces distributable unchanged.
 
+Amended by [`ADR-0054-stale-bindings-surfaced-not-reaped.md`](./ADR-0054-stale-bindings-surfaced-not-reaped.md) — binding stays explicit and `--write`-gated, and now has an explicit inverse, `viv unbind`; a binding whose project directory has vanished is warned about, never removed automatically.
+
 Supersedes [`ADR-0006-manifest-binding-and-precedence.md`](./ADR-0006-manifest-binding-and-precedence.md). Refines the registry placement of [`ADR-0005-xdg-user-config-layout.md`](./ADR-0005-xdg-user-config-layout.md).

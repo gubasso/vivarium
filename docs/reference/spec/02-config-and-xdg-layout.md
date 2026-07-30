@@ -6,7 +6,7 @@ vivarium stores all state under standard per-user XDG directories, split by dura
 
 - **Config root** (`$XDG_CONFIG_HOME/vivarium/`) — the user's source of truth. Holds the global config file, the `images/` library, the `pieces/` library, and the `manifests/` library. Everything here is hand-authored and may be version-controlled by the user. **vivarium only reads the config root; it never writes, creates, or scaffolds anything here** (N13 in [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md) — config is read-only to the tool). The tool's own writes go to state, data, or cache only.
 - **Data root** (`$XDG_DATA_HOME/vivarium/`) — pinned external module libraries pulled in as inputs.
-- **State root** (`$XDG_STATE_HOME/vivarium/`) — per-project runtime state the tool writes: the built VM's store output reference, a stable VM identity that survives restarts, the **project registry** (the project→manifest binding — see below), the per-project **build generations** (see below), and the diagnostic **log** (`logs/vivarium.log`, written by default — see [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)).
+- **State root** (`$XDG_STATE_HOME/vivarium/`) — per-project runtime state the tool writes: the built VM's store output reference, a stable VM identity that survives restarts, the **project registry** (`registry.toml` — the project→manifest binding — see below), the per-project **build generations** (see below), and the diagnostic **log** (`logs/vivarium.log`, written by default — see [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)).
 - **Cache root** (`$XDG_CACHE_HOME/vivarium/`) — derived, regenerable artifacts: Nix evaluation cache and built VM images. Safe to delete; the tool rebuilds it.
 
 The config, data, state, and cache roots hold, respectively, what the user edits, what is pinned as input, what a run produces, and what can be rebuilt. Any new artifact is placed by asking which of those four it is — and because config is read-only to the tool, anything the tool must write is by definition state, data, or cache, never config.
@@ -23,7 +23,45 @@ Two things it deliberately does not carry. It does **not** hold the project→ma
 
 The **project registry** is the single home for project→manifest bindings: a map from a project directory to the manifest it resolves to. It lives under the **state root** because it is machine-local, tool-managed, and not portable — a record of what the tool has bound on this machine, keyed by the project's absolute path. The tool writes it only on an explicit, user-directed action (`viv init --write`, see [`01-command-surface.md`](./01-command-surface.md)), never as a side effect of a normal command.
 
-The manifest **binding** has no file inside the repository: a project is bound by a registry entry, not by a committed or gitignored pointer. The one thing vivarium does write into a project's own tree is its self-ignored `.vivarium/` **identity** marker — which carries the `<project-id>` only, never the binding (N9, N21; [`15-project-identity.md`](./15-project-identity.md)). Identity is tracked in a separate state-root index, distinct from this `--write`-gated binding.
+The manifest **binding** has no file inside the repository: a project is bound by a registry entry, not by a committed or gitignored pointer. The one thing vivarium does write into a project's own tree is its self-ignored `.vivarium/` **identity** marker — which carries the `<project-id>` only, never the binding (N9, N21; [`15-project-identity.md`](./15-project-identity.md)). Identity is tracked in a separate state-root index, `identity.toml`, distinct from this `--write`-gated binding — a different key, a different write gate, and a different lifetime, which is why the two are separate files.
+
+### On-disk shape
+
+The registry is `registry.toml` under the state root, a TOML array of tables:
+
+```toml
+[[projects]]
+path = "/home/alice/backend"
+manifest = "rust-web"
+```
+
+`path` is the project directory's **canonical, symlink-resolved** absolute path — canonicalized exactly as identity resolution canonicalizes it ([`15-project-identity.md`](./15-project-identity.md)), so one directory can never acquire two bindings. `manifest` is the bare kebab-case **name**, never a resolved file path: resolution is a config-root function (below) and the config root is user-mutable behind the tool's back (N13), so a stored path would be a stale pointer for no gain.
+
+Those two keys are a **supported interface**. `viv init` prints exactly this block for the user to paste ([`01-command-surface.md`](./01-command-surface.md)), and vivarium accepts a hand-written entry. Nothing else about the state root is specified — no other file name, and no other schema; the supported readers for the rest are `viv config --json` and `viv status -g --json`. Decided in [`../../decisions/ADR-0052-state-root-file-layout-and-schema-visibility.md`](../../decisions/ADR-0052-state-root-file-layout-and-schema-visibility.md).
+
+The registry carries **no schema version**, and an unknown key fails closed naming the accepted keys and the CLI version. The grammar evolves additively; a genuinely breaking change would signal out of band through a new filename rather than through a field the incompatible parser must already understand. This is the manifest's rule ([`../../decisions/ADR-0047-manifest-carries-no-schema-version.md`](../../decisions/ADR-0047-manifest-carries-no-schema-version.md)) applied to the other file a user writes into.
+
+### Writing and concurrency
+
+Both state files are written **atomically**: serialize to a temp file in the same directory, flush it, rename it over the target, then fsync the parent directory. A concurrent reader sees the old file or the new one, never a partial one. Both files are `0600` and the state root is `0700`.
+
+A writer takes an exclusive `flock(2)` on a sidecar `<file>.lock`; read-only diagnostics take a shared one. Every lock vivarium takes obeys one total order — **registry → identity index → per-target `flock` ([`12-exec-and-shell.md`](./12-exec-and-shell.md)) → Nix profile** — acquired in that order, released in reverse, and never held across a VM boot or a Nix build. A lock that cannot be taken promptly is `75` rather than a hang ([`14-exit-codes.md`](./14-exit-codes.md)). Decided in [`../../decisions/ADR-0053-state-file-atomicity-and-lock-ordering.md`](../../decisions/ADR-0053-state-file-atomicity-and-lock-ordering.md).
+
+### When a state file cannot be read
+
+Absent is not corrupt, and vivarium never silently rebuilds one:
+
+| On disk                       | Behavior                                              | Exit |
+| ----------------------------- | ----------------------------------------------------- | ---- |
+| absent                        | empty collection                                      | `0`  |
+| zero-length                   | empty collection                                      | `0`  |
+| unreadable (permissions, I/O) | fail closed                                           | `74` |
+| malformed TOML                | fail closed, naming the file and the failing line     | `78` |
+| unknown key                   | fail closed, naming the accepted keys and CLI version | `78` |
+
+A malformed registry is a **configuration** defect rather than an I/O failure, because a user may have written the entry by hand; `74` is reserved for the channel genuinely failing. The two need different messages: a user who never wrote `identity.toml` cannot be told to go fix their typo. Wholesale self-repair is never attempted — an identity entry is re-adopted one project at a time from its `.vivarium/id` marker ([`15-project-identity.md`](./15-project-identity.md)), and a lost binding is re-created by `viv init --write`.
+
+A registry entry whose project directory has vanished is **warned about, never removed automatically**; see `viv status -g` and `viv unbind` in [`01-command-surface.md`](./01-command-surface.md) and [`../../decisions/ADR-0054-stale-bindings-surfaced-not-reaped.md`](../../decisions/ADR-0054-stale-bindings-surfaced-not-reaped.md).
 
 ## Per-project VM state
 

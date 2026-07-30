@@ -19,6 +19,7 @@ Nothing is at **Implemented** today.
 | Command                               | Status                          | Trial                                                                                         |
 | ------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------- |
 | `viv init`                            | Acceptance test written (gated) | `workflow_01_first_time_bind_usage`, `workflow_02_clean_repo_global_registry_only`            |
+| `viv unbind`                          | Designed                        | —                                                                                             |
 | `viv images list`                     | Designed                        | —                                                                                             |
 | `viv manifest list` / `manifest show` | Acceptance test written (gated) | `workflow_03_team_shared_and_personal_override`, `workflow_04_inspect_before_run_usage`       |
 | `viv start`                           | Acceptance test written (gated) | `workflow_01_first_time_bind_boot`, `workflow_08_destroy_cold_rebuild`                        |
