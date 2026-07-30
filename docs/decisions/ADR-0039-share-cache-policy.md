@@ -31,4 +31,8 @@ Accepted
 
 Amended by **ADR-0049** — the daemon that accepts or rejects a cache policy is a member of the built runner's closure, so a policy it does not accept is an evaluation-time assertion, not the `doctor` probe this decision originally named.
 
+Amended by **ADR-0050** — the read-write policy is named explicitly rather than inherited as "the daemon's default", and is justified by disqualifying the other three policies on coherency mechanics rather than by a pending benchmark.
+
+Amended by **ADR-0051** — worker-pool sizing, which sits under this decision's performance-not-confinement rule, is pinned to a small non-zero value uniform across shares, because the daemon exposes a single request queue per share.
+
 Amends [`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](./ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md) — removing cache mode from the N20 profile without touching any other element of it. The concrete per-share table lives in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md); the launch recipe is in [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md).

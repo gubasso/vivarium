@@ -33,6 +33,8 @@ Accepted
 
 Amended by **ADR-0049** — the balloon-driver requirement is an evaluation-time assertion on the guest vivarium builds, not a `doctor` probe, and the backend version floor that free page reporting needs is settled by the lockfile rather than checked at runtime.
 
+The zero-size balloon is settled rather than pending: the backend's own configuration parser defaults the size to zero and validates only against exceeding guest RAM, its device construction advertises free page reporting from that feature's own flag independently of size, its documentation uses a zero-size reporting balloon as its worked example, and the guest module's corresponding option is an unsigned integer defaulting to zero. The device itself must still exist, because the runtime resize `viv trim` performs is refused when there is no balloon device to address.
+
 The guest kernel's page-reporting granularity is an explicit setting of vivarium's own base image rather than an inherited default, and the guest compacts proactively so that fragmented free memory becomes reportable without host involvement — which is guest self-reclamation under N22, not the host arbitration N23 forbids.
 
 Note on the rejected controller — the controller designs that outperform an explicit `viv trim` all decide from a per-guest **working-set** signal reported by the balloon driver, which tells the host _which_ pages are cold. vivarium's backend exposes no such signal. A controller here could act only on a pressure scalar, which is the shape that produces the fault storms this decision rejects.
