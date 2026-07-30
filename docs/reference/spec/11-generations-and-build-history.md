@@ -24,7 +24,7 @@ $XDG_STATE_HOME/vivarium/projects/<project-id>/<target>/
 
 `<project-id>` is the project-identity key that also scopes the project's other state; its form is defined in [`15-project-identity.md`](./15-project-identity.md).
 
-Each generation retains the **whole lockfile** it was built against, not merely a revision. A revision names where one input pointed; reproducing an evaluation needs the pinned graph, and the live lock under the data root has moved on by then ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), [`../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md)). The `lock_digest` in the metadata is the content digest of that snapshot, which is what `viv generations list` reports and what makes two generations comparable at a glance.
+Each generation retains the **whole lockfile** it was built against, not merely a revision. A revision names where one input pointed; reproducing an evaluation needs the pinned graph, and the live lock under the data root has moved on by then ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), [`../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md)). What is retained is the lock that was **in force** — a team's override lock when one was present, otherwise the per-target lock — so a generation reproduces even after the team's pin is withdrawn. The `lock_digest` in the metadata is the content digest of that snapshot, which is what `viv generations list` reports and what makes two generations comparable at a glance.
 
 ## Commands
 

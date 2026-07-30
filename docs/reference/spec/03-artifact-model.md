@@ -55,7 +55,7 @@ pieces = [ "git", "ssh-agent", "direnv", "egress-open" ]   # optional; ordered
 mem_mib = 4096
 vcpu    = 4
 
-[egress]                                            # optional; defaults to open
+[egress]                                            # optional; policy default, see below
 mode  = "open"
 allow = [ ]
 
@@ -70,36 +70,40 @@ readonly = true                                     # default false
 [[volumes]]                                         # optional; repeatable
 name     = "cache"
 mount    = "/var/cache/project"
-size_gib = 64                                       # optional; default 32, a virtual ceiling
+size_gib = 64                                       # optional; a virtual ceiling, not a reservation
 
-# Escape hatch for composition the TOML cannot express:
-# extends = "./rust-web.custom.nix"
+# Escape hatch for composition the TOML cannot express. Naming it requires
+# the directory manifest form, so this file is manifests/rust-web/default.toml
+# and the module sits beside it:
+# extends = "./custom.nix"
 ```
 
 ### The key table
 
 This is the complete authoring surface. Nothing outside it is accepted, and an unknown key fails closed naming the accepted keys and the CLI version — the manifest carries **no schema version**, because the grammar evolves additively and a key's meaning is never repurposed ([`../../decisions/ADR-0047-manifest-carries-no-schema-version.md`](../../decisions/ADR-0047-manifest-carries-no-schema-version.md)). The table and the validation boundary below it are decided in [`../../decisions/ADR-0057-manifest-grammar-and-validation-boundary.md`](../../decisions/ADR-0057-manifest-grammar-and-validation-boundary.md).
 
-| Key                    | Type                                               | Required | Default       | Channel |
-| ---------------------- | -------------------------------------------------- | -------- | ------------- | ------- |
-| `image`                | name                                               | **yes**  | —             | build   |
-| `pieces`               | array of names                                     | no       | `[]`          | build   |
-| `extends`              | relative path to a `.nix` module                   | no       | `null`        | build   |
-| `resources.mem_mib`    | integer ≥ 256                                      | no       | host-resolved | launch  |
-| `resources.vcpu`       | integer ≥ 1                                        | no       | host-resolved | launch  |
-| `egress.mode`          | `"open"` \| `"allowlist"`                          | no       | `"open"`      | build   |
-| `egress.allow`         | array of host names                                | no       | `[]`          | build   |
-| `env.<NAME>`           | string, `NAME` matching `^[A-Za-z_][A-Za-z0-9_]*$` | no       | `{}`          | launch  |
-| `[[mounts]].source`    | host path; `${VAR}` stays unexpanded               | in table | —             | launch  |
-| `[[mounts]].target`    | guest path; `~` is the guest home                  | in table | —             | launch  |
-| `[[mounts]].readonly`  | boolean                                            | no       | `false`       | launch  |
-| `[[volumes]].name`     | name; `default` is reserved                        | in table | —             | build   |
-| `[[volumes]].mount`    | absolute guest path                                | in table | —             | build   |
-| `[[volumes]].size_gib` | integer ≥ 1                                        | no       | `32`          | launch  |
-| `[volume].size_gib`    | integer ≥ 1                                        | no       | `32`          | launch  |
-| `[volume].persist`     | array of absolute guest paths                      | no       | `[]`          | build   |
+| Key                    | Type                                               | Required | Default        | Channel |
+| ---------------------- | -------------------------------------------------- | -------- | -------------- | ------- |
+| `image`                | name                                               | **yes**  | —              | build   |
+| `pieces`               | array of names                                     | no       | `[]`           | build   |
+| `extends`              | relative path to a `.nix` module                   | no       | `null`         | build   |
+| `resources.mem_mib`    | integer ≥ 256                                      | no       | host-resolved  | launch  |
+| `resources.vcpu`       | integer ≥ 1                                        | no       | host-resolved  | launch  |
+| `egress.mode`          | `"open"` \| `"allowlist"`                          | no       | policy default | build   |
+| `egress.allow`         | array of host names                                | no       | `[]`           | build   |
+| `env.<NAME>`           | string, `NAME` matching `^[A-Za-z_][A-Za-z0-9_]*$` | no       | `{}`           | launch  |
+| `[[mounts]].source`    | host path; `${VAR}` stays unexpanded               | in table | —              | launch  |
+| `[[mounts]].target`    | guest path; `~` is the guest home                  | in table | —              | launch  |
+| `[[mounts]].readonly`  | boolean                                            | no       | `false`        | launch  |
+| `[[volumes]].name`     | name; `default` is reserved                        | in table | —              | build   |
+| `[[volumes]].mount`    | absolute guest path                                | in table | —              | build   |
+| `[[volumes]].size_gib` | integer ≥ 1                                        | no       | policy default | launch  |
+| `[volume].size_gib`    | integer ≥ 1                                        | no       | policy default | launch  |
+| `[volume].persist`     | array of absolute guest paths                      | no       | `[]`           | build   |
 
 A **name** is the kebab-case identifier resolved against the config library ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)). "In table" means the key is required once its `[[…]]` entry exists, not that the table itself is required — every table here is optional. The **channel** column is the purity classification: a launch-channel value is read by pure evaluation and applied when the VM boots, and no build output may depend on it ([`04-composition-and-determinism.md`](./04-composition-and-determinism.md), [`../../decisions/ADR-0041-resource-and-volume-channel-classification.md`](../../decisions/ADR-0041-resource-and-volume-channel-classification.md)). An absent table is never the same as an empty one: an undeclared ceiling resolves from the host at launch rather than to zero ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)).
+
+The **Default** column prints a literal only where this page owns it — the structural empties, and `readonly`, whose absence-means-false is grammar rather than policy. Where the value is a policy another page decides, the cell reads _policy default_ or _host-resolved_ and that page states the number: the egress default in [`05-networking-and-egress.md`](./05-networking-and-egress.md), volume size and the resource ceilings in [`17-resources-and-capacity.md`](./17-resources-and-capacity.md). Restating those figures here would put a second authority on a value that can move.
 
 Two conventions the table encodes. **Units live in key names** — `mem_mib`, `size_gib` — never in value suffixes, so there is no scale to disambiguate and no suffix grammar to learn. And **there is no `resources.disk`**: disk belongs to a volume, which already declares and reports its own ceiling. `[volume]` and `[[volumes]]` are deliberately different names because TOML forbids a table and an array of tables sharing one; the singular table configures the default home volume, which always exists without declaration.
 
@@ -111,11 +115,11 @@ The `pieces` list is ordered, but order never decides a scalar's value: merge is
 
 A defect is reported at exactly one stage, under exactly one code:
 
-| Stage    | Defect                                                                                                                                            | Exit |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| parse    | malformed TOML; an unknown key; a wrong type; a value outside its domain (`mem_mib = 0`, `mode = "off"`, a non-kebab name)                        | `78` |
-| resolve  | a name with no matching file, or both spellings of one name present ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md))              | `78` |
-| evaluate | one volume name bound to two mountpoints, a duplicate mount target, an equal-priority scalar tie, a literal personal path in a shared layer (N11) | `65` |
+| Stage    | Defect                                                                                                                                                   | Exit |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| parse    | malformed TOML; an unknown key; a wrong type; a value outside its domain (`mem_mib = 0`, `mode = "off"`, a non-kebab name); `extends` in a flat manifest | `78` |
+| resolve  | a name with no matching file, or both spellings of one name present ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md))                     | `78` |
+| evaluate | one volume name bound to two mountpoints, a duplicate mount target, an equal-priority scalar tie, a literal personal path in a shared layer (N11)        | `65` |
 
 The dividing line is **what the manifest text alone can decide**. Everything else waits for the merge — including the duplicate-name and duplicate-target checks, which a single manifest can violate on its own. They still run only at evaluation, because a piece can contribute the colliding declaration and one defect must never carry two exit codes — the codes are a permanent API ([`14-exit-codes.md`](./14-exit-codes.md), [`../../decisions/ADR-0042-evaluation-time-content-defects.md`](../../decisions/ADR-0042-evaluation-time-content-defects.md)).
 
@@ -124,8 +128,9 @@ The dividing line is **what the manifest text alone can decide**. Everything els
 `extends` names **one raw `.nix` module** — the escape hatch for composition the TOML cannot express. Its semantics are fixed in [`../../decisions/ADR-0060-extends-is-one-local-module.md`](../../decisions/ADR-0060-extends-is-one-local-module.md):
 
 - **Exactly one value, never an array and never transitive.** A Nix module already has `imports`, which the module system evaluates; a list vivarium ordered itself would make declaration order decide again.
-- **Resolved relative to the manifest file's own directory**, and the result must canonicalize — after symlinks — to a path inside the config root. An escape, a missing file, or a non-module target is `78`.
-- **Its containing directory is copied into the generated flake**, so its own relative imports work and the module is a build input like any other layer (N3, [`04-composition-and-determinism.md`](./04-composition-and-determinism.md)).
+- **It requires the directory manifest form.** A manifest naming `extends` must resolve as `manifests/<name>/default.toml`, and a flat manifest that names it is `78` at parse, naming the required spelling — one `mv` resolves it, the same remedy the both-spellings ambiguity gets ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)). This is what makes the bullet below safe, and it is why the rule exists ([`../../decisions/ADR-0063-extends-requires-the-directory-manifest-form.md`](../../decisions/ADR-0063-extends-requires-the-directory-manifest-form.md)).
+- **Resolved relative to the manifest file's own directory**, and the result must canonicalize — after symlinks — inside that same directory. An escape, a missing file, or a non-module target is `78`.
+- **That directory is copied into the generated flake**, so its own relative imports work and the module is a build input like any other layer (N3, [`04-composition-and-determinism.md`](./04-composition-and-determinism.md)). The unit is `manifests/<name>/` and nothing else: the rest of the manifest library stays excluded, so an unrelated manifest can never change this project's output path (N4).
 - **It merges at the same rank as a piece** and chooses its own priority — `mkDefault` to propose, `mkForce` to override a floor, which is what the tie hint in [`01-command-surface.md`](./01-command-surface.md) means by "override through extends".
 
 `extends` does **not** inherit another manifest. Manifest-to-manifest inheritance would require vivarium to publish, per key, whether a child value replaces or merges with its parent's — a merge engine of its own, which N6 forbids. A live team baseline is a shared **piece** instead: a piece carries packages, guest config, mounts, env, resources, and volumes, and may import an image, so adopting it brings the whole baseline and editing it reaches every teammate's next build ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)).

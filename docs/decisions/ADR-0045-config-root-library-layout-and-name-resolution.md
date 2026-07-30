@@ -31,6 +31,8 @@ Chosen option: **flat first, directory as a fallback** — flat keeps the common
 
 Accepted
 
+Amended by [`ADR-0063-extends-requires-the-directory-manifest-form.md`](./ADR-0063-extends-requires-the-directory-manifest-form.md) — the directory form stays a fallback everywhere except for a manifest that names `extends`, where it is required so the copied unit excludes the rest of the library. Resolution itself is unchanged.
+
 Amended by [`ADR-0061-examples-ship-not-a-second-namespace.md`](./ADR-0061-examples-ship-not-a-second-namespace.md) — the config root is the whole search path: an artifact bundled with vivarium is an example to copy and never participates in name resolution, so no shadowing rule joins the algorithm above.
 
 Specified in [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md) and [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md).

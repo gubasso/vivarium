@@ -16,7 +16,7 @@
 Chosen option: **small, fixed, non-zero, uniform**.
 
 - **The daemon exposes exactly one request queue per share**, so pool size is the only concurrency lever a share has. With the pool disabled, every filesystem request for that share executes on a single thread, in order, with one slow request blocking everything behind it — the wrong posture for a workspace, whose traffic is many small concurrent metadata requests.
-- **The evidence behind the disabled default does not reach this case.** It measured a sixty-four-thread pool against none, in an earlier implementation of the daemon, and its own author later held that a pool wins for concurrent work. Nothing establishes that none beats a *small* pool.
+- **The evidence behind the disabled default does not reach this case.** It measured a sixty-four-thread pool against none, in an earlier implementation of the daemon, and its own author later held that a pool wins for concurrent work. Nothing establishes that none beats a _small_ pool.
 - **One worker per host core is rejected**: vivarium multiplies it by the shares in a sandbox and again by the sandboxes running at once ([`ADR-0036-host-resource-scoping-and-admission-control.md`](./ADR-0036-host-resource-scoping-and-admission-control.md)).
 - **Uniform, not per-share.** Cache policy is per-share because it is a correctness property; pool size carries none, so a per-share knob would multiply threads for no invariant.
 - The value lives in the launch wrapper; the spec states the property instead, so a later measurement moves the constant without changing a specified sentence.

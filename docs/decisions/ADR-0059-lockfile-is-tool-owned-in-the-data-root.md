@@ -16,21 +16,23 @@ Chosen option: **one lockfile per project target, under the data root** at `proj
 
 - **Data**, because a lockfile is a pin and the data root is exactly "pinned inputs" (`spec/02`). Cache is documented deletable, and deleting a lock does not rebuild — it re-resolves, which is N3's failure mode. State is cleared by `viv destroy`, which would silently discard the pin.
 - **Per target, not global.** A global lock makes updating one project an unannounced update to every other. ADR-0049 already speaks of "the project's lockfile".
-- **Created on first build and announced, never demanded.** Failing closed governs manifest _resolution_ (N7), not a derived pin the tool owns; refusing a user's first `start` would make ADR-0004's "no Nix fluency required" false. The safeguard is printing what was pinned.
-- **Only `viv update` moves it.** No ordinary build re-resolves inputs.
-- **A team's shared pin is a read-only `flake.lock` in the config root**, which wins when present and is never written — the config root is where ADR-0040 already put shared guarantees.
+- **Created by the first build or by `viv update`, whichever comes first; announced, never demanded.** Failing closed governs manifest _resolution_ (N7), not a derived pin the tool owns; refusing a user's first `start` would make ADR-0004's "no Nix fluency required" false. The safeguard is printing what was pinned.
+- **Only `viv update` re-resolves.** A build may create it, never move it.
+- **A team's shared pin is a read-only `flake.lock` in the config root**, which wins when present and is never written — the config root is where ADR-0040 already put shared guarantees. ADR-0062 narrows it to one manifest.
 - **Each generation retains the lock that built it**, not merely a revision: a revision alone cannot reproduce an evaluation.
 
 ## Consequences
 
 - Good: determinism finally names a file, and rollback is genuine — a generation carries its own pin.
 - Good: two projects can move independently.
-- Bad: without the config-root override lock, two teammates can build one manifest against different pins.
+- Bad: without an override lock, two teammates can build one manifest against different pins.
 - Bad: a new verb and a new per-target file, plus a per-generation lock snapshot to retain.
 
 ## Status
 
 Accepted
+
+Amended by [`ADR-0062-override-lock-is-per-manifest-and-update-refuses.md`](./ADR-0062-override-lock-is-per-manifest-and-update-refuses.md) — the shared override lock is per manifest, at `manifests/<name>/flake.lock`, not one file at the config root; and `viv update` refuses (`78`) while it is in force rather than writing the lock it shadows. The retained generation snapshot is the lock in force.
 
 Amends [`ADR-0014-build-generations-and-gc-roots.md`](./ADR-0014-build-generations-and-gc-roots.md) — the per-generation record retains a snapshot of the lockfile and its digest, replacing the bare lock revision, because the revision alone does not reproduce an evaluation.
 
