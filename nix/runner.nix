@@ -117,7 +117,11 @@ pkgs.writeShellApplication {
           local pid
           for pid in "''${pids[@]:-}"; do kill "$pid" 2>/dev/null || true; done
           wait "''${pids[@]:-}" 2>/dev/null || true
-          rm -f "$store_socket" "$workspace_socket" "$api_socket" "$console_socket"
+          # virtiofsd writes a pid file beside each socket as `<socket>.pid` and
+          # does not remove it on exit, so clearing only the sockets leaves the
+          # runtime directory dirty for the next launch.
+          rm -f "$store_socket" "$workspace_socket" "$api_socket" "$console_socket" \
+            "$store_socket.pid" "$workspace_socket.pid"
         }
         trap cleanup EXIT INT TERM
         ulimit -n "$(ulimit -Hn)"
