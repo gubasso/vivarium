@@ -33,6 +33,8 @@ Accepted
 
 Amended by [`ADR-0063-extends-requires-the-directory-manifest-form.md`](./ADR-0063-extends-requires-the-directory-manifest-form.md) — `manifests/` is still never copied wholesale, but the selected manifest's own directory is materialized when that manifest names `extends`, which is why the directory form is required in that one case.
 
+Amended by [`ADR-0073-shared-artifacts-declare-their-own-flake-inputs.md`](./ADR-0073-shared-artifacts-declare-their-own-flake-inputs.md) — the generated flake gains an `inputs` set, unioned from the input declarations the copied images and pieces carry. Those declarations are read from the config root at compile time; the copies that land in the store are never re-read.
+
 Amends [`ADR-0004-toml-manifest-compiles-to-flake.md`](./ADR-0004-toml-manifest-compiles-to-flake.md) — the generated flake's location, contents, and inspection path are fixed here; the compile-to-a-flake decision is unchanged.
 
 Amends [`ADR-0010-secrets-never-in-nix-store.md`](./ADR-0010-secrets-never-in-nix-store.md) — the prohibition now demonstrably reaches the manifest, because compiling it into the flake copies its text into the store. Stated in [`../reference/spec/07-secrets-and-config-sharing.md`](../reference/spec/07-secrets-and-config-sharing.md).

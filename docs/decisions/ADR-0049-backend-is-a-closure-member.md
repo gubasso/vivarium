@@ -30,4 +30,6 @@ Accepted
 
 Amended by [`ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](./ADR-0059-lockfile-is-tool-owned-in-the-data-root.md) — a generation retains a snapshot of the whole lockfile it was built against plus its digest, replacing the bare lock revision this ADR named. The backend is still pinned by that lock and identified through the generation record; only the record's shape changes.
 
+Amended by [`ADR-0078-backend-advisory-response-is-a-released-pin-move.md`](./ADR-0078-backend-advisory-response-is-a-released-pin-move.md) — the Bad consequence here, that a backend security fix arrives by updating the lock rather than from the host's package manager, now has a named owner, a cadence, and a stated obligation on what a published advisory must say.
+
 Amends [`ADR-0023-doctor-check-catalog-and-contract.md`](./ADR-0023-doctor-check-catalog-and-contract.md) with a membership criterion the catalog contract lacked, and amends ADR-0025, ADR-0035, ADR-0037, ADR-0039, ADR-0041, and ADR-0042 where each named a probe this rule retires. Applied in [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md), [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md), and [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md).

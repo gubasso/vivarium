@@ -16,7 +16,11 @@ The tool is a thin command-line wrapper. It does the boring parts — resolving 
 
 ## Status
 
-Design stage. The architecture is specified; the implementation has not started. See [`docs/reference/implementation-status.md`](docs/reference/implementation-status.md) for what runs today versus what is designed only.
+Design stage. The architecture is specified; the implementation has not started. See [`docs/reference/implementation-status.md`](docs/reference/implementation-status.md) for what runs today versus what is designed only, and for what a release may change before 1.0.
+
+## Security
+
+Report a vulnerability privately — see [`SECURITY.md`](./SECURITY.md), which also explains why a fix to the virtualization backend arrives as a moved lockfile pin rather than a host package update.
 
 ## Documentation
 

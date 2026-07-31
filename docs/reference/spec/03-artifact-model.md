@@ -43,6 +43,46 @@ A piece is the _whole_ piece for its concern. Beyond guest config, it may declar
 
 Adopting a piece therefore brings everything the concern needs — packages, guest config, mounts, and env — with no re-declaration in the manifest.
 
+## Inputs: how a shared artifact declares a third-party dependency
+
+A piece or image whose concern needs a **third-party NixOS module library** — an encrypted-at-rest module being the motivating case ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md), [`../../decisions/ADR-0072-vivarium-integrates-no-encrypted-at-rest-scheme.md`](../../decisions/ADR-0072-vivarium-integrates-no-encrypted-at-rest-scheme.md)) — declares that dependency itself. It has to: a NixOS module is not a flake and carries no inputs of its own, and the manifest is the **personal** layer, so a shared artifact that could not name its own dependency would stop being whole and shareable ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)). Decided in [`../../decisions/ADR-0073-shared-artifacts-declare-their-own-flake-inputs.md`](../../decisions/ADR-0073-shared-artifacts-declare-their-own-flake-inputs.md).
+
+The declaration is an **`inputs.toml` beside the artifact**, which therefore requires the directory form — `pieces/<name>/inputs.toml` or `images/<name>/inputs.toml` ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)):
+
+```toml
+# pieces/secret-support/inputs.toml
+[inputs.secret-module]
+url = "github:example/secret-module"   # a flake reference; an update source, not a pin
+```
+
+The module beside it consumes the resolved input through a module argument, never by fetching anything itself:
+
+```nix
+# pieces/secret-support/default.nix
+{ vivariumInputs, ... }:
+{ imports = [ vivariumInputs.secret-module.nixosModules.default ]; }
+```
+
+### The input key table
+
+| Key                   | Type            | Required | Default |
+| --------------------- | --------------- | -------- | ------- |
+| `inputs.<name>.url`   | flake reference | **yes**  | —       |
+| `inputs.<name>.flake` | boolean         | no       | `true`  |
+
+`<name>` is a kebab-case **name**, the same grammar the libraries use. The file is otherwise closed exactly as the manifest is: an unknown key fails at parse with `78`, naming the accepted keys and the CLI version.
+
+`flake` decides **what the module argument holds**, so the two settings are consumed differently. At the default `true` the source is a flake and `vivariumInputs.<name>` is its outputs, which is why the example above selects `.nixosModules.default`. At `false` the source is not a flake and `vivariumInputs.<name>` is the fetched tree itself, so a module reaches a file inside it by path — `imports = [ "${vivariumInputs.<name>}/module.nix" ]`. Selecting a flake output from a `flake = false` input is an evaluation failure like any other, and vivarium does not paper over it.
+
+Four rules complete it:
+
+- **No revision key.** Pinning is the lockfile's job and only the lockfile's — a `rev` here would be a second pin fighting the one effective lock ([`04-composition-and-determinism.md`](./04-composition-and-determinism.md), [`../../decisions/ADR-0074-declared-inputs-are-pinned-by-the-effective-lock.md`](../../decisions/ADR-0074-declared-inputs-are-pinned-by-the-effective-lock.md)).
+- **vivarium's baseline input names are reserved.** The names the generated flake already carries — `nixpkgs` and `microvm` ([`01-command-surface.md`](./01-command-surface.md)) — may not be declared by an artifact. Doing so is `78` at resolve.
+- **Declarations union by name.** Two artifacts declaring one name identically coalesce to one input. Declaring one name with different values is a **resolve**-stage defect at `78` naming both artifacts — decidable from authored text alone, which is the line the validation table below draws. vivarium never silently namespaces or picks a winner.
+- **`inputs.toml` is not a library member.** Like a helper module or a team override lock, it sits in a library directory without being enumerated by it ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), [`../../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md`](../../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md)).
+
+The declaration is artifact text, so it is copied into the generated flake with the rest of the piece and **lands in the store** — a flake reference embedding a credential is a build-time secret exactly as an inline manifest token is (N10, [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)). A flake reference is neither a literal personal path nor personal data, so N11 is untouched by it.
+
 ## Manifests
 
 A **manifest** is the unifier and the single source of truth a project binds to. It is the user's own artifact — the **personal** side of the sharing split ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)) — and it names one image, an ordered list of pieces, and policy knobs (resources, egress). It is authored as TOML and compiled by the tool into a generated flake whose module `imports` are the named image and pieces, per [`../../decisions/ADR-0004-toml-manifest-compiles-to-flake.md`](../../decisions/ADR-0004-toml-manifest-compiles-to-flake.md). Example:
@@ -80,7 +120,7 @@ size_gib = 64                                       # optional; a virtual ceilin
 
 ### The key table
 
-This is the complete authoring surface. Nothing outside it is accepted, and an unknown key fails closed naming the accepted keys and the CLI version — the manifest carries **no schema version**, because the grammar evolves additively and a key's meaning is never repurposed ([`../../decisions/ADR-0047-manifest-carries-no-schema-version.md`](../../decisions/ADR-0047-manifest-carries-no-schema-version.md)). The table and the validation boundary below it are decided in [`../../decisions/ADR-0057-manifest-grammar-and-validation-boundary.md`](../../decisions/ADR-0057-manifest-grammar-and-validation-boundary.md).
+This is the complete authoring surface **of the manifest**. Nothing outside it is accepted there, and an unknown key fails closed naming the accepted keys and the CLI version — the manifest carries **no schema version**, because the grammar evolves additively and a key's meaning is never repurposed ([`../../decisions/ADR-0047-manifest-carries-no-schema-version.md`](../../decisions/ADR-0047-manifest-carries-no-schema-version.md)). The table and the validation boundary below it are decided in [`../../decisions/ADR-0057-manifest-grammar-and-validation-boundary.md`](../../decisions/ADR-0057-manifest-grammar-and-validation-boundary.md).
 
 | Key                    | Type                                               | Required | Default        | Channel |
 | ---------------------- | -------------------------------------------------- | -------- | -------------- | ------- |
@@ -107,6 +147,8 @@ A **name** is the kebab-case identifier resolved against the config library ([`0
 
 The **Default** column prints a literal only where this page owns it — the structural empties, and `readonly`, whose absence-means-false is grammar rather than policy. Where the value is a policy another page decides, the cell reads _policy default_ or _host-resolved_ and that page states the number: the egress default in [`05-networking-and-egress.md`](./05-networking-and-egress.md), volume size and the resource ceilings in [`17-resources-and-capacity.md`](./17-resources-and-capacity.md). Restating those figures here would put a second authority on a value that can move.
 
+There is deliberately **no `inputs` key**. A third-party dependency belongs to the shared artifact that needs it, not to one user's personal manifest — see "Inputs" above. That is what keeps this table the manifest's whole surface without making it vivarium's whole authored surface.
+
 Two conventions the table encodes. **Units live in key names** — `mem_mib`, `size_gib` — never in value suffixes, so there is no scale to disambiguate and no suffix grammar to learn. And **there is no `resources.disk`**: disk belongs to a volume, which already declares and reports its own ceiling. `[volume]` and `[[volumes]]` are deliberately different names because TOML forbids a table and an array of tables sharing one; the singular table configures the default home volume, which always exists without declaration.
 
 The `[[mounts]]` and `[env]` shapes are owned by [`../../decisions/ADR-0020-mount-and-config-mirroring-schema.md`](../../decisions/ADR-0020-mount-and-config-mirroring-schema.md), the volume keys by [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md).
@@ -117,13 +159,13 @@ The `pieces` list is ordered, but order never decides a scalar's value: merge is
 
 A defect is reported at exactly one stage, under exactly one code:
 
-| Stage    | Defect                                                                                                                                                                                                      | Exit |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| parse    | malformed TOML; an unknown key; a wrong type; a value outside its domain (`mem_mib = 0`, `mode = "off"`, a non-kebab name); `extends` in a flat manifest                                                    | `78` |
-| resolve  | a name with no matching file, or both spellings of one name present ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md))                                                                        | `78` |
-| evaluate | one volume name bound to two mountpoints, a duplicate mount target, an equal-priority scalar tie, a literal personal path in a shared layer (N11), a literal host session directory as a mount source (N24) | `65` |
+| Stage    | Defect                                                                                                                                                                                                                              | Exit |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| parse    | malformed TOML; an unknown key; a wrong type; a value outside its domain (`mem_mib = 0`, `mode = "off"`, a non-kebab name); `extends` in a flat manifest; the same faults in an `inputs.toml`                                       | `78` |
+| resolve  | a name with no matching file, or both spellings of one name present ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)); an input declared under a reserved name; one input name declared differently by two artifacts | `78` |
+| evaluate | one volume name bound to two mountpoints, a duplicate mount target, an equal-priority scalar tie, a literal personal path in a shared layer (N11), a literal host session directory as a mount source (N24)                         | `65` |
 
-The dividing line is **what the manifest text alone can decide**. Everything else waits for the merge — including the duplicate-name and duplicate-target checks, which a single manifest can violate on its own. They still run only at evaluation, because a piece can contribute the colliding declaration and one defect must never carry two exit codes — the codes are a permanent API ([`14-exit-codes.md`](./14-exit-codes.md), [`../../decisions/ADR-0042-evaluation-time-content-defects.md`](../../decisions/ADR-0042-evaluation-time-content-defects.md)).
+The dividing line is **what the authored text alone can decide** — the manifest, plus the `inputs.toml` of each artifact the manifest resolves to, which is why a name declared differently by two artifacts is caught at resolve rather than deferred. Everything else waits for the merge — including the duplicate-name and duplicate-target checks, which a single manifest can violate on its own. They still run only at evaluation, because a piece can contribute the colliding declaration and one defect must never carry two exit codes — the codes are a permanent API ([`14-exit-codes.md`](./14-exit-codes.md), [`../../decisions/ADR-0042-evaluation-time-content-defects.md`](../../decisions/ADR-0042-evaluation-time-content-defects.md)).
 
 Two mount-source faults sit **below** this table because neither is decidable from declarations at all: a source that expands to a session directory only after host-side expansion, and a source whose resolved type is a socket, FIFO, or device node (N24, [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)). Both are host facts, so both are launch-time refusals returning `78` — before any side effect, in the same pass that already fails an unset variable or a missing path.
 

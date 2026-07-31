@@ -42,6 +42,7 @@ The manifest is not evaluated directly. The tool compiles it into a **generated 
 - It lives under the **cache** root, at the path [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md) fixes, and is regenerated wholesale — safe to delete, never edited by hand, and printed by `viv config` for anyone debugging a merge.
 - The resolved modules are **copied into it**, not referenced from the config root. Referencing would make every unrelated image, piece, and other project's manifest a build input, so editing any of them would change this project's output path — and the output path is the freshness key below, so every project would rebuild.
 - `images/` and `pieces/` copy wholesale; the manifest library does not. When a manifest names `extends`, the one exception is that manifest's **own directory**, which is why naming `extends` requires the directory form — the copied unit must hold the module's helpers and no other manifest ([`03-artifact-model.md`](./03-artifact-model.md), [`../../decisions/ADR-0063-extends-requires-the-directory-manifest-form.md`](../../decisions/ADR-0063-extends-requires-the-directory-manifest-form.md)).
+- **The flake's `inputs` are the union of what the layers declare**, plus vivarium's own baseline inputs. Each resolved image and piece may carry an `inputs.toml` naming a third-party flake reference ([`03-artifact-model.md`](./03-artifact-model.md)); the tool collects those declarations before generating, unions them by name, and writes them into the generated flake, passing the resolved set to every layer as the module argument `vivariumInputs`. Collecting rather than letting a module fetch is what lets vivarium validate the dependency graph before evaluation instead of discovering it mid-build ([`../../decisions/ADR-0073-shared-artifacts-declare-their-own-flake-inputs.md`](../../decisions/ADR-0073-shared-artifacts-declare-their-own-flake-inputs.md)).
 - Because the manifest's own text becomes a module in that tree, **the manifest lands in the store** like any other layer — including its launch-channel tables. N19 still holds: no build output depends on a launch-channel value. What reaches the store is the text, which is why nothing secret belongs in a manifest ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md), N10).
 
 ## Determinism
@@ -50,5 +51,18 @@ A sandbox is a Nix build, and its inputs are pinned by **exactly one effective l
 
 - **The store output hash is the freshness key.** Identical inputs produce an identical output path; the tool does not compute a separate content digest. A changed layer changes the inputs, which changes the output path, which triggers a rebuild. Each such output the tool retains is pinned as a **generation** ([`11-generations-and-build-history.md`](./11-generations-and-build-history.md)).
 - **The build must be pure.** No host-specific value may enter it. In particular, the working directory path is injected at launch time, never built in, per [`../../decisions/ADR-0009-launch-time-workspace-path-injection.md`](../../decisions/ADR-0009-launch-time-workspace-path-injection.md).
+
+### A declared input the lock does not carry
+
+A flake input a shared artifact declares is an **ordinary node in that same one effective lock** — there is no second pin file, and the declaration itself carries no revision ([`03-artifact-model.md`](./03-artifact-model.md)).
+
+So a build can meet a declared input the lock in force has no node for; adopting a piece that declares a new input is exactly the case, since it changes no lock by itself. When that happens, `viv start` and `viv config eval` **fail closed with `78`**, naming the input, the artifact that declares it, and the lock in force. They do not resolve the missing node — that would be an ordinary build re-resolving inputs, which is the unannounced input jump N3 exists to prevent.
+
+The remedy depends on which lock is in force, and the message says which:
+
+- **Tool-owned lock** — `viv update` creates the node, reports the pin, and the next `start` builds.
+- **Team override lock** — there is no remedy inside vivarium. `viv update` still refuses ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)), so the team moves its shared pin and the user re-runs.
+
+The gap is also surfaced ahead of the command that hits it, as the soft `lock-covers-declared-inputs` check ([`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md)). Decided in [`../../decisions/ADR-0074-declared-inputs-are-pinned-by-the-effective-lock.md`](../../decisions/ADR-0074-declared-inputs-are-pinned-by-the-effective-lock.md).
 
 The determinism and purity requirements are stated normatively in [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md).

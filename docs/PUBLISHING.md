@@ -67,6 +67,17 @@ The generated `.github/workflows/release.yml` fires on a pushed version tag (any
 
 Automatic trigger: release-plz runs with a **GitHub App token** (secrets `RELEASE_PLZ_APP_ID` / `RELEASE_PLZ_APP_PRIVATE_KEY`), so the tag it pushes retriggers `release.yml`. A tag pushed with the default `GITHUB_TOKEN` would **not** retrigger it — that is why the App token is required. Create a GitHub App with `contents` + `pull-requests` write, install it on the repo, and store its App ID and private key as those two secrets.
 
+## Backend security owner
+
+The hypervisor, filesystem daemon, and guest kernel are pinned by a project's lockfile rather than installed from a host's package manager, so an upstream fix reaches users only as a released pin move. One maintainer owns that watch, with a named backup. What the role obliges — the two clocks, the response windows, and what a published advisory must say — is stated once in [`../SECURITY.md`](../SECURITY.md) and decided in [`decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md`](decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md). This section is only the record of **who holds it**, kept here so a rotation edits the release process instead of a decision.
+
+| Role                   | Holder       |
+| ---------------------- | ------------ |
+| Backend security owner | _unassigned_ |
+| Backup                 | _unassigned_ |
+
+**Both must be named before the first release.** `SECURITY.md` states a response commitment in the present tense, and an unassigned role cannot keep it — so publishing a release while either cell is empty ships a promise with nobody behind it. Releasing is the gate because before the first release there is nothing to advise on: [supported versions](../SECURITY.md) is the latest release, and there is none.
+
 ## Manual release if CI is down
 
 1. `./scripts/publish-dry` to validate.
