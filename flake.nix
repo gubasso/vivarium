@@ -6,6 +6,8 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
+    microvm.url = "github:astro/microvm.nix";
+    microvm.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -16,6 +18,7 @@
       nixpkgs,
       rust-overlay,
       flake-utils,
+      microvm,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -70,5 +73,14 @@
           shellHook = ''echo "rust dev shell ready (toolchain from rust-toolchain.toml)"'';
         };
       }
+      // nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux (
+        let
+          firstMicrovm = import ./nix { inherit nixpkgs microvm system; };
+        in
+        {
+          packages.first-microvm = firstMicrovm.runner;
+          checks.first-microvm = firstMicrovm.contract;
+        }
+      )
     );
 }
