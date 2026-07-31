@@ -34,4 +34,6 @@ Automatic movement was rejected as the unannounced input jump N3 forbids; a feed
 
 Accepted
 
+Amended by **ADR-0079** — the owner role has no backup while vivarium has one maintainer, and the response windows are targets rather than guarantees. The owner role itself, the two clocks, and the boundary trigger are unchanged.
+
 Specified in [`../../SECURITY.md`](../../SECURITY.md) and [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md).

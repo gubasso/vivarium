@@ -27,18 +27,18 @@ Out of scope: what a user deliberately puts inside their own guest, and the gues
 
 The hypervisor, the filesystem daemon, and the guest kernel are **not host packages**. They are members of the closure a project builds, pinned by that project's lockfile ([`docs/decisions/ADR-0049-backend-is-a-closure-member.md`](docs/decisions/ADR-0049-backend-is-a-closure-member.md)). A host's package manager therefore cannot fix them, and neither can a vivarium release on its own.
 
-A maintainer role — backend security owner, with a named backup — watches upstream releases and advisories for those closure members. Two clocks run, and they are deliberately separate:
+A maintainer role — backend security owner — watches upstream releases and advisories for those closure members. vivarium is maintained by one person, so that role has **no backup**: the windows below are targets kept with one person's time, and an advisory that misses one says so. Two clocks run, and they are deliberately separate:
 
 - **Routine currency** is scheduled. A periodic job moves vivarium's own pins and opens them for review, advisory scanning runs in CI, and the built runner's closure is scanned once a build exists. None of this is user-visible.
 - **Advisory response** is triggered. When an advisory affects a closure member, we publish a release whose only content is the moved pin.
 
 Response windows, measured from public disclosure — vivarium is not party to any upstream embargo, so our clock starts when yours does:
 
-| Trigger                                                                      | Released within      |
-| ---------------------------------------------------------------------------- | -------------------- |
-| A flaw crossing the guest-to-host boundary, or one under active exploitation | 3 business days      |
-| Another severe flaw                                                          | 14 days              |
-| Everything else                                                              | next routine release |
+| Trigger                                                                      | Target release window |
+| ---------------------------------------------------------------------------- | --------------------- |
+| A flaw crossing the guest-to-host boundary, or one under active exploitation | 3 business days       |
+| Another severe flaw                                                          | 14 days               |
+| Everything else                                                              | next routine release  |
 
 The trigger is the **boundary**, not a severity number. A flaw whose impact stays inside the guest is a different kind of thing from one that reaches the host, and scores routinely disagree with that distinction. A numeric severity is a secondary signal. We never publish a routine release that knowingly retains an applicable vulnerability, and if no fixed upstream revision exists we publish the exposure and any mitigation, and track it until it closes.
 
@@ -54,4 +54,4 @@ So every vivarium advisory names three things:
 
 And it names one asymmetry. If your team uses a **shared override lock** beside its manifest, `viv update` refuses and writes nothing — including for a security update, because urgency does not make an unannounced pin move safe ([`docs/decisions/ADR-0062-override-lock-is-per-manifest-and-update-refuses.md`](docs/decisions/ADR-0062-override-lock-is-per-manifest-and-update-refuses.md)). In that case the remedy is outside vivarium: whoever maintains the shared lock moves the pin, and you rebuild against it.
 
-The process is decided in [`docs/decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md`](docs/decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md). Who currently holds the backend security owner role, and who backs them up, is recorded with the release process rather than here — see [`docs/PUBLISHING.md`](docs/PUBLISHING.md) — so a rotation does not require rewriting a decision.
+The process is decided in [`docs/decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md`](docs/decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md), amended by [`docs/decisions/ADR-0079-security-role-is-held-solo-and-windows-are-targets.md`](docs/decisions/ADR-0079-security-role-is-held-solo-and-windows-are-targets.md) for the single-maintainer case. Who currently holds the backend security owner role is recorded with the release process rather than here — see [`docs/PUBLISHING.md`](docs/PUBLISHING.md) — so a rotation does not require rewriting a decision.

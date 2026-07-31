@@ -69,14 +69,16 @@ Automatic trigger: release-plz runs with a **GitHub App token** (secrets `RELEAS
 
 ## Backend security owner
 
-The hypervisor, filesystem daemon, and guest kernel are pinned by a project's lockfile rather than installed from a host's package manager, so an upstream fix reaches users only as a released pin move. One maintainer owns that watch, with a named backup. What the role obliges — the two clocks, the response windows, and what a published advisory must say — is stated once in [`../SECURITY.md`](../SECURITY.md) and decided in [`decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md`](decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md). This section is only the record of **who holds it**, kept here so a rotation edits the release process instead of a decision.
+The hypervisor, filesystem daemon, and guest kernel are pinned by a project's lockfile rather than installed from a host's package manager, so an upstream fix reaches users only as a released pin move. One maintainer owns that watch. What the role obliges — the two clocks, the response windows, and what a published advisory must say — is stated once in [`../SECURITY.md`](../SECURITY.md) and decided in [`decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md`](decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md). This section is only the record of **who holds it**, kept here so a rotation edits the release process instead of a decision.
 
-| Role                   | Holder       |
-| ---------------------- | ------------ |
-| Backend security owner | _unassigned_ |
-| Backup                 | _unassigned_ |
+| Role                   | Holder                           |
+| ---------------------- | -------------------------------- |
+| Backend security owner | @gubasso                         |
+| Backup                 | none — single-maintainer project |
 
-**Both must be named before the first release.** `SECURITY.md` states a response commitment in the present tense, and an unassigned role cannot keep it — so publishing a release while either cell is empty ships a promise with nobody behind it. Releasing is the gate because before the first release there is nothing to advise on: [supported versions](../SECURITY.md) is the latest release, and there is none.
+**The owner cell must name a person before the first release**, because `SECURITY.md` states a response target and an unassigned role cannot keep even a target. `none` in the backup cell is different in kind: it is a disclosed fact, and `SECURITY.md` discloses it in the same words ([`decisions/ADR-0079-security-role-is-held-solo-and-windows-are-targets.md`](decisions/ADR-0079-security-role-is-held-solo-and-windows-are-targets.md)). If vivarium ever gains a second maintainer, name them here; a rotation edits this table, never a decision.
+
+The reporting route `SECURITY.md` names — the repository's **Report a vulnerability** form — is a one-time repository setting (Settings → Advanced Security → _Private vulnerability reporting_), enabled 2026-07-31. It belongs with the other one-time GitHub setup above, and the policy's only recognized route depends on it staying on.
 
 ## Manual release if CI is down
 

@@ -22,6 +22,8 @@ running | built | failed ──destroy──▶ built (store paths linger) ─�
 running | starting ──abnormal exit──▶ failed
 ```
 
+There is no suspended or saved state, and the six above are the whole set: `stop` is an orderly guest shutdown, so in-flight process state is deliberately not carried across it — a non-goal, for the reason in [`00-goals-and-non-goals.md`](./00-goals-and-non-goals.md).
+
 `stop` can only ever reach **built** — a stopped project's build output stays pinned. A clean `stop`/`destroy` **tears down the runtime markers** (stale pid, socket), so "markers present but the process is dead" is exactly what separates **failed** from **built** — the invariant `viv status` relies on to report a crash rather than a clean stop. A project returns to **absent** only when `destroy` has unlinked its generations _and_ a later collection has reclaimed the store paths ([`11-generations-and-build-history.md`](./11-generations-and-build-history.md)).
 
 ## What `viv start` does

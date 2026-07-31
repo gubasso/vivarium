@@ -12,6 +12,7 @@ The tool is a thin command-line wrapper. It does the boring parts — resolving 
 - **Declarative & deterministic** — the sandbox is a Nix build; a pinned lockfile makes it reproducible across machines and over time.
 - **Composable** — small images and config pieces combine through one manifest, the single source of truth for a project's sandbox.
 - **Your dev environment, untouched** — your project's own `flake.nix` / direnv setup runs _inside_ the sandbox, independent of vivarium.
+- **Disposable** — destroy and rebuild at any time and lose nothing that matters: your work is in your own version-controlled directory on the host, and the environment is in the manifest. Let an agent wreck a sandbox; rebuilding one is the recovery path.
 - **User-based** — all state lives under standard per-user XDG directories.
 
 ## Status
