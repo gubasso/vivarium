@@ -1,3 +1,4 @@
+# Nix owns runtimes; pre-commit owns hooks.
 default_install_hook_types: [pre-commit, commit-msg, pre-push]
 
 repos:
@@ -344,8 +345,12 @@ repos:
   # (report-only) verifies an explicit relative target actually resolves on disk,
   # complementing the pygrep FORM guards above (form vs. existence). Configure via
   # the sibling ./.markdownlint-cli2.jsonc. Uses the node variant.
+  # nodeenv cannot provision a usable Node here, so language_version: system
+  # selects the flake's nodejs runtime — the same Nix-owns-the-runtime pattern
+  # used by the typos/committed/dprint system hooks above.
   - repo: https://github.com/DavidAnson/markdownlint-cli2
     rev: v0.22.1
     hooks:
       - id: markdownlint-cli2
+        language_version: system
         additional_dependencies: ['markdownlint-rule-relative-links']

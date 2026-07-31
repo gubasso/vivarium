@@ -40,6 +40,13 @@
             pkgs.cargo-audit
             pkgs.just
             pkgs.pre-commit
+            # Nix owns runtimes; pre-commit owns hooks. markdownlint-cli2 uses
+            # this Node via language_version: system instead of nodeenv.
+            pkgs.nodejs
+            # Interpreter for the language:system scripts/check-table-pipes hook.
+            pkgs.python3
+            # Binary for the language:system taplo-format hook.
+            pkgs.taplo
             # Nix quality tools for the pre-commit `_nix` overlay hooks
             # (nixfmt/statix/deadnix run as language:system off PATH).
             pkgs.nixfmt
