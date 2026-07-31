@@ -52,7 +52,7 @@ When inputs changed, `start` builds the fresh output but is **non-destructive to
 
 ## Attach vs detach
 
-By default `start` boots the VM as a **background resource and returns once the guest answers** — the VM is a persistent thing `exec`/`shell` connect to, and the wait is what lets the post-condition above hold. `--attach` instead streams the VM console until it exits; `Ctrl-C` **detaches** the console and leaves the VM running — it never stops the VM. Because an attached `start` returns when the stream ends, a guest that powers itself off leaves `--attach` returning with no VM, which is why the post-condition excludes it.
+By default `start` boots the VM as a **background resource and returns once the guest answers** — the VM is a persistent thing `exec`/`shell` connect to, and the wait is what lets the post-condition above hold. `--attach` instead streams the VM console until it exits; `Ctrl-C` **detaches** the console and leaves the VM running — it never stops the VM. The stream is the same capture that feeds `console.log`, so attaching works against a VM that is already running ([`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)). Because an attached `start` returns when the stream ends, a guest that powers itself off leaves `--attach` returning with no VM, which is why the post-condition excludes it.
 
 ## Session boundary
 

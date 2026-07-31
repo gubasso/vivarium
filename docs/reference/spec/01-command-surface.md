@@ -41,6 +41,7 @@ A small set of flags is **global** — accepted before or after any subcommand (
 - `-v` / `--verbose` — increase diagnostic verbosity on stderr; stackable (`-vv`, `-vvv` for trace). Tunes stderr only; it never adds to or reshapes stdout data.
 - `-q` / `--quiet` — suppress non-error progress and status on stderr; it never suppresses errors. `-v` and `-q` are mutually exclusive (last one wins).
 - `--log-file <path>` / `--log-level <level>` / `--log-format <logfmt|json>` / `--no-log` — control the always-on diagnostic **log file** (the machine/debug face). Verbosity (`-v`/`-q`) tunes the **stderr** face; these tune the **file** face, independently. Full contract in [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md).
+- `--no-console-log` — do not capture the running VM's serial console to `console.log`. A separate channel from all of the above, and unaffected by them ([`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)).
 
 Machine output is deliberately **not** global: each data command owns its own `--json` flag (one JSON value on stdout), rather than a global `--format`/`-o`. This keeps every command's output schema independent and stable for automation and coding-agent consumers.
 
@@ -51,7 +52,7 @@ Cross-cutting settings resolve by a single precedence rule — **flag > environm
 The stream and machine-output rules are the same for every command, specified in [`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md):
 
 - **stdout carries the result only** — a human table/line for data commands (`images list`, `manifest show`, `generations list`, `volume list`, `config`/`config sources`/`config eval`, `status`, `doctor`'s report), a `--json` record in machine mode, and **nothing** for side-effect commands whose result is a VM state change (`start`, `stop`, `destroy`). `trim`, `volume trim`, and `volume prune` are the exception that proves the rule: they act, but what a user runs them for is the measurement they return, so they print it (shape below).
-- **stderr carries everything else** — progress, status, prompts, warnings, errors. Progress is shown only when stderr is a TTY, so `… --json 2>/dev/null | jq` is always clean.
+- **stderr carries everything else** — progress, status, prompts, warnings, errors. Progress is shown only when stderr is a TTY, so `… --json 2>/dev/null | jq` is always clean. This includes the **`--json` failure envelope**: a failure has no result, so its machine-readable form is one JSON object on **stderr**, never on stdout. Its shape and the human skeleton beside it are in [`14-exit-codes.md`](./14-exit-codes.md).
 - **A diagnostic log file is written by default** — a third, structured face separate from stdout and stderr, invisible during normal use. It is the machine/debug channel, fully specified in [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md).
 - `exec`/`shell` pass guest stdio transparently as specified in [`12-exec-and-shell.md`](./12-exec-and-shell.md); vivarium progress remains on stderr only so guest stdout stays pipeable.
 - Color is human-only, honoring `NO_COLOR > FORCE_COLOR > isatty`; JSON and non-TTY output are never colored.
@@ -59,7 +60,7 @@ The stream and machine-output rules are the same for every command, specified in
 ## Failure and preflight
 
 - Commands return zero on success and a **specific** non-zero code on failure, from the program-wide BSD sysexits taxonomy (never a generic `1`). The complete legend and the per-command exit-code matrix are in [`14-exit-codes.md`](./14-exit-codes.md); the contract is [`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md) as amended by [`../../decisions/ADR-0028-exit-code-taxonomy-and-stability.md`](../../decisions/ADR-0028-exit-code-taxonomy-and-stability.md).
-- Commands that need host prerequisites run a **preflight guard** — the hard subset of the shared `viv doctor` probe catalog — and refuse **before any side effect**. Each failure reports what / where / why / hint plus a stable check id. See [`10-vm-lifecycle.md`](./10-vm-lifecycle.md) for `viv start`'s preflight.
+- Commands that need host prerequisites run a **preflight guard** — the hard subset of the shared `viv doctor` probe catalog — and refuse **before any side effect**. Each failure reports what / where / why / hint plus a stable check id — which is also its diagnostic id, in the one id space fixed by [`14-exit-codes.md`](./14-exit-codes.md). See [`10-vm-lifecycle.md`](./10-vm-lifecycle.md) for `viv start`'s preflight.
 - `viv exec` and `viv shell` use sysexits for vivarium-origin failures before a guest process starts; after the guest command or shell starts, they return its exit status verbatim, with signal deaths reported as `128+S`. See [`12-exec-and-shell.md`](./12-exec-and-shell.md).
 - Diagnostics (`doctor`, `config`, `config sources`, `config eval`, `status`, `generations list`, `volume list`) are read-only and never modify project or VM state.
 

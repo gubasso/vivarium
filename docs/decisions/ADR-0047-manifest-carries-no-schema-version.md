@@ -30,6 +30,8 @@ Chosen option: **no version key** — a hand-authored file's version declaration
 
 Accepted
 
+Amended by [`ADR-0068-human-error-presentation-and-diagnostic-ids.md`](./ADR-0068-human-error-presentation-and-diagnostic-ids.md) — discharges the load-bearing message named above. The unknown-key message is now normative text in [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md) and must carry the file, the failing position, the unknown key, the accepted key set at that position, and the CLI version.
+
 Amended by [`ADR-0052-state-root-file-layout-and-schema-visibility.md`](./ADR-0052-state-root-file-layout-and-schema-visibility.md) — the scope above ("this one governs what a user writes") now reaches the state registry as well as the manifest, because `viv init`'s pasted snippet makes the registry record something a user writes. No version key and unknown-keys-fail-closed apply there unchanged.
 
 Specified in [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md).

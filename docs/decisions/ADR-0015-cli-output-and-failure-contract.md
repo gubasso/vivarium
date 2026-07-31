@@ -37,4 +37,6 @@ Amended by [`ADR-0026-global-flags-and-config-precedence.md`](./ADR-0026-global-
 
 Amended by [`ADR-0028-exit-code-taxonomy-and-stability.md`](./ADR-0028-exit-code-taxonomy-and-stability.md) — makes the sysexits taxonomy program-wide (codes name the failure kind, not the command), moves the canonical legend and per-command mapping into a central matrix, and adds an append-only stability guarantee; the sysexits basis here is unchanged.
 
+Amended by [`ADR-0068-human-error-presentation-and-diagnostic-ids.md`](./ADR-0068-human-error-presentation-and-diagnostic-ids.md) — fixes how "what / where / why / hint" renders, adds a stable diagnostic id ahead of the `what`, and settles the machine-readable failure form: under `--json` a failure emits one semantic object on **stderr**, because stdout carries the result and a failure has none. The stream split and the color chain here are unchanged.
+
 Applied across [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md) and [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md).

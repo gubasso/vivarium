@@ -31,4 +31,6 @@ Chosen option: **two files, registry record public** — the rule in [`ADR-0045-
 
 Accepted
 
+Amended by [`ADR-0068-human-error-presentation-and-diagnostic-ids.md`](./ADR-0068-human-error-presentation-and-diagnostic-ids.md) — discharges the load-bearing message named above. The malformed-registry and unknown-key messages are now normative text in [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md), which owns their content for the registry and the manifest alike.
+
 Specified in [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md) and [`../reference/spec/15-project-identity.md`](../reference/spec/15-project-identity.md). Extends the visibility rule of [`ADR-0045-config-root-library-layout-and-name-resolution.md`](./ADR-0045-config-root-library-layout-and-name-resolution.md) to the state root, and the compatibility rule of [`ADR-0047-manifest-carries-no-schema-version.md`](./ADR-0047-manifest-carries-no-schema-version.md) to the registry.

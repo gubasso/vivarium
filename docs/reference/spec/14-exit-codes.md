@@ -42,6 +42,46 @@ The codes above are a **permanent API**:
 - **Append-only.** New categories take fresh, previously-unused numbers; existing ones are never repurposed.
 - **Branch on categories.** Consumers should test `0` vs non-zero, or a documented category — never an undocumented number, and never assume no new category can appear later.
 
+## Human error format
+
+Every vivarium-origin failure renders the same skeleton on stderr. Four slots are mandatory and one is conditional; the order and the labels are fixed, so `doctor`'s report ([`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md)) and an ordinary failure wear one house style rather than two. Decided in [`../../decisions/ADR-0068-human-error-presentation-and-diagnostic-ids.md`](../../decisions/ADR-0068-human-error-presentation-and-diagnostic-ids.md).
+
+```text
+error[manifest.unknown-key]: unknown key `schema_version` in manifest `rust-web`
+  --> manifests/rust-web.toml:7:1
+  why: not part of the manifest grammar viv 0.4.1 understands
+  accepted here: image, pieces, extends, env, mounts, resources, volumes
+  hint: remove the key, or upgrade vivarium — a manifest written for a newer
+        vivarium reports its new keys exactly this way
+```
+
+| Slot             | Carries                                                                                                                                                                                      |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `error[<id>]:`   | **what** — the specific thing that failed, never a category restatement ("config error", "operation failed")                                                                                 |
+| `-->`            | **where** — `path:line:col` when the parser can supply a position, `path` when it cannot, and otherwise a **named locus**: `state registry`, `control socket`, `check kvm-device-accessible` |
+| `why:`           | the nearest useful cause, in the user's terms. Never an internal error chain — that belongs to the log file only ([`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md))        |
+| `accepted here:` | **conditional** — present only for an unknown key or an unknown value, listing what is accepted _at that position_                                                                           |
+| `hint:`          | **fix** — a runnable command or a concrete edit, never a restatement of `why`. Omitted when no honest local repair exists, rather than filled with advice that does not act                  |
+
+Wording is uniform: messages start lowercase and end without punctuation, identifiers and paths are backticked, and the `what` line must stand alone if it is the only thing a consumer displays. Color is a stderr-only, TTY-only concern ([`01-command-surface.md`](./01-command-surface.md)) — the text is identical with and without it.
+
+### The two compatibility messages
+
+Neither file a user writes carries a schema version: not the manifest ([`../../decisions/ADR-0047-manifest-carries-no-schema-version.md`](../../decisions/ADR-0047-manifest-carries-no-schema-version.md)) and not the state registry ([`../../decisions/ADR-0052-state-root-file-layout-and-schema-visibility.md`](../../decisions/ADR-0052-state-root-file-layout-and-schema-visibility.md)). An unknown key is therefore how "this file was written for a newer vivarium" surfaces, which makes the message the compatibility surface rather than a courtesy. In both places it **must** carry all five of: the file, the failing position, the unknown key, the accepted key set at that position, and **the CLI version string**. The version is what turns "unknown key" into "your file is newer than your tool" with no in-band field to read.
+
+## Diagnostic ids
+
+The bracketed id is the **instance** handle the code cannot carry. Grammar: `<namespace>.<condition>`, both `[a-z0-9-]+`. Reserved namespaces: `manifest.`, `state.`, `merge.`, `lock.`, `host.`, `vm.`, `guest.`, `store.`, `internal.`
+
+- **One id space, not a new one.** [`01-command-surface.md`](./01-command-surface.md) already promises a stable check id on preflight failure; a preflight failure reports **that check id verbatim** as its diagnostic id rather than minting a parallel identifier. The catalog in [`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md) is therefore normative for a wider surface than `doctor` alone.
+- **The code stays the branch surface.** Ids are stable and greppable, and they are not reassigned; but a consumer that must branch does so on the exit code above. This is deliberate — one permanent numeric API is enough, and a second one would have to be defended release by release.
+- **Documented where the condition lives**, not in a central index: `manifest.*` in [`03-artifact-model.md`](./03-artifact-model.md), `state.*` in [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), check ids in [`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md). An index would be a second home for a fact and would go stale first.
+- There is **no** `viv explain` verb and **no** URL slot. A URL would point outside this repository, and the id's meaning is already one page away.
+
+## Machine-readable failures
+
+Under `--json`, a failure emits **one JSON object on stderr** — not stdout, which carries the result and a failure has none. The object carries the same semantic fields as the skeleton, never a captured rendering of it: `id`, `code` (the integer above), `what`, `where` (`{file, line, col}` or `{locus}`), `why`, `hint`, and `accepted` when the conditional slot applies. No ANSI, no internal chain, and no pre-rendered duplicate of the human text. `… --json 2>/dev/null | jq` stays clean on success and discards the error object on failure, which is the intended behavior of both rules together.
+
 ## Command matrix
 
 Every command returns `0` on success. The columns a command can also return on failure:

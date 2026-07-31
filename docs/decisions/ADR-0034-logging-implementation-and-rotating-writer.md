@@ -27,3 +27,5 @@ Chosen stack: **`tracing` + `tracing-subscriber` + `tracing-logfmt`, with a firs
 ## Status
 
 Accepted
+
+Amended by [`ADR-0070-guest-console-capture-and-rotation.md`](./ADR-0070-guest-console-capture-and-rotation.md) — the rotating writer gains a second consumer with its own thresholds and a raw-bytes input path that does not pass through `tracing`. "Exact size/count are an implementation detail" still holds for the tool log; for the guest console the ceiling being small and per-VM is normative, because the runtime root is memory-backed.

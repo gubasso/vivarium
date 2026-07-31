@@ -27,3 +27,7 @@ Chosen option: **`thiserror` + `anyhow`, with a hand-rolled `ExitKind` enum.**
 ## Status
 
 Accepted
+
+Amended by [`ADR-0069-redaction-is-by-construction.md`](./ADR-0069-redaction-is-by-construction.md) — adds a secret-carrying newtype to the error/field type stack: `Debug` and `Display` render `[REDACTED]` and it is not serializable, so the boundary renderer above cannot emit a secret even in an error chain. The `ExitKind` mapping is unchanged.
+
+Amended by [`ADR-0068-human-error-presentation-and-diagnostic-ids.md`](./ADR-0068-human-error-presentation-and-diagnostic-ids.md) — the typed error carries a stable diagnostic id alongside its `ExitKind`, and the boundary renderer emits the fixed skeleton (or the JSON failure object on stderr) specified in [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md).

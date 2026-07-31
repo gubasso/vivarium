@@ -29,4 +29,6 @@ Chosen option: **program-wide categories + central matrix + append-only stabilit
 
 Accepted
 
+Amended by [`ADR-0068-human-error-presentation-and-diagnostic-ids.md`](./ADR-0068-human-error-presentation-and-diagnostic-ids.md) — the "category vs instance" split above gains a machine-matchable handle on the instance side: a stable diagnostic id, rendered in the message. It is explicitly **not** a second permanent numeric API — the exit code remains the surface consumers branch on, and the append-only guarantee here is unchanged.
+
 Amends [`ADR-0015-cli-output-and-failure-contract.md`](./ADR-0015-cli-output-and-failure-contract.md) — makes the sysexits taxonomy program-wide and adds the central matrix and append-only stability; the basis is unchanged. Specified in [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md). Supersedes the retired ad-hoc `10/20/30/40` sketch.

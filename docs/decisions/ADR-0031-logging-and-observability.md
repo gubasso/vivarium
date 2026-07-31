@@ -30,4 +30,8 @@ Chosen option: **active-by-default file logging, no `viv logs` command**.
 
 Accepted
 
+Amended by [`ADR-0069-redaction-is-by-construction.md`](./ADR-0069-redaction-is-by-construction.md) — discharges the redaction deferral above, and replaces its premise: redaction is a property of the value, not a filter applied to records before writing, so there is no scrubber in the write path.
+
+Amended by [`ADR-0070-guest-console-capture-and-rotation.md`](./ADR-0070-guest-console-capture-and-rotation.md) — adds the guest serial console as a fourth channel beside the three faces above. It is deliberately not a fourth face: raw guest bytes in the runtime root, captured by default, and untouched by `-v`/`-q` or any `--log-*` flag.
+
 Supersedes the `--log-format` deferral in [`ADR-0026-global-flags-and-config-precedence.md`](./ADR-0026-global-flags-and-config-precedence.md). Applied in [`../reference/spec/16-logging-and-diagnostics.md`](../reference/spec/16-logging-and-diagnostics.md), [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md), and [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md).
