@@ -781,15 +781,15 @@ fn workflow_05_enforcement() -> Result<(), Failed> {
     // be silently discarded. Timing is the honest way to check that. Asserting on stderr
     // content instead would test whichever fetch tool the image ships, not vivarium.
     //
-    // TODO(spec): the enforcement mechanism is section E's to design
-    // (.draft/design-todo/todo.md, "Allowlist enforcement model"), and both arms above
-    // are waiting on it. `.example`
-    // is reserved documentation space with no delegation in the root zone, so neither
-    // host resolves: the allowed arm cannot reach a real endpoint, and the denied arm
-    // fails fast on NXDOMAIN whether or not a filter is in force. Section E owes this
-    // trial a guest-reachable controlled endpoint with two names differing only in
-    // allowlist membership; until then the budget below pins the contract's shape, not
-    // yet its enforcement.
+    // TODO(impl): the fixture this trial needs is now specified — spec/05, "What a
+    // conforming implementation must be able to prove": two `.test` names on two
+    // different addresses, served by a listener inside the VM's own network namespace,
+    // with only the first in `egress.allow`. Building it is implementation work and
+    // waits on the enforcement crates. Until then both arms travel `.example`, reserved
+    // documentation space with no delegation in the root zone, so neither host
+    // resolves: the allowed arm cannot reach a real endpoint, and the denied arm fails
+    // fast on NXDOMAIN whether or not a filter is in force. The budget below therefore
+    // pins the contract's shape, not yet its enforcement.
     if elapsed >= DENIAL_BUDGET {
         return fail(format!(
             "denied fetch took {elapsed:?}; a rejection must fail fast rather \

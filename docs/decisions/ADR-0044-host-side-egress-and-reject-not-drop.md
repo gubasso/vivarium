@@ -30,3 +30,5 @@ Chosen option: **host-side enforcement with a required reject-not-drop denial su
 Accepted
 
 Amends [`ADR-0007-default-open-egress.md`](./ADR-0007-default-open-egress.md). Specified in [`../reference/spec/05-networking-and-egress.md`](../reference/spec/05-networking-and-egress.md).
+
+Extended by [`ADR-0064-egress-allowlist-enforcement-model.md`](./ADR-0064-egress-allowlist-enforcement-model.md), which supplies the mechanism this ADR deliberately left open and makes both of its rules concrete: "host-side" becomes a per-VM network namespace the guest has no handle on, and "reject, not drop" becomes DNS `REFUSED`, TCP reset, and ICMP administratively-prohibited. Nothing here is revised.

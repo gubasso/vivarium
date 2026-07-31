@@ -21,7 +21,17 @@ A share **carries the host's own filesystem boundaries into the guest**: a direc
 
 Read-only is enforced on both sides: the host source is exposed read-only **and** the guest mount is `ro,nodev,nosuid,noexec`, so a read-only mount can carry data but never executables or device nodes, and writes are confined to exactly the declared read-write paths. Guest scratch — `/tmp` and other non-persistent locations — is the per-VM ephemeral layer above, never a host mount.
 
-**A share is not a general-purpose local filesystem.** Two operations are unavailable on any share, read-write ones included: creating an unnamed temporary file that is later linked into place — the atomic create-then-link pattern some toolchains use for output files — and creating device nodes. A toolchain that requires either must write to a persistent volume or to guest-local scratch, which is the same rule as "keep regenerable caches off the share" below.
+**A share is not a general-purpose local filesystem.** Three operations are unavailable on any share, read-write ones included: creating an unnamed temporary file that is later linked into place — the atomic create-then-link pattern some toolchains use for output files — creating device nodes, and **POSIX ACLs**, which are mutually exclusive with the identity translation below. A toolchain that requires any of them must write to a persistent volume or to guest-local scratch, which is the same rule as "keep regenerable caches off the share" below.
+
+### Who owns a shared file
+
+The guest user has a **fixed** UID and GID, chosen when the image is built and identical on every host. Each per-share daemon is launched with a **bidirectional one-to-one translation** between that pair and the UID/GID of the host user who ran `viv` ([`../../decisions/ADR-0066-share-uid-gid-translation.md`](../../decisions/ADR-0066-share-uid-gid-translation.md)). So a file the guest writes into the workspace lands owned by the host user, a file the host wrote is writable by the guest user, and neither side sees an identity it cannot act on.
+
+The translation is the daemon's own, applied in software. It needs no capability, no host-administered subordinate-ID ranges, and no setuid helper — which is what lets it compose with the unprivileged namespace sandbox N20 requires, rather than fighting it.
+
+**Guest identities outside the map are forbidden rather than passed through.** A guest attempt to own a shared file as some other user fails with a permission error; it never silently becomes a file owned by the host user, which would be an invisible privilege the guest did not ask for and the host did not grant. Host identities outside the map — files the share contains that some other host user owns — appear under the conventional overflow identity, visible and inert.
+
+The guest UID is deliberately **not** the host UID. A guest user's numeric identity is guest system configuration and therefore build-channel ([`03-artifact-model.md`](./03-artifact-model.md)); deriving it from the host would put a launch-time value in a build output, break N19, and make one user's cached guest build useless to the next.
 
 ### Cache policy per share
 
@@ -67,9 +77,18 @@ The guest filesystem is three layers: the **immutable image** built from the sto
 - Each image is **sparse and raw**, created lazily on the first `viv start` that needs it, and its declared size is a **virtual ceiling**: the image occupies what its contents occupy, and space freed inside the guest is returned to the host by periodic and on-demand trim (N22, [`../../decisions/ADR-0037-volume-disk-format-and-reclamation.md`](../../decisions/ADR-0037-volume-disk-format-and-reclamation.md)). A volume's ceiling may be raised between boots; it is never lowered in place. Sizes, defaults, and the allocated-against-virtual reporting are in [`17-resources-and-capacity.md`](./17-resources-and-capacity.md).
 - **Anything written outside `$HOME`, a named volume's mountpoint, or a `persist` path is ephemeral** and lost at shutdown.
 - Volumes are removed only on explicit request — `viv destroy` (all of them, unless `--keep-volumes`) or `viv volume rm` (which refuses while the VM runs) — never by `stop` or a rebuild (N18, [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md)).
-- An **orphan** is a volume image still on disk under the project's state that no current layer declares — the residue of a volume dropped from the manifest or from a piece. It keeps occupying space and is never removed implicitly, precisely because a declaration can be removed by accident and the data is not regenerable. `viv volume list` flags orphans so the space is visible before `viv volume rm` reclaims it.
+- An **orphan** is a volume image still on disk under the project's state that no current layer declares — the residue of a volume dropped from the manifest or from a piece. It keeps occupying space and is never removed implicitly, precisely because a declaration can be removed by accident and the data is not regenerable. `viv volume list` flags orphans so the space is visible before `viv volume rm` reclaims it, and `viv volume prune` reclaims **all** of them in one step ([`../../decisions/ADR-0067-volume-prune-and-first-boot-home.md`](../../decisions/ADR-0067-volume-prune-and-first-boot-home.md)).
+- **`prune` removes orphans and nothing else.** Its candidate set is exactly the orphan predicate above — the same one `volume list` reports — so it introduces no second notion of "unused" that could drift from the first. A declared volume is never a candidate, under any flag: there is no `--all`, and the command to remove data that is still declared is `viv volume rm` or `viv destroy`, both of which say so in their names. Removing orphans is not the same operation as `trim`, which returns free space from _inside_ volumes that are kept.
 
-Exit codes for `viv volume list` / `rm` / `trim` follow the per-command matrix in [`14-exit-codes.md`](./14-exit-codes.md) — notably `75` when `rm` refuses because the VM is still running (stop first).
+Exit codes for `viv volume list` / `rm` / `trim` / `prune` follow the per-command matrix in [`14-exit-codes.md`](./14-exit-codes.md) — notably `75` when `rm` or `prune` refuses because the VM is still running (stop first).
+
+### First boot of a volume
+
+A volume's image is created lazily, so the first `viv start` that needs one attaches an **empty** filesystem whose root is owned by the guest's system identity, not by the guest user. Left alone, that would make the default volume — mounted at the guest user's home — unwritable by the very user who lives there.
+
+vivarium's guest module ([`../../decisions/ADR-0048-guest-module-only-vivarium-owns-the-runner.md`](../../decisions/ADR-0048-guest-module-only-vivarium-owns-the-runner.md)) therefore declares the required ownership and mode for each volume's mount point, applied **after** that volume mounts and **before** the agent accepts a session — so no session ever observes the unowned state. The default volume's home is additionally seeded once from the image's skeleton, guarded by a marker stored **inside the volume itself**, so a rebuild or a later boot never re-seeds over data the user has since written. The same declaration covers each `persist` path.
+
+Two things this deliberately does **not** do. It does not repair ownership recursively: the work would be proportional to a home that legitimately grows to tens of gibibytes, on every boot, and it would overwrite ownership the user set on purpose. And it does not treat a later boot as a first boot: after the marker exists, vivarium verifies the mount point and touches nothing below it.
 
 ## The store inside the guest
 

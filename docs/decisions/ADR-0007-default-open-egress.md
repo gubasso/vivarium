@@ -27,3 +27,5 @@ This is safe because the isolation boundary is the microVM, not the network (see
 Accepted
 
 Amended by [`ADR-0044-host-side-egress-and-reject-not-drop.md`](./ADR-0044-host-side-egress-and-reject-not-drop.md) — enforcement is **host-side**, not in-guest: a rule set inside a guest that may hold root could be torn down. The default-open decision and its single knob are unchanged. That ADR also requires a denied connection to fail fast rather than be silently dropped.
+
+Amended by [`ADR-0064-egress-allowlist-enforcement-model.md`](./ADR-0064-egress-allowlist-enforcement-model.md) — the allowlist mechanism this ADR left abstract is now fixed (a per-VM host-side network namespace with a gating resolver), and the allowlist's string grammar gains wildcard and address/CIDR forms. The default-open decision and its single knob are unchanged.

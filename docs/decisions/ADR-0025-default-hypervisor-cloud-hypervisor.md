@@ -42,3 +42,5 @@ Amended by **ADR-0049** — the backend is a member of the built runner's closur
 Amended by **ADR-0048** — vivarium generates this backend's launch arguments itself rather than consuming the upstream runner package.
 
 Discharges the deferral in ADR-0024. The binaries this default resolves to are named in [`ADR-0049-backend-is-a-closure-member.md`](./ADR-0049-backend-is-a-closure-member.md). The hardened launch profile it names (VMM + virtiofsd confinement) is enacted by [`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](./ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md).
+
+Amended by [`ADR-0066-share-uid-gid-translation.md`](./ADR-0066-share-uid-gid-translation.md) — the "virtio-fs fidelity for the RW workspace (UID/GID mapping)" consequence this ADR left to implementation is now settled: a fixed guest identity translated per share to the invoking host user, adding a version floor to the closure assertions above.

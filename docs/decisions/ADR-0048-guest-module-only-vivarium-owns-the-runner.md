@@ -29,3 +29,5 @@ Chosen option: **guest module only** — the generated runner cannot satisfy N5,
 Accepted
 
 Presupposed by ADR-0027 and ADR-0036, both unbuildable if the upstream runner owns the launch; states how ADR-0009 is achieved. The concrete launch profile lives in [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md); the lifecycle step that execs it is in [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md).
+
+Extended by [`ADR-0067-volume-prune-and-first-boot-home.md`](./ADR-0067-volume-prune-and-first-boot-home.md) — first-boot ownership and seeding of a freshly created volume's mount point are the guest module's, like everything else guest-side.

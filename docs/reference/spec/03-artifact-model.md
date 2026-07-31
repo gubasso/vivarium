@@ -90,7 +90,7 @@ This is the complete authoring surface. Nothing outside it is accepted, and an u
 | `resources.mem_mib`    | integer ≥ 256                                      | no       | host-resolved  | launch  |
 | `resources.vcpu`       | integer ≥ 1                                        | no       | host-resolved  | launch  |
 | `egress.mode`          | `"open"` \| `"allowlist"`                          | no       | policy default | build   |
-| `egress.allow`         | array of host names                                | no       | `[]`           | build   |
+| `egress.allow`         | array of destination patterns                      | no       | `[]`           | build   |
 | `env.<NAME>`           | string, `NAME` matching `^[A-Za-z_][A-Za-z0-9_]*$` | no       | `{}`           | launch  |
 | `[[mounts]].source`    | host path; `${VAR}` stays unexpanded               | in table | —              | launch  |
 | `[[mounts]].target`    | guest path; `~` is the guest home                  | in table | —              | launch  |
@@ -100,6 +100,8 @@ This is the complete authoring surface. Nothing outside it is accepted, and an u
 | `[[volumes]].size_gib` | integer ≥ 1                                        | no       | policy default | launch  |
 | `[volume].size_gib`    | integer ≥ 1                                        | no       | policy default | launch  |
 | `[volume].persist`     | array of absolute guest paths                      | no       | `[]`           | build   |
+
+A **destination pattern** is one exact host name, a `*.`/`**.` wildcard over it, or an address or CIDR block; the forms and what each matches are owned by [`05-networking-and-egress.md`](./05-networking-and-egress.md), which also states why the pattern carries no port. A malformed pattern is decidable from the manifest text alone and so fails at parse with `78` ([`14-exit-codes.md`](./14-exit-codes.md), [`../../decisions/ADR-0057-manifest-grammar-and-validation-boundary.md`](../../decisions/ADR-0057-manifest-grammar-and-validation-boundary.md)).
 
 A **name** is the kebab-case identifier resolved against the config library ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)). "In table" means the key is required once its `[[…]]` entry exists, not that the table itself is required — every table here is optional. The **channel** column is the purity classification: a launch-channel value is read by pure evaluation and applied when the VM boots, and no build output may depend on it ([`04-composition-and-determinism.md`](./04-composition-and-determinism.md), [`../../decisions/ADR-0041-resource-and-volume-channel-classification.md`](../../decisions/ADR-0041-resource-and-volume-channel-classification.md)). An absent table is never the same as an empty one: an undeclared ceiling resolves from the host at launch rather than to zero ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)).
 

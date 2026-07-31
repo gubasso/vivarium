@@ -27,3 +27,5 @@ vivarium uses a small in-guest agent over a vsock-class, host-local, network-ind
 Accepted
 
 Specified in [`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exec-and-shell.md). The per-project `flock` and control-socket paths are keyed by the project-identity key ([`ADR-0029-project-identity-and-marker.md`](./ADR-0029-project-identity-and-marker.md)).
+
+Amended by [`ADR-0065-control-socket-wire-protocol.md`](./ADR-0065-control-socket-wire-protocol.md) — the deferred wire framing and auth handshake are supplied there, and this ADR's phrase **"authenticated control-socket ping"** now means boot-identity attestation over a `0700`-scoped socket, not a shared secret. A reader expecting a secret here will not find one, and that is the decision. The transport and session model above are unchanged.

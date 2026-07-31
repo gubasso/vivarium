@@ -42,7 +42,7 @@ Mount semantics are owned by [`06-workspace-and-project-environment.md`](./06-wo
 ## Ensure running and control socket
 
 1. Take the per-target `flock` under `$XDG_RUNTIME_DIR/vivarium/<project-id>/<target>/lock`.
-2. If `control.sock` exists, send the guest agent a cheap authenticated `Ping`.
+2. If `control.sock` exists, send the guest agent a cheap `Ping` over an authorized connection (below).
 3. If `Ping` succeeds and `boot.json` matches the project identity, running generation/store path, backend, and workspace host path expected for this invocation, reuse the running VM and skip preflight/build/boot.
 4. If the socket exists but ping fails, check `vm.pid` only as diagnostic/staleness evidence: dead process means remove stale runtime files; live process with unreachable agent means wait within the boot timeout or fail EX_UNAVAILABLE (69).
 5. If no live VM is found, run the same hard preflight subset used by `viv start`, build or select the requested generation as needed, launch the VM, inject mounts, and wait for the guest agent readiness ping before releasing the lock.
@@ -80,8 +80,44 @@ Exit codes follow the program-wide taxonomy and per-command matrix in [`14-exit-
 
 `127` (not found) and `126` (not executable) stay reserved for a future refinement of the before-start not-found/not-executable cases; v1 uses the categories above.
 
+## The wire protocol
+
+Settled in [`../../decisions/ADR-0065-control-socket-wire-protocol.md`](../../decisions/ADR-0065-control-socket-wire-protocol.md). What follows is the contract for **one** connection; there is nothing above it, because there is no multiplexer.
+
+### Establishing a connection
+
+The vsock-class transport is a **hybrid** one: the backend listens on `control.sock`, and a host connection is completed to a guest port by the transport's own preamble before any vivarium byte is exchanged. Two properties fall out of that and are load-bearing:
+
+- **The host end is an ordinary Unix stream.** Nothing on the host side needs a vsock-aware transport; the vsock dependency exists only in the guest agent.
+- **The guest cannot originate a control connection.** A guest-initiated connection would need a host process listening on a per-port socket beside `control.sock`, and vivarium creates none — ever. The control plane is host-initiated by construction, not by policy.
+
+A connection that closes before the transport completes it means the agent is not yet listening: wait within the boot timeout, then `69` (step 4 above).
+
+### Framing
+
+Each message is a length prefix, a one-byte type tag, and a payload. Standard-I/O payloads are raw bytes; every control payload is a serde-encoded structure. Frames are bounded, and a stream frame's bound is far smaller than a control frame's, so a peer can size buffers without trusting the other side.
+
+An unknown tag is a **protocol error, not a message to skip** — silently ignoring one would let two versions believe they agreed. Direction is part of the contract and is enforced, not merely documented: only the client sends standard input, resize, and signal frames; only the agent sends standard output, standard error, and the exit frame.
+
+The message set is exactly what a session needs and no more: a handshake pair, `Ping`/`Pong`, a request to start the process, the three standard streams with an explicit end-of-input, `Resize`, `Signal`, `Exit`, and `Error`.
+
+### Terminal size and signals
+
+A resize carries the new dimensions and the agent applies them to the session's PTY; the host re-sends whenever its own terminal changes size. Sent before the process starts, it sets the initial dimensions instead — so a session never briefly renders at the wrong size.
+
+With `-t` the host puts the local terminal in raw mode and forwards the interrupt **as a byte**, letting the guest PTY's line discipline raise the signal against the guest's own foreground process group. This is the only correct behaviour when the guest runs a job-control shell: a synthesized signal would go to the wrong process. Explicit signal frames therefore exist for the non-TTY path, where there is no line discipline to do the work.
+
+### Authorization
+
+`control.sock` is **not** protected by a shared secret, and that is a decision rather than an omission. Three facts already settle who may talk to it:
+
+- The runtime directory is session-scoped and `0700`, so no other host user can reach the socket at all ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), [`../../decisions/ADR-0055-runtime-directory-is-required.md`](../../decisions/ADR-0055-runtime-directory-is-required.md)).
+- The guest cannot originate connections, per above.
+- A secret would have to be delivered into the guest, where guest root — the adversary the sandbox is drawn against — reads it anyway. It would add a handling path and defend against nobody.
+
+What is left to establish is **which** agent answered, and the handshake does exactly that: the agent's reply carries the boot identity, and vivarium compares it against `boot.json` before proceeding — the same comparison step 3 above already requires, against a stale socket, a re-created VM, or a crossed project. `boot.json` is host-written metadata and never authentication material.
+
 ## Deferred details
 
-- Exact control-socket wire framing and auth handshake for a single session. Session **multiplexing** is not deferred — it is the transport's, specified above.
 - Credential/agent forwarding.
 - Implementation backend/device.

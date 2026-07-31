@@ -28,3 +28,5 @@ Chosen baseline: **`clap` v4, `serde` + `serde_json` + `toml`, `schemars`, and `
 ## Status
 
 Accepted
+
+Amended by [`ADR-0065-control-socket-wire-protocol.md`](./ADR-0065-control-socket-wire-protocol.md) — the deferred vsock-class transport crate resolves to **none in the CLI**: the control socket's host end is an ordinary Unix stream, so the `tokio` `net` feature already in this baseline suffices. The vsock dependency belongs to the guest agent and is chosen with it. The baseline above is otherwise unchanged.

@@ -34,3 +34,5 @@ Accepted
 Amends [`ADR-0019-volume-model.md`](./ADR-0019-volume-model.md) — the volume shape gains `size_gib`, the key for the virtual ceiling ADR-0037 made raisable. The model is otherwise unchanged.
 
 Specified in [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md), [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md), [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md), and [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md).
+
+Amended by [`ADR-0064-egress-allowlist-enforcement-model.md`](./ADR-0064-egress-allowlist-enforcement-model.md) — `egress.allow`'s **type** is refined from "array of host names" to "array of destination patterns" (exact name, `*.`/`**.` wildcard, or address/CIDR literal). No row is added or removed and the value stays a TOML array of strings; a malformed pattern is decidable from the manifest text and so fails at parse with `78`, on the right side of the boundary this ADR draws.
