@@ -38,4 +38,6 @@ FOO_CONFIG = "~/.config/foo"       # runtime env injection (see 07)
 
 Accepted
 
+Amended by [`ADR-0071-agent-forwarding-over-a-second-vsock-port.md`](./ADR-0071-agent-forwarding-over-a-second-vsock-port.md) — a `source` carries **filesystem data only**: a regular file or a directory, never a socket, FIFO, or device node, and never a host session directory (N24). Sockets have their own typed channel, because a share conveys an inode rather than a listener and this schema's `readonly` flags constrain file use rather than connection.
+
 Amended by [`ADR-0021-typed-launch-channel-options-in-pieces.md`](./ADR-0021-typed-launch-channel-options-in-pieces.md) — the schema stands; the piece-side declaration surface is now typed `vivarium.mounts`/`vivarium.env` NixOS options (the TOML above remains the manifest surface, compiled into the same options), and shared layers are restricted to portable variables in mount sources.

@@ -23,6 +23,17 @@ Read-only is enforced on both sides: the host source is exposed read-only **and*
 
 **A share is not a general-purpose local filesystem.** Three operations are unavailable on any share, read-write ones included: creating an unnamed temporary file that is later linked into place — the atomic create-then-link pattern some toolchains use for output files — creating device nodes, and **POSIX ACLs**, which are mutually exclusive with the identity translation below. A toolchain that requires any of them must write to a persistent volume or to guest-local scratch, which is the same rule as "keep regenerable caches off the share" below.
 
+### What a source may be
+
+A mount carries **filesystem data**: a `source` must resolve to a regular file or a directory. A socket, a FIFO, or a device node is refused before boot, naming the credential channel where a socket belongs ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md), [`../../decisions/ADR-0071-agent-forwarding-over-a-second-vsock-port.md`](../../decisions/ADR-0071-agent-forwarding-over-a-second-vsock-port.md)). Two reasons, and the first is sufficient on its own:
+
+- **It could not work.** A share conveys an inode, not a kernel object. A guest that finds a socket inode over a share has a name whose listener lives in the host kernel and is unreachable from a guest with its own (N1) — so the declaration would produce a broken guest rather than an error.
+- **The flags would mean nothing.** `ro,nodev,nosuid,noexec` constrain how a _file_ may be used; none of them constrains connecting to a socket. A socket would be the one entry in this schema where the guarantees that justify the schema do not apply.
+
+The type check reads the source through the descriptor the share is then served from, rather than checking a path and reopening it, so the answer cannot change between the check and the launch.
+
+Separately, **no mount may take a host session directory as its source** — `/tmp`, `/var/tmp`, or `${XDG_RUNTIME_DIR}`, or any ancestor of them (N24). This binds both layers, including a user's own manifest where literal paths are otherwise legal. Such a directory is a rendezvous point for other processes' sockets and temporary files, and read-only does not contain that: a socket confers authority rather than data, and a name in a shared directory can be replaced between one use and the next. A literal session path is decidable from the declaration and fails at evaluation with `65`; one that only appears after host-side expansion is caught at launch with `78`, the same two-tier shape the portable-path rule already uses ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)).
+
 ### Who owns a shared file
 
 The guest user has a **fixed** UID and GID, chosen when the image is built and identical on every host. Each per-share daemon is launched with a **bidirectional one-to-one translation** between that pair and the UID/GID of the host user who ran `viv` ([`../../decisions/ADR-0066-share-uid-gid-translation.md`](../../decisions/ADR-0066-share-uid-gid-translation.md)). So a file the guest writes into the workspace lands owned by the host user, a file the host wrote is writable by the guest user, and neither side sees an identity it cannot act on.

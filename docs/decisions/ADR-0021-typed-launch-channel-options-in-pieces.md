@@ -28,6 +28,8 @@ Chosen option: **typed `vivarium.*` options inside the piece module** — one fi
 
 Accepted
 
+Amended by [`ADR-0071-agent-forwarding-over-a-second-vsock-port.md`](./ADR-0071-agent-forwarding-over-a-second-vsock-port.md) — the typed option family gains `vivarium.credentials.agents`, a closed enum naming an authentication-agent channel rather than a host path. It is launch-channel like the options above, and it is the one credential surface a **shared** piece may carry, because a member of a closed enum is not personal data (N11).
+
 Amended by [`ADR-0040-manifest-is-the-personal-layer.md`](./ADR-0040-manifest-is-the-personal-layer.md) — the manifest moved to the personal class, so the portable-variable rule binds shared images and pieces only; literal paths are legal in a user's own manifest.
 
 Amended by [`ADR-0041-resource-and-volume-channel-classification.md`](./ADR-0041-resource-and-volume-channel-classification.md) — the option surface above is not the whole set: `vivarium.resources` joins the launch channel and `vivarium.volumes` is build-channel, so this ADR's title over-generalizes. Channel membership is decided per option, not by the `vivarium.*` prefix.

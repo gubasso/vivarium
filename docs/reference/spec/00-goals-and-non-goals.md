@@ -21,7 +21,7 @@ The command-line tool is a thin wrapper over a Nix build and a virtual machine r
 - **Not a shared-kernel container runtime.** The boundary is a VM, not namespaces; there is no shared-kernel mode.
 - **Not a general orchestrator.** vivarium manages per-user, per-project sandboxes, not clusters, scheduling, or multi-tenant fleets.
 - **Not a replacement for a project's dev environment.** It runs that environment; it does not define or absorb it.
-- **Not a secrets manager.** It refuses to place secrets in the build and integrates injection channels, but it does not store or rotate credentials. See [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md).
+- **Not a secrets manager.** It refuses to place secrets in the build and provides the runtime-injection channels — a forwarded authentication-agent channel and read-only credential mounts — but it does not store or rotate credentials, and it performs no cryptography on the user's behalf. Encrypted-at-rest secrets stay a legal and entirely user-owned shape: vivarium supplies no decryptor, executes no provider, and defines no secrets schema. The list of refusals that makes this enforceable rather than aspirational is in [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md).
 - **Not a packaging or publishing tool** for the artifacts it builds.
 
 ## Audience

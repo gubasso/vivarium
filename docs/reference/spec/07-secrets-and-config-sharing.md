@@ -19,12 +19,41 @@ The most common leak is an absolute working-directory path. It is eliminated by 
 
 ## Secrets
 
-A secret embedded during the build lands in the world-readable store and ships with the VM's closure, so build-time secrets are prohibited. Two safe channels replace them:
+A secret embedded during the build lands in the world-readable store and ships with the VM's closure, so build-time secrets are prohibited. Two safe shapes replace them, and vivarium's relationship to each is different:
 
-- **Encrypted-at-rest, for shared secrets.** Commit encrypted secret files that decrypt only at activation into a runtime-only location, never into the store. Only the public recipient identities are committed in clear.
-- **Runtime injection, for personal secrets.** The **primary channel is authentication-agent socket forwarding** (SSH/GPG): the guest receives the forwarded socket, so a compromised guest can _use_ a key for the session but the private key material never crosses the boundary and cannot be exfiltrated. Where a token is unavoidable, pass a **scoped, short-lived** one as runtime environment — never a long-lived credential. Credential directories may be bind-mounted **read-only** (`ro,nodev,nosuid,noexec`) for tools that read config files. None of these involve the build.
+- **Encrypted-at-rest, for shared secrets.** Commit encrypted secret files that decrypt only at activation into a runtime-only location, never into the store; only the public recipient identities are committed in clear. **vivarium performs no part of this** — it supplies no decryptor, executes no provider, and defines no secrets schema ([`../../decisions/ADR-0072-vivarium-integrates-no-encrypted-at-rest-scheme.md`](../../decisions/ADR-0072-vivarium-integrates-no-encrypted-at-rest-scheme.md)). A piece is a NixOS module, so a team that wants decrypt-at-activation imports one; see "What vivarium does not do" below.
+- **Runtime injection, for personal secrets.** This vivarium does own. The **primary channel is authentication-agent socket forwarding** (SSH/GPG): the guest receives a socket, so a compromised guest can _use_ a key for the session but the private key material never crosses the boundary and cannot be exfiltrated. Where a token is unavoidable, pass a **scoped, short-lived** one as runtime environment — never a long-lived credential. Credential directories may be bind-mounted **read-only** (`ro,nodev,nosuid,noexec`) for tools that read config files.
 
-The rule is: **build-time means in the store, which is wrong for secrets; secrets are runtime or encrypted-at-rest only.**
+The rule is: **build-time means in the store, which is wrong for secrets; secrets are runtime or encrypted-at-rest only.** Neither shape involves the build, and vivarium **enforces** that rule without **performing** either shape's cryptography.
+
+### The agent channel
+
+Settled in [`../../decisions/ADR-0071-agent-forwarding-over-a-second-vsock-port.md`](../../decisions/ADR-0071-agent-forwarding-over-a-second-vsock-port.md). A host authentication-agent socket cannot be delivered through a filesystem share: a Unix socket's endpoint is an object in the kernel that owns the listener, and a share conveys the inode, not the listener — so a guest with its own kernel (N1) finds a name with nothing behind it. Forwarding is therefore a **relay**, carried on a dedicated credential port of the same vsock-class transport as the control plane ([`12-exec-and-shell.md`](./12-exec-and-shell.md)), and never a mount.
+
+What may be forwarded is a **closed allowlist of two**, declared through the typed `vivarium.credentials.agents` option and **off unless a layer opts in**:
+
+| Id    | Host source                                                      | Guest path                     |
+| ----- | ---------------------------------------------------------------- | ------------------------------ |
+| `ssh` | `$SSH_AUTH_SOCK`                                                 | `/run/vivarium/ssh-agent.sock` |
+| `gpg` | the agent's **restricted extra socket** — never the ordinary one | `/run/vivarium/gpg-agent.sock` |
+
+An arbitrary host path is never forwardable: the option's value is a member of the enum above, carries no host path, and so a **shared piece may declare it** without violating N11 — which is what makes a distributable `ssh-agent` piece honest ([`03-artifact-model.md`](./03-artifact-model.md)). The guest's `SSH_AUTH_SOCK` is set by the guest agent to the fixed guest path above; it is a tool-generated value, not a forwarded host one, so N17's deny-by-default rule is untouched. Refusing the unrestricted GPG socket is deliberate: the extra socket exists to sign and decrypt for a remote consumer without exposing the key, and the ordinary one does not.
+
+Two limits are stated rather than engineered away. A compromised guest can **use** a forwarded key for as long as the session lasts — the channel protects the key material, not its authority — so a user who wants use-time confirmation or destination constraints configures them on their own agent, which is the only place they can live. And a byte relay does not carry the signal an agent uses to recognize a forwarded connection, so agent-side restrictions that depend on it do not apply inside the guest.
+
+### What vivarium does not do
+
+The non-goal at [`00-goals-and-non-goals.md`](./00-goals-and-non-goals.md) — not a secrets manager — is enforceable rather than aspirational because this list is exhaustive. vivarium will not:
+
+1. store a credential in any root — config, state, cache, data, or the store;
+2. hold, generate, derive, or rotate a decryption identity or key;
+3. write decrypted material to any host filesystem path;
+4. implement or depend on any decryption itself;
+5. execute a user-named provider command and relay its output;
+6. offer any verb whose subject is a credential value;
+7. expire, renew, or reason about a credential's lifetime — that is what makes "scoped, short-lived" the user's choice above and not a promise here.
+
+Items 4 and 5 are the load-bearing pair. A provider hook looks like the smallest possible integration and is in fact the opposite of this decision: it would place plaintext in vivarium's own address space, which is exactly the condition [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)'s redaction guarantee is free of today. A user remains free to compose any encrypted-at-rest scheme into their own image or piece; vivarium neither ships one nor stands in the way, and the identity such a scheme needs arrives through the channels above.
 
 ### Your manifest is compiled, so it is in the store too
 
@@ -44,10 +73,17 @@ A shared layer references the host only through **portable variables**: `${HOME}
 
 What vivarium's own diagnostics may say about any of this — which values never reach a log, why a generated command line is structured rather than pasteable, and why personal paths are normalized rather than blanked — is the redaction contract in [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md).
 
-`${XDG_RUNTIME_DIR}` is deliberately **not** in that set. The four above name durable user data; the runtime directory names live session state — the session bus, the display socket, the authentication-agent socket — so a shared piece resolving it could mount into a guest exactly what deny-by-default (N17) and the deferral of agent forwarding ([`12-exec-and-shell.md`](./12-exec-and-shell.md)) exist to keep out. It stays legal in the **personal** layer, where literal paths already are: a user who wants a session socket in their guest writes it in their own manifest, which is the split this page exists to draw. Excluding it costs nothing else, because a shared layer has no other use for a directory that is empty at every fresh login.
+`${XDG_RUNTIME_DIR}` is deliberately **not** in that set, and neither layer may mount it (N24). The four above name durable user data; the runtime directory names live session state — the session bus, the display socket, the authentication-agent socket — which is the one class of host data a sandbox must not receive wholesale. Two independent reasons close this off. It **would not work**: mounting a directory of sockets delivers inodes with no listener behind them, for the reason "The agent channel" gives above, so a session socket has never been obtainable this way by anyone. And it **must not be tried**: a directory of live session endpoints is precisely what deny-by-default (N17) exists to keep out, and the one legitimate use case — reaching an authentication agent — is now served by a named channel that carries no host path at all. Excluding it costs nothing else, because a shared layer has no other use for a directory that is empty at every fresh login.
 
 This rule is what keeps a piece _whole_ and still shareable: an application piece carries the packages, guest config, runtime env, and host-config mounts its application needs, and adopting the piece brings all of it (see [`03-artifact-model.md`](./03-artifact-model.md)).
 
 ## Enforcing the split
 
-Because the working-directory path is never written to config and secrets are never built in, the shared class stays genuinely shareable. Tooling guards the boundary with **read-only checks** — rejecting a shared artifact that contains an absolute home path or an inline secret — never by writing into the user's config (N13). The personal class already has a home in the per-user config and state roots, the manifest chief among them; vivarium does not scaffold it (see [`../../decisions/ADR-0012-generate-config-examples-from-types.md`](../../decisions/ADR-0012-generate-config-examples-from-types.md)).
+Because the working-directory path is never written to config and secrets are never built in, the shared class stays genuinely shareable. Tooling guards the boundary with **read-only checks** — never by writing into the user's config (N13). The personal class already has a home in the per-user config and state roots, the manifest chief among them; vivarium does not scaffold it (see [`../../decisions/ADR-0012-generate-config-examples-from-types.md`](../../decisions/ADR-0012-generate-config-examples-from-types.md)).
+
+The two halves of N11 are **not equally enforceable, and the difference is worth stating plainly** rather than leaving a reader to assume the tool sees more than it does:
+
+- **A literal personal path is decidable**, because it is a property of text vivarium already parses. It is a genuine refusal: evaluation rejects it with `65`, as above.
+- **A plaintext secret is not decidable.** Nothing distinguishes a credential from a fixture by inspection. `manifest-no-inline-secret` ([`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md)) is a heuristic that warns, and a value it does not flag is not a promise that the value is safe.
+
+So N11's secret clause is a rule the user upholds and the tool assists with; its path clause is a rule the tool upholds. What refusal means here is narrow and worth being precise about: vivarium declines to lend its own machinery to a defect it can see. It cannot stop a user from writing anything they like into their own files, and it does not try — the checks are read-only, the config root is never written (N13), and the guardrails exist to make the right thing obvious rather than to make the wrong thing impossible.

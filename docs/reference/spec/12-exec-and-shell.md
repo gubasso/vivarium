@@ -33,7 +33,9 @@ Guest stdout maps raw to host stdout, guest stderr maps raw to host stderr, and 
 
 The default guest user is non-root `vivarium`; root is allowed only when an image or piece explicitly opts in. The workspace mount is writable for that user.
 
-Host environment passthrough is deny-by-default. The default allowlist is `TERM`, `COLORTERM`, `NO_COLOR`, `FORCE_COLOR`, `LANG`, and `LC_*`. No other host variables are forwarded unless named by `--env`; vivarium does not auto-forward `SSH_AUTH_SOCK`, cloud tokens, or other credential-bearing variables. Credential and agent forwarding is deferred to a later runtime-injection design; see [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md).
+Host environment passthrough is deny-by-default. The default allowlist is `TERM`, `COLORTERM`, `NO_COLOR`, `FORCE_COLOR`, `LANG`, and `LC_*`. No other host variables are forwarded unless named by `--env`; vivarium does not auto-forward `SSH_AUTH_SOCK`, cloud tokens, or other credential-bearing variables.
+
+Agent forwarding is **not** an exception to that rule, and naming `--env SSH_AUTH_SOCK` is not a substitute for it. The variable holds a host filesystem path; forwarding it hands the guest a **name**, while the socket it names is an object in the host kernel that a guest `connect()` cannot reach. When the agent channel is declared, the guest's `SSH_AUTH_SOCK` is set by the guest agent to a fixed guest path served by the relay below — a tool-generated value, not a forwarded host one. The channel itself, and the closed allowlist of what may cross it, are owned by [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md).
 
 ## Workspace mounts
 
@@ -93,6 +95,17 @@ The vsock-class transport is a **hybrid** one: the backend listens on `control.s
 
 A connection that closes before the transport completes it means the agent is not yet listening: wait within the boot timeout, then `69` (step 4 above).
 
+### The credential port
+
+When a composition declares the agent channel ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md), [`../../decisions/ADR-0071-agent-forwarding-over-a-second-vsock-port.md`](../../decisions/ADR-0071-agent-forwarding-over-a-second-vsock-port.md)), the transport carries a **second guest port** beside the control port. It is a separate port and a separate, deliberately minimal protocol — an opaque byte relay with no control tags — because sharing the control connection would demand the multiplexer this page says does not exist, and would put guest-reachable bytes on the same stream as `Exec` and `Signal` frames.
+
+Both properties above survive unchanged, and the design is shaped around keeping them:
+
+- Vivarium holds a small pool of **idle connections it opened** on the credential port. The guest-side proxy accepts a local connection at the fixed guest socket path and consumes one parked connection; vivarium refills the pool. So the guest still originates nothing, and vivarium still creates no host listener beside `control.sock`.
+- The host end of each parked connection remains an ordinary Unix stream, and vivarium relays its bytes to the host agent socket the channel names.
+
+Vivarium never interprets a byte of that stream. The relay's payload is secret-class in full ([`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)); what may be recorded is that a channel exists and which id it carries, never its traffic.
+
 ### Framing
 
 Each message is a length prefix, a one-byte type tag, and a payload. Standard-I/O payloads are raw bytes; every control payload is a serde-encoded structure. Frames are bounded, and a stream frame's bound is far smaller than a control frame's, so a peer can size buffers without trusting the other side.
@@ -119,5 +132,4 @@ What is left to establish is **which** agent answered, and the handshake does ex
 
 ## Deferred details
 
-- Credential/agent forwarding.
 - Implementation backend/device.

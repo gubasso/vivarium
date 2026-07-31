@@ -117,13 +117,15 @@ The `pieces` list is ordered, but order never decides a scalar's value: merge is
 
 A defect is reported at exactly one stage, under exactly one code:
 
-| Stage    | Defect                                                                                                                                                   | Exit |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| parse    | malformed TOML; an unknown key; a wrong type; a value outside its domain (`mem_mib = 0`, `mode = "off"`, a non-kebab name); `extends` in a flat manifest | `78` |
-| resolve  | a name with no matching file, or both spellings of one name present ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md))                     | `78` |
-| evaluate | one volume name bound to two mountpoints, a duplicate mount target, an equal-priority scalar tie, a literal personal path in a shared layer (N11)        | `65` |
+| Stage    | Defect                                                                                                                                                                                                      | Exit |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| parse    | malformed TOML; an unknown key; a wrong type; a value outside its domain (`mem_mib = 0`, `mode = "off"`, a non-kebab name); `extends` in a flat manifest                                                    | `78` |
+| resolve  | a name with no matching file, or both spellings of one name present ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md))                                                                        | `78` |
+| evaluate | one volume name bound to two mountpoints, a duplicate mount target, an equal-priority scalar tie, a literal personal path in a shared layer (N11), a literal host session directory as a mount source (N24) | `65` |
 
 The dividing line is **what the manifest text alone can decide**. Everything else waits for the merge — including the duplicate-name and duplicate-target checks, which a single manifest can violate on its own. They still run only at evaluation, because a piece can contribute the colliding declaration and one defect must never carry two exit codes — the codes are a permanent API ([`14-exit-codes.md`](./14-exit-codes.md), [`../../decisions/ADR-0042-evaluation-time-content-defects.md`](../../decisions/ADR-0042-evaluation-time-content-defects.md)).
+
+Two mount-source faults sit **below** this table because neither is decidable from declarations at all: a source that expands to a session directory only after host-side expansion, and a source whose resolved type is a socket, FIFO, or device node (N24, [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)). Both are host facts, so both are launch-time refusals returning `78` — before any side effect, in the same pass that already fails an unset variable or a missing path.
 
 ### `extends`
 

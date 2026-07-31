@@ -85,8 +85,9 @@ The secret-class channels are enumerated, and the list grows additively as new c
 
 - manifest `[env]` values and per-invocation `--env` values ([`12-exec-and-shell.md`](./12-exec-and-shell.md));
 - the contents of any credential path mounted `readonly = true`;
-- forwarded authentication-agent sockets;
-- anything read through the encrypted-at-rest channel.
+- the traffic relayed over a forwarded authentication-agent channel ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)) — that a channel exists and which id it carries are safe to record; not one byte it carries is.
+
+There is deliberately **no encrypted-at-rest entry**, and its absence is a decision rather than an omission: vivarium decrypts nothing and executes no provider, so no plaintext ever reaches a vivarium process to be redacted ([`../../decisions/ADR-0072-vivarium-integrates-no-encrypted-at-rest-scheme.md`](../../decisions/ADR-0072-vivarium-integrates-no-encrypted-at-rest-scheme.md), N25). This is the clearest case of what "by construction" buys — the guarantee needs no enforcement here because there is nothing to enforce it on. Adding a channel that hands vivarium plaintext would convert that structural fact into a claim requiring defense, which is why the refusal list in [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md) is normative rather than advisory.
 
 Sensitivity **propagates**: a URI, an argument, a header, or an error assembled from a secret is itself secret unless it was built from separately-classified safe parts. Nothing about the verbosity level, the record format, or a panic path relaxes this — `-vvv`, `json`, and an error chain are all subject to the same rule, because the rule is a property of the value and not of the sink.
 

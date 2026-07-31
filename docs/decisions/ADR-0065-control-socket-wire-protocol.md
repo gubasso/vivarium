@@ -33,4 +33,6 @@ Extends [`ADR-0016-guest-control-transport-and-exec-contract.md`](./ADR-0016-gue
 
 Amends [`ADR-0032-cli-dependency-baseline.md`](./ADR-0032-cli-dependency-baseline.md) — the deferred vsock-class transport crate resolves to _none in the CLI_; the guest agent's crate is chosen with the agent.
 
+Amended by [`ADR-0071-agent-forwarding-over-a-second-vsock-port.md`](./ADR-0071-agent-forwarding-over-a-second-vsock-port.md) — the transport carries a **second guest port** for the agent channel, with its own minimal protocol. The framing, session model, and authorization above are untouched, and the parked-connection design was chosen precisely so that the third authorization leg here — "the guest cannot originate connections" — stays literally true.
+
 Specified in [`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exec-and-shell.md).
