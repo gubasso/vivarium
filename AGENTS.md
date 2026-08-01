@@ -10,9 +10,15 @@ The normative rules and guarantees the product must uphold live in [`docs/refere
 
 <!-- self-containment -->
 
-## Self-Containment
+## Self-Containment and External References
 
-Non-negotiable: this project is self-contained. The docs describe **only** vivarium, and every fact must stand alone in this repository. Do not reference, cite, or link to any other project, tool, or external documentation shelf inside `docs/`, this file, or `README.md`. An external reference is allowed only where it names _upstream_ technology that is part of vivarium's own stack (Nix, microvm.nix, NixOS modules, direnv) — never as a load-bearing dependency on another _project_, tool, external shelf, or personal path. If external knowledge is required to understand, build, or operate vivarium, copy its essential substance into the repo.
+Non-negotiable: the docs describe **only** vivarium, and must make complete sense to a reader who has this repository and a public internet connection — and nothing else. The line is **public versus local**, not internal versus external.
+
+**Forbidden — anything scoped to one person or one machine.** No absolute personal paths (`/home/alice/…`, `~/my-project/`), no reference to a project or working tree that exists only on a contributor's disk, no private notes shelf or personal documentation collection, no URL only the author can reach, and no fact whose justification is "it is in my other repo". A reader who cannot resolve the reference cannot verify the claim, and the reference is therefore worthless to them.
+
+**Allowed and encouraged — the public record.** Upstream technology in vivarium's own stack (Nix, microvm.nix, NixOS modules, direnv), well-known third-party projects, published articles, specifications, standards, CVEs, and their URLs. Cite them properly: name the thing and link it, so a reader can go read the source. A guide that teaches a real workflow should name the real tools that perform it.
+
+**Still required — the substance travels with the citation.** A link is a pointer, not a load-bearing dependency. Where external knowledge is needed to understand, build, or operate vivarium, carry the essential substance in the repo alongside the citation, so a dead link costs a reader convenience rather than a fact. Cite for provenance and depth; never for the part of the explanation that must be here.
 
 ## Documentation Maintenance
 
