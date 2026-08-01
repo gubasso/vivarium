@@ -31,4 +31,6 @@ Chosen option: **vivarium owns the capture.**
 
 Accepted
 
+Amended by **ADR-0081** — the guest writes to the console device directly rather than through its log daemon, which is what makes this channel lossless. The "unverified until the first build" consequence above is **discharged**: a host-side reader attached before the guest's first write does capture the whole stream. Two premises were also corrected on a real host — the console does **not** replay to a late-connecting client, so there is no buffer to bound and the reader must exist from before the guest's first write rather than merely outlive the VM; and a backend-written file was rejected here for the right reason, since the socket the backend listens on is the only form that leaves rotation outside the backend's control.
+
 Extends the three faces of [`ADR-0031-logging-and-observability.md`](./ADR-0031-logging-and-observability.md) with a fourth channel that is deliberately not a face, and gives the writer of [`ADR-0034-logging-implementation-and-rotating-writer.md`](./ADR-0034-logging-implementation-and-rotating-writer.md) a second consumer. Specified in [`../reference/spec/16-logging-and-diagnostics.md`](../reference/spec/16-logging-and-diagnostics.md) and [`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exec-and-shell.md).

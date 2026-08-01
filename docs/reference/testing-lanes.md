@@ -1,5 +1,7 @@
 # Testing lanes
 
+> The host-tier work these lanes cannot reach — booting a guest and reading its console — is done today by the hand-run harness in [`microvm-verification-harness.md`](./microvm-verification-harness.md). It is the base a host lane grows from, and its two-tier gate is the same distinction the lanes below draw.
+
 The named lanes vivarium's test suite is organized into, what each one proves, and which are required. The lane taxonomy is decided in [`../decisions/ADR-0076-test-lanes-and-what-each-proves.md`](../decisions/ADR-0076-test-lanes-and-what-each-proves.md); the two absence-proving lanes get their own decision in [`../decisions/ADR-0077-proving-absence-in-the-purity-and-non-invasion-lanes.md`](../decisions/ADR-0077-proving-absence-in-the-purity-and-non-invasion-lanes.md). What is implemented today is tracked in [`implementation-status.md`](./implementation-status.md), which this page does not restate. The executable form of this taxonomy is one profile per lane in `.config/nextest.toml`; those profiles land with the suite itself, so the file does not carry them yet.
 
 ## The unifying rule

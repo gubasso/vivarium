@@ -1,0 +1,570 @@
+#!/usr/bin/env bash
+
+# Boot the first microVM and check what only a real host can answer.
+#
+# Two tiers, and the split is the *gate*, not the topic:
+#
+#   Evaluation tier — runs anywhere Nix is present. Purity, the ADR-0048
+#   negative reference, launch-channel token flow, lints, and binary-cache
+#   reachability. These describe Nix artifacts only and say nothing whatever
+#   about target-host behaviour.
+#
+#   Host tier — gated on /dev/kvm, systemd as PID 1, a systemd user manager and
+#   $XDG_RUNTIME_DIR. Actually boots the guest and reads its console.
+#
+# Output is one `[PASS]`/`[FAIL]`/`[SKIP]`/`[RECORD]` line per check plus a
+# verdict, so the whole run pastes back into a review. A `[SKIP]` means
+# *unproven*, never *absent*. A `[RECORD]` is a measurement, not a judgement.
+#
+# This is the base the host/integration lane grows from; see
+# docs/reference/microvm-verification-harness.md for what each check proves and
+# for the findings register, and docs/reference/testing-lanes.md for the lanes.
+#
+# Three defects this file has already been bitten by, all the same shape — a
+# check whose *form* encoded a wrong assumption and so passed or failed for the
+# wrong reason. They are why the comments below argue rather than describe:
+#   * demanding a seccomp filter of a thread-group leader that never carries one;
+#   * a PASS that tested process exit status while claiming the guest diagnostic
+#     had completed;
+#   * a burst-fidelity check comparing *bytes* against a threshold the guest log
+#     daemon's own line prefixes cleared on their own, while lines were missing.
+# A check that fails is cheap. A check that passes vacuously is worse than none.
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || uname -m | sed 's/$/-linux/')
+FLAKE_REF="path:$REPO_ROOT"
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+RECORD_COUNT=0
+TEMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/vivarium-first-microvm.XXXXXX" 2>/dev/null || true)
+if [[ -z $TEMP_ROOT ]]; then
+  printf '[FAIL] cannot create a private temporary directory\n' >&2
+  exit 1
+fi
+
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+  GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; RESET=$'\033[0m'
+else
+  GREEN=; RED=; YELLOW=; BLUE=; RESET=
+fi
+
+cleanup() {
+  [[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"
+}
+trap cleanup EXIT INT TERM
+
+pass() { PASS_COUNT=$((PASS_COUNT + 1)); printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"; }
+fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"; [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"; }
+skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"; }
+record() { RECORD_COUNT=$((RECORD_COUNT + 1)); printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"; }
+
+run_check() {
+  local name=$1; shift
+  local output status
+  output=$("$@" 2>&1); status=$?
+  if ((status == 0)); then pass "$name"; [[ -n $output ]] && sed 's/^/       /' <<<"$output"
+  else fail "$name (exit $status)" "$output"; fi
+  return "$status"
+}
+
+printf 'vivarium first microVM check\n'
+printf 'repository: %s\n' "$REPO_ROOT"
+printf 'guest workspace mount: /workspaces/vivarium (host source: %s)\n' "$REPO_ROOT"
+printf 'system: %s\n' "$SYSTEM"
+printf 'kernel: %s\n' "$(uname -sr 2>/dev/null || echo unavailable)"
+printf 'nix: %s\n' "$(nix --version 2>/dev/null || echo unavailable)"
+if [[ -r $REPO_ROOT/.git/HEAD ]]; then printf 'HEAD: %s\n' "$(<"$REPO_ROOT/.git/HEAD")"; else printf 'HEAD: unavailable\n'; fi
+printf 'flake source: %s (path form includes this write-mode file set without git operations)\n' "$FLAKE_REF"
+printf 'NOTE: evaluation-tier results describe Nix artifacts only. They say nothing about\n'
+printf '      target-host behaviour, and a SKIPped host-tier check is unproven, not absent.\n\n'
+
+printf 'Evaluation tier\n'
+if ! command -v nix >/dev/null 2>&1; then
+  for check in drv-path environment-metamorphism location-metamorphism derivation-graph negative-runner-reference sentinel-provenance flake-check build closure lint-nixfmt lint-statix lint-deadnix binary-cache-x86_64 binary-cache-aarch64; do
+    fail "$check: Nix is absent"
+  done
+else
+  drv_file=$TEMP_ROOT/drv-path
+  eval_output=$(nix eval --raw "$FLAKE_REF#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/eval.err"); eval_status=$?
+  if ((eval_status == 0)); then printf '%s' "$eval_output" >"$drv_file"; pass "drv-path evaluates without realisation: $eval_output"
+  else fail "drv-path evaluation" "$eval_output$(<"$TEMP_ROOT/eval.err")"; fi
+
+  if ((eval_status == 0)); then
+    env_drv=$(cd / && env HOME=/homeless-shelter USER=vivarium-canary TMPDIR=/var/empty/vivarium-canary XDG_RUNTIME_DIR=/run/user/424242 XDG_STATE_HOME=/var/empty/vivarium-state nix eval --raw "$FLAKE_REF#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/env-eval.err"); env_status=$?
+    if ((env_status == 0)) && [[ $env_drv == "$eval_output" ]]; then pass "environment and cwd metamorphism preserves drvPath"
+    else fail "environment and cwd metamorphism" "$env_drv$(<"$TEMP_ROOT/env-eval.err")"; fi
+  else skip "environment metamorphism: base drvPath unavailable"; fi
+
+  copy_root=$TEMP_ROOT/location-copy
+  if cp -a "$REPO_ROOT" "$copy_root" 2>"$TEMP_ROOT/copy.err"; then
+    copy_drv=$(nix eval --raw "path:$copy_root#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/copy-eval.err"); copy_status=$?
+    if ((eval_status == 0 && copy_status == 0)) && [[ $copy_drv == "$eval_output" ]]; then pass "location metamorphism preserves drvPath"
+    else fail "location metamorphism" "$copy_drv$(<"$TEMP_ROOT/copy-eval.err")"; fi
+  else skip "location metamorphism: worktree copy failed: $(<"$TEMP_ROOT/copy.err")"; fi
+
+  graph=$TEMP_ROOT/derivations.json
+  graph_output=$(nix derivation show -r "$FLAKE_REF#first-microvm" 2>"$TEMP_ROOT/graph.err"); graph_status=$?
+  if ((graph_status == 0)); then printf '%s' "$graph_output" >"$graph"; pass "recursive derivation graph evaluates without realisation"
+  else fail "recursive derivation graph" "$graph_output$(<"$TEMP_ROOT/graph.err")"; fi
+
+  if ((graph_status == 0)); then
+    bad_names=$(jq -r '.derivations | keys[]' "$graph" | grep -E '(^|-)supervisord(-|\.|$)|virtiofsd-run|supervisord-event-handler|microvm-.*-run|microvm-cloud-hypervisor-' || true)
+    if [[ -z $bad_names ]]; then pass "ADR-0048 negative reference: no upstream runner/supervisor derivation was forced"
+    else fail "ADR-0048 negative reference" "$bad_names"; fi
+
+    sentinel_hits=$(grep -oE 'VIVARIUM_LAUNCH_(WORKSPACE_SOURCE|VOLUME_IMAGE)' "$graph" | sort | uniq -c || true)
+    if [[ -z $sentinel_hits ]]; then pass "sentinel provenance: neither launch-channel sentinel occurs in the graph (any occurrence is a defect)"
+    else fail "sentinel provenance: sentinels must occur nowhere" "$sentinel_hits"; fi
+
+    concrete_hits=
+    for canary in "${HOME:-}" "${XDG_RUNTIME_DIR:-}" "${XDG_STATE_HOME:-}"; do
+      [[ -n $canary && $canary != / ]] || continue
+      if grep -Fq -- "$canary" "$graph"; then concrete_hits+="$canary"$'\n'; fi
+    done
+    if [[ -z $concrete_hits ]]; then pass "derivation graph contains no concrete host paths (the equal /workspaces/vivarium guest constant is covered by metamorphism and sentinels)"
+    else fail "derivation graph contains concrete host paths" "$concrete_hits"; fi
+  else
+    skip "negative runner-reference check: graph unavailable"
+    skip "sentinel provenance: graph unavailable"
+    skip "concrete host-path scan: graph unavailable"
+  fi
+
+  run_check "flake checks" nix flake check "$FLAKE_REF"
+  # nixfmt 1.3+ deprecates directory arguments; expand the file set explicitly.
+  shopt -s nullglob
+  nix_files=("$REPO_ROOT/flake.nix" "$REPO_ROOT"/nix/*.nix)
+  shopt -u nullglob
+  run_check "nixfmt formatting" nix develop "$FLAKE_REF" --command nixfmt --check "${nix_files[@]}"
+  statix_check() { (cd "$REPO_ROOT" && nix develop "$FLAKE_REF" --command statix check); }
+  run_check "statix" statix_check
+  run_check "deadnix" nix develop "$FLAKE_REF" --command deadnix --fail "${nix_files[@]}"
+
+  build_output=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm" 2>"$TEMP_ROOT/build.err"); build_status=$?
+  if ((build_status == 0)); then
+    launcher=$(printf '%s\n' "$build_output" | tail -n 1)/bin/vivarium-first-microvm
+    pass "launcher and guest closure realised: $launcher"
+    closure_output=$(nix path-info -r "$(dirname "$(dirname "$launcher")")" 2>&1); closure_status=$?
+    if ((closure_status == 0)) && grep -q cloud-hypervisor <<<"$closure_output" && grep -q virtiofsd <<<"$closure_output"; then pass "realised closure contains cloud-hypervisor, ch-remote package, and virtiofsd"
+    else fail "realised backend closure" "$closure_output"; fi
+
+    common=(--workspace "$REPO_ROOT" --runtime-dir /run/user/1000/vivarium/canary-a --volume /var/lib/vivarium/canary-a.img --uid 1000 --gid 1000 --memory-mib 2048 --vcpu 2 --print-static-arguments)
+    static_a=$("$launcher" "${common[@]}" 2>&1); static_status=$?
+    static_b=$("$launcher" --workspace /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume /srv/vivarium/canary-b.img --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1); static_b_status=$?
+    if ((static_status == 0 && static_b_status == 0)); then
+      normalized_a=$(sed -e 's/boot=2/boot=@VCPU@/' -e 's/size=2048M/size=@MEMORY@M/' -e 's#/run/user/1000/vivarium/canary-a#@RUNTIME@#g' -e 's#/var/lib/vivarium/canary-a.img#@VOLUME@#g' <<<"$static_a")
+      normalized_b=$(sed -e 's/boot=8/boot=@VCPU@/' -e 's/size=4096M/size=@MEMORY@M/' -e 's#/run/user/4242/vivarium/canary-b#@RUNTIME@#g' -e 's#/srv/vivarium/canary-b.img#@VOLUME@#g' <<<"$static_b")
+      if [[ $normalized_a == "$normalized_b" ]]; then pass "launcher static argv structure is invariant under runtime arguments"
+      else fail "launcher static argv contract differs" "$static_a"$'\n---\n'"$static_b"; fi
+
+      # The checks above are all negative — they prove nothing bad appears.
+      # A launcher that hardcoded a launch-channel value would pass every one of
+      # them (both invocations would render the same constant and compare equal).
+      # These are the positive counterparts: each launch-channel value must
+      # actually track the argument it was given.
+      missing_flow=
+      grep -Fq 'size=2048M' <<<"$static_a" || missing_flow+="memory-mib not rendered from argv (A)"$'\n'
+      grep -Fq 'size=4096M' <<<"$static_b" || missing_flow+="memory-mib not rendered from argv (B)"$'\n'
+      grep -Fq 'boot=2' <<<"$static_a" || missing_flow+="vcpu not rendered from argv (A)"$'\n'
+      grep -Fq 'boot=8' <<<"$static_b" || missing_flow+="vcpu not rendered from argv (B)"$'\n'
+      grep -Fq '/var/lib/vivarium/canary-a.img' <<<"$static_a" || missing_flow+="volume image not rendered from argv (A)"$'\n'
+      grep -Fq '/srv/vivarium/canary-b.img' <<<"$static_b" || missing_flow+="volume image not rendered from argv (B)"$'\n'
+      grep -Fq '/run/user/4242/vivarium/canary-b' <<<"$static_b" || missing_flow+="runtime dir not rendered from argv (B)"$'\n'
+      if [[ -z $missing_flow ]]; then pass "launch-channel values flow from arguments, not constants (positive counterpart to the negative scans)"
+      else fail "launch-channel value is hardcoded rather than taken from argv" "$missing_flow"; fi
+
+      # Typed-token retention: every declared token must still be present in the
+      # build-channel JSON. A token replaced by a concrete value — including one
+      # that happens to equal a legitimate guest constant — removes it from here.
+      launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$launcher" | head -n1)
+      if [[ -n $launcher_json && -r $launcher_json ]]; then
+        missing_tokens=
+        while IFS= read -r token; do
+          grep -Fq -- "$token" "$launcher_json" || missing_tokens+="$token"$'\n'
+        done < <(jq -r '.tokens[]' "$launcher_json")
+        if [[ -z $missing_tokens ]]; then pass "every declared launch-channel token is retained in the build-channel arguments"
+        else fail "a launch-channel token was replaced by a concrete value" "$missing_tokens"; fi
+      else fail "launch-arguments JSON not locatable in the launcher" "$launcher"; fi
+    else fail "launcher print-static-arguments" "$static_a"$'\n'"$static_b"; fi
+  else
+    launcher=
+    skip "realisation unavailable; purity evidence above remains valid: $build_output"
+    if ((graph_status == 0)) && grep -q cloud-hypervisor "$graph" && grep -q virtiofsd "$graph"; then pass "derivation graph contains backend and virtiofsd (realisation caveat)"
+    else skip "backend closure membership: neither realised closure nor usable graph"; fi
+    skip "launcher static argv comparison: launcher not realised"
+  fi
+
+  cache_check() {
+    local arch=$1 package=$2 out status query qstatus
+    out=$(nix eval --impure --raw --expr "let f = builtins.getFlake \"$FLAKE_REF\"; p = import f.inputs.nixpkgs { system = \"$arch-linux\"; }; in p.$package.outPath" 2>"$TEMP_ROOT/cache-$arch-$package.err"); status=$?
+    if ((status != 0)); then fail "binary cache $arch $package evaluation" "$out"; return; fi
+    query=$(nix path-info --store https://cache.nixos.org "$out" 2>&1); qstatus=$?
+    if ((qstatus == 0)); then pass "binary cache $arch $package: confirmed hit"
+    elif grep -Eqi 'not found|does not exist|404|valid path' <<<"$query"; then fail "binary cache $arch $package: confirmed miss" "$query"
+    else skip "binary cache $arch $package: network/query error (not a confirmed miss): $query"; fi
+  }
+  cache_check x86_64 cloud-hypervisor
+  cache_check x86_64 virtiofsd
+  cache_check aarch64 cloud-hypervisor
+  cache_check aarch64 virtiofsd
+fi
+
+printf '\nHost tier\n'
+missing=()
+[[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
+[[ -r /dev/kvm && -w /dev/kvm ]] || missing+=("/dev/kvm openable read/write")
+[[ -r /proc/1/comm && $(< /proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
+systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
+[[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
+command -v python3 >/dev/null 2>&1 || missing+=("python3 console reader")
+[[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]] || missing+=("realised launcher")
+
+if ((${#missing[@]})); then
+  reason=$(IFS=', '; echo "${missing[*]}")
+  for check in launch-with-landlock console-reader console-burst-fidelity boot-and-mount free-page-reporting shared-store-spike confinement diagnostic-completion shutdown-cleanup; do
+    skip "$check: missing prerequisites: $reason"
+  done
+else
+  state_home=${XDG_STATE_HOME:-$HOME/.local/state}
+  run_id="first-microvm-$$"
+  runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
+  volume_dir=$state_home/vivarium/diagnostics
+  volume=$volume_dir/first-microvm.img
+  mkdir -p "$runtime_dir" "$volume_dir"
+  chmod 0700 "$runtime_dir"
+  launch_log=$TEMP_ROOT/launcher.log
+  console_log=$TEMP_ROOT/console.log
+  launch_args=(--workspace "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume "$volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2)
+
+  launch_attempt=0
+  # NOTE: `--wait` may not be combined with `--scope` — systemd rejects that
+  # combination outright, which would make every host check fail with a usage
+  # error dressed up as a Landlock finding. A scope runs the command in
+  # systemd-run's own process, so backgrounding it and `wait`ing is the
+  # synchronous behaviour we want.
+  launch_vm() {
+    launch_attempt=$((launch_attempt + 1))
+    systemd-run --user --scope --quiet --collect --unit="$run_id-$launch_attempt" "$launcher" "${launch_args[@]}" "$@" >"$launch_log" 2>&1 &
+    vm_pid=$!
+  }
+  wait_for_console() {
+    for _ in {1..300}; do
+      [[ -S $runtime_dir/console.sock ]] && return 0
+      kill -0 "$vm_pid" 2>/dev/null || return 1
+      sleep 0.1
+    done
+    return 1
+  }
+
+  launch_vm
+  if wait_for_console; then
+    pass "Landlock-on launch reached the console-socket stage"
+  else
+    wait "$vm_pid"; launch_status=$?
+    launch_output=$(<"$launch_log")
+    # Distinguish "the launch never started" from "Landlock denied a path".
+    if grep -Eqi 'systemd-run|unknown option|may not be combined|Failed to (start|create) transient' <<<"$launch_output"; then
+      fail "host-tier launch could not start (not Landlock evidence)" "$launch_output"
+      launch_args=()
+    else
+      record "Landlock-on launch failed (later N20 evidence), retrying once without it; exit=$launch_status; output=$launch_output"
+      : >"$launch_log"
+      launch_vm --no-landlock
+      wait_for_console || fail "launch failed with Landlock off as well" "$(<"$launch_log")"
+    fi
+  fi
+
+  # Cloud Hypervisor's `--serial socket=` does not buffer and does not replay:
+  # bytes the guest writes while no client is attached are discarded outright.
+  # The first host run proved this the expensive way — the reader connected only
+  # after the process scan and a 15s settle, by which time the guest had finished
+  # its whole diagnostic (~17s) and the launcher's cleanup trap had unlinked the
+  # socket, so every guest-side finding was lost to a FileNotFoundError. Attach
+  # the reader the instant the socket exists and keep it attached for the run.
+  reader_py=$TEMP_ROOT/console-reader.py
+  cat >"$reader_py" <<'PY'
+import socket, sys, time
+
+path, out_path, idle_timeout = sys.argv[1], sys.argv[2], float(sys.argv[3])
+# The socket file can exist a moment before the VMM listens on it.
+deadline = time.monotonic() + 30.0
+while True:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(path)
+        break
+    except OSError:
+        sock.close()
+        if time.monotonic() >= deadline:
+            raise
+        time.sleep(0.2)
+sock.settimeout(idle_timeout)
+with open(out_path, "wb") as out:
+    while True:
+        try:
+            data = sock.recv(65536)
+        except socket.timeout:
+            break
+        if not data:
+            break
+        out.write(data)
+        out.flush()
+PY
+  : >"$console_log"
+  python3 "$reader_py" "$runtime_dir/console.sock" "$console_log" 180 >"$TEMP_ROOT/reader.log" 2>&1 &
+  reader_pid=$!
+
+  # /proc entries vanish under the scan as short-lived processes exit; the failed
+  # redirection is reported by the shell itself, so the guard has to wrap it.
+  proc_cmdline() { { tr '\0' ' ' <"/proc/$1/cmdline"; } 2>/dev/null || true; }
+  proc_field() { awk -v key="$2:" '$1 == key {print $2}' "/proc/$1/status" 2>/dev/null || true; }
+  # `Seccomp:` is per-task, and neither daemon filters the task we can see first:
+  # virtiofsd installs its filter in the `--sandbox namespace` child it forks, and
+  # cloud-hypervisor's `--seccomp true` filters worker threads, which never appear
+  # in a /proc/[0-9]* glob at all. Take the maximum across the thread group.
+  max_seccomp() {
+    local leader=$1 best=0 value task
+    for task in /proc/"$leader"/task/[0-9]*/status; do
+      value=$(awk '/^Seccomp:/ {print $2}' "$task" 2>/dev/null || true)
+      [[ $value =~ ^[0-9]+$ ]] && ((value > best)) && best=$value
+    done
+    printf '%s' "$best"
+  }
+
+  vmm_pid=
+  for _ in {1..300}; do
+    for proc_stat in /proc/[0-9]*/stat; do
+      child=${proc_stat#/proc/}; child=${child%/stat}
+      cmd=$(proc_cmdline "$child")
+      if [[ $cmd == *cloud-hypervisor* && $cmd == *"$runtime_dir"* ]]; then vmm_pid=$child; break 2; fi
+    done
+    sleep 0.1
+  done
+  rss_before=$(awk '/VmRSS:/ {print $2}' "/proc/${vmm_pid:-missing}/status" 2>/dev/null || echo unavailable)
+
+  # Measurement (a) needs a metric that moves only when memory is really returned.
+  # With `--memory shared=on` the guest's RAM is a memfd mapped MAP_SHARED, so
+  # MADV_DONTNEED drops the VMM's PTEs — and VmRSS with them — while the shmem
+  # pages stay allocated. fallocate(PUNCH_HOLE) is the call that frees them, and
+  # the only thing that observes it is the memfd's own st_blocks. Sample that as
+  # the primary series and smaps_rollup Pss as the cross-check, on a timer for the
+  # VM's whole life so every guest-announced phase has host samples either side.
+  sampler_py=$TEMP_ROOT/memfd-sampler.py
+  memfd_series=$TEMP_ROOT/memfd-series.txt
+  sampler_log=$TEMP_ROOT/memfd-sampler.log
+  cat >"$sampler_py" <<'PY'
+import os, sys, time
+
+pid, out_path, interval = sys.argv[1], sys.argv[2], float(sys.argv[3])
+
+
+def memfd_kib(pid):
+    """Allocated blocks of every memfd the VMM holds, in KiB.
+
+    st_blocks is in 512-byte units and counts blocks actually allocated to the
+    shmem inode, so it drops exactly when a hole is punched -- unlike VmRSS.
+    """
+    total = None
+    fd_dir = f"/proc/{pid}/fd"
+    try:
+        entries = os.listdir(fd_dir)
+    except OSError:
+        return None
+    for entry in entries:
+        path = f"{fd_dir}/{entry}"
+        try:
+            if "memfd:" not in os.readlink(path):
+                continue
+            total = (total or 0) + os.stat(path).st_blocks // 2
+        except OSError:
+            continue
+    return total
+
+
+def pss_kib(pid):
+    try:
+        with open(f"/proc/{pid}/smaps_rollup") as handle:
+            for line in handle:
+                if line.startswith("Pss:"):
+                    return int(line.split()[1])
+    except OSError:
+        return None
+    return None
+
+
+with open(out_path, "w") as out:
+    while os.path.exists(f"/proc/{pid}"):
+        stamp = time.monotonic()
+        memfd, pss = memfd_kib(pid), pss_kib(pid)
+        if memfd is None and pss is None:
+            break
+        out.write(f"t={stamp:.1f},memfd={memfd},pss={pss}\n")
+        out.flush()
+        time.sleep(interval)
+PY
+  : >"$memfd_series"
+  if [[ -n ${vmm_pid:-} ]]; then
+    python3 "$sampler_py" "$vmm_pid" "$memfd_series" 1.0 >"$sampler_log" 2>&1 &
+    sampler_pid=$!
+  else
+    sampler_pid=
+    printf 'no VMM pid to sample\n' >"$sampler_log"
+  fi
+
+  # Sample confinement while the daemons are certainly alive, before the guest
+  # reaches poweroff. The launcher's own bash wrapper is recorded but never
+  # asserted on: `setpriv --no-new-privs` applies to the children it execs, not
+  # to the caller, so demanding nnp=1 of the wrapper is a guaranteed false alarm.
+  proc_evidence=
+  declare -A role_seccomp=() role_count=()
+  bad_conf=
+  for status_file in /proc/[0-9]*/status; do
+    pid=${status_file#/proc/}; pid=${pid%/status}
+    cmd=$(proc_cmdline "$pid")
+    [[ $cmd == *"$runtime_dir"* ]] || continue
+    uid=$(proc_field "$pid" Uid); nnp=$(proc_field "$pid" NoNewPrivs)
+    leader_seccomp=$(proc_field "$pid" Seccomp); group_seccomp=$(max_seccomp "$pid")
+    caps=$(proc_field "$pid" CapEff)
+    role=wrapper
+    case $cmd in
+      *virtiofsd*store.sock*) role=virtiofsd:store ;;
+      *virtiofsd*workspace.sock*) role=virtiofsd:workspace ;;
+      *cloud-hypervisor*) role=cloud-hypervisor ;;
+    esac
+    proc_evidence+="role=$role pid=$pid uid=$uid nnp=$nnp seccomp=$leader_seccomp seccomp-threadgroup-max=$group_seccomp caps=$caps cmd=$cmd"$'\n'
+    [[ $role == wrapper ]] && continue
+    role_count[$role]=$(( ${role_count[$role]:-0} + 1 ))
+    (( group_seccomp > ${role_seccomp[$role]:-0} )) && role_seccomp[$role]=$group_seccomp
+    [[ $uid == "$(id -u)" ]] || bad_conf+="$role pid=$pid is not owned by the invoking user (uid=$uid)"$'\n'
+    [[ $nnp == 1 ]] || bad_conf+="$role pid=$pid has NoNewPrivs=$nnp"$'\n'
+  done
+  sleep 15
+  rss_late=$(awk '/VmRSS:/ {print $2}' "/proc/${vmm_pid:-missing}/status" 2>/dev/null || echo unavailable)
+
+  # Bounded: a guest that never powers off must FAIL with a timeout rather than
+  # hang the script and deny the maintainer any summary at all. The guest's own
+  # spike allows nix-develop 120s, so the ceiling has to sit well above that.
+  vm_status=0
+  rss_peak=${rss_before//[!0-9]/}
+  for _ in {1..840}; do
+    kill -0 "$vm_pid" 2>/dev/null || break
+    sample=$(awk '/VmRSS:/ {print $2}' "/proc/${vmm_pid:-missing}/status" 2>/dev/null || true)
+    [[ $sample =~ ^[0-9]+$ && -n $rss_peak ]] && ((sample > rss_peak)) && rss_peak=$sample
+    sleep 0.5
+  done
+  if kill -0 "$vm_pid" 2>/dev/null; then
+    fail "guest did not shut down within 420s; terminating" "$(tail -n 40 "$launch_log")"
+    kill -TERM "$vm_pid" 2>/dev/null || true
+    vm_status=124
+  fi
+  wait "$vm_pid" 2>/dev/null || vm_status=$?
+  wait "$reader_pid" 2>/dev/null; reader_status=$?
+  # The sampler exits on its own when /proc/<vmm> disappears; bound the wait so a
+  # sampler that outlives its target cannot hang the whole run.
+  if [[ -n ${sampler_pid:-} ]]; then
+    for _ in {1..40}; do kill -0 "$sampler_pid" 2>/dev/null || break; sleep 0.25; done
+    kill "$sampler_pid" 2>/dev/null || true
+    wait "$sampler_pid" 2>/dev/null || true
+  fi
+
+  bytes=0; [[ -s $console_log ]] && bytes=$(wc -c <"$console_log")
+  if ((reader_status != 0)) && ((bytes == 0)); then
+    fail "console reader produced nothing" "$(cat "$TEMP_ROOT/reader.log" 2>/dev/null; tail -n 40 "$launch_log")"
+  elif grep -Fq VIVARIUM_DIAGNOSTIC_FIRST_MARKER "$console_log"; then
+    pass "console reader attached before first output: $bytes bytes captured"
+  else
+    fail "console captured $bytes bytes but never saw the guest's first marker" "$(head -c 2000 "$console_log")"
+  fi
+  # With a reader attached for the whole run the early burst is a lossless-delivery
+  # check, which is worth more than the replay question the first run already
+  # answered (Cloud Hypervisor does not replay to a late client). Count marker
+  # occurrences, never bytes: the guest's journal+console path prefixes every line,
+  # so the wire total runs ~3.7x the guest's own figure and a `bytes >= 1 MiB`
+  # threshold passes vacuously while lines are missing — the exact shape this
+  # script has been bitten by before. The guest states its own expected count, so
+  # the constant lives on the side that produced the burst.
+  claimed=$(grep -ao 'VIVARIUM_CONSOLE_BYTES_CLAIMED=[0-9]*' "$console_log" | tail -n1 || true)
+  expected=$(grep -ao 'VIVARIUM_CONSOLE_LINES_EXPECTED=[0-9]*' "$console_log" | tail -n1 | cut -d= -f2)
+  captured=$(grep -ao VIVARIUM_CONSOLE_BURST "$console_log" | wc -l)
+  # A split marker and a dropped marker both lower the count, but they are
+  # different findings: one is another writer interleaving on the shared console,
+  # the other is the transport losing bytes. Only the second impugns ADR-0070.
+  # Recover the count with newlines and ANSI/status noise stripped: if the markers
+  # reappear, every byte arrived and the token was merely broken in transit.
+  rejoined=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null \
+    | tr -d '\n' | grep -ao VIVARIUM_CONSOLE_BURST | wc -l)
+  if [[ $expected =~ ^[0-9]+$ ]] && ((captured >= expected)); then
+    pass "console delivered the full early burst without loss ($captured/$expected marker lines; $bytes bytes on the wire, guest ${claimed:-claim-absent})"
+  elif [[ $expected =~ ^[0-9]+$ ]] && ((rejoined >= expected)); then
+    fail "console interleaved another writer into the guest's burst (no bytes lost)" \
+      "intact-markers=$captured rejoined-markers=$rejoined expected=$expected wire-bytes=$bytes
+this is a shared-console contention finding, NOT transport loss: every byte arrived.
+the guest is expected to silence PID 1 status output for the burst (systemd SIGRTMIN+21)."
+  else
+    fail "console lost part of the guest's early burst" \
+      "intact-markers=$captured rejoined-markers=$rejoined expected=${expected:-unstated} wire-bytes=$bytes guest-${claimed:-bytes-claim-absent}
+rejoined count is below expected, so bytes are genuinely missing rather than split."
+  fi
+
+  if grep -Fq 'VIVARIUM_WORKSPACE_CONTRACT=virtiofs-rw' "$console_log"; then pass "workspace is virtiofs rw at /workspaces/vivarium; no write probe touched it"
+  else fail "guest workspace mount contract" "$(grep -a VIVARIUM_WORKSPACE "$console_log" || tail -n 100 "$console_log")"; fi
+  free_lines=$(grep -ao 'VIVARIUM_MEM_PHASE=[a-z]* MEMFREE=[0-9]* MEMAVAIL=[0-9]*' "$console_log" || true)
+  # VmRSS is not authoritative here and must not be reported as if it were.
+  # `--memory shared=on` backs guest RAM with a memfd; MADV_DONTNEED tears down
+  # the VMM's page-table entries — dropping VmRSS — without freeing the shmem
+  # pages. Only the memfd's own allocated block count moves when
+  # fallocate(PUNCH_HOLE) actually returns memory, so that is the primary series
+  # and PSS is the cross-check. Both are sampled by the phase sampler below.
+  record "guest free-page phases: ${free_lines:-unavailable}"
+  if [[ -s $memfd_series ]]; then
+    record "host memfd allocated-KiB series (authoritative for measurement (a)): $(tr '\n' ' ' <"$memfd_series")"
+  else
+    record "host memfd series unavailable: $(head -c 300 "$sampler_log" 2>/dev/null)"
+  fi
+  record "VMM VmRSS KiB (context only, not the measurement): before=$rss_before peak=${rss_peak:-unavailable} late=$rss_late"
+  store_lines=$(grep -aE 'VIVARIUM_STORE_(SYSTEM_PATH|KNOWN_PATH|SAMPLE_IN_CLOSURE|DB_VALID_[A-Z]*)|VIVARIUM_INNER_NIX_DEVELOP_STATUS' "$console_log" || true)
+  record "shared-store inner-layer spike: ${store_lines:-unavailable}"
+  # A non-zero inner status is the spike's answer, but the *reason* is the finding
+  # and it only exists in the guest's own log tail. Surfacing it here keeps the
+  # verdict pasteable without a second run to recover what the console already said.
+  inner_reason=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$console_log" 2>/dev/null \
+    | grep -aE 'error:|warning: Git tree' | head -n 6 || true)
+  record "inner-develop failure reason (the spike's actual result): ${inner_reason:-none reported}"
+
+  # A RECORD that always fires would let the verdict read PASS while nothing was
+  # observed. Confinement has an expected shape — one VMM plus one virtiofsd per
+  # share, every one owned by the invoking user with NoNewPrivs=1, and each of the
+  # three roles carrying a seccomp filter *somewhere* in its thread group — so
+  # absent or malformed evidence is a FAIL, not a measurement.
+  if [[ -z $proc_evidence ]]; then
+    fail "confinement: no VMM or virtiofsd process was observable at sample time" "$(tail -n 40 "$launch_log")"
+  else
+    for role in cloud-hypervisor virtiofsd:store virtiofsd:workspace; do
+      (( ${role_count[$role]:-0} > 0 )) || { bad_conf+="no $role process observed"$'\n'; continue; }
+      (( ${role_seccomp[$role]:-0} == 2 )) || bad_conf+="$role has no task in seccomp filter mode (thread-group max=${role_seccomp[$role]:-0})"$'\n'
+    done
+    grep -q 'sandbox none' <<<"$proc_evidence" && bad_conf+="a daemon ran with --sandbox none"$'\n'
+    if [[ -z $bad_conf ]]; then pass "confinement: all daemons unprivileged with NoNewPrivs=1 and a seccomp filter per role (not the N20 allowlist test)"
+    else fail "confinement contract" "$bad_conf"; fi
+  fi
+  record "confinement/process evidence (not the N20 allowlist test): ${proc_evidence:-none}"
+  if ((vm_status != 0)); then fail "VM exit status $vm_status" "$(<"$launch_log")"
+  elif grep -Fq VIVARIUM_DIAGNOSTIC_COMPLETE "$console_log"; then pass "guest ran the diagnostic to completion and shut down cleanly"
+  else fail "guest shut down with status 0 but never reported VIVARIUM_DIAGNOSTIC_COMPLETE" "$(tail -n 60 "$console_log")"; fi
+  if find "$runtime_dir" -mindepth 1 -print -quit | grep -q .; then fail "runtime directory not empty after shutdown" "$(find "$runtime_dir" -mindepth 1 -maxdepth 1 -print)"
+  else pass "runtime directory empty after shutdown; persistent volume retained at $volume"; fi
+
+  # The console capture is the run's primary evidence and TEMP_ROOT is removed on
+  # exit, so anything not grepped above used to be unrecoverable without a second
+  # boot. Keep the artefacts beside the volume; they are the reason to run this.
+  if cp -- "$console_log" "$volume_dir/console.log" 2>/dev/null; then
+    cp -- "$memfd_series" "$volume_dir/memfd-series.txt" 2>/dev/null || true
+    record "artefacts retained: $volume_dir/console.log (guest console, $bytes bytes), $volume_dir/memfd-series.txt"
+  fi
+fi
+
+printf '\nSummary\n'
+printf 'PASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+if ((FAIL_COUNT == 0)); then printf 'VERDICT: PASS (RECORD findings are measurements; SKIPs require a capable host)\n'; exit 0
+else printf 'VERDICT: FAIL (%d hard check(s) failed)\n' "$FAIL_COUNT"; exit 1; fi
