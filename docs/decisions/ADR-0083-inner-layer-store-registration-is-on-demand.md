@@ -34,4 +34,6 @@ Amended 2026-08-01, before implementation, by a greenfield review. The decision 
 
 Three competing spikes decide it, and none can be settled on paper: `local-overlay-store` against an immutable metadata snapshot; a restricted store-protocol proxy; filtered registration. Two facts the spike must carry: `nix-store --dump-db` **does** accept store paths and subset the dump, but the caller owns closure completeness — a partial dump fails `registerValidPaths`. And whichever mechanism wins, the host must not garbage-collect under a running guest; that constraint predates this decision and belongs to [`ADR-0038`](./ADR-0038-guest-store-sharing.md).
 
+Fallback (b) is not a protocol to invent. `nix-store --serve` is upstream's documented primitive for exactly this shape — a store-protocol server speaking over stdin and stdout, meant for a restricted peer, read-only unless `--write` is passed ([Nix manual](https://nix.dev/manual/nix/2.31/command-ref/nix-store/serve.html)). The spike models that arm on it rather than on a bespoke allowlist, so what gets confined under N20 is a known program with a known surface.
+
 Discharges the fork left open in [`ADR-0038`](./ADR-0038-guest-store-sharing.md).
