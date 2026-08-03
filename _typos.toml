@@ -1,0 +1,18 @@
+# typos exceptions.
+#
+# The hook in `.pre-commit-config.yaml` runs with `--write-changes`, so a false
+# positive is not a warning — it silently rewrites prose, including inside code
+# spans, and the edit lands in the commit unread. That happened once: `mke2fs`
+# tokenizes to `mke` + `2fs`, the dictionary maps `mke` to `make`, and the tool's
+# name was rewritten to `make2fs` in an accepted decision record.
+#
+# Scope every exception to the whole identifier, never to the fragment that
+# tripped. Allowing `mke` outright would silence the same correction everywhere
+# else, which is the one thing this tool is here to do.
+
+[default.extend-identifiers]
+# e2fsprogs' filesystem builder, named in the store volume's provisioning
+# (`docs/decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md`) and
+# invoked by the launcher. Its siblings — `dumpe2fs`, `tune2fs`, `resize2fs`,
+# `e2fsck` — tokenize cleanly and need no entry.
+mke2fs = "mke2fs"

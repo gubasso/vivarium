@@ -30,6 +30,8 @@ Chosen option: **collect on free-space pressure.**
 
 Accepted
 
+Amended by [**ADR-0091**](./ADR-0091-the-store-volume-is-provisioned-for-inodes.md) — this trigger reads free **blocks**, so it cannot see inode exhaustion, and the store volume is therefore provisioned with a denser inode ratio at creation. The collection policy here is unchanged; what is added is a limit it was never able to reach.
+
 Bounds [`ADR-0087`](./ADR-0087-the-inner-store-persists-on-its-own-volume.md), and is safe only because of [`ADR-0088`](./ADR-0088-the-guest-store-is-a-local-overlay-store.md) — on a plain overlay this policy would whiteout host paths on a schedule the user never asked for. Specified in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md), with the thresholds in [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md).
 
 **Unimplemented, and until it lands the guest never collects.** That is the honest interim posture, stated rather than left to read as though ADR-0088 had covered it: ADR-0088 makes a collection safe, which is not the same as arranging for one.

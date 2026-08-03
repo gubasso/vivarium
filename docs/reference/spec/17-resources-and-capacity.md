@@ -94,6 +94,15 @@ The guest store's volume is the one volume that grows without the user asking, s
 
 The volume itself takes the 32 GiB per-volume default above. The floor is one Rust toolchain of headroom, so the common case of a large closure arriving does not immediately re-trigger; the gap between the two reclaims about 4 GiB per pass, enough that passes are rare rather than continuous. Both numbers are argued rather than measured and are expected to move once real growth is observed.
 
+**The store volume is also provisioned for file count, and this is the one volume where that is not automatic.** The trigger above reads free _space_; a Nix store is millions of small files, and a filesystem created with ordinary defaults runs out of inodes before it runs out of blocks. That failure surfaces as "no space left" on a volume showing gibibytes free, and no floor expressed in gibibytes can prevent it.
+
+| Provisioning                       | Default            |
+| ---------------------------------- | ------------------ |
+| Store volume — inode density       | **one per 8 KiB**  |
+| Every other volume — inode density | filesystem default |
+
+At that density a 32 GiB store volume reaches its byte ceiling before its inode ceiling, which is what makes the 32 GiB above the limit the user was actually told about. The number is argued from a measured store — about one inode per 11 KiB — and stays provisional in the same way the thresholds above do ([`../../decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md`](../../decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md)). It costs roughly 3% of the volume, charged whether the inodes are used or not, and it cannot be changed in place: raising it later re-creates the volume, which is cheap only because the store volume is regenerable.
+
 ## Reporting
 
 `viv status` and `viv status -g` show the ceiling and the reality side by side, for both memory and disk. That contrast is the whole model in one table:
