@@ -1,0 +1,37 @@
+# ADR-0087: The inner store persists on its own volume
+
+## Context and Problem Statement
+
+[`ADR-0084`](./ADR-0084-the-inner-layer-provisions-its-own-store.md) settled that the project's inner environment provisions its own store, and left open whether what it provisions survives a restart. Guest-side Nix writes land in the store overlay's upper layer, which is the ephemeral runtime layer, so a profile under the persistent home points at paths that are gone. [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md) called it "not currently expressible".
+
+## Considered Options
+
+- **Keep the cost** — document the dangling profile as expected.
+- **An inner store under `$HOME`**, carried by the default volume.
+- **Persist the overlay's upper layer**, on a volume mounted before the store.
+
+## Decision Outcome
+
+Chosen option: **persist the upper layer, together with the store database that describes it.**
+
+- **Guest changes surviving a restart is product intent.** ADR-0084 removed the host as a source for the inner environment, which leaves the guest's own store as the only place that behaviour can come from.
+- **[`ADR-0080`](./ADR-0080-the-sandbox-is-disposable.md) already permits it and needs no amendment.** It names caches as continuity and says volumes persist "so a warm restart is cheap". The store is the largest cache a guest has and every path in it is regenerable from a substituter, so nothing here becomes a system of record.
+- **The database persists with the bytes.** Validity is a database query, so persisting paths alone reproduces ADR-0084's own condition — physically present, formally unknown — this time self-inflicted.
+- **A store under `$HOME` is refused.** It needs an explicit `--store`, breaking the two-layer rule that the inner environment works identically inside or outside a sandbox.
+- **What is shared stays shared.** The host store remains the overlay's lower layer, and a path in the guest's registered system closure is still used in place.
+
+## Consequences
+
+- Good: profiles stop dangling, and an inner `nix develop` stops re-fetching every boot.
+- Bad: the volume must mount in initrd, so it is a new kind, outside the first-boot machinery of [`ADR-0067`](./ADR-0067-volume-prune-and-first-boot-home.md).
+- Bad: it grows, so the guest needs a working collector — the subject of [`ADR-0088`](./ADR-0088-the-guest-store-is-a-local-overlay-store.md).
+
+## Status
+
+Accepted
+
+Closes the question [`ADR-0084`](./ADR-0084-the-inner-layer-provisions-its-own-store.md)'s `## Status` left open, and supersedes nothing: ADR-0084's refusal to bridge host store bytes into the inner layer stands unchanged, and this decision does not reach it. What persists is what the guest fetched or built for itself.
+
+Specified in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md). The mechanism is [`ADR-0088`](./ADR-0088-the-guest-store-is-a-local-overlay-store.md); the two are separate because the store's persistence and the store type that makes persistence safe are separately reversible.
+
+**Unimplemented, and three premises are unmeasured.** That an inner build lands its closure in the upper layer rather than reusing lower bytes; that a volume can be attached and mounted early enough to back that layer under the guest's initrd; and that the database and the boot-time closure registration compose in either order. Each is carried in the design checklist. The first is load-bearing — if inner builds somehow reuse lower paths without registering them, there is less to persist than this decision assumes.
