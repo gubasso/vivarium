@@ -28,7 +28,13 @@ Chosen option: **launch channel, one closure on demand** — the only option agn
 
 ## Status
 
-Accepted — **as policy. The mechanism is deliberately open.**
+Superseded by [`ADR-0084-the-inner-layer-provisions-its-own-store.md`](./ADR-0084-the-inner-layer-provisions-its-own-store.md) — **do not implement anything below.**
+
+Superseded 2026-08-03, before implementation, on a premise this record never argued. Everything here asks _which mechanism_ bridges host store validity into the inner layer; ADR-0084 answers the prior question and says **none** — the inner layer provisions its own store, because vivarium may assume nothing about the host beyond Nix being installed to build with. A saving whose size depends on what the user happens to have in their store cannot be contract. Two supporting corrections: the share was chosen in ADR-0038 as boot-closure delivery rather than as package sharing, and the inner `nix develop` failure recorded below is bounded by egress mode, not universal — under the default open egress ([`ADR-0007`](./ADR-0007-default-open-egress.md)) it substitutes normally into the writable overlay.
+
+So the policy below, its three candidate mechanisms, and the host spike that was to choose between them all close **unbuilt**. What does _not_ close is the host-GC interlock: it is [`ADR-0038`](./ADR-0038-guest-store-sharing.md)'s, it follows from sharing the live store at all, and it survives this reversal untouched.
+
+The record below is kept as written. It is the reasoning that was true before the premise was examined, and it names the fork in ADR-0038 it was written to discharge.
 
 Amended 2026-08-01, before implementation, by a greenfield review. The decision outcome survived intact; the original mechanism — a bespoke guest-originated `--dump-db` request — did not, because Nix's experimental `local-overlay-store` already implements the same semantics upstream and vivarium's guest is already in the filesystem layout it requires. Its experimental status ([NixOS/nix milestone 50](https://github.com/NixOS/nix/milestone/50) is open) is the reason it is presumptive rather than chosen.
 

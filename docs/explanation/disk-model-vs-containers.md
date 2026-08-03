@@ -18,13 +18,15 @@ The comparison is worth making because the two models share the goal and differ 
 
 The practical effect is the one the [`../../README.md`](../../README.md) highlight claims: the fifth concurrent project costs close to nothing on disk.
 
+This comparison is why the obvious-looking alternative is refused rather than reserved. Giving each sandbox its own copy of the store would be the one design that makes vivarium cost _more_ disk than the model above — five copies of a base where five containers share one — so it is inadmissible in every profile, and no hardening or safety argument may reach for it ([`../decisions/ADR-0086-per-vm-store-duplication-is-refused.md`](../decisions/ADR-0086-per-vm-store-duplication-is-refused.md)).
+
 ## What is not shared, and never will be
 
 Two limits belong to the mental model rather than to the fine print.
 
 **Memory is not deduplicated.** The saving above is a saving on the host's disk and its page cache. Guest memory is per-guest, and no design choice can change that — the constraint and its cause are stated in [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md). Five near-identical sandboxes each pay for what they read. This is the honest asymmetry against containers, which share one kernel and therefore one page cache all the way up.
 
-**Presence is not usability.** A host store path being visible through the share does not make it usable by the guest's Nix, because validity lives in a database the guest owns. Today that database knows the guest's own closure and nothing more, so the disk saving is proven for the base image and does not yet extend to the project's own dependencies. The measured limit and the policy for lifting it are in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md) and [`../decisions/ADR-0083-inner-layer-store-registration-is-on-demand.md`](../decisions/ADR-0083-inner-layer-store-registration-is-on-demand.md). It is worth separating from the disk question it is easily confused with: the bytes are already shared; what is open is whether the guest may use them.
+**Presence is not usability, and that is the design rather than a gap.** A host store path being visible through the share does not make it usable by the guest's Nix, because validity lives in a database the guest owns, and that database knows the guest's own closure and nothing more. So the saving compared here is the saving on **the base image** — which is what the share exists to deliver. The project's own dependencies are the inner layer's to provision, and vivarium never bridges host bytes into them, because it may assume nothing about the host beyond the Nix it builds with: the ruling is in [`../decisions/ADR-0084-the-inner-layer-provisions-its-own-store.md`](../decisions/ADR-0084-the-inner-layer-provisions-its-own-store.md) and the contract in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md). This is worth separating from the disk question it is easily confused with: the comparison above is about base-image bytes, and it holds on a host whose user has never run Nix themselves — which is the point.
 
 ## Reclamation has a different shape, and this surprises people
 
