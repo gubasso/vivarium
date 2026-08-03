@@ -83,6 +83,17 @@ This is the whole arbitration story. vivarium reports pressure and lets the user
 
 `viv status` suggests `trim` when a VM's measured use approaches its ceiling while host memory is low. It is a suggestion on stderr, never an action.
 
+## Reclaiming store space inside the guest
+
+The guest store's volume is the one volume that grows without the user asking, so the guest bounds it itself. Its Nix collects when free space on that volume falls below a **floor** and stops once it has reached a **target**; nothing else triggers a collection — not boot, not a timer ([`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md), [`../../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md`](../../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md)).
+
+| Threshold              | Default   |
+| ---------------------- | --------- |
+| Floor — collect below  | **4 GiB** |
+| Target — collect up to | **8 GiB** |
+
+The volume itself takes the 32 GiB per-volume default above. The floor is one Rust toolchain of headroom, so the common case of a large closure arriving does not immediately re-trigger; the gap between the two reclaims about 4 GiB per pass, enough that passes are rare rather than continuous. Both numbers are argued rather than measured and are expected to move once real growth is observed.
+
 ## Reporting
 
 `viv status` and `viv status -g` show the ceiling and the reality side by side, for both memory and disk. That contrast is the whole model in one table:
