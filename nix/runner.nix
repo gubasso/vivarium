@@ -26,12 +26,11 @@ pkgs.writeShellApplication {
         setpriv=$(jq -r .setpriv "$json_file")
         truncate_bin=$(jq -r .truncate "$json_file")
         mkfs_ext4=$(jq -r .mkfsExt4 "$json_file")
-        volume_label=$(jq -r .volumeLabel "$json_file")
-        volume_size_mib=$(jq -r .volumeSizeMiB "$json_file")
 
         workspace=
         runtime_dir=
         volume=
+        store_volume=
         uid=
         gid=
         memory_mib=
@@ -39,12 +38,12 @@ pkgs.writeShellApplication {
         print_only=false
         landlock=true
         usage() {
-          echo "usage: $0 --workspace ABS --runtime-dir ABS --volume ABS --uid N --gid N --memory-mib N --vcpu N [--no-landlock] [--print-static-arguments]" >&2
+          echo "usage: $0 --workspace ABS --runtime-dir ABS --volume ABS --store-volume ABS --uid N --gid N --memory-mib N --vcpu N [--no-landlock] [--print-static-arguments]" >&2
           exit 64
         }
         while (($#)); do
           case $1 in
-            --workspace|--runtime-dir|--volume|--uid|--gid|--memory-mib|--vcpu)
+            --workspace|--runtime-dir|--volume|--store-volume|--uid|--gid|--memory-mib|--vcpu)
               (($# >= 2)) || usage
               name=''${1#--}; name=''${name//-/_}; printf -v "$name" '%s' "$2"; shift 2 ;;
             --print-static-arguments) print_only=true; shift ;;
@@ -52,7 +51,7 @@ pkgs.writeShellApplication {
             *) usage ;;
           esac
         done
-        for value in workspace runtime_dir volume; do
+        for value in workspace runtime_dir volume store_volume; do
           candidate=''${!value:-}
           [[ $candidate = /* ]] || { echo "$value must be an absolute path" >&2; exit 64; }
         done
@@ -62,6 +61,7 @@ pkgs.writeShellApplication {
         workspace=$(realpath -m -- "$workspace")
         runtime_dir=$(realpath -m -- "$runtime_dir")
         volume=$(realpath -m -- "$volume")
+        store_volume=$(realpath -m -- "$store_volume")
         is_same_or_below() { [[ $1 == "$2" || $1 == "$2"/* ]]; }
         # N24 forbids a mount source that resolves to /tmp, /var/tmp or the
         # runtime dir *or to any ancestor of them* — mounting / exposes strictly
@@ -78,10 +78,13 @@ pkgs.writeShellApplication {
           echo "workspace violates N24" >&2
           exit 64
         fi
-        if violates_n24 "$volume"; then
-          echo "volume violates N24" >&2
-          exit 64
-        fi
+        for value in volume store_volume; do
+          if violates_n24 "''${!value}"; then
+            echo "$value violates N24" >&2
+            exit 64
+          fi
+        done
+        [[ $volume != "$store_volume" ]] || { echo "volume and store-volume must be distinct images" >&2; exit 64; }
 
         store_socket=$runtime_dir/store.sock
         workspace_socket=$runtime_dir/workspace.sock
@@ -91,6 +94,7 @@ pkgs.writeShellApplication {
         for index in "''${!argv[@]}"; do
           argv[index]=''${argv[index]//@VCPU@/$vcpu}
           argv[index]=''${argv[index]//@MEMORY_MIB@/$memory_mib}
+          argv[index]=''${argv[index]//@STORE_VOLUME_IMAGE@/$store_volume}
           argv[index]=''${argv[index]//@VOLUME_IMAGE@/$volume}
           argv[index]=''${argv[index]//@STORE_SOCKET@/$store_socket}
           argv[index]=''${argv[index]//@WORKSPACE_SOCKET@/$workspace_socket}
@@ -106,11 +110,30 @@ pkgs.writeShellApplication {
         umask 077
         [[ -d $workspace && -w $workspace ]] || { echo "workspace must be a writable directory" >&2; exit 66; }
         mkdir -p "$runtime_dir"
-        if [[ ! -e $volume ]]; then
-          "$truncate_bin" -s "''${volume_size_mib}M" "$volume"
-          "$mkfs_ext4" -q -L "$volume_label" "$volume"
-        fi
-        [[ -f $volume ]] || { echo "volume must be a regular file" >&2; exit 66; }
+        # One row per volume, in the guest module's own `microvm.volumes` order —
+        # the same order that decides which image becomes /dev/vda and which
+        # /dev/vdb. Creating them from that list rather than from a flat field per
+        # volume is what keeps the two orderings from drifting apart silently.
+        volume_count=$(jq -r '.volumeLaunch | length' "$json_file")
+        for volume_index in $(seq 0 $((volume_count - 1))); do
+          row=$(jq -c ".volumeLaunch[$volume_index]" "$json_file")
+          arg_name=$(jq -r .argName <<<"$row")
+          case $arg_name in
+            volume) image=$volume ;;
+            store-volume) image=$store_volume ;;
+            *) echo "unknown volume argument $arg_name" >&2; exit 70 ;;
+          esac
+          if [[ ! -e $image ]]; then
+            "$truncate_bin" -s "$(jq -r .sizeMiB <<<"$row")M" "$image"
+            mkfs_args=(-q -L "$(jq -r .label <<<"$row")")
+            # ADR-0091: only the store volume declares an inode ratio, because
+            # only its trigger (free blocks) is blind to inode exhaustion.
+            inode_ratio=$(jq -r '.inodeRatio // empty' <<<"$row")
+            [[ -n $inode_ratio ]] && mkfs_args+=(-i "$inode_ratio")
+            "$mkfs_ext4" "''${mkfs_args[@]}" "$image"
+          fi
+          [[ -f $image ]] || { echo "$arg_name must be a regular file" >&2; exit 66; }
+        done
 
         pids=()
         cleanup() {

@@ -28,13 +28,15 @@ Chosen option: **persist the upper layer, together with the store database that 
 
 ## Status
 
-Accepted
+Implemented
+
+**Measured on a real host, over two boots against one store volume.** On the warm boot a path the guest added on the cold boot was valid _before anything was written_, with its bytes still in the writable layer — and validity is a database query, so this decision's central claim is now a measurement rather than an argument. Both premises the record below calls unmeasured are closed with it: the volume mounts from the initrd ahead of the merged store, and the persisted database composes with the boot-time registration in the order the design requires. The sharing claim is closed as a number: **0 of 520** requisites of the running system were copied into the writable layer, on both boots. Recorded in [`../reference/microvm-verification-harness.md`](../reference/microvm-verification-harness.md).
 
 Closes the question [`ADR-0084`](./ADR-0084-the-inner-layer-provisions-its-own-store.md)'s `## Status` left open, and supersedes nothing: ADR-0084's refusal to bridge host store bytes into the inner layer stands unchanged, and this decision does not reach it. What persists is what the guest fetched or built for itself.
 
 Specified in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md). The mechanism is [`ADR-0088`](./ADR-0088-the-guest-store-is-a-local-overlay-store.md); the two are separate because the store's persistence and the store type that makes persistence safe are separately reversible.
 
-**Unimplemented. Two premises are unmeasured, and the load-bearing one is now settled from upstream source.** Still unmeasured: that a volume can be attached and mounted early enough to back the writable layer under the guest's initrd, and that the database and the boot-time closure registration compose in either order. Both are carried in the design checklist.
+**Two premises were unmeasured when this was written; both are now measured, per the paragraph above.** They were: that a volume can be attached and mounted early enough to back the writable layer under the guest's initrd, and that the database and the boot-time closure registration compose in either order. The second turned out to be structural rather than arranged: the boot-time registration runs in stage 2, before systemd, so it always precedes the daemon opening the store.
 
 The premise this decision rested on — that an inner build lands its closure in the upper layer rather than reusing lower bytes — **holds, and by a stronger mechanism than assumed.** Nix does not write into a store path; it deletes the destination first and then restores or renames into it, on both the substitution path (`LocalStore::addToStore`) and the build path (`deletePath` then `movePath`). So a path that is physically present below but invalid in the guest's database is not reused: it is unlinked through the merged view, which writes the very whiteout [`ADR-0088`](./ADR-0088-the-guest-store-is-a-local-overlay-store.md) exists to prevent, and then copied in full. That hazard is therefore reachable from the ordinary write path and not only from a collection, which neither ADR said. Recorded in [`../reference/microvm-verification-harness.md`](../reference/microvm-verification-harness.md); a host run now confirms a known mechanism rather than deciding an open question.
 

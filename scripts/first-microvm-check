@@ -114,7 +114,7 @@ else
     if [[ -z $bad_names ]]; then pass "ADR-0048 negative reference: no upstream runner/supervisor derivation was forced"
     else fail "ADR-0048 negative reference" "$bad_names"; fi
 
-    sentinel_hits=$(grep -oE 'VIVARIUM_LAUNCH_(WORKSPACE_SOURCE|VOLUME_IMAGE)' "$graph" | sort | uniq -c || true)
+    sentinel_hits=$(grep -oE 'VIVARIUM_LAUNCH_(WORKSPACE_SOURCE|VOLUME_IMAGE|STORE_VOLUME_IMAGE)' "$graph" | sort | uniq -c || true)
     if [[ -z $sentinel_hits ]]; then pass "sentinel provenance: neither launch-channel sentinel occurs in the graph (any occurrence is a defect)"
     else fail "sentinel provenance: sentinels must occur nowhere" "$sentinel_hits"; fi
 
@@ -149,12 +149,12 @@ else
     if ((closure_status == 0)) && grep -q cloud-hypervisor <<<"$closure_output" && grep -q virtiofsd <<<"$closure_output"; then pass "realised closure contains cloud-hypervisor, ch-remote package, and virtiofsd"
     else fail "realised backend closure" "$closure_output"; fi
 
-    common=(--workspace "$REPO_ROOT" --runtime-dir /run/user/1000/vivarium/canary-a --volume /var/lib/vivarium/canary-a.img --uid 1000 --gid 1000 --memory-mib 2048 --vcpu 2 --print-static-arguments)
+    common=(--workspace "$REPO_ROOT" --runtime-dir /run/user/1000/vivarium/canary-a --volume /var/lib/vivarium/canary-a.img --store-volume /var/lib/vivarium/canary-a-store.img --uid 1000 --gid 1000 --memory-mib 2048 --vcpu 2 --print-static-arguments)
     static_a=$("$launcher" "${common[@]}" 2>&1); static_status=$?
-    static_b=$("$launcher" --workspace /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume /srv/vivarium/canary-b.img --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1); static_b_status=$?
+    static_b=$("$launcher" --workspace /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume /srv/vivarium/canary-b.img --store-volume /srv/vivarium/canary-b-store.img --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1); static_b_status=$?
     if ((static_status == 0 && static_b_status == 0)); then
-      normalized_a=$(sed -e 's/boot=2/boot=@VCPU@/' -e 's/size=2048M/size=@MEMORY@M/' -e 's#/run/user/1000/vivarium/canary-a#@RUNTIME@#g' -e 's#/var/lib/vivarium/canary-a.img#@VOLUME@#g' <<<"$static_a")
-      normalized_b=$(sed -e 's/boot=8/boot=@VCPU@/' -e 's/size=4096M/size=@MEMORY@M/' -e 's#/run/user/4242/vivarium/canary-b#@RUNTIME@#g' -e 's#/srv/vivarium/canary-b.img#@VOLUME@#g' <<<"$static_b")
+      normalized_a=$(sed -e 's/boot=2/boot=@VCPU@/' -e 's/size=2048M/size=@MEMORY@M/' -e 's#/run/user/1000/vivarium/canary-a#@RUNTIME@#g' -e 's#/var/lib/vivarium/canary-a-store.img#@STORE_VOLUME@#g' -e 's#/var/lib/vivarium/canary-a.img#@VOLUME@#g' <<<"$static_a")
+      normalized_b=$(sed -e 's/boot=8/boot=@VCPU@/' -e 's/size=4096M/size=@MEMORY@M/' -e 's#/run/user/4242/vivarium/canary-b#@RUNTIME@#g' -e 's#/srv/vivarium/canary-b-store.img#@STORE_VOLUME@#g' -e 's#/srv/vivarium/canary-b.img#@VOLUME@#g' <<<"$static_b")
       if [[ $normalized_a == "$normalized_b" ]]; then pass "launcher static argv structure is invariant under runtime arguments"
       else fail "launcher static argv contract differs" "$static_a"$'\n---\n'"$static_b"; fi
 
@@ -170,7 +170,16 @@ else
       grep -Fq 'boot=8' <<<"$static_b" || missing_flow+="vcpu not rendered from argv (B)"$'\n'
       grep -Fq '/var/lib/vivarium/canary-a.img' <<<"$static_a" || missing_flow+="volume image not rendered from argv (A)"$'\n'
       grep -Fq '/srv/vivarium/canary-b.img' <<<"$static_b" || missing_flow+="volume image not rendered from argv (B)"$'\n'
+      grep -Fq '/var/lib/vivarium/canary-a-store.img' <<<"$static_a" || missing_flow+="store volume image not rendered from argv (A)"$'\n'
+      grep -Fq '/srv/vivarium/canary-b-store.img' <<<"$static_b" || missing_flow+="store volume image not rendered from argv (B)"$'\n'
       grep -Fq '/run/user/4242/vivarium/canary-b' <<<"$static_b" || missing_flow+="runtime dir not rendered from argv (B)"$'\n'
+      # ADR-0087 makes the store volume a second --disk, and cloud-hypervisor
+      # assigns drive letters in --disk order. Assert the order, not just the
+      # presence: swapping the two would boot a guest whose store volume is its
+      # home and whose home is its store, silently.
+      disk_order=$(grep -oE '/(var/lib|srv)/vivarium/canary-[ab](-store)?\.img' <<<"$static_a" | tr '\n' ' ')
+      [[ $disk_order == '/var/lib/vivarium/canary-a.img /var/lib/vivarium/canary-a-store.img ' ]] \
+        || missing_flow+="--disk order is not (volume, store-volume): $disk_order"$'\n'
       if [[ -z $missing_flow ]]; then pass "launch-channel values flow from arguments, not constants (positive counterpart to the negative scans)"
       else fail "launch-channel value is hardcoded rather than taken from argv" "$missing_flow"; fi
 
@@ -222,7 +231,7 @@ command -v python3 >/dev/null 2>&1 || missing+=("python3 console reader")
 
 if ((${#missing[@]})); then
   reason=$(IFS=', '; echo "${missing[*]}")
-  for check in launch-with-landlock console-reader console-burst-fidelity boot-and-mount free-page-reporting shared-store-spike confinement diagnostic-completion shutdown-cleanup; do
+  for check in launch-with-landlock console-reader console-burst-fidelity boot-and-mount free-page-reporting shared-store-spike store-canary-realisation persistent-store-premises persistent-store-sharing persistent-store-collection delete-duplicate persistent-store-persistence confinement diagnostic-completion shutdown-cleanup; do
     skip "$check: missing prerequisites: $reason"
   done
 else
@@ -231,11 +240,54 @@ else
   runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
   volume_dir=$state_home/vivarium/diagnostics
   volume=$volume_dir/first-microvm.img
+  store_volume=$volume_dir/first-microvm-store.img
   mkdir -p "$runtime_dir" "$volume_dir"
   chmod 0700 "$runtime_dir"
   launch_log=$TEMP_ROOT/launcher.log
   console_log=$TEMP_ROOT/console.log
-  launch_args=(--workspace "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume "$volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2)
+
+  # ADR-0087's central claim — that the guest's store survives a restart — is not
+  # observable from one boot, so this script is run twice against the same store
+  # volume. VIVARIUM_SPIKE_COLD=1 makes the first run provably cold rather than
+  # merely presumed so; without it the volume is reused and the run is the warm
+  # half of the pair.
+  if [[ ${VIVARIUM_SPIKE_COLD:-} == 1 ]]; then
+    rm -f -- "$store_volume"
+    record "store volume removed before launch: this is the cold half of the persistence pair"
+  elif [[ -f $store_volume ]]; then
+    record "store volume reused from a previous run: this is the warm half of the persistence pair"
+  else
+    record "store volume absent and VIVARIUM_SPIKE_COLD unset: this run is cold by accident, not by request"
+  fi
+  # The canary must exist in the *host* store before the guest boots, so its
+  # bytes are in the lower layer while its output path is absent from the guest's
+  # boot closure — the only way to reach the delete-duplicate shape without a
+  # writable lower store. Realised from the very expression file the guest
+  # evaluates, taken from the launcher's own JSON, so the two cannot drift.
+  # `nix-build` rather than `nix build`: the expression uses builtins.storePath,
+  # which flake pure evaluation forbids.
+  host_launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$launcher" | head -n1)
+  canary_expr=$(jq -r .storeCanaryExpression "$host_launcher_json" 2>/dev/null || true)
+  if [[ -n $canary_expr && -r $canary_expr ]]; then
+    canary_out=$(nix-build --no-out-link "$canary_expr" 2>"$TEMP_ROOT/canary.err"); canary_status=$?
+    if ((canary_status == 0)) && [[ -e $canary_out ]]; then
+      pass "store canary realised host-side: $canary_out (present in the lower layer, absent from the guest's boot closure)"
+    else
+      fail "store canary could not be realised host-side" "$canary_out$(<"$TEMP_ROOT/canary.err")"
+    fi
+  else
+    fail "store canary expression not locatable in the launcher JSON" "${canary_expr:-unset}"
+  fi
+
+  # ADR-0091's open hazard: mkfs.ext4 may leave the inode table lazily
+  # initialised, in which case the kernel zeroes it in the background after first
+  # mount and the sparse image gains around a gibibyte with the guest writing
+  # nothing — which would interact with ADR-0037's sparse-image promise. Sample
+  # allocated blocks, never apparent size.
+  image_allocated() { stat -c '%b*%B=%s' -- "$1" 2>/dev/null || echo unavailable; }
+  store_alloc_before=$(image_allocated "$store_volume")
+
+  launch_args=(--workspace "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume "$volume" --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2)
 
   launch_attempt=0
   # NOTE: `--wait` may not be combined with `--scope` — systemd rejects that
@@ -531,6 +583,144 @@ rejoined count is below expected, so bytes are genuinely missing rather than spl
   inner_reason=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$console_log" 2>/dev/null \
     | grep -aE 'error:|warning: Git tree' | head -n 6 || true)
   record "inner-develop failure reason (the spike's actual result): ${inner_reason:-none reported}"
+
+  # ---- ADR-0087/ADR-0088/ADR-0091: the persistent local-overlay guest store ----
+  # Every value below is stated by the guest on its own console. Read them by
+  # marker rather than by position, and treat an absent marker as unproven — a
+  # missing line must never satisfy a check by default, which is the defect shape
+  # this file's method note names.
+  spike_value() {
+    sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null \
+      | grep -ao "VIVARIUM_STORE_SPIKE_$1=.*" | tail -n1 | cut -d= -f2- || true
+  }
+  spike_lines=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null \
+    | grep -ao 'VIVARIUM_STORE_SPIKE_[A-Z_]*=.*' || true)
+  record "persistent guest store, guest-reported: ${spike_lines:-unavailable}"
+  record "store image allocated blocks: before=$store_alloc_before after=$(image_allocated "$store_volume") (ADR-0091's lazy-inode-table hazard; growth with no guest writes is the finding)"
+
+  spike_boot=$(spike_value BOOT)
+  if [[ -z ${spike_lines:-} ]]; then
+    for check in persistent-store-premises persistent-store-sharing persistent-store-collection delete-duplicate; do
+      fail "$check: the guest never reported a store-spike line"
+    done
+    skip "persistent-store-persistence: no guest report to compare against"
+  else
+    # Premises (b) and (c). The mount-id comparison is the observational half of
+    # what `neededForBoot` promises at evaluation: ids are handed out in mount
+    # order, so the writable layer carrying a lower one than the overlay built
+    # from it is evidence it really was established first.
+    premise_bad=
+    [[ $(spike_value UPPER_DEVICE) == block ]] || premise_bad+="writable layer is not a block device: $(spike_value UPPER_MOUNT)"$'\n'
+    [[ $(spike_value UPPER_BEFORE_STORE) == yes ]] || premise_bad+="writable layer was not mounted before /nix/store: $(spike_value MOUNT_IDS)"$'\n'
+    [[ $(spike_value LOWER_DB_HAS_SYSTEM) == yes ]] || premise_bad+="the lower store's database does not describe the boot closure"$'\n'
+    [[ $(spike_value DAEMON_NIX_REMOTE) == NIX_REMOTE=local-overlay://* ]] || premise_bad+="nix-daemon did not open a local-overlay store: $(spike_value DAEMON_NIX_REMOTE)"$'\n'
+    [[ $(spike_value CHECK_POST_INIT) == 'merged=yes lower=yes verified=yes' ]] || premise_bad+="lower and merged views disagree: $(spike_value CHECK_POST_INIT)"$'\n'
+    # ADR-0067's stage-2 first-boot machinery must be confirmed *absent* here,
+    # not assumed away: this volume mounts before stage 2 exists.
+    [[ $(spike_value STAGE2_OWNERSHIP) == absent ]] || premise_bad+="ADR-0067's first-boot marker appeared on the store volume"$'\n'
+    if [[ -z $premise_bad ]]; then
+      pass "persistent-store-premises: block-backed writable layer mounted before /nix/store, boot closure in the lower database, daemon on the overlay store (boot ${spike_boot:-?})"
+    else
+      fail "persistent-store-premises" "$premise_bad"
+    fi
+
+    # ADR-0087's sharing claim, stated as a number rather than as a hope: a path
+    # already valid in the lower database must not be copied up. Any non-zero
+    # count means the volume grows by a closure instead of by what the guest
+    # actually fetched.
+    copied=$(spike_value BOOT_CLOSURE_COPIED_UP)
+    if [[ $copied == 0/* ]]; then
+      pass "persistent-store-sharing: no boot-closure path was copied into the writable layer ($copied)"
+    elif [[ -n $copied ]]; then
+      fail "persistent-store-sharing: boot-closure paths were copied up" "$copied — ADR-0087 says a path valid in the lower database is used in place"
+    else
+      fail "persistent-store-sharing: the guest did not report a copy-up count"
+    fi
+
+    # ADR-0088's whole reason for existing: a collection must not whiteout the
+    # lower layer. The lower directory count is the host-visible half of the same
+    # claim; whiteouts are character devices, so they are countable directly.
+    gc_report=$(spike_value GC)
+    gc_bad=
+    # Judge the whiteouts by what they sit over, not by counting them. Upstream's
+    # else branch writes one whenever an upper-layer path is absent from the lower
+    # database — for the guest's own instantiated derivations, that is specified
+    # behaviour, not a defect, and the first host run mistook it for one. What
+    # must never happen is a whiteout over a path the lower database *does* know,
+    # because that is the guest blinding itself to its own boot closure.
+    over_valid=$(spike_value WHITEOUT_OVER_VALID)
+    [[ $over_valid == 0 ]] || gc_bad+="a collection whiteouted a path valid in the lower database: $(spike_value WHITEOUT_OVER_VALID_NAME)"$'\n'
+    [[ $gc_report == *"system_valid=yes"* ]] || gc_bad+="the boot closure did not survive a collection"$'\n'
+    [[ $gc_report == *"system_present=yes"* ]] || gc_bad+="the running system's path was removed from the merged view"$'\n'
+    lower_before=${gc_report#*lower_before=}; lower_before=${lower_before%% *}
+    lower_after=${gc_report#*lower_after=}; lower_after=${lower_after%% *}
+    [[ -n $lower_before && $lower_before == "$lower_after" ]] || gc_bad+="the lower layer's entry count changed across a collection: $lower_before -> $lower_after"$'\n'
+    if [[ -z $gc_report ]]; then
+      fail "persistent-store-collection: the guest did not report a collection"
+    elif [[ -z $gc_bad ]]; then
+      pass "persistent-store-collection: a rooted collection left the lower layer and the boot closure intact, and whiteouted nothing the lower database knows ($gc_report; whiteouts over unregistered paths: $(spike_value WHITEOUT_NAMES))"
+    else
+      fail "persistent-store-collection" "$gc_bad$gc_report"
+    fi
+
+    # The delete-duplicate substitute for upstream's stale-file-handle scenario,
+    # which is unrunnable here: it garbage-collects the lower store three times
+    # and ours is served --readonly. The first host run showed the design
+    # checklist had this half wrong, so the two branches are asserted separately.
+    #
+    # Arm 1 — bytes below, unknown to the lower database. `deleteStorePath`
+    # guards on lower-store *validity*, not on bytes, so this takes the else
+    # branch and a whiteout is the correct outcome, not a defect.
+    unreg=$(spike_value DELETE_UNREGISTERED)
+    rebuild=$(spike_value REBUILD_AFTER_UNREGISTERED)
+    case $unreg in
+      'upper=char-device merged=absent whiteout=char-device'|'upper=present merged=absent whiteout=char-device')
+        if [[ $rebuild == 0 ]]; then
+          pass "delete-duplicate (unregistered): deleted through the merged view, leaving the whiteout upstream's else branch specifies, and the rebuild replaced it with no stale handle"
+        else
+          fail "delete-duplicate (unregistered): the rebuild after deletion failed" "$rebuild $(spike_value REBUILD_ERROR)"
+        fi ;;
+      skipped-*) skip "delete-duplicate (unregistered): $unreg (unproven, not absent)" ;;
+      '') skip "delete-duplicate (unregistered): the guest did not report the scenario" ;;
+      *) fail "delete-duplicate (unregistered) did not match upstream's else branch" "$unreg rebuild=$rebuild $(spike_value DELETE_OUTPUT_UNREGISTERED)" ;;
+    esac
+
+    # Arm 2 — the branch the remount hook exists for. With the path registered in
+    # the lower database, the delete must go through the upper layer, leave no
+    # whiteout, and let the merged view fall back to the lower inode.
+    reg=$(spike_value DELETE_REGISTERED)
+    inodes=$(spike_value DELETE_INODES)
+    case $reg in
+      'upper=absent merged=present whiteout=none')
+        lower_inode=${inodes#*lower=}
+        merged_after=${inodes#*merged_after=}; merged_after=${merged_after%% *}
+        if [[ -n $lower_inode && $lower_inode == "$merged_after" ]]; then
+          pass "delete-duplicate (registered): the upper copy was removed without a whiteout and the merged view now resolves to the lower inode ($inodes)"
+        else
+          fail "delete-duplicate (registered): the merged view does not resolve to the lower inode" "$inodes"
+        fi ;;
+      skipped-*) skip "delete-duplicate (registered): $reg (unproven, not absent)" ;;
+      '') skip "delete-duplicate (registered): the guest did not report the scenario" ;;
+      *) fail "delete-duplicate (registered) did not behave as ADR-0088 describes" "$reg $(spike_value DELETE_OUTPUT_REGISTERED)" ;;
+    esac
+    record "process executing from the store across a collection's remount: $(spike_value EXEC_ACROSS_REMOUNT)"
+    record "non-store names in the layers (one aborts a guest collection before the guard is reached): $(spike_value STRAY_NAMES) upper=$(spike_value STRAY_UPPER_NAMES)"
+    record "store volume capacity, guest-reported: $(spike_value DF_H_LATE) | inodes: $(spike_value DF_I_LATE) | writable layer: $(spike_value UPPER_USAGE)"
+
+    # The one claim a single boot structurally cannot make. On the cold half
+    # there is nothing recorded yet and this is correctly unproven.
+    recorded=$(spike_value PERSIST_RECORDED)
+    if [[ $recorded == none-cold-volume ]]; then
+      skip "persistent-store-persistence: cold volume, so nothing had been recorded to survive (run again without VIVARIUM_SPIKE_COLD)"
+    elif [[ -z $recorded ]]; then
+      fail "persistent-store-persistence: the guest reported no canary record"
+    elif [[ $(spike_value PERSIST_VALID_BEFORE_WRITE) == yes && $(spike_value PERSIST_UPPER_BEFORE_WRITE) == present ]]; then
+      pass "persistent-store-persistence: the canary was valid before anything was written and its bytes were still in the writable layer — the database persisted, not merely the bytes (boot ${spike_boot:-?})"
+    else
+      fail "persistent-store-persistence: the canary did not survive the restart" \
+        "recorded=$recorded valid=$(spike_value PERSIST_VALID_BEFORE_WRITE) upper=$(spike_value PERSIST_UPPER_BEFORE_WRITE)"
+    fi
+  fi
 
   # A RECORD that always fires would let the verdict read PASS while nothing was
   # observed. Confinement has an expected shape — one VMM plus one virtiofsd per

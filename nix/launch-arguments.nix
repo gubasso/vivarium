@@ -2,7 +2,7 @@
   config,
   lib,
   pkgs,
-  volumeLabel,
+  storeCanaryExpression,
 }:
 
 let
@@ -24,7 +24,33 @@ let
     else
       throw "vivarium first microVM: unsupported system ${system}";
   shareByTag = tag: lib.findFirst (share: share.tag == tag) (throw "missing ${tag} share") shares;
-  volume = builtins.head volumes;
+  # A list, in `config.microvm.volumes` order, rather than a flat field set per
+  # volume. The reason is correctness, not tidiness: cloud-hypervisor assigns
+  # /dev/vda, /dev/vdb in `--disk` order and microvm.nix's `withDriveLetters`
+  # assigns guest drive letters by the same list's order, so the ordering is a
+  # contract between the two halves that parallel fields cannot express.
+  #
+  # The store volume is identified by upstream's *own* predicate — the volume
+  # whose mount point is the writable store overlay — which is the same test
+  # mounts.nix uses to grant it `neededForBoot`. Matching a label string here
+  # would be a second, silently divergent definition of the same role.
+  volumeLaunch = map (
+    volume:
+    let
+      isStore = volume.mountPoint == config.microvm.writableStoreOverlay;
+    in
+    {
+      inherit (volume) label imageType;
+      sizeMiB = volume.size;
+      argName = if isStore then "store-volume" else "volume";
+      imageToken = if isStore then "@STORE_VOLUME_IMAGE@" else "@VOLUME_IMAGE@";
+      # ADR-0091: the store volume is the one provisioned for file count as well
+      # as for size, because ADR-0089's collection trigger reads free *blocks*
+      # and structurally cannot see inode exhaustion. Every other volume keeps
+      # the filesystem default.
+      inodeRatio = if isStore then 8192 else null;
+    }
+  ) volumes;
   # Per-share virtiofsd policy is declared once, in the guest module, and read
   # from there. Duplicating it in the launcher would make the guest declaration
   # dead — a change to `cache` would alter no behaviour and raise no error.
@@ -42,9 +68,12 @@ let
   }) shares;
 in
 {
-  inherit volumeLabel;
-  volumeSizeMiB = volume.size;
-  volumeImageType = volume.imageType;
+  inherit volumeLaunch;
+  # The host realises this same expression before booting, so the canary's bytes
+  # reach the lower layer without its output path entering the guest's boot
+  # closure. Carried here so the harness reads it from the launcher's own JSON
+  # rather than from a second copy of the constant.
+  storeCanaryExpression = toString storeCanaryExpression;
   cloudHypervisor = lib.getExe config.microvm.cloud-hypervisor.package;
   chRemote = lib.getExe' config.microvm.cloud-hypervisor.package "ch-remote";
   virtiofsd = lib.getExe config.microvm.virtiofsd.package;
@@ -71,8 +100,12 @@ in
     "null"
     "--serial"
     "socket=@CONSOLE_SOCKET@"
+  ]
+  ++ lib.concatMap (volume: [
     "--disk"
-    "path=@VOLUME_IMAGE@,direct=off,readonly=off,image_type=${volume.imageType},sparse=on"
+    "path=${volume.imageToken},direct=off,readonly=off,image_type=${volume.imageType},sparse=on"
+  ]) volumeLaunch
+  ++ [
     "--fs"
     "tag=${(shareByTag "store").tag},socket=@STORE_SOCKET@"
     "--fs"
@@ -106,6 +139,7 @@ in
     uid = "@UID@";
     vcpu = "@VCPU@";
     volumeImage = "@VOLUME_IMAGE@";
+    storeVolumeImage = "@STORE_VOLUME_IMAGE@";
     workspaceSocket = "@WORKSPACE_SOCKET@";
     workspaceSource = "@WORKSPACE_SOURCE@";
   };
