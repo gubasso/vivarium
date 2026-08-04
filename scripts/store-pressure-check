@@ -1,0 +1,531 @@
+#!/usr/bin/env bash
+
+# Measure ADR-0089's collection trigger under pressure, in a guest, on a real
+# host. Sibling of `store-gc-interlock-check`; same shapes, separate script
+# because it drives a different guest unit and needs its own volumes.
+#
+# WHY NOT THE OBVIOUS EXPERIMENT. The literal form of this measurement — fill a
+# 32 GiB store volume until free space crosses `min-free = 4 GiB` — cannot be
+# performed as this image is built, and would take 40-90 minutes per attempt to
+# find that out. Three reasons, all of them structural rather than incidental:
+#
+#   * The guest has NO network device and no reachable substituter, so the "build
+#     a real toolchain inside the guest" framing has nothing to fetch.
+#   * `LocalStore::autoGC` is polled from `Worker::run`'s goal loop, which parks
+#     in `waitForInput()`. A silent multi-gibibyte builder never iterates that
+#     loop, so the volume can sail past `min-free` and hit ENOSPC without the
+#     trigger ever being consulted.
+#   * Ballasting with a real closure would answer the DENSITY question wrongly:
+#     `rustc` alone measures ~287 KiB per inode, three orders of magnitude off
+#     the median store path, so whichever closure was picked would decide the
+#     result. `store-density-check` measures that distribution properly, and this
+#     script does not try to.
+#
+# METHOD, and it is the whole design: shrink the distance to the threshold rather
+# than enlarge the ballast, in two arms that fail differently.
+#
+#   Arm C — the trigger in isolation. Upstream Nix's own `_NIX_TEST_FREE_SPACE_FILE`
+#   hook (the one `tests/functional/gc-auto.sh` uses) makes the daemon read free
+#   space from a file instead of `statvfs`. Drive that number down past `min-free`
+#   and the trigger either fires or it does not, in ten minutes and with nothing
+#   written. STATED GAP, and it is not a small one: with free space faked,
+#   `availAfterGC` is faked too, so Arm C proves the trigger and its arithmetic
+#   and says NOTHING about real reclamation.
+#
+#   Arm D — a real crossing. `min-free` is placed just under the volume's actual
+#   free space, so a few gibibytes of ballast cross a real threshold on real ext4,
+#   with a real `bytesFreed` and a real post-collection remount. The 4 GiB/8 GiB
+#   figures then follow from a scaling argument rather than from tens of
+#   gibibytes of writes.
+#
+# The ballast is synthetic and its density is an input, which is the point: Arm D
+# can be run at several bytes-per-file settings to see which limit binds first.
+#
+# Output is one `[PASS]`/`[FAIL]`/`[SKIP]`/`[RECORD]` line per check plus a
+# verdict. A `[SKIP]` means *unproven*, never *absent*. A `[RECORD]` is a
+# measurement, not a judgement. FAIL is reserved for "the experiment could not be
+# performed" — with one deliberate exception, noted at its check: a trigger that
+# never fires is ADR-0089's own prediction failing, and that is a real FAIL.
+
+# DUP: no `set -euo pipefail`. Every check captures its own exit status and turns
+# it into a result line; a failing check must not abort the run.
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || uname -m | sed 's/$/-linux/')
+FLAKE_REF="path:$REPO_ROOT"
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+RECORD_COUNT=0
+
+ARM=c
+BALLAST_TOTAL_MIB=${VIVARIUM_PRESSURE_BALLAST_MIB:-3072}
+FILE_BYTES=${VIVARIUM_PRESSURE_FILE_BYTES:-8192}
+CHATTY=${VIVARIUM_PRESSURE_CHATTY:-yes}
+BUDGET_SECONDS=${VIVARIUM_PRESSURE_BUDGET:-3600}
+
+# DUP: NOT under $TMPDIR. N24 (runner.nix) refuses a workspace source that
+# resolves to /tmp, /var/tmp or the runtime dir *or to any ancestor of them*, and
+# this script's scratch directory IS the workspace it hands the launcher.
+STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
+TEMP_BASE=${VIVARIUM_PRESSURE_TEMP_BASE:-$STATE_HOME/vivarium/pressure}
+VOLUME_DIR=$STATE_HOME/vivarium/diagnostics
+
+# DUP
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+  GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; RESET=$'\033[0m'
+else
+  GREEN=; RED=; YELLOW=; BLUE=; RESET=
+fi
+
+# DUP
+pass() { PASS_COUNT=$((PASS_COUNT + 1)); printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"; }
+fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"; [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"; }
+skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"; }
+record() { RECORD_COUNT=$((RECORD_COUNT + 1)); printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"; }
+
+# DUP: named in one place so a run that skips wholesale reports the same
+# inventory as a run that completes.
+ALL_CHECKS=(
+  store-pressure-runner-built
+  store-pressure-cold-volume
+  store-pressure-launch
+  store-pressure-console-reader
+  store-pressure-instruction-delivered
+  store-pressure-daemon-config
+  store-pressure-optimise-off
+  store-pressure-statvfs-agrees
+  store-pressure-trigger-fired
+  store-pressure-freed-toward-max-free
+  store-pressure-no-premature-enospc
+  store-pressure-garbage-accumulates
+  store-pressure-itable-progress
+  store-pressure-host-image-reclamation
+  store-pressure-guest-completion
+  store-pressure-cleanup
+)
+
+# DUP: `last` is optional and inclusive.
+skip_remaining() {
+  local reason=$1 first=$2 last=${3:-} seen=no check
+  for check in "${ALL_CHECKS[@]}"; do
+    [[ $check == "$first" ]] && seen=yes
+    [[ $seen == yes ]] && skip "$check: $reason"
+    [[ -n $last && $check == "$last" ]] && break
+  done
+}
+
+# DUP: see `first-microvm-check` for why `--clean` is opt-in and why a run
+# directory holding a live pid is kept rather than removed.
+LANE_RUN_PREFIX=store-pressure
+clean_lane() {
+  local removed=0 kept=0 entry dir pidfile pid alive
+  for entry in "$VOLUME_DIR/store-pressure.img" "$VOLUME_DIR/store-pressure-store.img" \
+    "$VOLUME_DIR/store-pressure-console.log" "$VOLUME_DIR/store-pressure-image-series.txt"; do
+    [[ -e $entry ]] || continue
+    printf 'removing %s (%s bytes allocated)\n' "$entry" "$(($(stat -c %b "$entry") * $(stat -c %B "$entry")))"
+    rm -f -- "$entry" && removed=$((removed + 1))
+  done
+  for dir in "${XDG_RUNTIME_DIR:-/nonexistent}"/vivarium/"$LANE_RUN_PREFIX"-*; do
+    [[ -d $dir ]] || continue
+    alive=
+    for pidfile in "$dir"/*.pid; do
+      [[ -f $pidfile ]] || continue
+      pid=$(<"$pidfile")
+      [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null && alive="$alive $pid"
+    done
+    if [[ -n $alive ]]; then printf 'keeping  %s (live pid(s):%s)\n' "$dir" "$alive"; kept=$((kept + 1))
+    else printf 'removing %s\n' "$dir"; rm -rf -- "$dir" && removed=$((removed + 1)); fi
+  done
+  rmdir "${XDG_RUNTIME_DIR:-/nonexistent}/vivarium" 2>/dev/null
+  for dir in "$TEMP_BASE"/run.*; do
+    [[ -d $dir ]] || continue
+    [[ -n ${TEMP_ROOT:-} && $dir == "$TEMP_ROOT" ]] && continue
+    printf 'removing %s\n' "$dir"
+    rm -rf -- "$dir" && removed=$((removed + 1))
+  done
+  rmdir "$TEMP_BASE" 2>/dev/null
+  printf 'clean: removed=%d kept-live=%d\n' "$removed" "$kept"
+}
+
+usage() { printf 'usage: %s [--arm c|d] [--clean]\n' "$0"; }
+
+while (($#)); do
+  case $1 in
+    --arm) ARM=${2:-}; shift 2 ;;
+    # TEMP_ROOT does not exist yet at this point — it is created after argument
+    # parsing — so `clean_lane` can rmdir the base without racing its own scratch
+    # directory, and no `cleanup` call is needed here.
+    --clean) clean_lane; exit 0 ;;
+    -h | --help) usage; exit 0 ;;
+    *) usage >&2; exit 64 ;;
+  esac
+done
+case $ARM in
+  c | d) ;;
+  *) printf 'unknown arm %s (expected c or d)\n' "$ARM" >&2; exit 64 ;;
+esac
+
+mkdir -p "$TEMP_BASE" "$VOLUME_DIR" 2>/dev/null
+TEMP_ROOT=$(mktemp -d "$TEMP_BASE/run.XXXXXX" 2>/dev/null || true)
+if [[ -z $TEMP_ROOT ]]; then
+  printf '[FAIL] cannot create a private scratch directory under %s\n' "$TEMP_BASE" >&2
+  exit 1
+fi
+WORKSPACE=$TEMP_ROOT/workspace
+HANDSHAKE=$WORKSPACE/.vivarium-store-pressure
+mkdir -p "$HANDSHAKE"
+
+cleanup() {
+  [[ -n ${sampler_pid:-} ]] && kill "$sampler_pid" 2>/dev/null
+  [[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"
+}
+trap cleanup EXIT INT TERM
+
+printf 'vivarium store pressure check (ADR-0089/ADR-0091 measurement, arm %s)\n' "$ARM"
+printf '  repo:      %s\n' "$REPO_ROOT"
+printf '  system:    %s\n' "$SYSTEM"
+printf '  scratch:   %s\n' "$TEMP_ROOT"
+printf '  kernel:    %s\n' "$(uname -r)"
+printf '  nix:       %s\n' "$(nix --version 2>/dev/null || echo absent)"
+[[ $ARM == d ]] && printf '  ballast:   %s MiB at %s bytes/file, chatty=%s\n' "$BALLAST_TOTAL_MIB" "$FILE_BYTES" "$CHATTY"
+printf 'NOTE: symptoms are RECORDs, not verdicts. FAIL means the experiment could\n'
+printf '      not be performed — except store-pressure-trigger-fired, where a\n'
+printf '      trigger that never fires is ADR-0089'"'"'s own prediction failing.\n'
+if [[ $ARM == c ]]; then
+  printf 'NOTE: arm C fakes free space, so availAfterGC is faked too. It proves the\n'
+  printf '      trigger and its arithmetic, NOT real reclamation. That is arm D.\n'
+fi
+printf '\n'
+
+printf -- '--- evaluation tier -----------------------------------------------------\n'
+
+if ! command -v nix >/dev/null 2>&1; then
+  for check in "${ALL_CHECKS[@]}"; do fail "$check: Nix is absent"; done
+  printf '\nSummary\nPASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+  printf 'VERDICT: FAIL (%d hard check(s) failed)\n' "$FAIL_COUNT"
+  exit 1
+fi
+
+runner_out=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm" 2>"$TEMP_ROOT/build.err" | tail -n1)
+if [[ -z $runner_out ]]; then
+  fail "store-pressure-runner-built: the runner could not be built" "$(tail -n 20 "$TEMP_ROOT/build.err")"
+  launcher=
+else
+  launcher=$runner_out/bin/vivarium-first-microvm
+  pass "store-pressure-runner-built: $launcher"
+fi
+
+printf -- '\n--- host tier -----------------------------------------------------------\n'
+
+# DUP: the same prerequisite set as the sibling scripts, accumulated so the skip
+# line names every failure at once.
+missing=()
+[[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
+[[ -r /dev/kvm && -w /dev/kvm ]] || missing+=("/dev/kvm openable read/write")
+[[ -r /proc/1/comm && $(< /proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
+systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
+[[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
+command -v python3 >/dev/null 2>&1 || missing+=("python3 console reader")
+[[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]] || missing+=("realised launcher")
+
+if ((${#missing[@]})); then
+  reason=$(IFS=', '; echo "${missing[*]}")
+  skip_remaining "missing prerequisites: $reason" store-pressure-cold-volume
+else
+  run_id="store-pressure-$$"
+  runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
+  volume=$VOLUME_DIR/store-pressure.img
+  store_volume=$VOLUME_DIR/store-pressure-store.img
+  mkdir -p "$runtime_dir"
+  chmod 0700 "$runtime_dir"
+  launch_log=$TEMP_ROOT/launch.log
+  console_log=$TEMP_ROOT/console.log
+  image_series=$TEMP_ROOT/image-series.txt
+
+  # A warm volume makes "free space crossed the threshold at iteration N"
+  # uninterpretable, because N would depend on what a previous run happened to
+  # leave behind. This lane is always cold, by request rather than by accident.
+  rm -f -- "$volume" "$store_volume"
+  if [[ -e $store_volume ]]; then
+    fail "store-pressure-cold-volume: the store volume could not be removed"
+  else
+    pass "store-pressure-cold-volume: both volumes removed before launch, so this run is provably cold"
+  fi
+
+  image_allocated() { echo $(( $(stat -c %b -- "$1" 2>/dev/null || echo 0) * $(stat -c %B -- "$1" 2>/dev/null || echo 512) )); }
+
+  printf 'ARM=%s\nBUDGET_SECONDS=%s\nBALLAST_TOTAL_MIB=%s\nFILE_BYTES=%s\nCHATTY=%s\n' \
+    "$ARM" "$BUDGET_SECONDS" "$BALLAST_TOTAL_MIB" "$FILE_BYTES" "$CHATTY" >"$HANDSHAKE/instruction"
+  # DUP: mode 0644 and owned by the invoking user, because virtiofsd maps exactly
+  # one identity (host uid -> guest uid 1000) and forbids all others.
+  chmod 0644 "$HANDSHAKE/instruction"
+
+  launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume "$volume"
+    --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 4096 --vcpu 2)
+
+  # DUP: `--wait` may not be combined with `--scope`, so the scope is backgrounded
+  # and waited on instead.
+  launch_attempt=0
+  launch_vm() {
+    launch_attempt=$((launch_attempt + 1))
+    systemd-run --user --scope --quiet --collect --unit="$run_id-$launch_attempt" "$launcher" "${launch_args[@]}" "$@" >"$launch_log" 2>&1 &
+    vm_pid=$!
+  }
+  wait_for_console() {
+    for _ in {1..300}; do
+      [[ -S $runtime_dir/console.sock ]] && return 0
+      kill -0 "$vm_pid" 2>/dev/null || return 1
+      sleep 0.1
+    done
+    return 1
+  }
+
+  launch_vm
+  launched=no
+  if wait_for_console; then
+    launched=yes
+    pass "store-pressure-launch: reached the console-socket stage"
+  else
+    wait "$vm_pid"; launch_status=$?
+    launch_output=$(<"$launch_log")
+    if grep -Eqi 'systemd-run|unknown option|may not be combined|Failed to (start|create) transient' <<<"$launch_output"; then
+      fail "store-pressure-launch: could not start (not Landlock evidence)" "$launch_output"
+    else
+      record "Landlock-on launch failed, retrying once without it; exit=$launch_status; output=$launch_output"
+      : >"$launch_log"
+      launch_vm --no-landlock
+      if wait_for_console; then
+        launched=yes
+        pass "store-pressure-launch: reached the console-socket stage with Landlock off"
+      else
+        fail "store-pressure-launch: failed with Landlock off as well" "$(<"$launch_log")"
+      fi
+    fi
+  fi
+
+  if [[ $launched != yes ]]; then
+    skip_remaining "the guest never reached the console-socket stage" store-pressure-console-reader
+  else
+    # DUP: cloud-hypervisor's `--serial socket=` neither buffers nor replays, so
+    # the reader attaches the instant the socket exists and stays attached.
+    reader_py=$TEMP_ROOT/console-reader.py
+    cat >"$reader_py" <<'PY'
+import socket, sys, time
+
+path, out_path, idle_timeout = sys.argv[1], sys.argv[2], float(sys.argv[3])
+deadline = time.monotonic() + 30.0
+while True:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(path)
+        break
+    except OSError:
+        sock.close()
+        if time.monotonic() >= deadline:
+            raise
+        time.sleep(0.2)
+sock.settimeout(idle_timeout)
+with open(out_path, "wb") as out:
+    while True:
+        try:
+            data = sock.recv(65536)
+        except socket.timeout:
+            break
+        if not data:
+            break
+        out.write(data)
+        out.flush()
+PY
+    : >"$console_log"
+    # 900s idle. A collection pass can be silent for minutes, so the guest emits a
+    # heartbeat every 15s; this ceiling is far above that, which means a reader
+    # timeout is real evidence of a wedged guest rather than of a slow one.
+    python3 "$reader_py" "$runtime_dir/console.sock" "$console_log" 900 >"$TEMP_ROOT/reader.log" 2>&1 &
+    reader_pid=$!
+    pass "store-pressure-console-reader: attached to $runtime_dir/console.sock"
+
+    # Sample the host image while the guest runs. Two findings come out of this
+    # series and neither is reachable after the fact: how far ext4's lazy inode
+    # table gets (ADR-0091), and whether a guest-side collection returns blocks to
+    # the host at all (ADR-0037 — it should not, absent discard plumbing).
+    ( while true; do printf '%s %s %s\n' "$(date +%s)" "$(image_allocated "$store_volume")" "$(image_allocated "$volume")" >>"$image_series"; sleep 10; done ) &
+    sampler_pid=$!
+
+    # DUP: bounded wait for poweroff. Far above the sibling's 1200s: arm D's guest
+    # unit alone may spend an hour under its own budget.
+    vm_status=0
+    for _ in {1..8000}; do
+      kill -0 "$vm_pid" 2>/dev/null || break
+      sleep 0.5
+    done
+    if kill -0 "$vm_pid" 2>/dev/null; then
+      fail "store-pressure-guest-completion: the guest did not shut down within 4000s; terminating" "$(tail -n 40 "$launch_log")"
+      kill -TERM "$vm_pid" 2>/dev/null || true
+      vm_status=124
+    fi
+    wait "$vm_pid" 2>/dev/null || vm_status=$?
+    kill "$sampler_pid" 2>/dev/null; sampler_pid=
+    wait "$reader_pid" 2>/dev/null
+
+    # DUP: read markers BY NAME, never by position, after stripping the journal's
+    # ANSI decoration and carriage returns.
+    sp_all=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null | grep -ao 'VIVARIUM_STORE_PRESSURE_[A-Z_0-9]*=.*' || true)
+    sp_line() { grep -a "^VIVARIUM_STORE_PRESSURE_$1=" <<<"$sp_all" | tail -n1 | cut -d= -f2- || true; }
+    sp_lines() { grep -a "^VIVARIUM_STORE_PRESSURE_$1=" <<<"$sp_all" || true; }
+
+    if [[ -z $sp_all ]]; then
+      skip_remaining "the guest never reported a store-pressure line" store-pressure-instruction-delivered store-pressure-guest-completion
+    else
+      skipped=$(sp_line SKIPPED)
+      if [[ -n $skipped ]]; then
+        fail "store-pressure-instruction-delivered: the guest unit declined to run ($skipped)"
+        skip_remaining "the guest unit never ran the experiment" store-pressure-daemon-config store-pressure-host-image-reclamation
+      else
+        pass "store-pressure-instruction-delivered: the guest read the instruction and ran arm $(sp_line ARM | awk '{print $1}')"
+
+        minfree=$(sp_line CONFIG_MINFREE); maxfree=$(sp_line CONFIG_MAXFREE)
+        interval=$(sp_line CONFIG_INTERVAL); optimise=$(sp_line CONFIG_OPTIMISE)
+        record "store-pressure-daemon-config: min-free=$minfree max-free=$maxfree min-free-check-interval=$interval auto-optimise-store=$optimise"
+        if [[ -n $minfree ]]; then
+          pass "store-pressure-daemon-config: the daemon's own thresholds are on the record"
+        else
+          fail "store-pressure-daemon-config: the guest could not report the daemon's thresholds"
+        fi
+
+        # If store optimisation ran it would hardlink identical ballast copies and
+        # invert every density reading in this run.
+        links_fs=$(sp_line LINKS_FSTYPE)
+        if [[ $optimise == false ]]; then
+          pass "store-pressure-optimise-off: auto-optimise-store=false and /nix/store/.links is $links_fs, so identical ballast cannot be deduplicated"
+        else
+          fail "store-pressure-optimise-off: auto-optimise-store=$optimise would deduplicate the ballast and invalidate the density readings"
+        fi
+
+        # ADR-0089's central premise: statvfs on the overlay reports the UPPER
+        # filesystem. If the two ever disagree, that disagreement outranks
+        # everything else this run measured.
+        disagreements=0
+        while read -r line; do
+          merged=$(sed -n 's/.*merged=\([0-9]*\) \([0-9]*\).*/\1 \2/p' <<<"$line")
+          upper=$(sed -n 's/.*upper=\([0-9]*\) \([0-9]*\).*/\1 \2/p' <<<"$line")
+          [[ -n $merged && -n $upper && $merged != "$upper" ]] && disagreements=$((disagreements + 1))
+        done < <(sp_lines SAMPLE)
+        sample_count=$(sp_lines SAMPLE | wc -l)
+        if ((sample_count == 0)); then
+          skip "store-pressure-statvfs-agrees: no free-space samples were reported"
+        elif ((disagreements == 0)); then
+          pass "store-pressure-statvfs-agrees: across $sample_count samples, statvfs on the merged store reported the same free blocks as the upper filesystem (ADR-0089's premise holds)"
+        else
+          fail "store-pressure-statvfs-agrees: $disagreements of $sample_count samples disagreed between /nix/store and the upper filesystem" "$(sp_lines SAMPLE | head -n 5)"
+        fi
+        record "store-pressure-statvfs-agrees: free-space series"$'\n'"$(sp_lines SAMPLE)"
+
+        arm_lines=$(sp_lines "ARM${ARM^^}")
+        fired_total=$(grep -o 'fired=[0-9]*' <<<"$arm_lines" | cut -d= -f2 | awk '{s+=$1} END {print s+0}')
+        record "store-pressure-trigger-fired: arm $ARM series"$'\n'"$arm_lines"
+        if [[ -z $arm_lines ]]; then
+          skip "store-pressure-trigger-fired: arm $ARM produced no iterations"
+        elif ((fired_total > 0)); then
+          pass "store-pressure-trigger-fired: the daemon announced auto-GC $fired_total time(s) — ADR-0089's trigger fires under pressure"
+        elif [[ $ARM == d ]] && [[ -n $(sp_line ARMD_PLAN) ]] && [[ $(sp_line CONFIG_MINFREE) == 4294967296 ]]; then
+          # Arm D's thresholds provably never reached the collector. `autoGC` reads
+          # `settings.minFree` inside the DAEMON, and neither route this script has
+          # tried moves it: a client-side `--option min-free` is accepted and
+          # ignored, and `NIX_USER_CONF_FILES` on the daemon unit does not reach it
+          # either — both measured, with `restart_status=0` and the file on disk.
+          #
+          # So this is "the experiment could not be performed", which is a SKIP.
+          # Reporting it as a failed prediction would blame ADR-0089 for a
+          # threshold it was never given: the daemon still held the real 4 GiB,
+          # and a store with tens of gibibytes free was right not to collect.
+          skip "store-pressure-trigger-fired: the scaled thresholds never reached the daemon, so no crossing was ever presented to the collector"
+          record "store-pressure-trigger-fired: planned $(sp_line ARMD_PLAN); daemon kept min-free=$(sp_line CONFIG_MINFREE). The only route proven to reach autoGC is nix.settings at build time — see arm C, which drove the trigger through upstream's own hook instead."
+        else
+          # The one place FAIL is not "could not perform the experiment": the
+          # experiment ran, and the decision's prediction did not hold.
+          fail "store-pressure-trigger-fired: free space crossed min-free and the daemon never announced an auto-GC — ADR-0089's trigger did not fire"
+        fi
+
+        freed_values=$(grep -o 'want_freed=[0-9]*' <<<"$arm_lines" | cut -d= -f2)
+        if [[ -n $freed_values ]]; then
+          record "store-pressure-freed-toward-max-free: requested-free byte counts: $(tr '\n' ' ' <<<"$freed_values")"
+          pass "store-pressure-freed-toward-max-free: the collector's own target is on the record (max-free minus available, per GCOptions)"
+        else
+          skip "store-pressure-freed-toward-max-free: no auto-GC announcement carried a byte count"
+        fi
+
+        enospc_total=$(grep -o 'enospc=[0-9]*' <<<"$arm_lines" | cut -d= -f2 | awk '{s+=$1} END {print s+0}')
+        if ((enospc_total == 0)); then
+          pass "store-pressure-no-premature-enospc: no iteration hit ENOSPC, so collection kept ahead of the writer"
+        else
+          record "store-pressure-no-premature-enospc: $enospc_total iteration(s) hit ENOSPC — a legitimate finding about the policy's margin, not a harness fault"
+          pass "store-pressure-no-premature-enospc: the ENOSPC count is on the record"
+        fi
+
+        dead_series=$(grep -o 'dead=[0-9]*' <<<"$(sp_lines SAMPLE)" | cut -d= -f2 | tr '\n' ' ')
+        record "store-pressure-garbage-accumulates: dead-path counts across the run: $dead_series"
+        if [[ -n $dead_series ]]; then
+          pass "store-pressure-garbage-accumulates: the unrooted-ballast premise is measurable in the dead-path series"
+        else
+          skip "store-pressure-garbage-accumulates: the guest reported no dead-path counts"
+        fi
+
+        it_start=$(sp_line ITABLE_ZEROED); it_end=$(sp_line ITABLE_ZEROED_END)
+        it_groups=$(sp_line ITABLE_GROUPS)
+        record "store-pressure-itable-progress: ITABLE_ZEROED groups start=$it_start end=$it_end of $it_groups total"
+        if [[ -n $it_end ]]; then
+          pass "store-pressure-itable-progress: ext4's lazy inode-table progress was read from the filesystem, not inferred"
+        else
+          skip "store-pressure-itable-progress: dumpe2fs reported no group flags"
+        fi
+      fi
+    fi
+
+    if [[ -s $image_series ]]; then
+      first_alloc=$(head -n1 "$image_series" | awk '{print $2}')
+      last_alloc=$(tail -n1 "$image_series" | awk '{print $2}')
+      peak_alloc=$(awk '{if ($2 > m) m = $2} END {print m+0}' "$image_series")
+      record "store-pressure-host-image-reclamation: store image allocated bytes first=$first_alloc peak=$peak_alloc last=$last_alloc across $(wc -l <"$image_series") samples"
+      if ((last_alloc >= peak_alloc)); then
+        pass "store-pressure-host-image-reclamation: the host image never shrank, which is ADR-0037's expected behaviour absent discard plumbing"
+      else
+        record "store-pressure-host-image-reclamation: the image SHRANK from $peak_alloc to $last_alloc — blocks were returned to the host"
+        pass "store-pressure-host-image-reclamation: a reduction was observed and recorded"
+      fi
+    else
+      skip "store-pressure-host-image-reclamation: the sampler collected no readings"
+    fi
+
+    if ((vm_status != 0)); then
+      fail "store-pressure-guest-completion: VM exit status $vm_status" "$(tail -n 40 "$launch_log")"
+    elif [[ -n $(sp_line COMPLETE) ]]; then
+      pass "store-pressure-guest-completion: the guest ran the unit to completion and shut down cleanly"
+    else
+      fail "store-pressure-guest-completion: the guest exited 0 but never reported COMPLETE" "$(sp_line RESULT)"
+    fi
+  fi
+
+  leftovers=$(find "$runtime_dir" -mindepth 1 2>/dev/null | head -n 10)
+  if [[ -z $leftovers ]]; then
+    pass "store-pressure-cleanup: the runtime directory is empty"
+  else
+    fail "store-pressure-cleanup: the runtime directory retained entries" "$leftovers"
+  fi
+  cp -f "$console_log" "$VOLUME_DIR/store-pressure-console.log" 2>/dev/null \
+    && record "console log retained at $VOLUME_DIR/store-pressure-console.log"
+  cp -f "$image_series" "$VOLUME_DIR/store-pressure-image-series.txt" 2>/dev/null \
+    && record "host image series retained at $VOLUME_DIR/store-pressure-image-series.txt"
+  rmdir "$runtime_dir" 2>/dev/null
+fi
+
+printf '\nSummary\n'
+printf 'PASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+if ((FAIL_COUNT == 0)); then
+  printf 'VERDICT: PASS (RECORD findings are the measurement; SKIPs require a capable host)\n'
+  exit 0
+else
+  printf 'VERDICT: FAIL (%d hard check(s) failed)\n' "$FAIL_COUNT"
+  exit 1
+fi

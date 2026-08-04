@@ -143,6 +143,73 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# DUP: `--clean`, with this lane's own artefact names. See the argument in
+# `first-microvm-check` for why it is opt-in rather than automatic, and why a run
+# directory holding a live pid is kept rather than removed. This lane also owns
+# the scratch base under the state home, which `TEMP_ROOT`'s trap empties on a
+# normal exit but not after a kill.
+LANE_RUN_PREFIX=gc-interlock
+lane_artefacts() {
+  local volume_dir=$1
+  printf '%s\n' \
+    "$volume_dir/gc-interlock.img" \
+    "$volume_dir/gc-interlock-store.img" \
+    "$volume_dir/gc-interlock-console.log"
+}
+clean_lane() {
+  local state_home=${XDG_STATE_HOME:-$HOME/.local/state}
+  local volume_dir=$state_home/vivarium/diagnostics
+  local removed=0 kept=0 entry dir pidfile pid alive
+
+  while IFS= read -r entry; do
+    [[ -e $entry ]] || continue
+    printf 'removing %s (%s bytes allocated)\n' "$entry" "$(($(stat -c %b "$entry") * $(stat -c %B "$entry")))"
+    rm -f -- "$entry" && removed=$((removed + 1))
+  done < <(lane_artefacts "$volume_dir")
+
+  for dir in "${XDG_RUNTIME_DIR:-/nonexistent}"/vivarium/"$LANE_RUN_PREFIX"-*; do
+    [[ -d $dir ]] || continue
+    alive=
+    for pidfile in "$dir"/*.pid; do
+      [[ -f $pidfile ]] || continue
+      pid=$(<"$pidfile")
+      [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null && alive="$alive $pid"
+    done
+    if [[ -n $alive ]]; then
+      printf 'keeping  %s (live pid(s):%s)\n' "$dir" "$alive"
+      kept=$((kept + 1))
+    else
+      printf 'removing %s\n' "$dir"
+      rm -rf -- "$dir" && removed=$((removed + 1))
+    fi
+  done
+  rmdir "${XDG_RUNTIME_DIR:-/nonexistent}/vivarium" 2>/dev/null
+
+  # The scratch base is this lane's alone (N24 forces it under the state home
+  # rather than $TMPDIR), so removing leftover run.* directories here cannot
+  # touch another lane's workspace.
+  for dir in "$TEMP_BASE"/run.*; do
+    [[ -d $dir ]] || continue
+    # Not this invocation's own scratch directory: it is created before argument
+    # parsing and the EXIT trap already owns it.
+    [[ $dir == "$TEMP_ROOT" ]] && continue
+    printf 'removing %s\n' "$dir"
+    rm -rf -- "$dir" && removed=$((removed + 1))
+  done
+  rmdir "$TEMP_BASE" 2>/dev/null
+
+  printf 'clean: removed=%d kept-live=%d\n' "$removed" "$kept"
+}
+
+if [[ ${1:-} == --clean ]]; then
+  # Remove this invocation's own scratch directory FIRST. The EXIT trap would do
+  # it, but only after `clean_lane` has already tried to rmdir the base it sits
+  # in — which is why a `--clean` run used to leave the empty base behind.
+  cleanup
+  clean_lane
+  exit 0
+fi
+
 printf 'vivarium host-GC interlock check (ADR-0085 measurement)\n'
 printf '  repo:      %s\n' "$REPO_ROOT"
 printf '  system:    %s\n' "$SYSTEM"

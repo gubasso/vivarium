@@ -4,7 +4,11 @@
 
 `scripts/store-gc-interlock-check` is its sibling, described below: same shapes, separate script because it mutates the host store.
 
-This page is the lookup material for both: what each check proves, and the register of what has actually been verified. It holds no design rationale — that lives in the ADRs each section names.
+`scripts/store-density-check` is a third sibling, and the only one that never boots anything. It measures the host store's bytes-per-inode distribution and reads a freshly created store volume's inode table with `dumpe2fs`, both of which answer ADR-0091 questions that no amount of booting could reach. It needs Nix and nothing else — no `/dev/kvm`, no systemd.
+
+This page is the lookup material for all three: what each check proves, and the register of what has actually been verified. It holds no design rationale — that lives in the ADRs each section names.
+
+Each script also accepts `--clean`, which removes that lane's retained images, logs and orphaned run directories and exits. It is opt-in on purpose: the retained store volume is what makes the _warm_ half of the persistence pair possible, and the console log is a run's primary evidence, so neither may be tidied away as a side effect of a normal exit. A run directory whose `.pid` files still name a live process is kept, not removed.
 
 ## Running it
 
@@ -245,6 +249,66 @@ Two consequences worth keeping separate. The realistic hazard — a build that r
 Found while building the check above, and general enough to record. NixOS emits `set -e` ahead of a `systemd.services.<name>.script` body. For a unit whose purpose is to run commands that are _expected_ to fail and report the status they failed with, that is fatal: the first such probe took the shell down inside a command substitution, before it could print its own result.
 
 It failed **invisibly**. systemd stops writing unit status to the console once boot has completed, and this unit runs after `multi-user.target`, so the console showed a missing marker and nothing else — indistinguishable from a probe that returned no output. The fix is `set +e` in the body with a comment saying why; the diagnosis came from an `ExecStopPost` that echoes `$SERVICE_RESULT`/`$EXIT_CODE`/`$EXIT_STATUS` to the console, which runs even when the main process dies by signal. Any future probe unit here should carry both.
+
+### The store's aggregate density clears ADR-0091's ratio, but the median store path does not
+
+Measured by `scripts/store-density-check` on a real host, over three populations. Bytes are the sum of regular-file sizes; inodes are counted as **directory entries**, because a store path is materialised from a NAR and a NAR has no hardlink concept — every link becomes its own file in a guest.
+
+| population                         | paths | aggregate | p10   | median | p90     |
+| ---------------------------------- | ----- | --------- | ----- | ------ | ------- |
+| random host store sample           | 300   | 9,518     | 205   | 3,915  | 150,092 |
+| the `first-microvm` runner closure | 552   | 22,540    | 38    | 4,979  | 112,835 |
+| this repo's devShell closure       | 170   | 18,621    | 1,496 | 20,380 | 732,653 |
+
+All figures are bytes per inode. The **aggregate** corroborates [`../decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md`](../decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md)'s 11 KiB argument well enough — at 9.5–22.5 KiB per inode, bytes bind before inodes at a provisioning ratio of 8192, which is the outcome that decision wants. The **median path does not**: at 3,915 and 4,979 bytes per inode, two of the three populations sit _below_ 8192, so a guest store dominated by ordinary small paths exhausts inodes while the volume still reports free space — the exact failure ADR-0091 exists to prevent and [`../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md`](../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md)'s block-reading trigger is structurally unable to see.
+
+The spread is why an aggregate was the wrong statistic to bet the ratio on: the p90 column is three orders of magnitude above the p10, and a single large path (`rustc` alone measures ~287 KiB per inode) moves an aggregate that no typical path resembles.
+
+Two directional caveats, both recorded rather than corrected for. The host store is hardlink-deduplicated — **567,161 entries** in `/nix/store/.links` on the measured host — so its inode count is optimistically low. The guest masks `.links` with a tmpfs (ADR-0092) and can never deduplicate. **Both point the same way: the guest's realised density is worse than the numbers above, not better.** Measuring it in a guest needs a workload rather than a boot and is not closed by this entry.
+
+### `mkfs.ext4` leaves three quarters of the store volume's inode table unwritten, so ADR-0091's hazard is real and merely deferred
+
+Measured directly by `scripts/store-density-check` with `dumpe2fs`, on an image created with the launcher's own arguments read out of the built launch-arguments JSON rather than reconstructed (`sizeMiB=32768`, `inodeRatio=8192`, `label=vivarium-store`). This replaces ADR-0091's inference from allocated-block sampling with a reading of the filesystem's own metadata, before any mount.
+
+The table is **4,194,304 inodes × 256 bytes = 1,073,741,824 bytes** across 257 block groups. Immediately after `mkfs.ext4`, the sparse image holds **273,104,896 bytes** of allocated blocks — about 25% of the table. The feature list includes `metadata_csum`, and `/sys/fs/ext4/features/lazy_itable_init` is present on the host, so mke2fs's lazy default applies and the kernel's `ext4lazyinit` thread zeroes the remainder in the background after first mount. **So roughly 800 MiB of allocation is owed the moment the volume is first mounted, with the guest writing nothing** — which is the interaction with [`../decisions/ADR-0037-volume-disk-format-and-reclamation.md`](../decisions/ADR-0037-volume-disk-format-and-reclamation.md)'s sparse-image promise that ADR-0091 flagged.
+
+This also reinterprets the persistence spike's own numbers. That run recorded 327 MiB allocated after a cold boot and 356 MiB after a warm one, and read them as "no inflation occurred". Against the 273 MiB that `mkfs` alone accounts for, the cold boot had completed only ~54 MiB of background zeroing — so those readings do not show the hazard failing to appear, they show a three-minute VM catching it barely started. **Stated gap:** how far `ext4lazyinit` actually gets, and what the image weighs when it finishes, still needs a guest that lives long enough to find out.
+
+### ADR-0089's trigger fires, and frees exactly `max-free` minus available
+
+Measured by `scripts/store-pressure-check --arm c` on a real host, guest Nix 2.34.7, through upstream's own `_NIX_TEST_FREE_SPACE_FILE` hook — the one `tests/functional/gc-auto.sh` uses — which makes the daemon read free space from a file instead of `statvfs`. The guest reported `min-free=4294967296`, `max-free=8589934592`, `min-free-check-interval=5`, `auto-optimise-store=false`.
+
+| free space presented | auto-GC announced | bytes the collector asked to free |
+| -------------------- | ----------------- | --------------------------------- |
+| 16 GiB               | no                | —                                 |
+| 8 GiB                | no                | —                                 |
+| 6 GiB                | no                | —                                 |
+| 5 GiB                | no                | —                                 |
+| 4 GiB                | no                | —                                 |
+| 3 GiB                | **yes**           | 5,368,709,120 (5 GiB)             |
+| 2 GiB                | **yes**           | 6,442,450,944 (6 GiB)             |
+
+Three things follow. The trigger **fires**, which [`../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md`](../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md) asserted and nothing had shown. It fires **strictly below** `min-free`, not at it — 4 GiB exactly is not a crossing. And the amount is exactly **`max-free` minus available** (8 − 3 = 5, 8 − 2 = 6), so the decision's "collect until `max-free` is free again" is arithmetic, confirmed on the running daemon rather than read off a source file.
+
+**Stated gap, and it is not a small one.** With free space faked, `availAfterGC` is faked too, so this entry proves the trigger and its arithmetic and says **nothing** about real reclamation — whether a real collection on real ext4 actually frees what the collector asked for. That is the open half.
+
+### `statvfs` on the merged store does report the upper filesystem
+
+Measured across every sample of both pressure arms: the raw statvfs fields for `/nix/store` and for `/nix/.rw-store` were identical in all of them — free blocks, block size, total blocks and file counts alike. This is the premise [`../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md`](../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md) rests on when it says the collector "measures the store volume and nothing else", and it had been argued from `ovl_statfs`'s behaviour rather than observed. The samples also carry `/nix/store/.links` as `tmpfs`, which is ADR-0092 in effect, and `auto-optimise-store=false` — together the reason identical ballast cannot be deduplicated and the density readings mean what they say.
+
+### The collection thresholds cannot be reached from outside `nix.settings`, which bounded what arm D could measure
+
+Measured by `scripts/store-pressure-check --arm d`, and recorded because it is the reason a real-reclamation number is still missing. The arm writes real ballast into the real store volume with `min-free` moved up close to actual free space, so a few gibibytes cross a real threshold. Twelve iterations wrote 3 GiB; free space fell from 29.03 GiB to 26.02 GiB, past a planned `min-free` of 27.53 GiB; no iteration hit `ENOSPC`; and **no auto-GC was ever announced**.
+
+The cause is not ADR-0089. `LocalStore::autoGC` reads `settings.minFree` **inside the daemon**, and two routes to change it were tried and both failed silently: a client-side `--option min-free` is accepted by `nix-build` and ignored by the collector, and `NIX_USER_CONF_FILES` pointed at a config the daemon unit was told to read did not reach it either — with the file on disk and `systemctl restart nix-daemon` returning 0. The daemon kept the real 4 GiB throughout, and a store with 26 GiB free was right not to collect. **The only route proven to reach `autoGC` is `nix.settings` at image-build time**, which is how the real thresholds get there.
+
+The run is not wasted: it is the evidence that the ballast premise holds (see the dead-path series below) and the source of the host-image entry that follows. **Stated gap: real reclamation — an actual `bytesFreed` on actual ext4, and whether the post-collection `remountIfNecessary()` disturbs an in-flight build — remains unmeasured.** Closing it needs a measurement image whose `nix.settings` carry scaled thresholds, not a runtime override.
+
+### A guest-side store collection returns no blocks to the host image
+
+Measured across both pressure arms by sampling the store image's allocated blocks from the host every ten seconds while the guest ran. Arm D's series runs from **273,108,992 bytes** at first mount to a peak of **3,659,214,848**, and the last sample equals the peak: the image never shrank. That is [`../decisions/ADR-0037-volume-disk-format-and-reclamation.md`](../decisions/ADR-0037-volume-disk-format-and-reclamation.md)'s expected behaviour — reclamation there is periodic and discard-driven, not continuous — but it had not been observed for this volume, and it is the concrete reason a guest store that collects internally still costs the host its high-water mark until something trims it.
+
+The same sampling closes part of ADR-0091's lazy-inode-table question from the other side. By the time the measurement unit ran, `dumpe2fs` inside the guest reported **256 of 257** block groups already carrying `ITABLE_ZEROED`, and the count was unchanged at the end of the run. So `ext4lazyinit` completes early in a guest's life rather than lingering — which is why the three-minute VMs of the persistence spike saw only partial allocation, and why the hazard is a first-minutes cost rather than a long-session one. What the host image shows over the same window is a rise from 273 MB to about 456 MB in arm C, well short of the full 1 GiB table, so the zeroing does not materialise as a gibibyte of host allocation.
 
 ## The method note
 

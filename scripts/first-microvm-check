@@ -69,6 +69,63 @@ run_check() {
   return "$status"
 }
 
+# DUP: `--clean` removes this lane's retained artefacts and any orphaned run
+# directories, then exits. Deliberately opt-in and deliberately NOT on the normal
+# exit path, for two independent reasons: the retained store volume is precisely
+# what makes the *warm* half of the persistence pair possible, so tidying it away
+# automatically would silently turn every run cold; and the console log is the
+# run's primary evidence, unrecoverable without another boot.
+#
+# A run directory is skipped if any `.pid` file in it still names a live process
+# — an orphan is a directory whose daemons are gone, and deleting a live run's
+# sockets out from under it would be a far worse failure than leaving a stale
+# directory behind.
+LANE_RUN_PREFIX=first-microvm
+lane_artefacts() {
+  local volume_dir=$1
+  printf '%s\n' \
+    "$volume_dir/first-microvm.img" \
+    "$volume_dir/first-microvm-store.img" \
+    "$volume_dir/console.log" \
+    "$volume_dir/memfd-series.txt"
+}
+clean_lane() {
+  local state_home=${XDG_STATE_HOME:-$HOME/.local/state}
+  local volume_dir=$state_home/vivarium/diagnostics
+  local removed=0 kept=0 entry dir pidfile pid alive
+
+  while IFS= read -r entry; do
+    [[ -e $entry ]] || continue
+    printf 'removing %s (%s bytes allocated)\n' "$entry" "$(($(stat -c %b "$entry") * $(stat -c %B "$entry")))"
+    rm -f -- "$entry" && removed=$((removed + 1))
+  done < <(lane_artefacts "$volume_dir")
+
+  for dir in "${XDG_RUNTIME_DIR:-/nonexistent}"/vivarium/"$LANE_RUN_PREFIX"-*; do
+    [[ -d $dir ]] || continue
+    alive=
+    for pidfile in "$dir"/*.pid; do
+      [[ -f $pidfile ]] || continue
+      pid=$(<"$pidfile")
+      [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null && alive="$alive $pid"
+    done
+    if [[ -n $alive ]]; then
+      printf 'keeping  %s (live pid(s):%s)\n' "$dir" "$alive"
+      kept=$((kept + 1))
+    else
+      printf 'removing %s\n' "$dir"
+      rm -rf -- "$dir" && removed=$((removed + 1))
+    fi
+  done
+  rmdir "${XDG_RUNTIME_DIR:-/nonexistent}/vivarium" 2>/dev/null
+
+  printf 'clean: removed=%d kept-live=%d\n' "$removed" "$kept"
+}
+
+if [[ ${1:-} == --clean ]]; then
+  clean_lane
+  exit 0
+fi
+
 printf 'vivarium first microVM check\n'
 printf 'repository: %s\n' "$REPO_ROOT"
 printf 'guest workspace mount: /workspaces/vivarium (host source: %s)\n' "$REPO_ROOT"
@@ -744,6 +801,12 @@ rejoined count is below expected, so bytes are genuinely missing rather than spl
   else fail "guest shut down with status 0 but never reported VIVARIUM_DIAGNOSTIC_COMPLETE" "$(tail -n 60 "$console_log")"; fi
   if find "$runtime_dir" -mindepth 1 -print -quit | grep -q .; then fail "runtime directory not empty after shutdown" "$(find "$runtime_dir" -mindepth 1 -maxdepth 1 -print)"
   else pass "runtime directory empty after shutdown; persistent volume retained at $volume"; fi
+  # Checking the directory is empty is not the same as removing it, and for a
+  # long time this script did only the former: every run since 2026-07-31 left
+  # its own `$XDG_RUNTIME_DIR/vivarium/first-microvm-<pid>/` behind, 17 of them
+  # by the time anyone counted. Empty directories on a tmpfs cost nothing, which
+  # is exactly why nothing noticed. The sibling script has always done this.
+  rmdir "$runtime_dir" 2>/dev/null
 
   # The console capture is the run's primary evidence and TEMP_ROOT is removed on
   # exit, so anything not grepped above used to be unrecoverable without a second

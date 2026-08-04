@@ -61,6 +61,12 @@ let
   nixDaemonEnvironment = pkgs.writeText "vivarium-local-overlay-environment" ''
     NIX_REMOTE=${storeUri}
   '';
+  # ADR-0089's measurement hook. See the tmpfiles rule and the `nix-daemon`
+  # comment for why it exists and why it is inert by default.
+  freeSpaceHookDir = "/run/vivarium";
+  freeSpaceHookFile = "${freeSpaceHookDir}/nix-free-space";
+  extraConfFile = "${freeSpaceHookDir}/nix-extra.conf";
+  pressureHandshakeDir = "/workspaces/vivarium/.vivarium-store-pressure";
 in
 
 {
@@ -228,6 +234,27 @@ in
       "d ${upperStateDir} 0755 ${config.nix.daemonUser} ${config.nix.daemonGroup} - -"
       "d ${lowerStoreViewDir} 0755 ${config.nix.daemonUser} ${config.nix.daemonGroup} - -"
       "d ${lowerStoreViewDir}/.links 0755 ${config.nix.daemonUser} ${config.nix.daemonGroup} - -"
+
+      # ADR-0089's trigger is measured through upstream Nix's own test hook (see
+      # the `_NIX_TEST_FREE_SPACE_FILE` note on `nix-daemon` below). The file is
+      # seeded with a number far above `max-free` so that the hook is INERT on
+      # every ordinary boot: the daemon reads this instead of `statvfs`, sees a
+      # tebibyte free, and never collects. Only the measurement unit lowers it.
+      #
+      # Seeded rather than left absent on purpose — a missing file would make the
+      # daemon's behaviour depend on how it handles an unreadable hook, which is
+      # exactly the kind of thing that should not vary between a measured boot
+      # and a normal one.
+      "d ${freeSpaceHookDir} 0755 root root - -"
+      "f ${freeSpaceHookFile} 0644 root root - 1099511627776"
+
+      # An ADDITIVE config file the daemon reads on top of /etc/nix/nix.conf.
+      # `min-free`/`max-free` are read by the daemon, not by the client, so a
+      # client-side `--option min-free` is silently ignored — measured, and it
+      # cost a run that reported "the trigger did not fire" for a store that had
+      # never approached the real threshold. Empty by default, so an ordinary
+      # boot inherits exactly what `nix.settings` declares.
+      "f ${extraConfFile} 0644 root root - "
     ];
 
     mounts = [
@@ -253,6 +280,25 @@ in
       # daemon at the store and makes it wait for the mounts it is made of.
       nix-daemon = {
         serviceConfig.EnvironmentFile = nixDaemonEnvironment;
+        # `LocalStore::autoGC` reads free space from this file when the variable
+        # is set, instead of calling `statvfs`. It is upstream's own test hook —
+        # the same one `tests/functional/gc-auto.sh` uses — and it is the only way
+        # to exercise ADR-0089's threshold without writing tens of gibibytes,
+        # because the trigger lives in the *daemon*, so a client-side option
+        # cannot reach it and an environment variable must be set here.
+        #
+        # It is read once per process for the variable and per poll for the
+        # contents, so the measurement unit drives the number down while the
+        # daemon is running. Inert unless something lowers it: the tmpfiles rule
+        # above seeds a tebibyte.
+        #
+        # What this hook can and cannot prove is a real limit, and the register
+        # must state it: with free space faked, `availAfterGC` is faked too, so
+        # this measures the trigger and its arithmetic — not real reclamation.
+        serviceConfig.Environment = [
+          "_NIX_TEST_FREE_SPACE_FILE=${freeSpaceHookFile}"
+          "NIX_USER_CONF_FILES=${extraConfFile}"
+        ];
         unitConfig.RequiresMountsFor = [
           "/nix/store"
           "/nix/store/.links"
@@ -864,6 +910,268 @@ in
           probe SETTLED_SIBLING sha256sum "$TARGET/sibling"
           exec 9<&- 8<&-
           echo 'VIVARIUM_GC_INTERLOCK_COMPLETE=yes'
+        '';
+      };
+
+      # ADR-0089's thresholds and ADR-0091's ratio, measured under load. Same
+      # unit conventions as the interlock above and for the same reasons: `set
+      # +e` because an `ENOSPC` here is the finding rather than an error, output
+      # straight to /dev/console because journald's forwarder drops bytes, an
+      # `ExecStopPost` marker so a timeout kill is distinguishable from silence,
+      # and never `Requires=` in either direction with the diagnostic.
+      #
+      # Inert without an instruction file, exactly like the interlock: an
+      # ordinary boot of this image must be unchanged by this unit's presence.
+      vivarium-store-pressure = {
+        description = "ADR-0089/ADR-0091 store pressure and collection-trigger measurement";
+        wantedBy = [ "multi-user.target" ];
+        after = [
+          "vivarium-gc-interlock.service"
+          "nix-daemon.socket"
+          "workspaces-vivarium.mount"
+        ];
+        before = [ "vivarium-first-microvm-diagnostic.service" ];
+        unitConfig.RequiresMountsFor = [
+          "/workspaces/vivarium"
+          upperRoot
+        ];
+        serviceConfig = {
+          Type = "oneshot";
+          StandardOutput = "journal";
+          StandardError = "journal";
+          # Three hours. Arm D writes gibibytes through the daemon, and each
+          # collection walks the merged store over virtiofs. The unit also keeps
+          # its own wall-clock budget below this, so a slow host ends the loop
+          # cleanly with a final sample rather than being killed mid-series.
+          TimeoutStartSec = "10800s";
+          ExecStopPost = pkgs.writeShellScript "vivarium-store-pressure-result" ''
+            echo "VIVARIUM_STORE_PRESSURE_RESULT=$SERVICE_RESULT code=''${EXIT_CODE:-none} status=''${EXIT_STATUS:-none}" >/dev/console
+          '';
+        };
+        path = [
+          pkgs.coreutils
+          pkgs.e2fsprogs
+          pkgs.findutils
+          pkgs.gawk
+          pkgs.gnugrep
+          pkgs.nix
+          # Arm D restarts nix-daemon to make it re-read its config, and `path`
+          # REPLACES the unit's PATH rather than extending the system one, so
+          # systemd must be named here or `systemctl` is a bare exit 127.
+          config.systemd.package
+          pkgs.util-linux
+        ];
+        script = ''
+          set -u
+          set +e
+          exec >/dev/console 2>&1
+          echo 'VIVARIUM_STORE_PRESSURE_BEGIN=yes'
+          echo 'VIVARIUM_STORE_PRESSURE_PROTOCOL=1'
+
+          instruction=${pressureHandshakeDir}/instruction
+          if [ ! -r "$instruction" ]; then
+            echo 'VIVARIUM_STORE_PRESSURE_SKIPPED=no-instruction'
+            exit 0
+          fi
+
+          ARM=; BUDGET_SECONDS=3600; BALLAST_TOTAL_MIB=3072; FILE_BYTES=8192; CHATTY=no
+          # shellcheck disable=SC1090
+          . "$instruction"
+          echo "VIVARIUM_STORE_PRESSURE_ARM=$ARM budget=''${BUDGET_SECONDS}s ballast=''${BALLAST_TOTAL_MIB}MiB file_bytes=$FILE_BYTES chatty=$CHATTY"
+
+          export NIX_REMOTE=daemon
+          export HOME=/root
+          nix_build=${pkgs.nix}/bin/nix-build
+          nix_store=${pkgs.nix}/bin/nix-store
+          # `nix config show` is a `nix-command` subcommand, and this guest
+          # deliberately does not enable that feature globally (see nix.settings).
+          # Without the opt-in every config read returns empty, which reads as "the
+          # daemon has no thresholds" rather than as "the reader was refused" —
+          # measured, and it cost a boot.
+          nix_cli="${pkgs.nix}/bin/nix --extra-experimental-features nix-command"
+
+          # `df -h` rounds, and a 4 GiB crossing is invisible in "4.0G". Emit the
+          # raw statvfs fields the collector itself reads, for BOTH the merged
+          # store and the upper filesystem. ADR-0089's whole premise is that
+          # statvfs on the overlay reports the upper filesystem; if these two ever
+          # disagree, that disagreement is the headline finding and everything
+          # else in this run is noise.
+          sample() {
+            echo "VIVARIUM_STORE_PRESSURE_SAMPLE=$1 merged=$(stat -f -c '%a %S %f %b %d %c' /nix/store 2>/dev/null) upper=$(stat -f -c '%a %S %f %b %d %c' ${upperRoot} 2>/dev/null) dead=$($nix_store --gc --print-dead 2>/dev/null | wc -l)"
+          }
+
+          # A background heartbeat, because a collection pass can be silent for
+          # minutes and the host's console reader must not read that as a hang.
+          ( while true; do sleep 15; echo "VIVARIUM_STORE_PRESSURE_HEARTBEAT=$(date +%s)"; done ) &
+          heartbeat=$!
+          trap 'kill $heartbeat 2>/dev/null' EXIT
+
+          echo "VIVARIUM_STORE_PRESSURE_CONFIG_MINFREE=$($nix_cli config show min-free 2>&1 | tail -n1)"
+          echo "VIVARIUM_STORE_PRESSURE_CONFIG_MAXFREE=$($nix_cli config show max-free 2>/dev/null)"
+          echo "VIVARIUM_STORE_PRESSURE_CONFIG_INTERVAL=$($nix_cli config show min-free-check-interval 2>/dev/null)"
+          # If store optimisation ever ran it would hardlink identical ballast and
+          # invert the density reading, so assert it off rather than assume it.
+          echo "VIVARIUM_STORE_PRESSURE_CONFIG_OPTIMISE=$($nix_cli config show auto-optimise-store 2>/dev/null)"
+          echo "VIVARIUM_STORE_PRESSURE_LINKS_FSTYPE=$(stat -f -c %T /nix/store/.links 2>/dev/null)"
+          echo "VIVARIUM_STORE_PRESSURE_ITABLE_ZEROED=$(dumpe2fs /dev/vdb 2>/dev/null | grep -c ITABLE_ZEROED)"
+          echo "VIVARIUM_STORE_PRESSURE_ITABLE_GROUPS=$(dumpe2fs /dev/vdb 2>/dev/null | grep -c '^Group ')"
+          sample START
+
+          # The ballast expression. Built through the daemon, one process per
+          # iteration: a temproot lives in `${upperRoot}/state/temproots/<pid>`
+          # and dies with the process that made it, so iteration N's output is
+          # unrooted garbage the moment iteration N's `nix-build` exits. A single
+          # long-lived `nix` process over many outputs would keep every one of
+          # them rooted and the collector would free nothing.
+          #
+          # `builtins.storePath` is used for the builder and its tools because
+          # those paths ARE in the boot closure and therefore valid in this
+          # guest's database — the sandbox binds declared inputs only, so a bare
+          # path string would not be visible to the builder at all.
+          # The expression is written ONCE and parameterised through the
+          # environment, not regenerated per iteration with the numbers pasted in.
+          # That is deliberate: pasting would mean three languages (Nix's outer
+          # indented string, the shell heredoc, and the generated Nix file) all
+          # competing for `${"\${"}`, which is how this kind of generator acquires
+          # escaping bugs that only appear at run time. `nix-build` evaluates
+          # impurely by default, so `builtins.getEnv` is available; the builder
+          # text is assembled with `+` so the generated file contains no
+          # interpolation at all.
+          expr=/tmp/vivarium-ballast.nix
+          cat >"$expr" <<'EXPR'
+          let
+            bash = builtins.storePath "@BASH@";
+            coreutils = builtins.storePath "@COREUTILS@";
+            each = builtins.getEnv "BALLAST_FILE_BYTES";
+            mib = builtins.getEnv "BALLAST_MIB";
+            chatty = builtins.getEnv "BALLAST_CHATTY";
+          in
+          derivation {
+            name = "vivarium-ballast-" + (builtins.getEnv "BALLAST_NAME");
+            system = "@SYSTEM@";
+            builder = bash + "/bin/bash";
+            args = [
+              "-c"
+              ("export PATH=" + coreutils + "/bin\n"
+               + "set -e\n"
+               + "mkdir -p \"$out\"\n"
+               + "total=$(( " + mib + " * 1024 * 1024 ))\n"
+               + "each=" + each + "\n"
+               + "n=$(( total / each ))\n"
+               + "i=0; dir=0\n"
+               + "while [ $i -lt $n ]; do\n"
+               + "  if [ $(( i % 1000 )) -eq 0 ]; then dir=$(( i / 1000 )); mkdir -p \"$out/d$dir\"; fi\n"
+               + "  head -c $each /dev/urandom > \"$out/d$dir/f$i\"\n"
+               + "  i=$(( i + 1 ))\n"
+               + "  if [ " + chatty + " = yes ] && [ $(( i % 64 )) -eq 0 ]; then echo \"ballast $i/$n\"; fi\n"
+               + "done\n")
+            ];
+          }
+          EXPR
+          sed -i \
+            -e "s|@BASH@|${pkgs.bash}|" \
+            -e "s|@COREUTILS@|${pkgs.coreutils}|" \
+            -e "s|@SYSTEM@|${pkgs.stdenv.hostPlatform.system}|" \
+            "$expr"
+          export BALLAST_FILE_BYTES="$FILE_BYTES"
+          export BALLAST_CHATTY="$CHATTY"
+
+          started=$(date +%s)
+          if [ "$ARM" = c ]; then
+            # Arm C — the trigger in isolation. Drive the faked free-space number
+            # down past min-free and watch the daemon act on it. Nothing is
+            # written, so this proves the trigger and the arithmetic only.
+            hook=${freeSpaceHookFile}
+            echo "VIVARIUM_STORE_PRESSURE_HOOK_PRESENT=$([ -w "$hook" ] && echo yes || echo no)"
+            # One real, collectable path so a firing has something to delete.
+            # `export`, not an assignment prefix: a `VAR=x name=$(...)` line is two
+            # assignments, so the prefix would never reach the subshell.
+            export BALLAST_NAME=seed BALLAST_MIB=64
+            seed=$($nix_build --no-out-link --option substituters "" "$expr" 2>/tmp/seed.err)
+            echo "VIVARIUM_STORE_PRESSURE_SEED=''${seed:-none} status=$?"
+            sample SEEDED
+            for gib in 16 8 6 5 4 3 2; do
+              echo $(( gib * 1073741824 )) > "$hook"
+              echo "VIVARIUM_STORE_PRESSURE_HOOK_SET=''${gib}GiB"
+              export BALLAST_NAME="probe$gib" BALLAST_MIB=8
+              out=$($nix_build --no-out-link --option substituters "" "$expr" 2>/tmp/probe.err)
+              status=$?
+              # The daemon announces a firing on the client's stderr as
+              # "running auto-GC to free N bytes". Grepping for it is the only
+              # direct evidence the collector ran; the free-space series alone
+              # shows an effect with no named cause.
+              fired=$(grep -c 'running auto-GC' /tmp/probe.err)
+              freed=$(grep -o 'running auto-GC to free [0-9]* bytes' /tmp/probe.err | grep -o '[0-9]*' | tail -n1)
+              echo "VIVARIUM_STORE_PRESSURE_ARMC=''${gib}GiB status=$status fired=$fired want_freed=''${freed:-none} out=''${out:-none}"
+              echo "VIVARIUM_STORE_PRESSURE_ARMC_ERR=''${gib}GiB $(tr '\n' '|' </tmp/probe.err | tail -c 400)"
+              sample "ARMC_$gib"
+            done
+            # Restore the inert value so nothing downstream in this boot sees a
+            # store under fake pressure.
+            echo 1099511627776 > "$hook"
+            echo 'VIVARIUM_STORE_PRESSURE_HOOK_RESTORED=yes'
+          elif [ "$ARM" = d ]; then
+            # Arm D — a real crossing on a real filesystem. The distance to the
+            # threshold is shortened rather than the ballast enlarged: min-free is
+            # placed just under the actual free space, so a few gibibytes cross it.
+            avail=$(stat -f -c '%a * %S' ${upperRoot} | awk '{print $1 * $3}')
+            minfree=$(( avail - 1610612736 ))
+            # The GAP is scaled down along with the distance, not kept at
+            # ADR-0089's 4 GiB. With min-free placed just under a nearly empty
+            # volume's free space, a 4 GiB gap puts max-free ABOVE the device's
+            # capacity, and a target the filesystem can never reach turns a
+            # bounded collection into "delete everything and stop when the
+            # garbage runs out" — which measures the wrong thing. A 1 GiB gap
+            # keeps the collection bounded, so `GCLimitReached` is what ends it
+            # and the arithmetic is observable on real bytes.
+            maxfree=$(( minfree + 1073741824 ))
+            [ $minfree -lt 0 ] && minfree=0
+            echo "VIVARIUM_STORE_PRESSURE_ARMD_PLAN=avail=$avail min_free=$minfree max_free=$maxfree"
+            # The thresholds have to reach the DAEMON. `autoGC` runs in the
+            # daemon's own goal loop and reads `settings.minFree` there, so the
+            # client's `--option min-free` is accepted, ignored, and reported back
+            # as if it had applied. Write the additive config the daemon was told
+            # to read, then restart it so the new process picks the file up.
+            printf 'min-free = %s\nmax-free = %s\n' "$minfree" "$maxfree" > ${extraConfFile}
+            systemctl restart nix-daemon.service
+            sleep 2
+            echo "VIVARIUM_STORE_PRESSURE_ARMD_DAEMON_CONF=$(tr '\n' ';' < ${extraConfFile}) restart_status=$?"
+            i=0
+            chunk=256
+            while [ $(( i * chunk )) -lt $BALLAST_TOTAL_MIB ]; do
+              now=$(date +%s)
+              if [ $(( now - started )) -gt $BUDGET_SECONDS ]; then
+                echo "VIVARIUM_STORE_PRESSURE_ARMD_BUDGET_EXHAUSTED=$(( now - started ))s"
+                break
+              fi
+              # BALLAST_MIB is the size of THIS derivation; the loop's own bound is
+              # BALLAST_TOTAL_MIB. They were one variable at first, and exporting
+              # the chunk size overwrote the bound — so the loop ran exactly once
+              # and reported "the trigger did not fire" for a run that had barely
+              # written anything. Keep the two names apart.
+              export BALLAST_NAME="d$i" BALLAST_MIB=$chunk
+              out=$($nix_build --no-out-link --option substituters "" \
+                --option min-free $minfree --option max-free $maxfree \
+                "$expr" 2>/tmp/d.err)
+              status=$?
+              fired=$(grep -c 'running auto-GC' /tmp/d.err)
+              freed=$(grep -o 'running auto-GC to free [0-9]* bytes' /tmp/d.err | grep -o '[0-9]*' | tail -n1)
+              enospc=$(grep -ci 'No space left' /tmp/d.err)
+              echo "VIVARIUM_STORE_PRESSURE_ARMD=$i status=$status fired=$fired want_freed=''${freed:-none} enospc=$enospc out=''${out:-none}"
+              [ $status -ne 0 ] && echo "VIVARIUM_STORE_PRESSURE_ARMD_ERR=$i $(tr '\n' '|' </tmp/d.err | tail -c 400)"
+              sample "ARMD_$i"
+              i=$(( i + 1 ))
+            done
+            echo "VIVARIUM_STORE_PRESSURE_ITERATIONS=$i"
+          else
+            echo "VIVARIUM_STORE_PRESSURE_SKIPPED=unknown-arm-$ARM"
+          fi
+
+          sample END
+          # The lazy inode table's progress, read from the filesystem rather than
+          # inferred from the host image's allocated blocks.
+          echo "VIVARIUM_STORE_PRESSURE_ITABLE_ZEROED_END=$(dumpe2fs /dev/vdb 2>/dev/null | grep -c ITABLE_ZEROED)"
+          echo 'VIVARIUM_STORE_PRESSURE_COMPLETE=yes'
         '';
       };
 
