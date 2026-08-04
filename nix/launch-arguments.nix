@@ -3,6 +3,8 @@
   lib,
   pkgs,
   storeCanaryExpression,
+  gcInterlockCanaryExpression,
+  gcInterlockControlExpression,
 }:
 
 let
@@ -74,6 +76,12 @@ in
   # closure. Carried here so the harness reads it from the launcher's own JSON
   # rather than from a second copy of the constant.
   storeCanaryExpression = toString storeCanaryExpression;
+  # ADR-0085's two measurement paths, carried by the same route and for the same
+  # reason. The guest never learns either output path from the closure — the
+  # harness passes them through the workspace share at run time — because a store
+  # reference to an output is exactly what would stop the host deleting it.
+  gcInterlockCanaryExpression = toString gcInterlockCanaryExpression;
+  gcInterlockControlExpression = toString gcInterlockControlExpression;
   cloudHypervisor = lib.getExe config.microvm.cloud-hypervisor.package;
   chRemote = lib.getExe' config.microvm.cloud-hypervisor.package "ch-remote";
   virtiofsd = lib.getExe config.microvm.virtiofsd.package;

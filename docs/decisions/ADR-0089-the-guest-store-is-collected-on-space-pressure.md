@@ -34,7 +34,9 @@ Amended by [**ADR-0091**](./ADR-0091-the-store-volume-is-provisioned-for-inodes.
 
 Bounds [`ADR-0087`](./ADR-0087-the-inner-store-persists-on-its-own-volume.md), and is safe only because of [`ADR-0088`](./ADR-0088-the-guest-store-is-a-local-overlay-store.md) — on a plain overlay this policy would whiteout host paths on a schedule the user never asked for. Specified in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md), with the thresholds in [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md).
 
-**Unimplemented, and until it lands the guest never collects.** That is the honest interim posture, stated rather than left to read as though ADR-0088 had covered it: ADR-0088 makes a collection safe, which is not the same as arranging for one.
+**Implemented 2026-08-04** as two `nix.settings` lines in the guest module, replacing the interim posture recorded here before — that the guest never collected at all, because ADR-0088 makes a collection _safe_, which is not the same as arranging for one.
+
+**The thresholds themselves remain argued, not measured.** Landing them is not the same as testing them: reaching either one needs a workload rather than a boot, since a boot never approaches 4 GiB of pressure. Still open is whether the trigger fires where this record predicts and frees roughly what it predicts, and what bytes-per-inode the guest's own store actually reaches — the first run to answer that also doubles as this policy's implementation test.
 
 **The public prior art diverges here and is not followed.** [`shazow/agentspace`](https://github.com/shazow/agentspace) — the same topology ADR-0088 takes its configuration shape from — ships 8 GiB for this volume and no automatic collection at all. Its users can resize a host filesystem; a vivarium user is inside a fixed ceiling, so the same posture would turn a full volume into a stuck project.
 

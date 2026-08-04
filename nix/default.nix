@@ -39,6 +39,45 @@ let
       args = [ "-c" "echo vivarium-store-canary > \$out" ];
     }
   '';
+  # ADR-0085's measurement material, and deliberately *not* the canary above: the
+  # store spike builds and deletes that one inside the guest, so sharing it would
+  # make the two experiments each other's confound. Same conventions as above —
+  # `builtins.storePath` so the builder is a real input, a self-contained
+  # `derivation` because the guest has no channels, never `import`ed here.
+  #
+  # The output is a *directory* with two files, and the two files sit on separate
+  # inodes on purpose. virtiofsd runs with `--inode-file-handles=never`, so it
+  # holds an open descriptor per inode it knows: an fd held on `payload` pins
+  # that inode against the host's unlink, which would mask the very behaviour the
+  # experiment is after. `sibling` is the inode nothing pins, so it is the one a
+  # forced FORGET can actually make the guest look up again.
+  #
+  # Nothing in the output references another store path. A referrer would make
+  # the path undeletable, and deletability is the one property the whole
+  # experiment requires.
+  gcInterlockExpression =
+    name: filler:
+    pkgs.writeText "vivarium-${name}.nix" ''
+      let
+        bash = builtins.storePath "${pkgs.bash}";
+        coreutils = builtins.storePath "${pkgs.coreutils}";
+      in
+      derivation {
+        name = "vivarium-${name}";
+        system = "${system}";
+        builder = "''${bash}/bin/bash";
+        args = [
+          "-c"
+          "export PATH=''${coreutils}/bin; mkdir -p \$out; yes '${filler}' | head -c 1048576 > \$out/payload; printf '%s-sibling\n' '${filler}' > \$out/sibling"
+        ];
+      }
+    '';
+  # The path the guest reads before the host collects it.
+  gcInterlockCanaryExpression = gcInterlockExpression "gc-interlock-canary" "vivarium-gc-interlock-target";
+  # The control: the guest never touches it, and the host deletes it in the same
+  # step. A guest that still sees *this* proves the deletion did not propagate at
+  # all, which makes the run inconclusive rather than a pass.
+  gcInterlockControlExpression = gcInterlockExpression "gc-interlock-control" "vivarium-gc-interlock-control";
   guest = nixpkgs.lib.nixosSystem {
     inherit system;
     specialArgs = {
@@ -57,7 +96,12 @@ let
     ];
   };
   launchArguments = import ./launch-arguments.nix {
-    inherit pkgs storeCanaryExpression;
+    inherit
+      pkgs
+      storeCanaryExpression
+      gcInterlockCanaryExpression
+      gcInterlockControlExpression
+      ;
     inherit (guest) config;
     inherit (nixpkgs) lib;
   };
@@ -124,6 +168,11 @@ let
     # forcing `writableStoreOverlay` to null — as the vendored module does —
     # makes upstream emit its own `What=store` drop-in in place of this one, and
     # this line is what would catch it.
+    # ADR-0085: the three canary expressions must stay three. A copy-paste that
+    # re-collided any pair would silently make the store spike and the GC-interlock
+    # experiment operate on one path — each deleting the other's subject — and
+    # nothing else in the tree would notice.
+    test "$(jq -r '[.storeCanaryExpression, .gcInterlockCanaryExpression, .gcInterlockControlExpression] | unique | length' "$launcher_json")" = 3
     grep -F 'What=overlay' ${guest.config.system.build.toplevel}/etc/systemd/system/nix-store.mount.d/overrides.conf
     grep -F 'DefaultDependencies=false' ${guest.config.system.build.toplevel}/etc/systemd/system/nix-store.mount.d/overrides.conf
     touch "$out"

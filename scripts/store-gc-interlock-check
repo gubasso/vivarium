@@ -1,0 +1,681 @@
+#!/usr/bin/env bash
+#
+# ADR-0085's measurement: what does a *running* guest observe when a store path
+# it has already read is garbage-collected out from under it on the host?
+#
+# Why this is a separate script from `first-microvm-check`, and not another
+# block inside it:
+#
+#   - It mutates the host store. `nix-store --delete` on the invoking user's real
+#     store is a destructive act, and `first-microvm-check` is run casually. Its
+#     contract today is "reads the host, writes only its own volumes", and that
+#     is worth keeping.
+#   - It needs a prerequisite that one does not: the ability to delete from the
+#     host store at all. On a default multi-user Nix, `trusted-users` is root
+#     alone and this whole lane skips — which would otherwise plant a permanent
+#     skip block in the harness that proves nothing about what the harness
+#     proves.
+#   - The handshake pushes the guest's lifetime past that script's 420s ceiling.
+#   - Almost every result here is a `[RECORD]`. Its verdict line reads as a gate;
+#     this one reads as a report.
+#
+# The shared plumbing below (counters, helpers, host-tier gate, console reader,
+# launch with Landlock retry, marker extraction) is DUPLICATED from
+# `first-microvm-check` on purpose. Extracting a library beneath a 760-line file
+# that is currently the project's primary evidence is a separate change, and its
+# acceptance criterion is that that file's output stays byte-identical. Blocks
+# intended for that extraction are marked `# DUP:` below, so the debt is visible
+# rather than accidental.
+#
+# METHOD, and it is the whole design:
+#
+#   The trap this check exists to avoid is a confident result for a hazard that
+#   was never triggered. Deleting a path the guest has NEVER READ proves nothing
+#   — nothing was cached, so nothing can go stale. So the guest reads first, the
+#   host deletes second, the guest reads again third, and the `ready` handshake
+#   is what makes that order real rather than hoped for.
+#
+#   A CONTROL is not optional. A second path is realised, never touched by the
+#   guest, and deleted in the same host step. If the guest still sees THAT one,
+#   the deletion did not propagate at all and every symptom result is
+#   inconclusive. Without the control this script cannot tell "the overlay serves
+#   stale data" from "nothing was actually deleted" — and would report the first
+#   while observing the second.
+#
+#   FAIL is reserved for the harness failing to PERFORM the experiment: no read
+#   before the deletion, no handshake, no deletion, no console. The symptom
+#   itself is never a FAIL. ADR-0085 has no prediction to falsify; it is asking
+#   what happens, so the answer is a `[RECORD]`.
+#
+#   A `[SKIP]` means unproven, never absent.
+#
+# STATED GAP: mmap behaviour is NOT measured. Bash cannot hold a mapping across
+# the deletion, and a SIGBUS death is indistinguishable from a `timeout` kill, so
+# a successful read of freed blocks *through a mapping* is outside this script's
+# reach. No check name is emitted for it — a check that cannot fail is worse than
+# none. Recorded as a gap in the findings register instead.
+
+# DUP: no `set -euo pipefail`. Every check captures its own exit status and turns
+# it into a result line; a failing check must not abort the run.
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || uname -m | sed 's/$/-linux/')
+FLAKE_REF="path:$REPO_ROOT"
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+RECORD_COUNT=0
+
+# NOT under $TMPDIR, unlike `first-microvm-check`. N24 (runner.nix) refuses a
+# workspace source that resolves to /tmp, /var/tmp or the runtime dir *or to any
+# ancestor of them*, and this script's scratch directory IS the workspace it
+# hands the launcher. Rooting it under the state home is what keeps the launch
+# from dying with a bare `exit 64`.
+STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
+TEMP_BASE=${VIVARIUM_GC_TEMP_BASE:-$STATE_HOME/vivarium/gc-interlock}
+mkdir -p "$TEMP_BASE" 2>/dev/null
+TEMP_ROOT=$(mktemp -d "$TEMP_BASE/run.XXXXXX" 2>/dev/null || true)
+if [[ -z $TEMP_ROOT ]]; then
+  printf '[FAIL] cannot create a private scratch directory under %s\n' "$TEMP_BASE" >&2
+  exit 1
+fi
+WORKSPACE=$TEMP_ROOT/workspace
+HANDSHAKE=$WORKSPACE/.vivarium-gc-interlock
+mkdir -p "$HANDSHAKE"
+
+# DUP
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+  GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; RESET=$'\033[0m'
+else
+  GREEN=; RED=; YELLOW=; BLUE=; RESET=
+fi
+
+# DUP
+pass() { PASS_COUNT=$((PASS_COUNT + 1)); printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"; }
+fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"; [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"; }
+skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"; }
+record() { RECORD_COUNT=$((RECORD_COUNT + 1)); printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"; }
+
+# Every check this script can emit, in order. Named in one place so a run that
+# skips wholesale reports the same inventory as a run that completes — a shorter
+# list would read as "fewer things went wrong".
+ALL_CHECKS=(
+  gc-interlock-adr0085-premise
+  gc-interlock-workspace-scratch
+  gc-interlock-canary-realisation
+  gc-interlock-canary-unrooted
+  gc-interlock-store-deletable
+  gc-interlock-launch
+  gc-interlock-console
+  gc-interlock-instruction-delivered
+  gc-interlock-before-read
+  gc-interlock-ready-handshake
+  gc-interlock-host-deletion
+  gc-interlock-host-absence-held
+  gc-interlock-control
+  gc-interlock-symptom-reopen
+  gc-interlock-symptom-held-fd
+  gc-interlock-symptom-readdir
+  gc-interlock-symptom-stat
+  gc-interlock-symptom-after-drop-caches
+  gc-interlock-symptom-settled
+  gc-interlock-content-integrity
+  gc-interlock-symptom-class
+  gc-interlock-probe-hang
+  gc-interlock-guest-completion
+  gc-interlock-cleanup
+)
+# `last` is optional and inclusive: some branches skip a run of checks but still
+# go on to emit the ones after it for real, and double-reporting a check would
+# make the inventory lie in the other direction.
+skip_remaining() {
+  local reason=$1 first=$2 last=${3:-} seen=no check
+  for check in "${ALL_CHECKS[@]}"; do
+    [[ $check == "$first" ]] && seen=yes
+    [[ $seen == yes ]] && skip "$check: $reason"
+    [[ -n $last && $check == "$last" ]] && break
+  done
+}
+
+cleanup() {
+  [[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"
+}
+trap cleanup EXIT INT TERM
+
+printf 'vivarium host-GC interlock check (ADR-0085 measurement)\n'
+printf '  repo:      %s\n' "$REPO_ROOT"
+printf '  system:    %s\n' "$SYSTEM"
+printf '  scratch:   %s\n' "$TEMP_ROOT"
+printf '  kernel:    %s\n' "$(uname -r)"
+printf '  nix:       %s\n' "$(nix --version 2>/dev/null || echo absent)"
+printf 'NOTE: symptoms are RECORDs, not verdicts. FAIL means the experiment could\n'
+printf '      not be performed; it never means the guest behaved badly.\n'
+printf 'NOTE: mmap/SIGBUS behaviour is out of this script'"'"'s reach and is NOT measured.\n\n'
+
+printf -- '--- evaluation tier -----------------------------------------------------\n'
+
+if ! command -v nix >/dev/null 2>&1; then
+  for check in "${ALL_CHECKS[@]}"; do fail "$check: Nix is absent"; done
+  printf '\nSummary\nPASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+  printf 'VERDICT: FAIL (%d hard check(s) failed)\n' "$FAIL_COUNT"
+  exit 1
+fi
+
+# ---- gc-interlock-adr0085-premise ------------------------------------------
+# ADR-0085 takes no garbage-collection root of its own. It rests entirely on the
+# claim that a generation root already pins the running guest's closure, which is
+# true only if the kernel and the system are store *references* of the runner's
+# output rather than names resolved at runtime. If they are named at runtime the
+# closure is not pinned and the ADR's mechanism reopens — so this is checked
+# first, costs no boot, and can invalidate the decision rather than merely grade
+# it.
+runner_out=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm" 2>"$TEMP_ROOT/build.err")
+build_status=$?
+runner_out=$(printf '%s\n' "$runner_out" | tail -n 1)
+if ((build_status != 0)) || [[ -z $runner_out ]]; then
+  fail "gc-interlock-adr0085-premise: the runner could not be built" "$(tail -n 20 "$TEMP_ROOT/build.err")"
+  launcher=
+else
+  launcher=$runner_out/bin/vivarium-first-microvm
+  requisites=$(nix-store --query --requisites "$runner_out" 2>/dev/null)
+  premise_missing=
+  grep -qE 'nixos-system-' <<<"$requisites" || premise_missing+="the guest system is not a reference of the runner"$'\n'
+  grep -qE 'initrd-linux' <<<"$requisites" || premise_missing+="the initrd is not a reference of the runner"$'\n'
+  # x86_64 boots `vmlinux` out of the kernel's `dev` output; other systems take
+  # the kernel output itself. Accept either, and require one.
+  grep -qE 'linux-[0-9].*-dev$|-linux-[0-9]' <<<"$requisites" || premise_missing+="the guest kernel is not a reference of the runner"$'\n'
+  if [[ -z $premise_missing ]]; then
+    pass "gc-interlock-adr0085-premise: the runner's closure references the guest kernel, initrd and system, so a generation root pins them transitively"
+    record "premise evidence: $(grep -E 'nixos-system-|initrd-linux|linux-[0-9].*-dev' <<<"$requisites" | tr '\n' ' ')"
+  else
+    fail "gc-interlock-adr0085-premise: ADR-0085's load-bearing premise is FALSE — its mechanism reopens" "$premise_missing"
+  fi
+fi
+
+# ---- gc-interlock-workspace-scratch ----------------------------------------
+# N24 rejects a workspace that is, or contains, /tmp, /var/tmp or the runtime
+# dir. Asserted here so the violation reads as a named check rather than as a
+# bare exit 64 from the launcher three minutes later.
+scratch_bad=
+[[ $WORKSPACE == /* ]] || scratch_bad+="workspace is not absolute: $WORKSPACE"$'\n'
+case $WORKSPACE in
+  /tmp | /tmp/* | /var/tmp | /var/tmp/*) scratch_bad+="workspace is under a path N24 forbids: $WORKSPACE"$'\n' ;;
+esac
+case $WORKSPACE in
+  "$REPO_ROOT" | "$REPO_ROOT"/*) scratch_bad+="workspace is inside the repository worktree: $WORKSPACE"$'\n' ;;
+esac
+if [[ -z $scratch_bad ]]; then
+  pass "gc-interlock-workspace-scratch: $WORKSPACE is absolute, outside N24's forbidden set, and outside the worktree"
+else
+  fail "gc-interlock-workspace-scratch" "$scratch_bad"
+fi
+
+# ---- gc-interlock-canary-realisation ---------------------------------------
+# Both canaries must exist in the host store BEFORE the guest boots. This is not
+# an optimisation: the store share is cache="always", so a negative dentry cached
+# at first lookup would hide a path created after boot for the VM's whole life.
+#
+# `nix-build`, not `nix build`: the expressions use `builtins.storePath`, which
+# flake pure evaluation forbids. Read from the launcher's own JSON so the two
+# sides cannot drift.
+target= control=
+if [[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]]; then
+  launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$launcher" | head -n1)
+  target_expr=$(jq -r .gcInterlockCanaryExpression "$launcher_json" 2>/dev/null || true)
+  control_expr=$(jq -r .gcInterlockControlExpression "$launcher_json" 2>/dev/null || true)
+fi
+realise_bad=
+if [[ -z ${target_expr:-} || ! -r ${target_expr:-/nonexistent} ]]; then
+  realise_bad+="the canary expression is not locatable in the launcher JSON"$'\n'
+else
+  target=$(nix-build --no-out-link "$target_expr" 2>"$TEMP_ROOT/target.err" | tail -n1)
+  control=$(nix-build --no-out-link "$control_expr" 2>"$TEMP_ROOT/control.err" | tail -n1)
+  for pair in "target:$target" "control:$control"; do
+    name=${pair%%:*} path=${pair#*:}
+    [[ -d $path ]] || realise_bad+="$name did not realise to a directory: $path"$'\n'
+    [[ -r $path/payload ]] || realise_bad+="$name has no payload file"$'\n'
+    [[ -r $path/sibling ]] || realise_bad+="$name has no sibling file"$'\n'
+  done
+  [[ $target != "$control" ]] || realise_bad+="the canary and the control realised to the same path"$'\n'
+fi
+if [[ -z $realise_bad ]]; then
+  pass "gc-interlock-canary-realisation: both canaries are in the lower layer and absent from the guest's boot closure"
+  # Host-side digests, computed once, in the exact shapes the guest will report:
+  # the whole payload, its first 4096 bytes (what the held descriptor reads
+  # before the deletion) and everything after them (what it reads afterwards).
+  host_payload_sha=$(sha256sum <"$target/payload" | cut -d' ' -f1)
+  host_sibling_sha=$(sha256sum <"$target/sibling" | cut -d' ' -f1)
+  host_fd9_head_sha=$(head -c 4096 "$target/payload" | sha256sum | cut -d' ' -f1)
+  host_fd9_rest_sha=$(tail -c +4097 "$target/payload" | sha256sum | cut -d' ' -f1)
+  record "target=$target payload_sha=$host_payload_sha sibling_sha=$host_sibling_sha"
+  record "control=$control"
+else
+  fail "gc-interlock-canary-realisation" "$realise_bad$(cat "$TEMP_ROOT/target.err" "$TEMP_ROOT/control.err" 2>/dev/null)"
+fi
+
+# ---- gc-interlock-canary-unrooted ------------------------------------------
+# A run that tries to collect a rooted path cannot reach the failure at all, and
+# must skip rather than pass. `--ignore-liveness` is never used: forcing the
+# deletion would measure a situation the product can never produce.
+#
+# Note the `2>/dev/null`: `nix-store --query --roots` prints stale-root
+# housekeeping to stderr, and reading it as output would make every run look
+# rooted.
+unrooted=yes
+if [[ -n $target && -n $control ]]; then
+  rooted_detail=
+  for path in "$target" "$control"; do
+    roots=$(nix-store --query --roots "$path" 2>/dev/null)
+    refs=$(nix-store --query --referrers "$path" 2>/dev/null)
+    [[ -z $roots ]] || rooted_detail+="$path is held by a root: $roots"$'\n'
+    [[ -z $refs ]] || rooted_detail+="$path has referrers: $refs"$'\n'
+  done
+  if [[ -z $rooted_detail ]]; then
+    pass "gc-interlock-canary-unrooted: neither canary is covered by a GC root or a referrer"
+  else
+    unrooted=no
+    skip "gc-interlock-canary-unrooted: a root or referrer covers a canary, so the hazard is unreachable (unproven, not absent)"
+    record "rootedness: $rooted_detail"
+  fi
+else
+  unrooted=no
+  skip "gc-interlock-canary-unrooted: no canaries to query"
+fi
+
+# ---- gc-interlock-store-deletable ------------------------------------------
+# Probed on a throwaway path BEFORE spending a three-minute boot. On a default
+# multi-user Nix, `trusted-users` is root alone and `nix-store --delete` is
+# refused for an ordinary user — that is a property of the host, not a defect,
+# so the whole lane skips.
+deletable=no
+if [[ -n $target && -n $control ]]; then
+  # A throwaway of its own: deleting either canary here would be self-defeating,
+  # and the run id makes the added path unique so a second run cannot find the
+  # first one's probe already present and conclude nothing from deleting it.
+  printf 'vivarium-gc-interlock-delete-probe %s\n' "$$" >"$TEMP_ROOT/delete-probe"
+  probe_path=$(nix-store --add "$TEMP_ROOT/delete-probe" 2>/dev/null)
+  if [[ -n $probe_path ]]; then
+    probe_out=$(nix-store --delete "$probe_path" 2>&1)
+    if [[ ! -e $probe_path ]]; then
+      deletable=yes
+      pass "gc-interlock-store-deletable: this user can delete an unrooted path from the host store"
+    else
+      skip "gc-interlock-store-deletable: nix-store --delete was refused, so the experiment cannot run here"
+      record "refusal: $(tr '\n' '|' <<<"$probe_out" | tail -c 300)"
+    fi
+  else
+    skip "gc-interlock-store-deletable: could not add a throwaway path to probe with"
+  fi
+else
+  skip "gc-interlock-store-deletable: no expression to build a probe from"
+fi
+
+printf -- '\n--- host tier -----------------------------------------------------------\n'
+
+# DUP: the same prerequisite set as `first-microvm-check`, plus this lane's own
+# two (an unrooted canary and a deletable store). Every failure is accumulated so
+# the skip line names all of them at once.
+missing=()
+[[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
+[[ -r /dev/kvm && -w /dev/kvm ]] || missing+=("/dev/kvm openable read/write")
+[[ -r /proc/1/comm && $(< /proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
+systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
+[[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
+command -v python3 >/dev/null 2>&1 || missing+=("python3 console reader")
+[[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]] || missing+=("realised launcher")
+[[ $unrooted == yes ]] || missing+=("an unrooted canary pair")
+[[ $deletable == yes ]] || missing+=("a host store this user can delete from")
+
+if ((${#missing[@]})); then
+  reason=$(IFS=', '; echo "${missing[*]}")
+  skip_remaining "missing prerequisites: $reason" gc-interlock-launch
+else
+  run_id="gc-interlock-$$"
+  runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
+  volume_dir=$STATE_HOME/vivarium/diagnostics
+  volume=$volume_dir/gc-interlock.img
+  store_volume=$volume_dir/gc-interlock-store.img
+  mkdir -p "$runtime_dir" "$volume_dir"
+  chmod 0700 "$runtime_dir"
+  launch_log=$TEMP_ROOT/launch.log
+  console_log=$TEMP_ROOT/console.log
+
+  # The instruction reaches the guest through the workspace share and NOT through
+  # the closure. That is the load-bearing detail of the whole design: a store
+  # reference to either output path would make it a referrer, and a referrer
+  # cannot be deleted — which is the one thing this experiment requires.
+  #
+  # Mode 0644 and owned by the invoking user, because virtiofsd maps exactly one
+  # identity (host uid -> guest uid 1000) and forbids all others; a file the guest
+  # cannot read would make the unit report "no instruction" on a run that had one.
+  printf 'RUN_ID=%s\nTARGET=%s\nCONTROL=%s\nGO_TIMEOUT=300\n' \
+    "$run_id" "$target" "$control" >"$HANDSHAKE/instruction"
+  chmod 0644 "$HANDSHAKE/instruction"
+
+  launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume "$volume"
+    --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2)
+
+  # DUP: `--wait` may not be combined with `--scope`, so the scope is backgrounded
+  # and waited on instead.
+  launch_attempt=0
+  launch_vm() {
+    launch_attempt=$((launch_attempt + 1))
+    systemd-run --user --scope --quiet --collect --unit="$run_id-$launch_attempt" "$launcher" "${launch_args[@]}" "$@" >"$launch_log" 2>&1 &
+    vm_pid=$!
+  }
+  wait_for_console() {
+    for _ in {1..300}; do
+      [[ -S $runtime_dir/console.sock ]] && return 0
+      kill -0 "$vm_pid" 2>/dev/null || return 1
+      sleep 0.1
+    done
+    return 1
+  }
+
+  launch_vm
+  if wait_for_console; then
+    pass "gc-interlock-launch: reached the console-socket stage"
+  else
+    wait "$vm_pid"; launch_status=$?
+    launch_output=$(<"$launch_log")
+    if grep -Eqi 'systemd-run|unknown option|may not be combined|Failed to (start|create) transient' <<<"$launch_output"; then
+      fail "gc-interlock-launch: could not start (not Landlock evidence)" "$launch_output"
+    else
+      record "Landlock-on launch failed, retrying once without it; exit=$launch_status; output=$launch_output"
+      : >"$launch_log"
+      launch_vm --no-landlock
+      if wait_for_console; then
+        pass "gc-interlock-launch: reached the console-socket stage with Landlock off"
+      else
+        fail "gc-interlock-launch: failed with Landlock off as well" "$(<"$launch_log")"
+      fi
+    fi
+  fi
+
+  # DUP: cloud-hypervisor's `--serial socket=` neither buffers nor replays, so
+  # the reader attaches the instant the socket exists and stays attached.
+  reader_py=$TEMP_ROOT/console-reader.py
+  cat >"$reader_py" <<'PY'
+import socket, sys, time
+
+path, out_path, idle_timeout = sys.argv[1], sys.argv[2], float(sys.argv[3])
+deadline = time.monotonic() + 30.0
+while True:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(path)
+        break
+    except OSError:
+        sock.close()
+        if time.monotonic() >= deadline:
+            raise
+        time.sleep(0.2)
+sock.settimeout(idle_timeout)
+with open(out_path, "wb") as out:
+    while True:
+        try:
+            data = sock.recv(65536)
+        except socket.timeout:
+            break
+        if not data:
+            break
+        out.write(data)
+        out.flush()
+PY
+  : >"$console_log"
+  # Idle timeout must clear the guest unit's own 300s `go` wait plus its 60s
+  # settle, or the reader would detach mid-experiment and lose the after-phase.
+  python3 "$reader_py" "$runtime_dir/console.sock" "$console_log" 480 >"$TEMP_ROOT/reader.log" 2>&1 &
+  reader_pid=$!
+
+  # ---- the handshake -------------------------------------------------------
+  # The guest writes `ready` only after it has genuinely read the target, so this
+  # wait is what makes "read before delete" an ordering rather than an intention.
+  # Bounded above the store spike's own 600s ceiling, since this unit runs after
+  # it.
+  ready=no ready_waited=0
+  for _ in {1..2800}; do
+    if [[ -e $HANDSHAKE/ready ]]; then ready=yes; break; fi
+    kill -0 "$vm_pid" 2>/dev/null || break
+    sleep 0.25
+    ready_waited=$((ready_waited + 1))
+  done
+
+  delete_status=1 delete_out= host_absent=no
+  if [[ $ready == yes ]]; then
+    ready_run_id=$(sed -n 's/^RUN_ID=//p' "$HANDSHAKE/ready" | tail -n1)
+    if [[ $ready_run_id == "$run_id" ]]; then
+      pass "gc-interlock-ready-handshake: the guest reported it had read the target after $((ready_waited / 4))s"
+    else
+      fail "gc-interlock-ready-handshake: RUN_ID mismatch (stale handshake file)" "expected $run_id, got $ready_run_id"
+    fi
+
+    # ---- the deletion ------------------------------------------------------
+    delete_out=$(nix-store --delete "$target" "$control" 2>&1)
+    delete_status=$?
+    target_present=no; [[ -e $target ]] && target_present=yes
+    control_present=no; [[ -e $control ]] && control_present=yes
+    if [[ $target_present == no && $control_present == no ]]; then
+      host_absent=yes
+      pass "gc-interlock-host-deletion: both canaries are gone from the host store while the guest runs"
+    else
+      fail "gc-interlock-host-deletion: a canary survived the deletion on the host" \
+        "status=$delete_status target_present=$target_present control_present=$control_present $(tr '\n' '|' <<<"$delete_out" | tail -c 400)"
+    fi
+    record "host deletion: status=$delete_status $(tr '\n' '|' <<<"$delete_out" | tail -c 300)"
+
+    # Atomic, so the guest can never observe a half-written go file.
+    : >"$HANDSHAKE/go.tmp"
+    mv "$HANDSHAKE/go.tmp" "$HANDSHAKE/go"
+  else
+    fail "gc-interlock-ready-handshake: the guest never reported it had read the target"
+    skip "gc-interlock-host-deletion: nothing was deleted, because the guest never read anything"
+  fi
+
+  # ---- DUP: bounded wait for poweroff --------------------------------------
+  # Higher than `first-microvm-check`'s 420s: the guest unit alone may spend 300s
+  # waiting on the host plus a 60s settle.
+  vm_status=0
+  for _ in {1..2400}; do
+    kill -0 "$vm_pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  if kill -0 "$vm_pid" 2>/dev/null; then
+    fail "gc-interlock-guest-completion: the guest did not shut down within 1200s; terminating" "$(tail -n 40 "$launch_log")"
+    kill -TERM "$vm_pid" 2>/dev/null || true
+    vm_status=124
+  fi
+  wait "$vm_pid" 2>/dev/null || vm_status=$?
+  wait "$reader_pid" 2>/dev/null; reader_status=$?
+
+  bytes=0; [[ -s $console_log ]] && bytes=$(wc -c <"$console_log")
+  if ((bytes == 0)); then
+    fail "gc-interlock-console: the reader produced nothing" "$(cat "$TEMP_ROOT/reader.log" 2>/dev/null; tail -n 40 "$launch_log")"
+  fi
+
+  # DUP: read markers BY NAME, never by position, after stripping the journal's
+  # ANSI decoration and carriage returns.
+  gc_line() {
+    sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null \
+      | grep -ao "VIVARIUM_GC_INTERLOCK_$1=.*" | tail -n1 | cut -d= -f2- || true
+  }
+  gc_status() { local v; v=$(gc_line "$1"); [[ $v =~ status=([0-9]+) ]] && echo "${BASH_REMATCH[1]}"; }
+  gc_digest() { gc_line "$1" | grep -oE '\b[0-9a-f]{64}\b' | head -n1; }
+  gc_all=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null | grep -ao 'VIVARIUM_GC_INTERLOCK_[A-Z_0-9]*=.*' || true)
+
+  if [[ -z $gc_all ]]; then
+    fail "gc-interlock-console: captured $bytes bytes but no gc-interlock marker"
+    skip_remaining "the guest never reported a gc-interlock line" gc-interlock-instruction-delivered gc-interlock-guest-completion
+  else
+    pass "gc-interlock-console: captured $bytes bytes and $(grep -c . <<<"$gc_all") markers"
+    record "guest report:"$'\n'"$gc_all"
+
+    # ---- instruction delivery ---------------------------------------------
+    guest_run_id=$(gc_line RUN_ID)
+    skipped=$(gc_line SKIPPED)
+    if [[ -n $skipped ]]; then
+      fail "gc-interlock-instruction-delivered: the guest declined the instruction" "$skipped"
+    elif [[ $guest_run_id != "$run_id" ]]; then
+      fail "gc-interlock-instruction-delivered: RUN_ID mismatch" "expected $run_id, guest reported '${guest_run_id:-none}'"
+    else
+      pass "gc-interlock-instruction-delivered: the guest read this run's instruction"
+    fi
+
+    # ---- the anti-vacuous gate ---------------------------------------------
+    # If the guest did not genuinely read the target before the deletion, every
+    # symptom below is about a path that was never cached, and the run proves
+    # nothing at all. This is the defect the harness has already been bitten by
+    # three times, so it is a hard FAIL rather than a note.
+    before_bad=
+    [[ $(gc_status BEFORE_READ) == 0 ]] || before_bad+="the guest could not read the payload before the deletion"$'\n'
+    [[ $(gc_status BEFORE_SIBLING) == 0 ]] || before_bad+="the guest could not read the sibling before the deletion"$'\n'
+    [[ $(gc_line OPEN_FDS) == ok ]] || before_bad+="the guest could not hold descriptors across the deletion"$'\n'
+    [[ $(gc_digest BEFORE_READ) == "$host_payload_sha" ]] || before_bad+="the payload the guest read differs from the host's before any deletion: $(gc_digest BEFORE_READ) != $host_payload_sha"$'\n'
+    [[ $(gc_digest BEFORE_SIBLING) == "$host_sibling_sha" ]] || before_bad+="the sibling the guest read differs from the host's"$'\n'
+    [[ $(gc_line CONTROL_UNREAD) == yes ]] || before_bad+="the guest did not confirm it left the control untouched"$'\n'
+    if [[ -z $before_bad ]]; then
+      pass "gc-interlock-before-read: the guest read the target in full and matched the host's digests, so the deletion had something cached to invalidate"
+    else
+      fail "gc-interlock-before-read: the deletion was NOT preceded by a genuine read — every symptom below is vacuous" "$before_bad"
+    fi
+
+    # ---- host absence held --------------------------------------------------
+    # A concurrent host build can re-realise the identical derivation and
+    # resurrect the path mid-experiment, which would silently turn a stale read
+    # into a legitimate one.
+    resurrected=
+    [[ -e $target ]] && resurrected+="the target reappeared on the host during the run"$'\n'
+    [[ -e $control ]] && resurrected+="the control reappeared on the host during the run"$'\n'
+    if [[ $host_absent == yes && -z $resurrected ]]; then
+      pass "gc-interlock-host-absence-held: both canaries stayed absent for the whole run"
+    elif [[ -n $resurrected ]]; then
+      skip "gc-interlock-host-absence-held: a canary was re-realised concurrently, so no symptom can be attributed"
+      record "resurrection: $resurrected"
+    else
+      skip "gc-interlock-host-absence-held: the deletion did not complete"
+    fi
+
+    # ---- THE CONTROL, which gates everything below --------------------------
+    control_status=$(gc_status AFTER_CONTROL)
+    control_ok=no
+    if [[ $host_absent != yes || -n $resurrected ]]; then
+      skip "gc-interlock-control: the host side did not hold, so the control proves nothing"
+    elif [[ -z $control_status ]]; then
+      fail "gc-interlock-control: the guest did not report a control read"
+    elif [[ $control_status != 0 ]]; then
+      control_ok=yes
+      pass "gc-interlock-control: the guest could NOT read the never-touched control after deletion, so the deletion did propagate"
+      record "control symptom: $(gc_line AFTER_CONTROL)"
+    else
+      skip "gc-interlock-control: the guest still read the control it had never touched — the deletion did not propagate at all, so nothing below is attributable"
+      record "control read succeeded: $(gc_line AFTER_CONTROL)"
+    fi
+
+    if [[ $control_ok != yes || -n $before_bad ]]; then
+      skip_remaining "the control gate did not hold, or the guest never cached the target" gc-interlock-symptom-reopen gc-interlock-symptom-class
+    else
+      # ---- the symptoms. All RECORDs: this is the measurement. --------------
+      record "symptom-reopen (round 1, caches warm): $(gc_line AFTER_REOPEN)"
+      record "symptom-held-fd (descriptor opened before the deletion): $(gc_line AFTER_FD9_REST)"
+      record "symptom-readdir (round 1): $(gc_line AFTER_LIST)"
+      record "symptom-stat (round 1): $(gc_line AFTER_STAT)"
+      record "symptom-after-drop-caches sibling (nothing pinned this inode): $(gc_line AFTER_DROP_SIBLING)"
+      record "symptom-after-drop-caches payload: $(gc_line AFTER_DROP_REOPEN)"
+      record "symptom-after-drop-caches readdir: $(gc_line AFTER_DROP_LIST)"
+      record "symptom-after-drop-caches held fd 8: $(gc_line AFTER_DROP_FD8)"
+      record "symptom-settled (after 60s): payload=$(gc_line SETTLED_REOPEN) sibling=$(gc_line SETTLED_SIBLING)"
+      record "drop_caches: $(gc_line DROP_CACHES)"
+
+      # ---- content integrity -------------------------------------------------
+      # The distinction ADR-0085's whole bet turns on: a read that SUCCEEDS after
+      # the deletion is only harmless if the bytes are still right.
+      integrity=
+      for pair in "AFTER_REOPEN:$host_payload_sha" "AFTER_DROP_REOPEN:$host_payload_sha" \
+                  "SETTLED_REOPEN:$host_payload_sha" "AFTER_DROP_SIBLING:$host_sibling_sha" \
+                  "SETTLED_SIBLING:$host_sibling_sha" "AFTER_FD9_REST:$host_fd9_rest_sha" \
+                  "AFTER_DROP_FD8:$host_payload_sha"; do
+        marker=${pair%%:*} expect=${pair#*:}
+        if [[ $(gc_status "$marker") == 0 ]]; then
+          if [[ $(gc_digest "$marker") == "$expect" ]]; then
+            integrity+="$marker=bytes-identical"$'\n'
+          else
+            integrity+="$marker=BYTES-DIFFER got=$(gc_digest "$marker") want=$expect"$'\n'
+          fi
+        else
+          integrity+="$marker=read-failed"$'\n'
+        fi
+      done
+      record "content-integrity:"$'\n'"$integrity"
+
+      # ---- the derived class, the one line ADR-0085 consumes ------------------
+      loud=0 silent=0 corrupt=0
+      for marker in AFTER_REOPEN AFTER_LIST AFTER_STAT AFTER_FD9_REST AFTER_DROP_SIBLING \
+                    AFTER_DROP_REOPEN AFTER_DROP_LIST AFTER_DROP_FD8 SETTLED_REOPEN SETTLED_SIBLING; do
+        st=$(gc_status "$marker")
+        [[ -z $st ]] && continue
+        if [[ $st != 0 ]]; then
+          loud=$((loud + 1))
+        else
+          silent=$((silent + 1))
+        fi
+      done
+      grep -q 'BYTES-DIFFER' <<<"$integrity" && corrupt=1
+      hang=$(gc_line HANG)
+      [[ -n $hang ]] && loud=$((loud + 1))
+
+      if ((corrupt)); then
+        class=CORRUPT
+      elif ((loud > 0 && silent > 0)); then
+        class=MIXED
+      elif ((loud > 0)); then
+        class=LOUD
+      elif ((silent > 0)); then
+        class=SILENT-CORRECT
+      else
+        class=INCONCLUSIVE
+      fi
+      record "gc-interlock-symptom-class: $class (loud=$loud silent=$silent corrupt=$corrupt)"
+      case $class in
+        SILENT-CORRECT | CORRUPT)
+          record "ADR-0085 CONSEQUENCE: the symptom is not loud, so store-roots-intact cannot stay invoked-only — amend the ADR's trigger" ;;
+        MIXED)
+          record "ADR-0085 CONSEQUENCE: loud for some access shapes and silent for others; the ADR's trigger turns on which shapes a build actually uses" ;;
+        LOUD)
+          record "ADR-0085 CONSEQUENCE: the symptom is loud, so store-roots-intact may stay a doctor check as decided" ;;
+      esac
+    fi
+
+    if [[ -n $(gc_line HANG) ]]; then
+      record "gc-interlock-probe-hang: $(gc_line HANG) — a hang is itself a loud symptom"
+    else
+      pass "gc-interlock-probe-hang: no probe hit its timeout"
+    fi
+
+    if [[ $(gc_line COMPLETE) == yes ]] && ((vm_status == 0)); then
+      pass "gc-interlock-guest-completion: the unit ran to completion and the guest powered off cleanly"
+    else
+      fail "gc-interlock-guest-completion: unit incomplete or unclean shutdown" "vm_status=$vm_status"
+    fi
+  fi
+
+  leftovers=$(find "$runtime_dir" -mindepth 1 2>/dev/null | head -n 10)
+  if [[ -z $leftovers ]]; then
+    pass "gc-interlock-cleanup: the runtime directory is empty"
+  else
+    fail "gc-interlock-cleanup: the runtime directory retained entries" "$leftovers"
+  fi
+  cp -f "$console_log" "$volume_dir/gc-interlock-console.log" 2>/dev/null \
+    && record "console log retained at $volume_dir/gc-interlock-console.log"
+  rmdir "$runtime_dir" 2>/dev/null
+fi
+
+printf '\nSummary\n'
+printf 'PASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+if ((FAIL_COUNT == 0)); then
+  printf 'VERDICT: PASS (RECORD findings are the measurement; SKIPs require a capable host)\n'
+  exit 0
+else
+  printf 'VERDICT: FAIL (%d hard check(s) failed — the experiment could not be performed)\n' "$FAIL_COUNT"
+  exit 1
+fi

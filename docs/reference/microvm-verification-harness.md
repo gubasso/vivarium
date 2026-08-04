@@ -2,7 +2,9 @@
 
 `scripts/first-microvm-check` builds the first microVM, boots it on a real host, and checks the things only a real host can answer. It is the base the host lane of [`testing-lanes.md`](./testing-lanes.md) grows from, and it is run by hand today.
 
-This page is the lookup material for it: what each check proves, and the register of what has actually been verified. It holds no design rationale — that lives in the ADRs each section names.
+`scripts/store-gc-interlock-check` is its sibling, described below: same shapes, separate script because it mutates the host store.
+
+This page is the lookup material for both: what each check proves, and the register of what has actually been verified. It holds no design rationale — that lives in the ADRs each section names.
 
 ## Running it
 
@@ -48,6 +50,21 @@ An evaluation-tier result says **nothing** about target-host behaviour. A skippe
 - **Confinement** — one hypervisor plus one filesystem daemon per share, every one owned by the invoking user with no-new-privileges set and a seccomp filter somewhere in its thread group. This is **not** the N20 allowlist test; it checks that confinement is on, not that it is correct.
 - **Clean shutdown** and an empty runtime directory afterward, with the volumes retained.
 - **The persistent guest store** — the premises, the sharing count, the collection's effect on the lower layer, and both branches of the delete-duplicate scenario. The persistence check itself needs **two runs against one store volume**: `VIVARIUM_SPIKE_COLD=1` removes the store image so the first is provably cold, and a second run without it is the warm half. On a cold run the persistence check reports `[SKIP]`, because there is nothing yet that could have survived.
+
+## The sibling script: `scripts/store-gc-interlock-check`
+
+ADR-0085's measurement runs from its own script, not from `first-microvm-check`, because it **deletes from the invoking user's real host store** — which must never be a side effect of the routine harness — and because it needs a prerequisite the harness does not: a store this user may delete from. It emits the same four result kinds and the same stable check inventory.
+
+```console
+$ scripts/store-gc-interlock-check
+```
+
+Two properties are worth knowing before reading a result from it.
+
+- **`FAIL` means the experiment could not be performed** — no read before the deletion, no handshake, no deletion, no console. A symptom is never a `FAIL`: ADR-0085 has no prediction to falsify, so every symptom is a `[RECORD]` and the run derives one `symptom-class` line from them.
+- **Two gates decide whether any symptom is attributable at all.** A _control_ path is realised, never touched by the guest, and deleted in the same host step; if the guest can still read it, the deletion did not propagate and every symptom check is emitted as `[SKIP]`. And the guest must have genuinely read the target _before_ the deletion — removing a path nothing cached proves nothing — which is a hard `FAIL` if it did not. Both gates were confirmed to fire by deliberate-negative runs: a rooted canary skips the whole lane rather than passing, and a suppressed before-phase read fails rather than reporting symptoms.
+
+The guest half is the `vivarium-gc-interlock` unit, which is inert in the ordinary lane: with no instruction file in the workspace it reports `no-instruction` and exits, writing nothing. A plain `first-microvm-check` run is unchanged by its presence.
 
 ## Findings register
 
@@ -200,6 +217,34 @@ One cosmetic consequence remains unfixed and is recorded so nobody reads it as d
 Measured on both boots. At one inode per 8 KiB a 32 GiB volume carries **4,194,304** inodes, of which the guest used 228 after a cold boot — so [`../decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md`](../decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md)'s ratio is now measured at the provisioning end, though not yet at the exhaustion end, which needs a workload rather than a boot.
 
 That decision's open hazard — a lazily initialised inode table inflating the sparse image by about a gibibyte after first mount — **was not observed**: the image's allocated blocks were 327 MiB after the cold boot and 356 MiB after the warm one, against a fully written table of roughly 1 GiB. The measurement is honest about its own reach: each VM lived about three minutes, which is not long enough to rule out a background initialisation that a long-running guest would complete. Eager initialisation stays unnecessary on this evidence and unproven against a long session.
+
+### A host collection is loud for a fresh lookup and silent for a path the guest still holds
+
+Measured by `scripts/store-gc-interlock-check` (see [`testing-lanes.md`](./testing-lanes.md)) on a real host: the guest read a store path in full, the host deleted it with `nix-store --delete` while the guest ran, and the guest read again. This is the measurement [`../decisions/ADR-0085-a-running-guest-pins-the-store-paths-it-reads.md`](../decisions/ADR-0085-a-running-guest-pins-the-store-paths-it-reads.md) left open. The symptom class is **MIXED**, and — the part the decision turns on — **nothing was ever corrupt**: every read that succeeded returned bytes identical to the host's pre-deletion digest.
+
+| Access shape                                                    | After the host deletion                                                                    |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Control path, never read by the guest                           | `ENOENT` — so the deletion did propagate                                                   |
+| Re-read by name, caches warm                                    | succeeds, bytes identical                                                                  |
+| `stat`, caches warm                                             | succeeds, same inode, `nlink=1`                                                            |
+| `readdir`, caches warm                                          | succeeds, both entries listed                                                              |
+| Read from a descriptor opened before the deletion               | succeeds, bytes identical                                                                  |
+| **Sibling file, after `drop_caches`, nothing pinning it**       | **`ENOENT`**                                                                               |
+| Payload after `drop_caches`, still pinned by an open descriptor | succeeds, bytes identical                                                                  |
+| `readdir` after `drop_caches`                                   | succeeds, **and lists nothing** — while a read by name of an entry it omits still succeeds |
+| After a further 60 s                                            | unchanged from the round above                                                             |
+
+The mechanism accounts for the split. virtiofsd runs with `--inode-file-handles=never` (`nix/launch-arguments.nix`), so it holds an open descriptor per inode the guest knows; the host's `unlink` frees no blocks while that lasts, and reads keep returning the real bytes. Once the guest is made to forget the inode, virtiofsd closes its descriptor and a lookup by name reaches a host path that is gone — which is why the sibling, which nothing pinned, is the one that went loud. The share's `cache = "always"` sets an entry timeout of 86400 s, so a timeout-driven revalidation is structurally out of reach inside one boot; the 60 s round records that rather than hoping otherwise.
+
+Two consequences worth keeping separate. The realistic hazard — a build that resolves a store path it does not already hold open — is **loud**, which is the bet ADR-0085 made. The residual is narrower than "silent": a process holding the file open keeps reading correct bytes, which is not a correctness fault at all. What has no clean reading is the empty-`readdir`-with-successful-read state, which is precisely the "behaviour becomes undefined" the kernel documents rather than any particular error.
+
+**Stated gap: `mmap` is not measured.** Bash cannot hold a mapping across the deletion, and a `SIGBUS` death is indistinguishable from a `timeout` kill, so a successful read of freed blocks _through a mapping_ is outside this script's reach. No check is emitted for it — a check that cannot fail is worse than none. Closing it needs a small compiled probe.
+
+### `set -e` is prepended to every NixOS `script`, and it silently killed a probe unit
+
+Found while building the check above, and general enough to record. NixOS emits `set -e` ahead of a `systemd.services.<name>.script` body. For a unit whose purpose is to run commands that are _expected_ to fail and report the status they failed with, that is fatal: the first such probe took the shell down inside a command substitution, before it could print its own result.
+
+It failed **invisibly**. systemd stops writing unit status to the console once boot has completed, and this unit runs after `multi-user.target`, so the console showed a missing marker and nothing else — indistinguishable from a probe that returned no output. The fix is `set +e` in the body with a comment saying why; the diagnosis came from an `ExecStopPost` that echoes `$SERVICE_RESULT`/`$EXIT_CODE`/`$EXIT_STATUS` to the console, which runs even when the main process dies by signal. Any future probe unit here should carry both.
 
 ## The method note
 
