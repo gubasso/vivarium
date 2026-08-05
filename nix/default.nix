@@ -2,10 +2,47 @@
   nixpkgs,
   microvm,
   system,
+  # The one seam a measurement image needs (ADR-0095). Defaults reproduce the
+  # shipped image exactly at every value; `legs = [ ]` is what makes the shipped
+  # image probe-free, which is a *change* from what this file used to build.
+  variant ? { },
 }:
 
 let
   pkgs = import nixpkgs { inherit system; };
+  inherit (nixpkgs) lib;
+
+  variantDefaults = {
+    # Subset of nix/measurement's known legs. Empty is the shipped image.
+    legs = [ ];
+    homeVolumeSizeMiB = 32768;
+    storeVolumeSizeMiB = 32768;
+    storeMinFree = 4294967296; # 4 GiB — spec/17
+    storeMaxFree = 8589934592; # 8 GiB — spec/17
+    # Upstream Nix's own free-space TEST hook, which arms C and D drive. It is
+    # seeded above `max-free` so it is inert on an ordinary boot — but an arm
+    # that measures a REAL crossing needs it absent, not merely inert, because a
+    # daemon reading it never consults `statvfs` at all.
+    storeFreeSpaceHook = true;
+    virtiofsdThreadPoolSize = 4; # ADR-0051
+  };
+
+  # A shallow `//` accepts a typo and yields an image that looks right and is
+  # not — the same shape as the failure that already cost a boot, where scaled
+  # thresholds never reached the daemon. Three lines buy that back.
+  unknownKeys = builtins.attrNames (
+    builtins.removeAttrs variant (builtins.attrNames variantDefaults)
+  );
+  v =
+    lib.throwIf (unknownKeys != [ ])
+      "vivarium variant: unknown key(s) ${lib.concatStringsSep ", " unknownKeys} (known: ${lib.concatStringsSep ", " (builtins.attrNames variantDefaults)})"
+      (variantDefaults // variant);
+
+  storeLayout = import ./store-layout.nix { inherit pkgs lib; };
+  measurementModules = import ./measurement {
+    inherit lib storeLayout storeCanaryExpression;
+    inherit (v) legs storeFreeSpaceHook;
+  };
   volumeLabel = "vivarium-default";
   storeVolumeLabel = "vivarium-store";
   workspaceSourceSentinel = "VIVARIUM_LAUNCH_WORKSPACE_SOURCE";
@@ -82,18 +119,28 @@ let
     inherit system;
     specialArgs = {
       inherit
+        storeLayout
         volumeLabel
         storeVolumeLabel
         workspaceSourceSentinel
         volumeImageSentinel
         storeVolumeImageSentinel
-        storeCanaryExpression
+        ;
+      inherit (v)
+        homeVolumeSizeMiB
+        storeVolumeSizeMiB
+        storeMinFree
+        storeMaxFree
         ;
     };
+    # The complete, readable statement of what is in this image. A measurement
+    # input never travels in `specialArgs`, where it would be in scope for the
+    # whole module tree and auditable only by grepping it.
     modules = [
       microvm.nixosModules.microvm
       ./guest.nix
-    ];
+    ]
+    ++ measurementModules;
   };
   launchArguments = import ./launch-arguments.nix {
     inherit
@@ -102,81 +149,49 @@ let
       gcInterlockCanaryExpression
       gcInterlockControlExpression
       ;
+    # Launch-channel, so it must not reach the guest: this is what keeps the four
+    # pool-size variants on one guest closure and makes the sweep four short
+    # boots rather than four full rebuilds.
+    inherit (v) virtiofsdThreadPoolSize;
     inherit (guest) config;
     inherit (nixpkgs) lib;
   };
   runner = import ./runner.nix { inherit pkgs launchArguments; };
-  contract = pkgs.runCommand "vivarium-first-microvm-contract" { nativeBuildInputs = [ pkgs.jq ]; } ''
-    set -eu
-    # The volume label is a build-to-launch contract that only a boot test would
-    # otherwise catch: the launcher's mkfs applies it, and the guest resolves the
-    # volume through /dev/disk/by-label/<label>. Compare the two independently
-    # realised artifacts — the launcher's own JSON and the guest's own fstab —
-    # rather than two copies of one Nix constant, which cannot disagree.
-    launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' \
-      ${runner}/bin/vivarium-first-microvm | head -n1)
-    test -n "$launcher_json"
-    fstab=${guest.config.system.build.toplevel}/etc/fstab
-    for label in ${volumeLabel} ${storeVolumeLabel}; do
-      grep -F "\"label\":\"$label\"" "$launcher_json"
-      grep -F "/dev/disk/by-label/$label" "$fstab"
-    done
-    # Order is a contract between cloud-hypervisor's `--disk` sequence and
-    # microvm.nix's drive-letter assignment, so assert the sequence itself rather
-    # than only that both rows exist.
-    test "$(jq -r '[.volumeLaunch[].label] | join(",")' "$launcher_json")" = '${volumeLabel},${storeVolumeLabel}'
-    # ADR-0091: exactly one volume is provisioned for inodes, and it is the one
-    # whose mount point is the writable store overlay.
-    test "$(jq -r '[.volumeLaunch[] | select(.inodeRatio != null) | .argName] | join(",")' "$launcher_json")" = store-volume
-    test "$(jq -r '.volumeLaunch[] | select(.argName == "store-volume") | .inodeRatio' "$launcher_json")" = 8192
-    # ADR-0087: the store volume backs the writable layer, so the guest must
-    # resolve it at ${storeVolumeLabel} and mount it before /nix/store exists.
-    awk '$2 == "/nix/.rw-store"' "$fstab" | grep -qF '/dev/disk/by-label/${storeVolumeLabel}'
-    # ADR-0088's interposed overlay, without which the read-only lower store
-    # cannot create the .links directory LocalStore makes unconditionally.
-    grep -E '^overlay[[:space:]]+/nix/\.local-overlay-lower-store[[:space:]]+overlay' "$fstab"
-    # The daemon must be pointed at a local-overlay store through an
-    # EnvironmentFile — never Environment=, where systemd would read the URI's
-    # percent-encoding as unit specifiers.
-    # nix ships its own nix-daemon.service, so NixOS renders every override into
-    # a drop-in beside it rather than into the unit; read both.
-    daemon_units=$(echo ${guest.config.system.build.toplevel}/etc/systemd/system/nix-daemon.service \
-      ${guest.config.system.build.toplevel}/etc/systemd/system/nix-daemon.service.d/*.conf)
-    environment_file=$(cat $daemon_units | sed -n 's/^EnvironmentFile=//p' | head -n1)
-    test -n "$environment_file"
-    grep -qF 'NIX_REMOTE=local-overlay://' "$environment_file"
-    ! cat $daemon_units | grep -qE '^Environment=.*NIX_REMOTE'
-    # Both flags: the lower store's read-only=true parameter sits behind the
-    # second one, and enabling only the first fails at daemon start.
-    for feature in local-overlay-store read-only-local-store; do
-      grep -qE "^experimental-features = .*\b$feature\b" ${guest.config.system.build.toplevel}/etc/nix/nix.conf
-    done
-    # Per-share virtiofsd policy must reach the launcher from the guest module.
-    grep -F '"cache":"always"' "$launcher_json"
-    grep -F '"cache":"auto"' "$launcher_json"
-    grep -E '^overlay[[:space:]]+/nix/store[[:space:]]+overlay' "$fstab"
-    # spec/06:22 — the read-only share must be read-only inside the guest too,
-    # which upstream's generated `defaults` does not give us.
-    ro_store_options=$(awk '$2 == "/nix/.ro-store" { print $4 }' "$fstab")
-    for flag in ro nodev nosuid noexec; do
-      case ",$ro_store_options," in
-        *",$flag,"*) ;;
-        *) echo "read-only store mount is missing $flag: $ro_store_options" >&2; exit 1 ;;
-      esac
-    done
-    # The regression guard for ADR-0088's one divergence from the prior art:
-    # forcing `writableStoreOverlay` to null — as the vendored module does —
-    # makes upstream emit its own `What=store` drop-in in place of this one, and
-    # this line is what would catch it.
-    # ADR-0085: the three canary expressions must stay three. A copy-paste that
-    # re-collided any pair would silently make the store spike and the GC-interlock
-    # experiment operate on one path — each deleting the other's subject — and
-    # nothing else in the tree would notice.
-    test "$(jq -r '[.storeCanaryExpression, .gcInterlockCanaryExpression, .gcInterlockControlExpression] | unique | length' "$launcher_json")" = 3
-    grep -F 'What=overlay' ${guest.config.system.build.toplevel}/etc/systemd/system/nix-store.mount.d/overrides.conf
-    grep -F 'DefaultDependencies=false' ${guest.config.system.build.toplevel}/etc/systemd/system/nix-store.mount.d/overrides.conf
-    touch "$out"
-  '';
+  contract = import ./contract.nix {
+    inherit
+      pkgs
+      guest
+      runner
+      volumeLabel
+      storeVolumeLabel
+      ;
+    expect = {
+      inherit (v)
+        storeMinFree
+        storeMaxFree
+        storeVolumeSizeMiB
+        virtiofsdThreadPoolSize
+        ;
+      units = map (l: "vivarium-${l}.service") (
+        lib.optionals (v.legs != [ ]) (
+          lib.filter (u: u != null) (
+            map (
+              l:
+              {
+                spike = "store-spike";
+                gc-interlock = "gc-interlock";
+                pressure = "store-pressure";
+                bench = "share-benchmark";
+                diagnostic = "first-microvm-diagnostic";
+              }
+              .${l} or null
+            ) v.legs
+          )
+          ++ [ "measurement-stop" ]
+        )
+      );
+    };
+  };
 in
 {
   inherit

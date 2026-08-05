@@ -53,7 +53,12 @@
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || uname -m | sed 's/$/-linux/')
-FLAKE_REF="path:$REPO_ROOT"
+# The microVM is its own flake under `nix/`, not an output of the repository
+# root's. The root flake is the development environment — Rust toolchain,
+# pre-commit runtimes, the devShell direnv activates — and carries no product
+# input or output. `path:` form so the write-mode file set is included without
+# git operations.
+FLAKE_REF="path:$REPO_ROOT/nix"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
@@ -88,7 +93,10 @@ record() { RECORD_COUNT=$((RECORD_COUNT + 1)); printf '%s[RECORD]%s %s\n' "$BLUE
 # DUP: named in one place so a run that skips wholesale reports the same
 # inventory as a run that completes.
 ALL_CHECKS=(
+  store-pressure-flake-attribute
   store-pressure-runner-built
+  store-pressure-thresholds-in-image
+  store-pressure-volume-headroom
   store-pressure-cold-volume
   store-pressure-launch
   store-pressure-console-reader
@@ -101,6 +109,11 @@ ALL_CHECKS=(
   store-pressure-no-premature-enospc
   store-pressure-garbage-accumulates
   store-pressure-itable-progress
+  store-pressure-inodes-not-binding
+  store-pressure-discard-advertised
+  store-pressure-collector-freed
+  store-pressure-fstrim-reclaimed
+  store-pressure-discard-returns-blocks
   store-pressure-host-image-reclamation
   store-pressure-guest-completion
   store-pressure-cleanup
@@ -149,7 +162,7 @@ clean_lane() {
   printf 'clean: removed=%d kept-live=%d\n' "$removed" "$kept"
 }
 
-usage() { printf 'usage: %s [--arm c|d] [--clean]\n' "$0"; }
+usage() { printf 'usage: %s [--arm c|d|e] [--clean]\n' "$0"; }
 
 while (($#)); do
   case $1 in
@@ -163,9 +176,33 @@ while (($#)); do
   esac
 done
 case $ARM in
-  c | d) ;;
-  *) printf 'unknown arm %s (expected c or d)\n' "$ARM" >&2; exit 64 ;;
+  c | d | e) ;;
+  *) printf 'unknown arm %s (expected c, d or e)\n' "$ARM" >&2; exit 64 ;;
 esac
+
+# Arm E is the real-reclamation arm and it runs against a DIFFERENT image: only
+# `nix.settings` at build time reaches `LocalStore::autoGC`, which arm D measured
+# the hard way. The scaled variant's numbers are read out of the image rather
+# than restated here, so this script cannot drift from the flake.
+if [[ $ARM == e ]]; then
+  FLAKE_ATTR=first-microvm-scaled
+  # 64 KiB ballast files, not the 8 KiB arm D uses. A 4 GiB volume at the
+  # mandated `-i 8192` has 524,288 inodes, and 3 GiB of 8 KiB files is 393,216 of
+  # them plus directories — close enough that an inode ENOSPC would read as "the
+  # collector failed to reclaim". This size is chosen for crossing the threshold
+  # safely, and its density says NOTHING about a real store's; `df -i` here is an
+  # exhaustion guard, not a density measurement.
+  FILE_BYTES=${VIVARIUM_PRESSURE_FILE_BYTES:-65536}
+  # ~49k files with a progress line every 64 is ~9,000 extra console lines
+  # competing with the marker stream on a channel where a burst-fidelity defect
+  # is already on the record. The 15s heartbeat already proves liveness.
+  CHATTY=${VIVARIUM_PRESSURE_CHATTY:-no}
+  # Explicit rather than inherited: an exhausted budget must be a deliberate
+  # RECORD, not a silent truncation that later reads as "the collector stopped".
+  BUDGET_SECONDS=${VIVARIUM_PRESSURE_BUDGET:-2400}
+else
+  FLAKE_ATTR=first-microvm-measurement
+fi
 
 mkdir -p "$TEMP_BASE" "$VOLUME_DIR" 2>/dev/null
 TEMP_ROOT=$(mktemp -d "$TEMP_BASE/run.XXXXXX" 2>/dev/null || true)
@@ -189,13 +226,20 @@ printf '  system:    %s\n' "$SYSTEM"
 printf '  scratch:   %s\n' "$TEMP_ROOT"
 printf '  kernel:    %s\n' "$(uname -r)"
 printf '  nix:       %s\n' "$(nix --version 2>/dev/null || echo absent)"
-[[ $ARM == d ]] && printf '  ballast:   %s MiB at %s bytes/file, chatty=%s\n' "$BALLAST_TOTAL_MIB" "$FILE_BYTES" "$CHATTY"
+[[ $ARM == d || $ARM == e ]] && printf '  ballast:   %s MiB at %s bytes/file, chatty=%s, budget=%ss\n' "$BALLAST_TOTAL_MIB" "$FILE_BYTES" "$CHATTY" "$BUDGET_SECONDS"
 printf 'NOTE: symptoms are RECORDs, not verdicts. FAIL means the experiment could\n'
 printf '      not be performed — except store-pressure-trigger-fired, where a\n'
 printf '      trigger that never fires is ADR-0089'"'"'s own prediction failing.\n'
 if [[ $ARM == c ]]; then
   printf 'NOTE: arm C fakes free space, so availAfterGC is faked too. It proves the\n'
-  printf '      trigger and its arithmetic, NOT real reclamation. That is arm D.\n'
+  printf '      trigger and its arithmetic, NOT real reclamation. That is arm E.\n'
+fi
+if [[ $ARM == e ]]; then
+  printf 'NOTE: arm E boots the SCALED image (%s). It writes no daemon config and\n' "$FLAKE_ATTR"
+  printf '      restarts nothing — the thresholds are in the image or the arm skips.\n'
+  printf 'NOTE: a null fstrim result is triaged, never published. The guest emits the\n'
+  printf '      discard chain first, so "not advertised" / "ext4 issued nothing" /\n'
+  printf '      "host did not account" are three findings rather than one silence.\n'
 fi
 printf '\n'
 
@@ -208,13 +252,54 @@ if ! command -v nix >/dev/null 2>&1; then
   exit 1
 fi
 
-runner_out=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm" 2>"$TEMP_ROOT/build.err" | tail -n1)
+# A typo in the variant surface should cost a `nix eval`, not a boot.
+if nix eval --raw "$FLAKE_REF#packages.$SYSTEM.$FLAKE_ATTR.drvPath" >/dev/null 2>"$TEMP_ROOT/eval.err"; then
+  pass "store-pressure-flake-attribute: $FLAKE_ATTR evaluates"
+else
+  fail "store-pressure-flake-attribute: $FLAKE_ATTR does not evaluate" "$(tail -n 10 "$TEMP_ROOT/eval.err")"
+fi
+
+runner_out=$(nix build --no-link --print-out-paths "$FLAKE_REF#$FLAKE_ATTR" 2>"$TEMP_ROOT/build.err" | tail -n1)
 if [[ -z $runner_out ]]; then
   fail "store-pressure-runner-built: the runner could not be built" "$(tail -n 20 "$TEMP_ROOT/build.err")"
   launcher=
 else
   launcher=$runner_out/bin/vivarium-first-microvm
-  pass "store-pressure-runner-built: $launcher"
+  pass "store-pressure-runner-built: $launcher ($FLAKE_ATTR)"
+fi
+
+# The image's OWN thresholds, read from the guest toplevel it will boot. Arm D
+# spent a boot reporting "the trigger did not fire" for a store that had never
+# approached the real threshold, because a config written at run time never
+# reached the daemon. This turns that failure into a pre-boot gate — and arm E
+# asserts the same pair again inside the guest, so a mismatch is loud twice.
+EXPECT_MIN_FREE=; EXPECT_MAX_FREE=
+if [[ -n ${launcher:-} ]]; then
+  # Read the toplevel out of the LAUNCHER the lane is actually going to run,
+  # never from a restated copy of the variant's attrset. The first form of this
+  # gate re-declared the scaled variant here, drifted from the flake the moment
+  # a key was added, and refused a perfectly good image — the same
+  # two-copies-of-one-constant defect `nix/contract.nix` exists to avoid.
+  # cloud-hypervisor's own `--cmdline` names the system it boots.
+  launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$launcher" | head -n1)
+  guest_toplevel=$(jq -r '.staticArguments[]' "$launcher_json" 2>/dev/null \
+    | grep -oE 'init=/nix/store/[^ ]*-nixos-system-[^ /]*' | head -n1 | sed 's/^init=//')
+  if [[ -n $guest_toplevel ]]; then
+    nix-store --realise "$guest_toplevel" >/dev/null 2>&1
+    if [[ -r $guest_toplevel/etc/nix/nix.conf ]]; then
+      EXPECT_MIN_FREE=$(sed -n 's/^min-free = //p' "$guest_toplevel/etc/nix/nix.conf")
+      EXPECT_MAX_FREE=$(sed -n 's/^max-free = //p' "$guest_toplevel/etc/nix/nix.conf")
+    fi
+  fi
+fi
+if [[ -z $EXPECT_MIN_FREE || -z $EXPECT_MAX_FREE ]]; then
+  fail "store-pressure-thresholds-in-image: could not read min-free/max-free out of the image"
+elif [[ $ARM == e ]] && [[ $EXPECT_MIN_FREE != 1073741824 || $EXPECT_MAX_FREE != 1610612736 ]]; then
+  fail "store-pressure-thresholds-in-image: arm E needs the scaled image; got min-free=$EXPECT_MIN_FREE max-free=$EXPECT_MAX_FREE"
+else
+  gap=$(( EXPECT_MAX_FREE - EXPECT_MIN_FREE ))
+  rearm=$(( EXPECT_MAX_FREE * 3 / 100 ))
+  pass "store-pressure-thresholds-in-image: min-free=$EXPECT_MIN_FREE max-free=$EXPECT_MAX_FREE gap=$gap vs 0.97-damper re-arm=$rearm"
 fi
 
 printf -- '\n--- host tier -----------------------------------------------------------\n'
@@ -256,8 +341,35 @@ else
 
   image_allocated() { echo $(( $(stat -c %b -- "$1" 2>/dev/null || echo 0) * $(stat -c %B -- "$1" 2>/dev/null || echo 512) )); }
 
-  printf 'ARM=%s\nBUDGET_SECONDS=%s\nBALLAST_TOTAL_MIB=%s\nFILE_BYTES=%s\nCHATTY=%s\n' \
-    "$ARM" "$BUDGET_SECONDS" "$BALLAST_TOTAL_MIB" "$FILE_BYTES" "$CHATTY" >"$HANDSHAKE/instruction"
+  # Arm E writes ~3 GiB of ballast plus two sparse images into the state root.
+  # An hour lost to a host ENOSPC is the expensive failure, so check both blocks
+  # and inodes before spending the boot. (Everything else a lane needs —
+  # /dev/kvm, systemd as PID 1, the user manager, XDG_RUNTIME_DIR, python3, the
+  # realised launcher — is already preflighted above; re-checking it here would
+  # be the overchecking this round is explicitly avoiding.)
+  need_mib=$(( BALLAST_TOTAL_MIB + 2048 ))
+  avail_mib=$(( $(stat -f -c '%a * %S' "$VOLUME_DIR" | awk '{print $1 * $3}') / 1048576 ))
+  # A filesystem with no fixed inode table (btrfs, xfs, zfs) reports BOTH a total
+  # and a free count of zero, which is "not applicable" and not "exhausted". The
+  # first form of this check read 0 as exhaustion and failed a perfectly healthy
+  # host — a check whose shape encoded a wrong assumption, which is the exact
+  # defect class this harness keeps a method note about. Gate on the TOTAL.
+  total_inodes=$(stat -f -c %c "$VOLUME_DIR")
+  avail_inodes=$(stat -f -c %d "$VOLUME_DIR")
+  host_fstype=$(stat -f -c %T "$VOLUME_DIR")
+  if (( avail_mib < need_mib )); then
+    fail "store-pressure-volume-headroom: $avail_mib MiB free under $VOLUME_DIR, need ~$need_mib MiB"
+  elif (( total_inodes > 0 && avail_inodes < 100000 )); then
+    fail "store-pressure-volume-headroom: only $avail_inodes free inodes under $VOLUME_DIR"
+  elif (( total_inodes == 0 )); then
+    pass "store-pressure-volume-headroom: $avail_mib MiB free, need ~$need_mib MiB (host fs is $host_fstype: inodes are dynamic, so there is no count to check)"
+  else
+    pass "store-pressure-volume-headroom: $avail_mib MiB and $avail_inodes inodes free, need ~$need_mib MiB"
+  fi
+
+  printf 'ARM=%s\nBUDGET_SECONDS=%s\nBALLAST_TOTAL_MIB=%s\nFILE_BYTES=%s\nCHATTY=%s\nEXPECT_MIN_FREE=%s\nEXPECT_MAX_FREE=%s\n' \
+    "$ARM" "$BUDGET_SECONDS" "$BALLAST_TOTAL_MIB" "$FILE_BYTES" "$CHATTY" \
+    "$EXPECT_MIN_FREE" "$EXPECT_MAX_FREE" >"$HANDSHAKE/instruction"
   # DUP: mode 0644 and owned by the invoking user, because virtiofsd maps exactly
   # one identity (host uid -> guest uid 1000) and forbids all others.
   chmod 0644 "$HANDSHAKE/instruction"
@@ -369,6 +481,16 @@ PY
     kill "$sampler_pid" 2>/dev/null; sampler_pid=
     wait "$reader_pid" 2>/dev/null
 
+    # The in-run sampler reads every ten seconds, which can miss the accounting
+    # for a hole punched near the end. One `sync` and one final `stat` after the
+    # VM is gone is what makes the headline number trustworthy — and it costs a
+    # command. (Measured on this host: a punched hole is reflected in `st_blocks`
+    # immediately, so this is belt-and-braces rather than load-bearing; the
+    # calibration is a statement about THIS host, recorded so the numbers can be
+    # read, never a product claim about host filesystems.)
+    sync
+    printf '%s %s %s post-teardown\n' "$(date +%s)" "$(image_allocated "$store_volume")" "$(image_allocated "$volume")" >>"$image_series"
+
     # DUP: read markers BY NAME, never by position, after stripping the journal's
     # ANSI decoration and carriage returns.
     sp_all=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null | grep -ao 'VIVARIUM_STORE_PRESSURE_[A-Z_0-9]*=.*' || true)
@@ -472,6 +594,77 @@ PY
           skip "store-pressure-garbage-accumulates: the guest reported no dead-path counts"
         fi
 
+        # An inode ceiling reached before a block ceiling would read as "the
+        # collector failed to reclaim", and it is not the same finding. `%d` is
+        # free file nodes in the guest's own statvfs samples.
+        free_inodes=$(grep -o 'upper=[0-9]* [0-9]* [0-9]* [0-9]* [0-9]*' <<<"$(sp_lines SAMPLE)" | awk '{print $5}' | sort -n | head -n1)
+        if [[ -z $free_inodes ]]; then
+          skip "store-pressure-inodes-not-binding: no statvfs samples carried a free-file-node count"
+        elif ((free_inodes < 1000)); then
+          fail "store-pressure-inodes-not-binding: free inodes fell to $free_inodes — this run measured inode exhaustion, NOT reclamation, and its collector numbers must not be read as such"
+        else
+          pass "store-pressure-inodes-not-binding: free inodes bottomed at $free_inodes, so blocks bound first and the reclamation reading means what it says"
+        fi
+
+        if [[ $ARM != e ]]; then
+          skip "store-pressure-discard-advertised: only arm E exercises the discard chain"
+          skip "store-pressure-fstrim-reclaimed: only arm E exercises the discard chain"
+        else
+          dmax=$(sp_line DISCARD_MAX_BYTES); dgran=$(sp_line DISCARD_GRANULARITY)
+          dlsblk=$(sp_line DISCARD_LSBLK); dmount=$(sp_line MOUNT_OPTS)
+          record "store-pressure-discard-advertised: discard_max_bytes=$dmax granularity=$dgran lsblk=$dlsblk mount=$dmount"
+          if [[ -n $dmax && $dmax != 0 ]]; then
+            pass "store-pressure-discard-advertised: the guest driver negotiated VIRTIO_BLK_F_DISCARD, so cloud-hypervisor advertised it under sparse=on"
+          else
+            fail "store-pressure-discard-advertised: the guest reports no discard support, so a null trim below says nothing about reclamation"
+          fi
+
+          # Did the COLLECTOR free anything? Separate from whether discard
+          # works: a collection that frees nothing leaves the trim with nothing
+          # to return, and the two must not be read as one result.
+          dead_first=$(grep -o 'dead=[0-9]*' <<<"$(sp_lines SAMPLE)" | head -n1 | cut -d= -f2)
+          dead_after=$(grep -a 'SAMPLE=BEFORE_FSTRIM ' <<<"$sp_all" | grep -o 'dead=[0-9]*' | cut -d= -f2)
+          free_before_gc=$(grep -a "SAMPLE=ARME_$(( $(grep -c 'SAMPLE=ARME_' <<<"$sp_all") - 2 )) " <<<"$sp_all" | awk '{split($0,a,"merged="); split(a[2],b," "); print b[1]*b[2]}')
+          free_after_gc=$(grep -a 'SAMPLE=BEFORE_FSTRIM ' <<<"$sp_all" | awk '{split($0,a,"merged="); split(a[2],b," "); print b[1]*b[2]}')
+          record "store-pressure-collector-freed: dead paths first=$dead_first at-trim=$dead_after; guest free bytes before-collection=$free_before_gc after=$free_after_gc"
+          if [[ -z $fired_total || $fired_total -eq 0 ]]; then
+            skip "store-pressure-collector-freed: no collection was announced, so there is nothing to attribute"
+          elif [[ -n $dead_after && -n $dead_first ]] && ((dead_after > dead_first)); then
+            record "store-pressure-collector-freed: the collector announced a target but the dead-path count ROSE across the run and guest free space did not recover — the collection freed nothing measurable. This is a finding about the collector over a local-overlay store, NOT about discard, and the probe below is what separates them."
+            pass "store-pressure-collector-freed: the collector's real effect is on the record"
+          else
+            pass "store-pressure-collector-freed: dead paths fell from $dead_first to $dead_after, so the collection removed store paths"
+          fi
+
+          trim=$(sp_line FSTRIM)
+          record "store-pressure-fstrim-reclaimed: fstrim reported: ''${trim:-nothing}"
+          if [[ -z $trim ]]; then
+            skip "store-pressure-fstrim-reclaimed: the guest never reported an fstrim result"
+          elif grep -qi 'not supported\|EOPNOTSUPP' <<<"$trim"; then
+            fail "store-pressure-fstrim-reclaimed: the filesystem refused the trim ioctl"
+          else
+            # fstrim's own figure is the LENGTH OF THE RANGES handed to the
+            # kernel, not host bytes freed. The headline is the host image's
+            # allocated-block delta below; this line is context.
+            pass "store-pressure-fstrim-reclaimed: the trim was issued and accepted; the host-side delta below is the reclamation number"
+          fi
+        fi
+
+        # The discard chain, measured with a plain file so the collector cannot
+        # confound it. The host-side numbers come from the image series below.
+        if [[ $ARM != e ]]; then
+          skip "store-pressure-discard-returns-blocks: only arm E runs the discard probe"
+        else
+          probe_written=$(sp_line DISCARD_PROBE)
+          probe_trim=$(sp_line DISCARD_PROBE_FSTRIM)
+          record "store-pressure-discard-returns-blocks: probe $probe_written; trim after delete: $probe_trim"
+          if [[ -z $probe_written ]]; then
+            skip "store-pressure-discard-returns-blocks: the guest never reported the probe"
+          else
+            pass "store-pressure-discard-returns-blocks: the probe ran; the host-side allocated-block delta below is the answer"
+          fi
+        fi
+
         it_start=$(sp_line ITABLE_ZEROED); it_end=$(sp_line ITABLE_ZEROED_END)
         it_groups=$(sp_line ITABLE_GROUPS)
         record "store-pressure-itable-progress: ITABLE_ZEROED groups start=$it_start end=$it_end of $it_groups total"
@@ -489,7 +682,16 @@ PY
       peak_alloc=$(awk '{if ($2 > m) m = $2} END {print m+0}' "$image_series")
       record "store-pressure-host-image-reclamation: store image allocated bytes first=$first_alloc peak=$peak_alloc last=$last_alloc across $(wc -l <"$image_series") samples"
       if ((last_alloc >= peak_alloc)); then
-        pass "store-pressure-host-image-reclamation: the host image never shrank, which is ADR-0037's expected behaviour absent discard plumbing"
+        if [[ $ARM == e ]]; then
+          # Triage, not a verdict. Four causes are possible and only three have
+          # been eliminated above; publishing "sparse images do not reclaim"
+          # from this line alone would move an N22 property on a broken
+          # experiment. RECORD it and let the discard-chain checks decide.
+          record "store-pressure-host-image-reclamation: the image did NOT shrink after an accepted fstrim. Triage before concluding: see store-pressure-discard-advertised (was it advertised?), the guest MOUNT_OPTS (did ext4 issue?), and the post-teardown sample (did the host account late?). Do not read this as ADR-0037 failing until all three are eliminated."
+          pass "store-pressure-host-image-reclamation: the null result and its distinguishers are on the record"
+        else
+          pass "store-pressure-host-image-reclamation: the host image never shrank, which is ADR-0037's expected behaviour absent an explicit trim"
+        fi
       else
         record "store-pressure-host-image-reclamation: the image SHRANK from $peak_alloc to $last_alloc — blocks were returned to the host"
         pass "store-pressure-host-image-reclamation: a reduction was observed and recorded"

@@ -6,7 +6,15 @@
 
 `scripts/store-density-check` is a third sibling, and the only one that never boots anything. It measures the host store's bytes-per-inode distribution and reads a freshly created store volume's inode table with `dumpe2fs`, both of which answer ADR-0091 questions that no amount of booting could reach. It needs Nix and nothing else — no `/dev/kvm`, no systemd.
 
-This page is the lookup material for all three: what each check proves, and the register of what has actually been verified. It holds no design rationale — that lives in the ADRs each section names.
+`scripts/store-pressure-check` drives the guest store to a real space crossing. Its `--arm c` fakes free space through upstream Nix's own test hook, so it proves the trigger and its arithmetic and nothing about reclamation; `--arm e` boots a **different image** whose thresholds are scaled at build time and whose store daemon has no hook at all, which is the only shape that can measure a real collection.
+
+`scripts/share-benchmark-check` is the fifth, and the only one that boots more than once per invocation: it sweeps virtiofsd's worker-pool size across four launcher variants that share one guest closure, and measures what working through a share costs against the guest's own volume.
+
+**Since ADR-0095, every probe unit lives in a measurement image rather than the shipped one.** The lanes that boot build `nix#first-microvm-measurement` or a purpose-built variant; `packages.first-microvm` — the artifact a user gets — contains no probe, no upstream test hook, and no way to stop itself. That last point is deliberate: the harness stops it with `ch-remote power-button` over the API socket, which is the path a user's `stop` will take.
+
+**The microVM is its own flake, at `nix/flake.nix`.** The repository root's flake is the development environment — Rust toolchain, pre-commit runtimes, the devShell direnv activates — and carries no product input or output, which is why every lane resolves `path:$REPO_ROOT/nix` and only the lint checks reach back to the root for their tools.
+
+This page is the lookup material for all five: what each check proves, and the register of what has actually been verified. It holds no design rationale — that lives in the ADRs each section names.
 
 Each script also accepts `--clean`, which removes that lane's retained images, logs and orphaned run directories and exits. It is opt-in on purpose: the retained store volume is what makes the _warm_ half of the persistence pair possible, and the console log is a run's primary evidence, so neither may be tidied away as a side effect of a normal exit. A run directory whose `.pid` files still name a live process is kept, not removed.
 
@@ -312,12 +320,118 @@ Measured across both pressure arms by sampling the store image's allocated block
 
 The same sampling closes part of ADR-0091's lazy-inode-table question from the other side. By the time the measurement unit ran, `dumpe2fs` inside the guest reported **256 of 257** block groups already carrying `ITABLE_ZEROED`, and the count was unchanged at the end of the run. So `ext4lazyinit` completes early in a guest's life rather than lingering — which is why the three-minute VMs of the persistence spike saw only partial allocation, and why the hazard is a first-minutes cost rather than a long-session one. What the host image shows over the same window is a rise from 273 MB to about 456 MB in arm C, well short of the full 1 GiB table, so the zeroing does not materialise as a gibibyte of host allocation.
 
+### ADR-0089's trigger fires on a real filesystem, and the collection frees nothing
+
+Measured by `scripts/store-pressure-check --arm e` on a real host — guest kernel 6.18.38, guest Nix 2.34.7, cloud-hypervisor 52.0, virtiofsd 1.13.3, store image on the host's btrfs. This is the arm the earlier ones could not reach: arm C drove the trigger through upstream's own free-space **test hook**, so `availAfterGC` was faked along with everything else, and arm D never reached the collector at all. Arm E boots an image whose `nix.settings` carry scaled thresholds — the only route into `LocalStore::autoGC` — and whose store daemon has **no test hook at all**, so every number below comes from real `statvfs` on real ext4.
+
+Image: 4 GiB store volume, `min-free` 1 GiB, `max-free` 1.5 GiB. The gap is 33% of `max-free` against `autoGC`'s 3% re-arm damper, so silence between passes could not have been the damper.
+
+**The trigger fires, and its arithmetic is exact on real free space.** Twelve 256 MiB ballast iterations drove free space from 3,843,940,352 down past `min-free`. On the iteration that crossed, the daemon announced one auto-GC and asked to free **754,675,712** bytes. Available at that moment was 855,937,024, and `1,610,612,736 − 855,937,024 = 754,675,712` exactly. ADR-0089's "collect until `max-free` is free again" is therefore confirmed against a real filesystem, not only against a hook.
+
+**And the collection freed nothing.** This is the finding.
+
+| quantity                                   | before the collection | after       |
+| ------------------------------------------ | --------------------- | ----------- |
+| guest free bytes (`statvfs`, merged store) | 855,937,024           | 587,325,440 |
+| dead paths (`nix-store --gc --print-dead`) | 24,923                | 24,949      |
+
+Free space did not recover — it fell by the 256 MiB the same iteration wrote — and the dead-path count **rose monotonically across the whole run and never fell**. No path was reclaimed. The host image's allocated blocks tell the same story from the outside.
+
+**Stated gap: the cause is a hypothesis, not a measurement.** The dead set here is ~24,900 paths, which is essentially the entire host store seen through the overlay's lower layer, and a `local-overlay` store deliberately declines to delete a path that is valid only below. The collector's own `bytesFreed` is **apparent size** rather than allocated blocks — already on record — so it could satisfy a byte target by walking lower-only paths that cost the upper filesystem nothing, and stop. That is consistent with everything observed and **none of it is measured**. Closing it needs the collector's own deletion decisions instrumented per path, not another boot of this shape.
+
+**What this does not say.** It does not say ADR-0089's policy is wrong, and it does not license a second collection mechanism. It says the policy does not currently bound the store volume in _this topology_, and that the reason is unknown.
+
+### Guest `fstrim` does return blocks to the host, measured on a probe the collector cannot confound
+
+Same run, same host. The trim that follows the collection above returned nothing — but that is uninterpretable, because a discard can only return blocks the **filesystem** freed and the collection had freed none. So the discard chain is measured separately, with a plain file and no Nix involvement at all: write 1 GiB into the store volume, `sync`, delete it, `sync`, `fstrim`.
+
+| point               | guest free space | host image allocated blocks |
+| ------------------- | ---------------- | --------------------------- |
+| before the probe    | 560.1 MiB        | 3,206,057,984 (3058.0 MiB)  |
+| probe written       | 0.0 MiB          | 4,132,691,968 (3941.2 MiB)  |
+| deleted and trimmed | 560.1 MiB        | 3,331,567,616 (3177.1 MiB)  |
+
+**The host image shrank by 801,124,352 bytes (764.0 MiB).** Blocks written inside the guest and then freed were returned to the host, through `fstrim` → `VIRTIO_BLK_T_DISCARD` → `fallocate(PUNCH_HOLE)`. Every layer of that chain was already verified in upstream source; this is the number that was missing, and it is [`../decisions/ADR-0037-volume-disk-format-and-reclamation.md`](../decisions/ADR-0037-volume-disk-format-and-reclamation.md)'s sparse-image promise holding on real hardware.
+
+The guest's own view corroborates: the driver reported `discard_max_bytes=2199023255040` and `discard_granularity=512`, so cloud-hypervisor advertised DISCARD under `sparse=on` and the guest negotiated `VIRTIO_BLK_F_DISCARD`. `fstrim` itself reported 1017.7 MiB "trimmed", which is the **length of the ranges handed to the kernel** and not host bytes freed — the host-side allocated-block delta is the reclamation number, and the two differ by construction.
+
+**Why the two legs had to be separated.** A single "collect, then trim, then look" experiment produces one null result with four possible causes. Splitting it gives two findings with two different homes: the collector frees nothing (open), and discard works (closed).
+
+### The `st_blocks` metric is valid on this host, checked before it was relied on
+
+Every reclamation number above is an allocated-block delta on an image file, and this host's `/home` is copy-on-write btrfs (`rw,relatime,ssd,space_cache=v2`, no compression), where delayed allocation could in principle hide a punched hole until a transaction commits. Checked rather than assumed: write 256 MiB, `sync`, read `st_blocks`; punch a 128 MiB hole with `fallocate --punch-hole --keep-size`; read again immediately, after `sync`, and after `sync` plus 35 s — longer than btrfs's 30 s default commit interval.
+
+All three reads returned **134,217,728 bytes freed, exactly the hole, with no wait required**. The metric is sound here.
+
+This is a statement about **this host**, recorded so the numbers above can be read. It is not a claim about host filesystems in general and must not become one in `docs/` — which is also why the reclamation lane was left where it already runs rather than relocated to find a friendlier filesystem.
+
+### The worker-pool sweep does not discriminate, because the workload the backlog names has no concurrency
+
+Measured by `scripts/share-benchmark-check` across `--thread-pool-size` {0, 1, 2, 4}, four boots sharing **one guest closure** — the pool size is launch-channel, and the lane asserts that closure equality before spending the boots. 50,000-file tree, generated once host-side and copied to the volume so both filesystems hold byte-identical content, digests compared on every boot. The guest page cache is dropped before **every** repetition, because the workspace share is `cache = "auto"` and a warm cache issues no filesystem traffic at all — which is the condition under which this measurement would say nothing.
+
+| workload                               | pool 0 | pool 1 | pool 2 | pool 4 |
+| -------------------------------------- | ------ | ------ | ------ | ------ |
+| `git status`, virtiofs (ms, best of 3) | 271    | 309    | 275    | 304    |
+| `rg`, virtiofs (ms, best of 3)         | 693    | 922    | 884    | 1058   |
+| `git status`, ext4 volume (baseline)   | 60     | 58     | 59     | 68     |
+| `rg`, ext4 volume (baseline)           | 296    | 337    | 305    | 315    |
+
+**The metadata leg does not separate the pool sizes**: the spread _within_ one pool's three repetitions (271–369 ms at pool 0) is wider than the spread _between_ pools.
+
+**The content leg does separate them, and it runs backwards** — repetitions are tight (693/695/703 at pool 0; 1058/1085/1090 at pool 4), so a 1.5× penalty at pool 4 is not noise.
+
+**This does not move [`../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md`](../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md)'s constant, and the reason is the important part.** A non-zero pool exists to serve **concurrent** requests; with the pool disabled the daemon executes every request for that share on one thread, in order, with head-of-line blocking. Both workloads here are a single process, so neither exercises the thing the pool is for. What the numbers show is per-request dispatch overhead with nothing to overlap — a real cost, measured, and not the case the decision turns on. `todo.md`'s prescription of `git status` + `rg` cannot settle this constant; a concurrent workload is needed.
+
+### Working over the share costs about four times a local volume for metadata
+
+Same run. Against a byte-identical tree on the guest's own ext4 volume, `git status` over virtiofs is **4.5–5×** slower (271–304 ms against 58–68 ms) and `rg` is **2.3–3×** slower (693–1058 ms against 296–343 ms). That is the first measured figure behind [`spec/06`](./spec/06-workspace-and-project-environment.md)'s "keep regenerable caches off the share", which until now was argued from negative-lookup semantics alone.
+
+**The cache-placement leg did not discriminate** — 62–81 ms with the tool cache on the share and on the volume alike, across every pool size — and it was a _proxy_ for a cache workload rather than a cache workload. So `spec/06`'s guidance keeps its semantic argument and gains a ratio, and the claim that the layout choice is "the larger win" stays unmade, exactly as `todo.md` requires.
+
+Block throughput on the guest's volume, for context: sustained writes **1.4–1.5 GB/s** and reads **6.8–7.8 GB/s** with `O_DIRECT`, uniform across pool sizes as expected — the block path does not go through the filesystem daemon. First-pass writes ranged from 64 MB/s to 1.5 GB/s and are **not** comparable: the volume is a sparse image on copy-on-write btrfs, so a first write measures allocation. The second pass is the number.
+
+**Stated gap: `guest_userspace_ms` came back empty on all four boots.** `systemd-analyze time` produced nothing from inside the measurement unit, so the guest-side half of boot timing is unmeasured. The host-side interval — launcher `exec` to console socket — was 247–371 ms across the four boots, and the shipped image reached `multi-user.target` in **7.1 s**. Neither is upstream Cloud Hypervisor's `boot_time_ms`, which measures a kernel-internal debug-I/O-port interval; see the naming note below.
+
+### Cloud Hypervisor's published metric names are not reusable, so vivarium's benchmark uses its own
+
+Not measured on a host — established from upstream source at the pinned v52.0, and recorded because `todo.md` instructed the opposite and the instruction was a bet that lost.
+
+`docs/performance_metrics.md` at that tag is a catalogue of names with **no definitions**. The implementation supplies them, and they are not what vivarium measures: `boot_time_ms` is the interval between guest debug-I/O-port codes `0x40` (kernel start) and `0x41` (user-space start) — a kernel-internal window that excludes everything before kernel entry — and `block_read_MiBps`/`block_write_MiBps` come from `fio --direct=1 --bs=4k --ioengine=io_uring` against a **raw dedicated block device**. vivarium's figures are a launcher-to-ready wall-clock interval and `dd` against a mounted filesystem.
+
+Publishing different measurements under upstream's names would be this register's own method note failing at the level of naming, and it is the shape most likely to survive review and mislead a later reader. Every vivarium benchmark figure therefore carries a vivarium name — `workspace_git_status_ms`, `home_volume_read_MiBps`, and so on — and the harness states the parameters with the number. Reproducing upstream's instrumentation was considered and refused: it is machinery in service of a comparison this project does not need.
+
+### The base image boots and stops without carrying anything that measures it
+
+Measured on a real host after the probe units moved out of the shipped image. `nix#first-microvm` reached `Reached target Multi-User System` **7.1 s** after the launcher was executed, with its console showing ordinary systemd status and no vivarium unit but `vivarium-volume-prepare.service`. The host then stopped it with `ch-remote power-button` over the API socket: the guest ran its full shutdown transaction and reached `System Power Off` **2.0 s** later, and the runtime directory was empty afterwards.
+
+Two things this closes. The ACPI power-button path was **unverified** — the guest module configures no `logind` policy and no ACPI handling, so whether a power button reached a poweroff depended on kernel and `systemd-logind` defaults neither of which had been confirmed by booting. It does. And it is the mechanism [`../decisions/ADR-0095-measurement-services-live-in-a-measurement-image.md`](../decisions/ADR-0095-measurement-services-live-in-a-measurement-image.md) relies on, since the shipped image deliberately has no way to stop itself.
+
+The shutdown log also shows `Stopping Create swap on /dev/zram0`, which is [`../decisions/ADR-0094-guest-memory-posture-takes-the-distribution-defaults.md`](../decisions/ADR-0094-guest-memory-posture-takes-the-distribution-defaults.md)'s posture **activated** rather than merely configured — the distinction that matters, because the swap device is generated rather than declared and its own upstream documents a reset race that can leave one initialised but unusable.
+
+### Relocating the probe units changed nothing about what they measure
+
+Not a host measurement — a build-time comparison, recorded because it is what licenses _not_ re-running three already-closed lanes.
+
+The three legs that produced this register's existing entries — `vivarium-store-spike`, `vivarium-gc-interlock`, `vivarium-store-pressure` — resolve to the **same script derivation** before and after the move, which is stronger than a textual diff because the derivation is content-addressed by its body. Their `After=` dependency sets are identical; only the _order_ systemd emits them in changed, which it treats as a set. `/etc/tmpfiles.d/00-nixos.conf` is an identical set on both sides.
+
+Two deltas are intended and are the point of the change: the shipped image's unit set is now exactly `vivarium-volume-prepare.service`, with no upstream Nix test hook on its store daemon and no `systemctl poweroff` anywhere; and a composed `vivarium-measurement-stop` unit owns stopping, so an image built with any leg selection stops instead of only the one that happened to include the diagnostic.
+
+Confirmed by boot: `scripts/first-microvm-check` against the measurement image returned `PASS=33 FAIL=0 SKIP=1`, identical to the cold-boot result recorded for the pre-refactor image.
+
 ## The method note
 
-Three of this harness's own checks have been defects of the same shape — a check whose _form_ encoded a wrong assumption, so it passed or failed for the wrong reason:
+Five of this harness's own checks have been defects of the same shape — a check whose _form_ encoded a wrong assumption, so it passed or failed for the wrong reason:
 
 - demanding a seccomp filter of a thread-group leader that never carries one;
 - a `[PASS]` that tested process exit status while claiming the guest diagnostic had completed;
-- a burst-fidelity check comparing **bytes** against a threshold that the guest log daemon's own line prefixes cleared unaided, while lines were genuinely missing.
+- a burst-fidelity check comparing **bytes** against a threshold that the guest log daemon's own line prefixes cleared unaided, while lines were genuinely missing;
+- an inode-headroom gate that read a free-inode count of zero as exhaustion, when a filesystem with no fixed inode table reports zero for **both** the total and the free count and means "not applicable". It failed a host with 160 GiB free;
+- an image that carried upstream Nix's free-space **test hook** into an arm measuring a real crossing. The hook was seeded far above the threshold, so it was inert _by value_ — and the arm needed it absent _by construction_. A daemon reading a file that says one tebibyte never consults `statvfs` at all, so the run reported "the trigger did not fire" about a trigger that was never shown the crossing.
 
 A check that fails is cheap. A check that passes vacuously, or fails for the wrong reason, sends the fix to the wrong layer — and the third one above hid a real transport defect behind a green result for two rounds. When a check's subject and its assertion can drift apart, assert on the thing the check is named after.
+
+The last two are worth separating from the first three, because they are not about assertions at all. **Inert is not absent.** A knob set to a harmless value is still a knob in the path, and an experiment that needs the path clear must remove it rather than neutralise it. And **a value that is "not applicable" is not a value**: before treating a reading as a quantity, check that the thing being read has one.
+
+These are all defects in _checks_. The same round produced one in the repository's own shape, and it is worth naming beside them because the failure mode is identical: the root flake had been accumulating product outputs one plausible line at a time, until a dev-environment file was building guests. Prose alone would not have caught the next one, so `scripts/check-flake-boundary` now asserts it as a pre-commit hook — on the flake's **evaluated attribute names**, not its source text, because an output merged in with `//` is invisible to a grep and that is exactly the shape that got through. The rule itself lives in `AGENTS.md`.
+
+One more, from the same round and cheaper to state: a lane that **restates** a build-time constant instead of reading it out of the artifact will drift the moment the artifact gains a parameter. The threshold gate here re-declared the scaled variant's attrset, drifted, and refused a correct image — the same two-copies-of-one-constant defect the build contract exists to avoid. It now reads the guest system out of the launcher's own `--cmdline`.

@@ -5,6 +5,11 @@
   storeCanaryExpression,
   gcInterlockCanaryExpression,
   gcInterlockControlExpression,
+  # ADR-0051 pins a small non-zero pool, uniform across shares. The *value* lives
+  # here rather than in `spec/06`, which states the property only, precisely so a
+  # benchmark can move it without touching a specified sentence. Parameterised so
+  # the sweep varies it without rebuilding the guest (ADR-0095).
+  virtiofsdThreadPoolSize ? 4,
 }:
 
 let
@@ -136,8 +141,14 @@ in
   };
   # Launcher-owned virtiofsd constants, kept here so the launcher reads every
   # daemon parameter from one place rather than from bash literals.
-  virtiofsdThreadPoolSize = 4;
+  #
+  # `never` is justified as **determinism**, not as descriptor economy: the
+  # daemon's own default is `prefer`, and it downgrades `Prefer -> Never` at
+  # startup whenever a handle cannot be opened, so under the N20 profile the two
+  # are behaviourally identical today. Pinning `never` is what stops behaviour
+  # changing silently if the capability is ever granted.
   virtiofsdInodeFileHandles = "never";
+  inherit virtiofsdThreadPoolSize;
   tokens = {
     apiSocket = "@API_SOCKET@";
     consoleSocket = "@CONSOLE_SOCKET@";

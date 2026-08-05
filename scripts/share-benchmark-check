@@ -1,0 +1,515 @@
+#!/usr/bin/env bash
+
+# Sweep virtiofsd's worker-pool size and measure what it costs a user to work in
+# the sandbox. ADR-0051 pins `4`; upstream's own default is `0` and the one
+# at-scale consumer that measured a metadata-heavy workload pins `1`, so `4` is
+# defensible but is nobody's published default. No amount of reading can pick it
+# — it depends on host cores, request mix and blocking operations — so this lane
+# is the only thing that can move the constant.
+#
+# The pool size is launch-channel, so the four variants share ONE guest closure
+# and this is four launcher builds rather than four image builds. That equality
+# is asserted before any boot is spent; if it ever fails, the sweep's numbers are
+# not comparable and the lane says so instead of publishing them.
+#
+# **Metric names are vivarium's own, deliberately.** Upstream Cloud Hypervisor's
+# `boot_time_ms` is a kernel-internal debug-I/O-port interval and its
+# `block_*_MiBps` is `fio --direct=1 --bs=4k` against a raw device. Neither is
+# what is measured here. Publishing different measurements under upstream's
+# names would be this harness's own method note ("assert on the thing the check
+# is named after") failing at the level of naming — and it is the shape most
+# likely to survive review and mislead a later reader.
+#
+# Output is one `[PASS]`/`[FAIL]`/`[SKIP]`/`[RECORD]` line per check plus a
+# verdict. A `[SKIP]` means *unproven*, never *absent*. A `[RECORD]` is a
+# measurement, not a judgement. FAIL is reserved for "the experiment could not be
+# performed" — a slow pool size is a finding, never a failure.
+
+# DUP: no `set -euo pipefail`. Every check captures its own exit status and turns
+# it into a result line; a failing check must not abort the run.
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || uname -m | sed 's/$/-linux/')
+# The microVM is its own flake under `nix/`, not an output of the repository
+# root's. The root flake is the development environment — Rust toolchain,
+# pre-commit runtimes, the devShell direnv activates — and carries no product
+# input or output. `path:` form so the write-mode file set is included without
+# git operations.
+FLAKE_REF="path:$REPO_ROOT/nix"
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+RECORD_COUNT=0
+
+# shellcheck disable=SC2206  # deliberate word splitting: the override is a list
+POOL_SIZES=(${VIVARIUM_BENCH_POOLS:-0 1 2 4})
+TREE_FILES=${VIVARIUM_BENCH_TREE_FILES:-50000}
+REPS=${VIVARIUM_BENCH_REPS:-3}
+
+# DUP: NOT under $TMPDIR. N24 (runner.nix) refuses a workspace source that
+# resolves to /tmp, /var/tmp or the runtime dir *or to any ancestor of them*, and
+# this script's scratch directory IS the workspace it hands the launcher.
+STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
+TEMP_BASE=${VIVARIUM_BENCH_TEMP_BASE:-$STATE_HOME/vivarium/bench}
+VOLUME_DIR=$STATE_HOME/vivarium/diagnostics
+
+# DUP
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+  GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; RESET=$'\033[0m'
+else
+  GREEN=; RED=; YELLOW=; BLUE=; RESET=
+fi
+
+# DUP
+pass() { PASS_COUNT=$((PASS_COUNT + 1)); printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"; }
+fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"; [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"; }
+skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"; }
+record() { RECORD_COUNT=$((RECORD_COUNT + 1)); printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"; }
+
+# DUP: named in one place so a run that skips wholesale reports the same
+# inventory as a run that completes.
+ALL_CHECKS=(
+  share-bench-flake-attributes
+  share-bench-guest-closure-shared
+  share-bench-pool-sizes-distinct
+  share-bench-tree-generated
+  share-bench-boots
+  share-bench-trees-identical
+  share-bench-metadata-sweep
+  share-bench-content-sweep
+  share-bench-cache-placement
+  share-bench-block-throughput
+  share-bench-boot-timing
+  share-bench-guest-completion
+  share-bench-cleanup
+)
+
+# DUP: `last` is optional and inclusive.
+skip_remaining() {
+  local reason=$1 first=$2 last=${3:-} seen=no check
+  for check in "${ALL_CHECKS[@]}"; do
+    [[ $check == "$first" ]] && seen=yes
+    [[ $seen == yes ]] && skip "$check: $reason"
+    [[ -n $last && $check == "$last" ]] && break
+  done
+}
+
+# DUP: see `first-microvm-check` for why `--clean` is opt-in and why a run
+# directory holding a live pid is kept rather than removed.
+LANE_RUN_PREFIX=share-bench
+clean_lane() {
+  local removed=0 kept=0 entry dir pidfile pid alive n
+  for n in "${POOL_SIZES[@]}" 0 1 2 4; do
+    for entry in "$VOLUME_DIR/share-bench-threads-$n.img" \
+      "$VOLUME_DIR/share-bench-threads-$n-store.img" \
+      "$VOLUME_DIR/share-bench-threads-$n-console.log"; do
+      [[ -e $entry ]] || continue
+      printf 'removing %s (%s bytes allocated)\n' "$entry" "$(($(stat -c %b "$entry") * $(stat -c %B "$entry")))"
+      rm -f -- "$entry" && removed=$((removed + 1))
+    done
+  done
+  [[ -e $VOLUME_DIR/share-bench-results.txt ]] && { printf 'removing %s\n' "$VOLUME_DIR/share-bench-results.txt"; rm -f -- "$VOLUME_DIR/share-bench-results.txt"; removed=$((removed + 1)); }
+  for dir in "${XDG_RUNTIME_DIR:-/nonexistent}"/vivarium/"$LANE_RUN_PREFIX"-*; do
+    [[ -d $dir ]] || continue
+    alive=
+    for pidfile in "$dir"/*.pid; do
+      [[ -f $pidfile ]] || continue
+      pid=$(<"$pidfile")
+      [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null && alive="$alive $pid"
+    done
+    if [[ -n $alive ]]; then
+      printf 'keeping  %s (live pid(s):%s)\n' "$dir" "$alive"
+      kept=$((kept + 1))
+    else
+      printf 'removing %s\n' "$dir"
+      rm -rf -- "$dir" && removed=$((removed + 1))
+    fi
+  done
+  rmdir "${XDG_RUNTIME_DIR:-/nonexistent}/vivarium" 2>/dev/null
+  rm -rf -- "$TEMP_BASE"/run.* 2>/dev/null
+  rmdir "$TEMP_BASE" 2>/dev/null
+  printf 'clean: removed=%d kept-live=%d\n' "$removed" "$kept"
+}
+
+usage() { printf 'usage: %s [--clean]\n' "$0"; }
+
+while (($#)); do
+  case $1 in
+    # TEMP_ROOT does not exist yet at this point — it is created after argument
+    # parsing — so `clean_lane` can rmdir the base without racing its own scratch.
+    --clean) clean_lane; exit 0 ;;
+    -h | --help) usage; exit 0 ;;
+    *) usage >&2; exit 64 ;;
+  esac
+done
+
+mkdir -p "$TEMP_BASE" "$VOLUME_DIR" 2>/dev/null
+TEMP_ROOT=$(mktemp -d "$TEMP_BASE/run.XXXXXX" 2>/dev/null || true)
+if [[ -z $TEMP_ROOT ]]; then
+  printf '[FAIL] cannot create a private scratch directory under %s\n' "$TEMP_BASE" >&2
+  exit 1
+fi
+WORKSPACE=$TEMP_ROOT/workspace
+HANDSHAKE=$WORKSPACE/.vivarium-share-benchmark
+mkdir -p "$HANDSHAKE"
+RESULTS=$VOLUME_DIR/share-bench-results.txt
+
+cleanup() {
+  [[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"
+}
+trap cleanup EXIT INT TERM
+
+printf 'vivarium share benchmark check (ADR-0051 worker-pool sweep)\n'
+printf '  repo:      %s\n' "$REPO_ROOT"
+printf '  system:    %s\n' "$SYSTEM"
+printf '  scratch:   %s\n' "$TEMP_ROOT"
+printf '  kernel:    %s\n' "$(uname -r)"
+printf '  nix:       %s\n' "$(nix --version 2>/dev/null || echo absent)"
+printf '  pools:     %s\n' "${POOL_SIZES[*]}"
+printf '  tree:      %s files, %s repetitions per measurement\n' "$TREE_FILES" "$REPS"
+printf 'NOTE: metric names are vivarium'"'"'s own. Upstream Cloud Hypervisor uses the\n'
+printf '      same words for different measurements; see this script'"'"'s header.\n'
+printf 'NOTE: the guest page cache is dropped before EVERY repetition. The HOST page\n'
+printf '      cache stays warm, which is the honest topology and is stated as such.\n'
+printf '\n'
+
+printf -- '--- evaluation tier -----------------------------------------------------\n'
+
+if ! command -v nix >/dev/null 2>&1; then
+  for check in "${ALL_CHECKS[@]}"; do fail "$check: Nix is absent"; done
+  printf '\nSummary\nPASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+  printf 'VERDICT: FAIL (%d hard check(s) failed)\n' "$FAIL_COUNT"
+  exit 1
+fi
+
+# A typo in the variant surface should cost a `nix eval`, not four boots.
+attrs_ok=yes
+for n in "${POOL_SIZES[@]}"; do
+  nix eval --raw "$FLAKE_REF#packages.$SYSTEM.first-microvm-bench-threads-$n.drvPath" >/dev/null 2>&1 || attrs_ok=no
+done
+if [[ $attrs_ok == yes ]]; then
+  pass "share-bench-flake-attributes: all ${#POOL_SIZES[@]} bench attributes evaluate"
+else
+  fail "share-bench-flake-attributes: at least one bench attribute does not evaluate"
+fi
+
+# The sweep's central premise, asserted rather than assumed: the pool size is
+# launch-channel, so the guest system must be byte-identical across variants. If
+# it ever is not, the four boots measure four different guests and the comparison
+# is void — which would otherwise show up as an inexplicably noisy result.
+guest_drv_of() {
+  nix eval --raw --impure --expr "
+    let f = builtins.getFlake \"$FLAKE_REF\";
+        p = import $REPO_ROOT/nix {
+              nixpkgs = f.inputs.nixpkgs; microvm = f.inputs.microvm; system = \"$SYSTEM\";
+              variant = { legs = [ \"bench\" ]; virtiofsdThreadPoolSize = $1; };
+            };
+    in p.guest.config.system.build.toplevel.drvPath" 2>/dev/null
+}
+ref_drv=$(guest_drv_of "${POOL_SIZES[0]}")
+shared=yes
+for n in "${POOL_SIZES[@]}"; do
+  [[ $(guest_drv_of "$n") == "$ref_drv" ]] || shared=no
+done
+if [[ -z $ref_drv ]]; then
+  fail "share-bench-guest-closure-shared: the guest toplevel could not be evaluated"
+elif [[ $shared == yes ]]; then
+  pass "share-bench-guest-closure-shared: one guest closure across pools ${POOL_SIZES[*]} — the sweep varies only the launcher"
+else
+  fail "share-bench-guest-closure-shared: the guest differs between pool sizes, so the four runs are not comparable"
+fi
+
+# Each launcher must actually carry its own pool size. Four identical runners
+# would produce four plausible, identical numbers and move ADR-0051 on nothing.
+declare -A LAUNCHER
+distinct=yes
+for n in "${POOL_SIZES[@]}"; do
+  r=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm-bench-threads-$n" 2>"$TEMP_ROOT/build-$n.err" | tail -n1)
+  LAUNCHER[$n]=$r/bin/vivarium-first-microvm
+  j=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "${LAUNCHER[$n]}" 2>/dev/null | head -n1)
+  got=$(jq -r '.virtiofsdThreadPoolSize' "$j" 2>/dev/null)
+  [[ $got == "$n" ]] || distinct=no
+  record "share-bench-pool-sizes-distinct: pool=$n launcher declares virtiofsdThreadPoolSize=$got"
+done
+if [[ $distinct == yes ]]; then
+  pass "share-bench-pool-sizes-distinct: every launcher declares the pool size it was built for"
+else
+  fail "share-bench-pool-sizes-distinct: a launcher does not declare the pool size it was built for"
+fi
+
+printf -- '\n--- host tier -----------------------------------------------------------\n'
+
+# DUP: the same prerequisite set as the sibling scripts, accumulated so the skip
+# line names every failure at once.
+missing=()
+[[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
+[[ -r /dev/kvm && -w /dev/kvm ]] || missing+=("/dev/kvm openable read/write")
+[[ -r /proc/1/comm && $(< /proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
+systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
+[[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
+command -v python3 >/dev/null 2>&1 || missing+=("python3 console reader")
+command -v git >/dev/null 2>&1 || missing+=("git (host-side tree generation)")
+for n in "${POOL_SIZES[@]}"; do [[ -x ${LAUNCHER[$n]:-/nonexistent} ]] || missing+=("realised launcher for pool $n"); done
+
+if ((${#missing[@]})); then
+  reason=$(IFS=', '; echo "${missing[*]}")
+  skip_remaining "missing prerequisites: $reason" share-bench-tree-generated
+else
+  # --- the workload tree, generated ONCE, host-side ------------------------
+  # Never inside a timed region, and never twice: the guest copies this same
+  # tree onto the volume so both filesystems hold byte-identical content rather
+  # than similar content. A `git` repository, because the metadata workload the
+  # backlog names is `git status` — an lstat storm over an index — and that is
+  # the shape that actually discriminates pool sizes.
+  tree=$HANDSHAKE/tree
+  mkdir -p "$tree"
+  gen_status=0
+  {
+    per_dir=100
+    dirs=$(( (TREE_FILES + per_dir - 1) / per_dir ))
+    i=0
+    while ((i < dirs)); do
+      d=$tree/d$i
+      mkdir -p "$d"
+      j=0
+      while ((j < per_dir)); do
+        printf 'vivarium %s %s\nlorem ipsum dolor sit amet\n' "$i" "$j" >"$d/f$j.txt"
+        j=$((j + 1))
+      done
+      i=$((i + 1))
+    done
+  } || gen_status=$?
+  if ((gen_status == 0)); then
+    git -C "$tree" init -q 2>/dev/null
+    git -C "$tree" -c user.email=bench@vivarium.invalid -c user.name=bench add -A 2>/dev/null
+    git -C "$tree" -c user.email=bench@vivarium.invalid -c user.name=bench commit -qm bench 2>/dev/null
+  fi
+  tree_count=$(find "$tree" -type f -not -path '*/.git/*' | wc -l)
+  if ((gen_status == 0 && tree_count > 0)); then
+    pass "share-bench-tree-generated: $tree_count files under $tree, committed so \`git status\` has an index to stat against"
+  else
+    fail "share-bench-tree-generated: could not generate the workload tree"
+    skip_remaining "no workload tree" share-bench-boots
+  fi
+
+  mkdir -p "$HANDSHAKE/cache"
+  : >"$RESULTS"
+
+  reader_py=$TEMP_ROOT/console-reader.py
+  cat >"$reader_py" <<'PY'
+import socket, sys, time
+
+path, out_path, idle_timeout = sys.argv[1], sys.argv[2], float(sys.argv[3])
+deadline = time.monotonic() + 30.0
+while True:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(path)
+        break
+    except OSError:
+        sock.close()
+        if time.monotonic() > deadline:
+            sys.exit(1)
+        # DUP-with-a-difference: a tighter poll than the sibling lanes use,
+        # because this lane reports a launcher-to-ready interval and a 0.2s
+        # poll would inject up to 200ms into a ~1000ms figure. Lane-local on
+        # purpose — the shared 0.2s elsewhere is fine and is not touched.
+        time.sleep(0.01)
+sock.settimeout(idle_timeout)
+with open(out_path, "wb", buffering=0) as out:
+    while True:
+        try:
+            chunk = sock.recv(65536)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        out.write(chunk)
+sock.close()
+PY
+
+  if ((tree_count > 0)); then
+    for n in "${POOL_SIZES[@]}"; do
+      printf -- '\n  --- pool size %s ---\n' "$n"
+      run_id="share-bench-$$-$n"
+      runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
+      volume=$VOLUME_DIR/share-bench-threads-$n.img
+      store_volume=$VOLUME_DIR/share-bench-threads-$n-store.img
+      mkdir -p "$runtime_dir"; chmod 0700 "$runtime_dir"
+      launch_log=$TEMP_ROOT/launch-$n.log
+      console_log=$TEMP_ROOT/console-$n.log
+
+      # Cold every time: a warm volume would make the first pool size pay for
+      # filesystem initialisation the others inherit for free.
+      rm -f -- "$volume" "$store_volume"
+
+      printf 'REPS=%s\nTREE=%s\nPOOL=%s\n' "$REPS" "$tree_count" "$n" >"$HANDSHAKE/instruction"
+      # DUP: mode 0644 and owned by the invoking user, because virtiofsd maps
+      # exactly one identity (host uid -> guest uid 1000).
+      chmod 0644 "$HANDSHAKE/instruction"
+
+      launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume "$volume"
+        --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 4096 --vcpu 4)
+
+      launch_attempt=0
+      launch_vm() {
+        launch_attempt=$((launch_attempt + 1))
+        systemd-run --user --scope --quiet --collect --unit="$run_id-$launch_attempt" "${LAUNCHER[$n]}" "${launch_args[@]}" "$@" >"$launch_log" 2>&1 &
+        vm_pid=$!
+      }
+      wait_for_console() {
+        for _ in {1..300}; do
+          [[ -S $runtime_dir/console.sock ]] && return 0
+          kill -0 "$vm_pid" 2>/dev/null || return 1
+          sleep 0.01
+        done
+        return 1
+      }
+
+      launch_epoch_ns=$(date +%s%N)
+      launch_vm
+      launched=no
+      if wait_for_console; then
+        launched=yes
+      else
+        wait "$vm_pid"; launch_status=$?
+        launch_output=$(<"$launch_log")
+        if grep -Eqi 'systemd-run|unknown option|may not be combined|Failed to (start|create) transient' <<<"$launch_output"; then
+          fail "share-bench-boots: pool $n could not start (not Landlock evidence)" "$launch_output"
+        else
+          record "share-bench-boots: pool $n Landlock-on launch failed, retrying once without it; exit=$launch_status"
+          : >"$launch_log"
+          launch_epoch_ns=$(date +%s%N)
+          launch_vm --no-landlock
+          wait_for_console && launched=yes
+        fi
+      fi
+
+      if [[ $launched != yes ]]; then
+        record "share-bench-boots: pool $n never reached the console-socket stage"
+        rmdir "$runtime_dir" 2>/dev/null
+        continue
+      fi
+      socket_ns=$(date +%s%N)
+
+      python3 "$reader_py" "$runtime_dir/console.sock" "$console_log" 300 &
+      reader_pid=$!
+
+      for _ in {1..4000}; do
+        kill -0 "$vm_pid" 2>/dev/null || break
+        sleep 0.5
+      done
+      if kill -0 "$vm_pid" 2>/dev/null; then
+        record "share-bench-boots: pool $n did not shut down within 2000s; terminating"
+        kill -TERM "$vm_pid" 2>/dev/null || true
+      fi
+      wait "$vm_pid" 2>/dev/null; vm_status=$?
+      wait "$reader_pid" 2>/dev/null
+
+      # DUP-with-a-difference: mixed case, because upstream's metric names are
+      # mixed case and vivarium's echo their shape without stealing their words.
+      bench_all=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null | grep -ao 'VIVARIUM_BENCH_[A-Za-z_0-9]*=.*' || true)
+      {
+        printf 'pool=%s vm_status=%s launcher_to_socket_ms=%s\n' "$n" "$vm_status" $(( (socket_ns - launch_epoch_ns) / 1000000 ))
+        printf '%s\n' "$bench_all"
+      } >>"$RESULTS"
+
+      if [[ -n $bench_all ]]; then
+        pass "share-bench-boots: pool $n booted and reported $(grep -c . <<<"$bench_all") marker line(s)"
+      else
+        record "share-bench-boots: pool $n produced no markers"
+      fi
+      rmdir "$runtime_dir" 2>/dev/null
+    done
+
+    # --- read the sweep back ------------------------------------------------
+    bench_field() { grep -a "^VIVARIUM_BENCH_$1=" "$RESULTS" | sed "s/^VIVARIUM_BENCH_$1=//"; }
+    sweep_of() { # sweep_of <metric>
+      local m=$1 n vals
+      for n in "${POOL_SIZES[@]}"; do
+        vals=$(grep -a "^VIVARIUM_BENCH_$m=" "$RESULTS" | grep -a "pool=$n" | awk '{print $1}' | sed "s/^VIVARIUM_BENCH_$m=//" | sort -n | tr '\n' ' ')
+        [[ -n $vals ]] && printf 'pool=%s: %s\n' "$n" "$vals"
+      done
+    }
+
+    tree_lines=$(grep -ac '^VIVARIUM_BENCH_TREE=' "$RESULTS")
+    mismatch=$(grep -a '^VIVARIUM_BENCH_TREE=' "$RESULTS" | awk '{split($0,a,"share_digest="); split(a[2],b," "); split($0,c,"volume_digest="); if (b[1] != c[2]) print}' | wc -l)
+    if ((tree_lines == 0)); then
+      skip "share-bench-trees-identical: no guest reported a tree digest"
+    elif ((mismatch == 0)); then
+      pass "share-bench-trees-identical: share and volume trees matched on every boot, so a share-vs-volume timing difference is the filesystem and not the content"
+    else
+      fail "share-bench-trees-identical: $mismatch boot(s) saw differing trees, so the comparison is void"
+    fi
+
+    for pair in "metadata:workspace_git_status_ms:volume_git_status_ms" "content:workspace_rg_ms:volume_rg_ms"; do
+      label=${pair%%:*}; rest=${pair#*:}; share_m=${rest%%:*}; vol_m=${rest#*:}
+      check="share-bench-metadata-sweep"; [[ $label == content ]] && check="share-bench-content-sweep"
+      s=$(sweep_of "$share_m"); v=$(sweep_of "$vol_m")
+      if [[ -z $s ]]; then
+        skip "$check: the guest reported no $label timings"
+      else
+        record "$check: $label over virtiofs (ms, sorted, per repetition)"$'\n'"$s"
+        record "$check: $label over the ext4 volume, as baseline"$'\n'"$v"
+        pass "$check: the $label sweep across pools ${POOL_SIZES[*]} is on the record"
+      fi
+    done
+
+    cache_share=$(bench_field 'cache_on_share_ms'); cache_vol=$(bench_field 'cache_on_volume_ms')
+    if [[ -z $cache_share && -z $cache_vol ]]; then
+      skip "share-bench-cache-placement: the guest reported no cache-placement timings"
+    else
+      record "share-bench-cache-placement: cache on the share (ms): $(tr '\n' ' ' <<<"$cache_share")"
+      record "share-bench-cache-placement: cache on the volume (ms): $(tr '\n' ' ' <<<"$cache_vol")"
+      record "share-bench-cache-placement: this is a PROXY for a cache workload, not a cache workload. spec/06 argues 'keep regenerable caches off the share' from negative-lookup semantics; do not upgrade that to 'the larger win' on this number alone."
+      pass "share-bench-cache-placement: both placements are on the record"
+    fi
+
+    w=$(bench_field 'home_volume_write_MiBps'); r=$(bench_field 'home_volume_read_MiBps')
+    if [[ -z $w && -z $r ]]; then
+      skip "share-bench-block-throughput: the guest reported no block figures"
+    else
+      record "share-bench-block-throughput: write (pass=1 is first-allocation on a sparse image, pass=2 is steady state): $(tr '\n' ' ' <<<"$w")"
+      record "share-bench-block-throughput: read: $(tr '\n' ' ' <<<"$r")"
+      pass "share-bench-block-throughput: figures are on the record with the first-allocation caveat attached"
+    fi
+
+    host_boot=$(grep -a 'launcher_to_socket_ms=' "$RESULTS" | tr '\n' ' ')
+    guest_boot=$(bench_field 'guest_userspace_ms' | tr '\n' ';')
+    if [[ -z $host_boot && -z $guest_boot ]]; then
+      skip "share-bench-boot-timing: no boot timings were captured"
+    else
+      record "share-bench-boot-timing: host launcher-to-console-socket: $host_boot"
+      record "share-bench-boot-timing: guest userspace-ready: $guest_boot"
+      record "share-bench-boot-timing: two numbers, both named, neither impersonating the other — and neither is upstream's boot_time_ms, which measures a kernel-internal debug-port interval."
+      pass "share-bench-boot-timing: both intervals are on the record"
+    fi
+
+    completed=$(grep -ac '^VIVARIUM_BENCH_COMPLETE=yes' "$RESULTS")
+    if ((completed == ${#POOL_SIZES[@]})); then
+      pass "share-bench-guest-completion: all ${#POOL_SIZES[@]} guests ran the unit to completion"
+    else
+      fail "share-bench-guest-completion: $completed of ${#POOL_SIZES[@]} guests reported COMPLETE"
+    fi
+
+    record "share-bench-guest-completion: full marker stream retained at $RESULTS"
+  fi
+
+  leftover=$(find "${XDG_RUNTIME_DIR:-/nonexistent}/vivarium" -maxdepth 1 -name "$LANE_RUN_PREFIX-$$-*" 2>/dev/null | wc -l)
+  if ((leftover == 0)); then
+    pass "share-bench-cleanup: every run directory this invocation created was removed"
+  else
+    fail "share-bench-cleanup: $leftover run directory/ies from this invocation survived"
+  fi
+  rmdir "${XDG_RUNTIME_DIR:-/nonexistent}/vivarium" 2>/dev/null
+fi
+
+printf '\nSummary\n'
+printf 'PASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+if ((FAIL_COUNT == 0)); then
+  printf 'VERDICT: PASS (RECORD findings are the measurement; SKIPs require a capable host)\n'
+  exit 0
+fi
+printf 'VERDICT: FAIL (%d hard check(s) failed — the experiment could not be performed)\n' "$FAIL_COUNT"
+exit 1

@@ -61,7 +61,12 @@
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || uname -m | sed 's/$/-linux/')
-FLAKE_REF="path:$REPO_ROOT"
+# The microVM is its own flake under `nix/`, not an output of the repository
+# root's. The root flake is the development environment — Rust toolchain,
+# pre-commit runtimes, the devShell direnv activates — and carries no product
+# input or output. `path:` form so the write-mode file set is included without
+# git operations.
+FLAKE_REF="path:$REPO_ROOT/nix"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
@@ -237,7 +242,10 @@ fi
 # closure is not pinned and the ADR's mechanism reopens — so this is checked
 # first, costs no boot, and can invalidate the decision rather than merely grade
 # it.
-runner_out=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm" 2>"$TEMP_ROOT/build.err")
+# The measurement image, not the shipped one: every probe unit moved out of the
+# base image with ADR-0095, so `#first-microvm` no longer contains this lane's
+# subject — nor anything that would stop the guest.
+runner_out=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm-measurement" 2>"$TEMP_ROOT/build.err")
 build_status=$?
 runner_out=$(printf '%s\n' "$runner_out" | tail -n 1)
 if ((build_status != 0)) || [[ -z $runner_out ]]; then

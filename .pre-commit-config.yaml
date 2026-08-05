@@ -282,6 +282,32 @@ repos:
   # package manager), the same model as the json/nix hooks. pre-commit only —
   # git push may strip PATH and the format is already applied by commit time.
 
+  # --- Flake boundary ---
+  #
+  # The repository root's flake is the DEVELOPMENT ENVIRONMENT: the Rust
+  # toolchain, the runtimes these hooks resolve off PATH, the devShell direnv
+  # activates. What vivarium *builds* lives in `nix/flake.nix` with its own lock.
+  #
+  # This guard exists because the boundary was crossed twice, and both times by a
+  # single line that read as reasonable in isolation — a `microvm` input here, a
+  # `packages.first-microvm` there. A file acquires responsibilities one plausible
+  # addition at a time, and prose alone is enforced by whoever remembers it.
+  #
+  # It asserts on the flake's own EVALUATED attribute names rather than on the
+  # source text, because an output introduced through a `//` merge or a helper is
+  # invisible to a grep and is exactly the shape that got through before. Runs
+  # whenever either flake or its lock changes; `pass_filenames: false` because
+  # the subject is the repository's shape, not the file it was reached through.
+  - repo: local
+    hooks:
+      - id: flake-boundary
+        name: root flake is the dev environment only
+        entry: scripts/check-flake-boundary
+        language: system
+        pass_filenames: false
+        files: ^(flake\.nix|flake\.lock|nix/flake\.nix|nix/flake\.lock)$
+        stages: [pre-commit]
+
   # --- Table pipe integrity (MUST run before dprint) ---
   #
   # An unescaped `|` inside a code span in a table row makes GFM split that row

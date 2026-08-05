@@ -9,7 +9,7 @@ Every resource figure vivarium accepts or computes is a **ceiling**: the most a 
 - **Memory** is demand-faulted. A VM declared 8 GiB starts at a fraction of that and grows toward it only as the guest actually touches pages.
 - **Memory is returned.** The guest reports pages it has finished with, and the host reclaims them, so resident size tracks the working set rather than ratcheting to the ceiling.
 - **vCPUs are schedulable threads**, not reserved cores. An idle VM's vCPUs cost approximately nothing; the host scheduler overcommits them exactly as it overcommits any other threads.
-- **Volume size is virtual.** The image occupies what its contents occupy.
+- **Volume size is virtual.** The image occupies what its contents occupy — plus, for the store volume alone, a one-time filesystem cost the guest kernel pays in the background rather than the guest writing it (see the inode provisioning below).
 
 The consequence users feel: the sum of ceilings across running projects may exceed the host's memory and disk. The sum of _measured_ use may not — and that is what admission control and `viv status` report on.
 
@@ -94,6 +94,8 @@ The guest store's volume is the one volume that grows without the user asking, s
 
 The volume itself takes the 32 GiB per-volume default above. The floor is one Rust toolchain of headroom, so the common case of a large closure arriving does not immediately re-trigger; the gap between the two reclaims about 4 GiB per pass, enough that passes are rare rather than continuous. Both numbers are argued rather than measured and are expected to move once real growth is observed.
 
+**What is measured is the mechanism, not the outcome, and the difference is currently a limit.** On a real filesystem the trigger fires strictly below the floor and asks to free exactly the target minus what is available — confirmed to the byte. The collection that follows has not been observed to reclaim anything, so the bound above is not one a user can rely on yet ([`../microvm-verification-harness.md`](../microvm-verification-harness.md)). The cause is not yet known and no second mechanism is being added on the strength of it.
+
 **The store volume is also provisioned for file count, and this is the one volume where that is not automatic.** The trigger above reads free _space_; a Nix store is millions of small files, and a filesystem created with ordinary defaults runs out of inodes before it runs out of blocks. That failure surfaces as "no space left" on a volume showing gibibytes free, and no floor expressed in gibibytes can prevent it.
 
 | Provisioning                       | Default            |
@@ -101,7 +103,9 @@ The volume itself takes the 32 GiB per-volume default above. The floor is one Ru
 | Store volume — inode density       | **one per 8 KiB**  |
 | Every other volume — inode density | filesystem default |
 
-At that density a 32 GiB store volume reaches its byte ceiling before its inode ceiling, which is what makes the 32 GiB above the limit the user was actually told about. The number is argued from a measured store — about one inode per 11 KiB — and stays provisional in the same way the thresholds above do ([`../../decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md`](../../decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md)). It costs roughly 3% of the volume, charged whether the inodes are used or not, and it cannot be changed in place: raising it later re-creates the volume, which is cheap only because the store volume is regenerable.
+The density is measured rather than argued, and the measurement is a distribution rather than a single figure ([`../../decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md`](../../decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md), [`../microvm-verification-harness.md`](../microvm-verification-harness.md)). Taken in **aggregate**, a store runs at 9.5–22.5 KiB per inode, so at this density a 32 GiB store volume reaches its byte ceiling before its inode ceiling — which is what makes the 32 GiB above the limit the user was actually told about. Taken by **typical path**, it does not: the median store path sits at 3.9–5.0 KiB per inode, below this ratio, so a volume dominated by ordinary small paths exhausts inodes while still reporting free space. The ratio therefore stays provisional in the same way the thresholds above do, and a **denser** ratio — not a sparser one — is the change to consider if a guest ever runs out of file count first.
+
+It costs roughly 3% of the volume, charged whether the inodes are used or not. That cost is **deferred, not free**: the filesystem is created with a lazily initialized inode table, so about three quarters of it is owed at first mount and the guest kernel writes it out in the background over a guest's first minutes, with the guest itself writing nothing. The ratio cannot be changed in place — raising it later re-creates the volume, which is cheap only because the store volume is regenerable.
 
 ## Reporting
 
@@ -128,10 +132,10 @@ The `--json` shape adds a `runtime` object beside the existing declared `resourc
 
 Two guest defaults follow from the model and are part of the base image, not user knobs:
 
-- **A small compressed in-memory swap device.** A session that briefly overshoots compresses cold pages instead of losing a process. Compressed pages remain guest memory, so nothing reaches host storage. It is sized from the RAM the guest observes at boot, never from `resources.mem_mib`: sizing it from the declaration would make a launch-channel value a build input and break N19.
-- **No disk-backed swap in the guest.** It would convert guest memory pressure into block I/O into host page cache — the worst of both, multiplied by the number of running VMs.
+- **A compressed in-memory swap device**, at the distribution's own default of half the guest's RAM. A session that briefly overshoots compresses cold pages instead of losing a process, and compressed pages remain guest memory, so nothing reaches host storage. Its size is a **ceiling on compressed capacity, not a reservation** — an unused device costs about a thousandth of that figure in metadata and grows only under the pressure it exists to absorb, which is N22 again one level down. It is sized from the RAM the guest observes at boot, never from `resources.mem_mib`: sizing it from the declaration would make a launch-channel value a build input and break N19.
+- **No disk-backed swap in the guest.** It would convert guest memory pressure into block I/O into host page cache — the worst of both, multiplied by the number of running VMs — and it would consume the persistent store volume while doing it.
 
-Guest memory overcommit stays at the kernel default. Strict accounting with no swap would spuriously fail the large, short-lived allocations that toolchains and language servers make constantly.
+Three further knobs are deliberately **not set**, and the reasons differ ([`../../decisions/ADR-0094-guest-memory-posture-takes-the-distribution-defaults.md`](../../decisions/ADR-0094-guest-memory-posture-takes-the-distribution-defaults.md)). Guest memory overcommit stays at the kernel default, because strict accounting with no disk swap would spuriously fail the large, short-lived allocations that toolchains and language servers make constantly. Proactive compaction is already on by default, which is what makes the compaction above a real behaviour rather than an aspiration; raising it carries a documented system-wide cost. And the two swap-tuning sysctls are left at their kernel defaults because **no upstream source states a posture for a virtual-machine guest** — that is policy by omission, and unverified.
 
 ## Capacity in practice
 

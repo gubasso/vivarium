@@ -1,13 +1,21 @@
 {
-  description = "rust dev shell (toolchain from rust-toolchain.toml)";
+  description = "vivarium's development environment (toolchain from rust-toolchain.toml)";
+
+  # This flake's single purpose is the **development environment** for working on
+  # vivarium: the Rust toolchain, the runtimes the pre-commit hooks resolve off
+  # PATH, and the devShell direnv activates. That is all.
+  #
+  # It is **not part of what vivarium builds.** The microVM — the guest, its
+  # launcher and their contract — is its own flake at `nix/flake.nix`, with its
+  # own lock, precisely so a product input never has to enter this file. If you
+  # find yourself adding a hypervisor, a guest kernel or `microvm.nix` here, it
+  # belongs there instead.
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
-    microvm.url = "github:astro/microvm.nix";
-    microvm.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -18,7 +26,6 @@
       nixpkgs,
       rust-overlay,
       flake-utils,
-      microvm,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -73,14 +80,5 @@
           shellHook = ''echo "rust dev shell ready (toolchain from rust-toolchain.toml)"'';
         };
       }
-      // nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux (
-        let
-          firstMicrovm = import ./nix { inherit nixpkgs microvm system; };
-        in
-        {
-          packages.first-microvm = firstMicrovm.runner;
-          checks.first-microvm = firstMicrovm.contract;
-        }
-      )
     );
 }

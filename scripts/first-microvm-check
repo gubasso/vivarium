@@ -33,7 +33,17 @@
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || uname -m | sed 's/$/-linux/')
-FLAKE_REF="path:$REPO_ROOT"
+# The microVM is its own flake under `nix/`, not an output of the repository
+# root's. The root flake is the development environment — Rust toolchain,
+# pre-commit runtimes, the devShell direnv activates — and carries no product
+# input or output. `path:` form so the write-mode file set is included without
+# git operations.
+FLAKE_REF="path:$REPO_ROOT/nix"
+# The lint tools come from the repository root's devShell, which is the *other*
+# flake and the only one that has one. Keeping the two references separate is
+# the point of the split: product artifacts resolve through `nix/`, developer
+# tooling through the root.
+DEV_FLAKE_REF="path:$REPO_ROOT"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
@@ -156,7 +166,7 @@ else
 
   copy_root=$TEMP_ROOT/location-copy
   if cp -a "$REPO_ROOT" "$copy_root" 2>"$TEMP_ROOT/copy.err"; then
-    copy_drv=$(nix eval --raw "path:$copy_root#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/copy-eval.err"); copy_status=$?
+    copy_drv=$(nix eval --raw "path:$copy_root/nix#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/copy-eval.err"); copy_status=$?
     if ((eval_status == 0 && copy_status == 0)) && [[ $copy_drv == "$eval_output" ]]; then pass "location metamorphism preserves drvPath"
     else fail "location metamorphism" "$copy_drv$(<"$TEMP_ROOT/copy-eval.err")"; fi
   else skip "location metamorphism: worktree copy failed: $(<"$TEMP_ROOT/copy.err")"; fi
@@ -190,15 +200,25 @@ else
 
   run_check "flake checks" nix flake check "$FLAKE_REF"
   # nixfmt 1.3+ deprecates directory arguments; expand the file set explicitly.
-  shopt -s nullglob
-  nix_files=("$REPO_ROOT/flake.nix" "$REPO_ROOT"/nix/*.nix)
-  shopt -u nullglob
-  run_check "nixfmt formatting" nix develop "$FLAKE_REF" --command nixfmt --check "${nix_files[@]}"
-  statix_check() { (cd "$REPO_ROOT" && nix develop "$FLAKE_REF" --command statix check); }
+  # `globstar` because `nix/*.nix` does not descend, and the measurement legs
+  # live in `nix/measurement/` — a non-descending glob would silently drop ~1000
+  # lines from the nixfmt and deadnix lanes. (statix walks the tree itself and
+  # was never affected, which is exactly why this would have gone unnoticed.)
+  shopt -s nullglob globstar
+  nix_files=("$REPO_ROOT/flake.nix" "$REPO_ROOT"/nix/**/*.nix)
+  shopt -u nullglob globstar
+  run_check "nixfmt formatting" nix develop "$DEV_FLAKE_REF" --command nixfmt --check "${nix_files[@]}"
+  statix_check() { (cd "$REPO_ROOT" && nix develop "$DEV_FLAKE_REF" --command statix check); }
   run_check "statix" statix_check
-  run_check "deadnix" nix develop "$FLAKE_REF" --command deadnix --fail "${nix_files[@]}"
+  run_check "deadnix" nix develop "$DEV_FLAKE_REF" --command deadnix --fail "${nix_files[@]}"
 
-  build_output=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm" 2>"$TEMP_ROOT/build.err"); build_status=$?
+  # The HOST tier boots, and every host-tier check here — console fidelity, free
+  # page reporting, the store spike, the persistence pair, delete-duplicate,
+  # diagnostic completion — is a statement about a probe. Those live in the
+  # measurement image now (ADR-0095). The EVALUATION tier above deliberately
+  # stays on `#first-microvm`, because purity, metamorphism and the negative
+  # reference are statements about the artifact users actually get.
+  build_output=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm-measurement" 2>"$TEMP_ROOT/build.err"); build_status=$?
   if ((build_status == 0)); then
     launcher=$(printf '%s\n' "$build_output" | tail -n 1)/bin/vivarium-first-microvm
     pass "launcher and guest closure realised: $launcher"

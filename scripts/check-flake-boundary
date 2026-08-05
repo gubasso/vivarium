@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+
+# The repository root's flake is the DEVELOPMENT ENVIRONMENT and nothing else.
+#
+# Its job is the Rust toolchain, the runtimes the pre-commit hooks resolve off
+# PATH, and the devShell direnv activates. What vivarium *builds* — the guest,
+# its launcher, their contract — is a separate flake at `nix/flake.nix` with its
+# own lock, so the guest's nixpkgs and the toolchain's nixpkgs move on separate
+# clocks (ADR-0078's reasoning about backend pins, one level up).
+#
+# This check exists because the boundary was crossed twice, and both times by a
+# line that looked reasonable on its own. A file acquires responsibilities one
+# plausible addition at a time; the question is never "is this line reasonable"
+# but "does this file still have one job". A rule that only lives in prose is
+# enforced by whoever happens to remember it.
+#
+# Asserted against the flake's OWN evaluated attribute names, not by grepping the
+# source: a grep would miss an output introduced through a `//` merge or a helper,
+# which is exactly the shape that got past review last time.
+
+set -u
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=${1:-$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)}
+
+# Outputs that mean "this flake builds something". `devShells`, `formatter` and
+# `packages`-free helpers are the dev environment's legitimate surface.
+FORBIDDEN_OUTPUTS=(packages checks nixosConfigurations nixosModules overlays apps hydraJobs)
+# Inputs that only a product build has any use for.
+FORBIDDEN_INPUTS=(microvm)
+
+fail=0
+note() { printf '%s\n' "$*" >&2; }
+
+if ! command -v nix >/dev/null 2>&1; then
+  note "check-flake-boundary: nix is absent; cannot evaluate the root flake"
+  exit 0
+fi
+
+# `--impure` because `getFlake` on a path is impure by construction; this reads
+# the working tree, which is the thing being checked.
+outputs=$(nix eval --raw --impure --expr \
+  "builtins.concatStringsSep \" \" (builtins.attrNames (builtins.getFlake \"path:$REPO_ROOT\"))" \
+  2>/dev/null)
+if [[ -z $outputs ]]; then
+  note "check-flake-boundary: could not evaluate the root flake's outputs"
+  exit 1
+fi
+
+inputs=$(nix eval --raw --impure --expr \
+  "builtins.concatStringsSep \" \" (builtins.attrNames (builtins.getFlake \"path:$REPO_ROOT\").inputs)" \
+  2>/dev/null)
+
+for o in "${FORBIDDEN_OUTPUTS[@]}"; do
+  case " $outputs " in
+    *" $o "*)
+      note "check-flake-boundary: the root flake declares \`$o\`."
+      note "  The root flake is the development environment only. Build outputs belong"
+      note "  in nix/flake.nix. See AGENTS.md, 'The root flake is the development"
+      note "  environment'."
+      fail=1
+      ;;
+  esac
+done
+
+for i in "${FORBIDDEN_INPUTS[@]}"; do
+  case " $inputs " in
+    *" $i "*)
+      note "check-flake-boundary: the root flake declares the \`$i\` input."
+      note "  A product input in the dev-environment flake couples the guest's pin to"
+      note "  the toolchain's. Declare it in nix/flake.nix instead."
+      fail=1
+      ;;
+  esac
+done
+
+# The other half of the boundary: the product flake must actually exist and carry
+# the outputs the root no longer does. Without this the check would pass happily
+# on a repository that had simply deleted them.
+if [[ ! -f $REPO_ROOT/nix/flake.nix ]]; then
+  note "check-flake-boundary: nix/flake.nix is missing — the product flake is where"
+  note "  the build outputs live, so its absence is not a clean state."
+  fail=1
+else
+  product=$(nix eval --raw --impure --expr \
+    "builtins.concatStringsSep \" \" (builtins.attrNames (builtins.getFlake \"path:$REPO_ROOT/nix\"))" \
+    2>/dev/null)
+  case " $product " in
+    *" packages "*) ;;
+    *)
+      note "check-flake-boundary: nix/flake.nix declares no \`packages\`."
+      note "  The build outputs have to live somewhere; if they moved again, point this"
+      note "  check at wherever they went."
+      fail=1
+      ;;
+  esac
+fi
+
+if ((fail == 0)); then
+  printf 'check-flake-boundary: root flake is dev-environment only; nix/flake.nix carries the build outputs\n'
+fi
+exit "$fail"
