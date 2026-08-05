@@ -12,12 +12,12 @@ vivarium had no verb to report a project VM's operational state, and its lifecyc
 
 ## Decision Outcome
 
-Chosen option: **a small vivarium-owned state set**, surfaced by `viv status`.
+Chosen option: a small vivarium-owned state set, surfaced by `viv status`.
 
-- **States:** `absent`, `built` (also "stopped"), `starting`, `running`, `stopping`, `failed`. `starting` and `stopping` are transitional; the rest rest.
-- **Staleness is a boolean on `running`**, not a state — freshness derives from the store output path (N4), orthogonal to liveness, so a stale VM is still `running`, only drifted.
-- **`failed`, not `crashed`:** `failed` covers boot failure, abnormal VMM/guest exit, and broken runtime records; the narrow `crashed` becomes a _reason_ field. A clean `stop`/`destroy` tears down runtime markers, so "markers present + process dead" distinguishes `failed` from `built`.
-- **`viv status`** is read-only, project-local by default; `-g`/`--global` (scoped to `status`, on YAGNI grounds) enumerates the state registry. Any reported state — including `failed` — exits `0`; the state is data, not a command failure.
+- States: `absent`, `built` (also "stopped"), `starting`, `running`, `stopping`, `failed`. `starting` and `stopping` are transitional; the rest rest.
+- Staleness is a boolean on `running`, not a state — freshness derives from the store output path (N4), orthogonal to liveness, so a stale VM is still `running`, only drifted.
+- `failed`, not `crashed`: `failed` covers boot failure, abnormal VMM/guest exit, and broken runtime records; the narrow `crashed` becomes a reason field. A clean `stop`/`destroy` tears down runtime markers, so "markers present + process dead" distinguishes `failed` from `built`.
+- `viv status` is read-only, project-local by default; `-g`/`--global` (scoped to `status`, on YAGNI grounds) enumerates the state registry. Any reported state — including `failed` — exits `0`; the state is data, not a command failure.
 
 ## Consequences
 
@@ -29,6 +29,6 @@ Chosen option: **a small vivarium-owned state set**, surfaced by `viv status`.
 
 Accepted
 
-`starting` stands, but its justification narrowed when [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md) fixed `start`'s post-condition: since `start` returns only once the guest answers, `starting` is observable to a **concurrent** `status` racing another process's boot, not in a detached window after one's own `start` returned.
+`starting` stands, but its justification narrowed when [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md) fixed `start`'s post-condition: since `start` returns only once the guest answers, `starting` is observable to a concurrent `status` racing another process's boot, not in a detached window after one's own `start` returned.
 
 Applied in [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md), [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md), and [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md).

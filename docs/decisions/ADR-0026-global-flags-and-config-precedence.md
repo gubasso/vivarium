@@ -12,12 +12,12 @@ ADR-0015 fixed streams, `--json`, color, and sysexits, but left three CLI-surfac
 
 ## Decision Outcome
 
-Chosen option: **cross-cutting global, data-shaping per-command**.
+Chosen option: cross-cutting global, data-shaping per-command.
 
-- **Verbosity is global.** `-v`/`--verbose` (stackable `-vv`/`-vvv`, trace ceiling) and `-q`/ `--quiet` are accepted before or after any subcommand and tune stderr diagnostics only — never stdout data; `-v`/`-q` are mutually exclusive (last one wins). Matches git/cargo/nix.
-- **Machine output stays per-command `--json`** — one JSON value on stdout. No global `--format`/ `-o`; the candidate `table`/`nix` values are dropped. The gh/nix per-command `--json` model fits a greenfield tool whose machine consumers are automation and coding agents; the docker/kubectl multi-render surface is more than vivarium needs.
-- **Precedence standard: `flag > environment variable > default`** for every cross-cutting concern (no user config file participated at the time; ADR-0046 later inserted one — see Status). Color stays env-only — `NO_COLOR > FORCE_COLOR > isatty`, no `--color` flag — reaffirming ADR-0015.
-- **`--log-format` is dropped** from the surface here, and later specified by ADR-0031 — an active-by-default log file controlled by `--log-format`/`VIV_LOG_FORMAT` and the other `--log-*` flags, with no `viv logs` command. **`--keep-generated` is removed** — retention is the generations model's job (ADR-0014), not a cross-cutting flag.
+- Verbosity is global. `-v`/`--verbose` (stackable `-vv`/`-vvv`, trace ceiling) and `-q`/ `--quiet` are accepted before or after any subcommand and tune stderr diagnostics only — never stdout data; `-v`/`-q` are mutually exclusive (last one wins). Matches git/cargo/nix.
+- Machine output stays per-command `--json` — one JSON value on stdout. No global `--format`/ `-o`; the candidate `table`/`nix` values are dropped. The gh/nix per-command `--json` model fits a greenfield tool whose machine consumers are automation and coding agents; the docker/kubectl multi-render surface is more than vivarium needs.
+- Precedence standard: `flag > environment variable > default` for every cross-cutting concern (no user config file participated at the time; ADR-0046 later inserted one — see Status). Color stays env-only — `NO_COLOR > FORCE_COLOR > isatty`, no `--color` flag — reaffirming ADR-0015.
+- `--log-format` is dropped from the surface here, and later specified by ADR-0031 — an active-by-default log file controlled by `--log-format`/`VIV_LOG_FORMAT` and the other `--log-*` flags, with no `viv logs` command. `--keep-generated` is removed — retention is the generations model's job (ADR-0014), not a cross-cutting flag.
 
 ## Consequences
 

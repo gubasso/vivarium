@@ -12,9 +12,9 @@
 
 ## Decision Outcome
 
-Chosen option: **the distribution defaults** — one zstd zram device sized at half of observed RAM, and no sysctl vivarium picks itself.
+Chosen option: the distribution defaults — one zstd zram device sized at half of observed RAM, and no sysctl vivarium picks itself.
 
-The second option rests on a premise that does not hold. A zram device's declared size is a **ceiling on compressed capacity, not a reservation**: unused it costs about 0.1% of that size in metadata, and it grows only under the pressure it exists to absorb. That is N22's own distinction, so taking the default agrees with the elastic model rather than straining it.
+The second option rests on a premise that does not hold. A zram device's declared size is a ceiling on compressed capacity, not a reservation: unused it costs about 0.1% of that size in metadata, and it grows only under the pressure it exists to absorb. That is N22's own distinction, so taking the default agrees with the elastic model rather than straining it.
 
 The swap-tuning pair is settled by a search that failed. No upstream source states a posture for a virtual-machine guest — not the kernel's zram documentation, not the distribution module, not the swap generator's own manual. Rather than dress a guess as a citation, vivarium sets neither and inherits what every other Linux system runs.
 
@@ -24,7 +24,7 @@ The swap-tuning pair is settled by a search that failed. No upstream source stat
 - Good: `page_reporting_order` stays unset, which is correct rather than lazy — on the primary target it resolves to `pageblock_order`, already 2 MiB, so writing it changes nothing. Load-bearing only on 64K-page arm64.
 - Good: proactive compaction is on by default, so `spec/17`'s compaction claim becomes true with no setting — deliberate rather than accidental.
 - Bad: half of RAM is not "small", so `spec/17`'s wording changes with this record.
-- Bad: the swap-tuning pair stays **policy by omission, unverified** — a real gap, recorded as one.
+- Bad: the swap-tuning pair stays policy by omission, unverified — a real gap, recorded as one.
 
 ## Status
 

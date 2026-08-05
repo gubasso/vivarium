@@ -8,16 +8,16 @@ ADR-0039 made cache mode per-share but left the read-write policy inherited — 
 
 - Keep deferring to the daemon's default until the benchmark runs.
 - Cache nothing on host-writable shares, maximizing visibility of host edits.
-- **Name the bounded-timeout policy explicitly**, disqualifying the other three on correctness.
+- Name the bounded-timeout policy explicitly, disqualifying the other three on correctness.
 
 ## Decision Outcome
 
-Chosen option: **name it explicitly**.
+Chosen option: name it explicitly.
 
-- **The long-timeout policies are disqualified for any host-writable share.** They hold names and attributes for a day, and the daemon can neither push an invalidation to the guest nor propagate a host-side change notification. Timeout expiry is the only invalidation there is, so a host-side edit is not late — it is unobservable until remount.
-- **The cacheless policies are disqualified on the very metric that would recommend them.** Both force direct I/O on regular files, so the guest kernel refuses shared memory-mapping — breaking executable loading, embedded databases, and toolchains that map their working files. The daemon's opt-out is documented as safe only under exclusive access to the directory, which a host-edited tree denies. The fully cacheless one also disables the bulk directory read.
-- **The read-write workspace and read-only mirrored config use the bounded-timeout, close-to-open policy**, named at launch.
-- **The store share keeps aggressive caching, with a sharper proof than immutability alone**: content-addressed paths are never rewritten in place, and no failed lookup is ever cached, so a store path created on the host mid-session is still found on first reference.
+- The long-timeout policies are disqualified for any host-writable share. They hold names and attributes for a day, and the daemon can neither push an invalidation to the guest nor propagate a host-side change notification. Timeout expiry is the only invalidation there is, so a host-side edit is not late — it is unobservable until remount.
+- The cacheless policies are disqualified on the very metric that would recommend them. Both force direct I/O on regular files, so the guest kernel refuses shared memory-mapping — breaking executable loading, embedded databases, and toolchains that map their working files. The daemon's opt-out is documented as safe only under exclusive access to the directory, which a host-edited tree denies. The fully cacheless one also disables the bulk directory read.
+- The read-write workspace and read-only mirrored config use the bounded-timeout, close-to-open policy, named at launch.
+- The store share keeps aggressive caching, with a sharper proof than immutability alone: content-addressed paths are never rewritten in place, and no failed lookup is ever cached, so a store path created on the host mid-session is still found on first reference.
 
 ## Consequences
 

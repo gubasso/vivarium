@@ -12,14 +12,14 @@
 
 ## Decision Outcome
 
-Chosen option: **require the directory form.** A manifest naming `extends` must resolve as `manifests/<name>/default.toml`; the target must canonicalize, after symlinks, inside that same directory; and the copied unit is exactly `manifests/<name>/`.
+Chosen option: require the directory form. A manifest naming `extends` must resolve as `manifests/<name>/default.toml`; the target must canonicalize, after symlinks, inside that same directory; and the copied unit is exactly `manifests/<name>/`.
 
-- **N4 holds exactly.** The copied unit carries no other manifest and no other project's helpers, so an unrelated manifest edit cannot change this project's output path — which is ADR-0058's whole rationale for materializing.
-- **The directory form already exists for this.** ADR-0045 introduced it so a multi-file artifact can keep helper modules beside it. `extends` is that case, not a new concept.
-- **Resolution narrows** from "inside the config root" to "inside the manifest's own directory". Nothing is lost: ADR-0060 already rules that a shared baseline is a **piece**, so a shared `extends` module contradicts its own doctrine.
-- A flat manifest naming `extends` is **`78` at parse**, naming the required spelling — ADR-0045's ambiguity idiom, which one `mv` resolves.
-- **A computed closure is rejected**: `imports` accepts arbitrary module expressions, not only literal paths, so it is not enumerable without evaluating — and evaluation needs the tree materialized first.
-- **A single-file copy is rejected**: ADR-0058 rejected per-file copying already, and a broken relative import would surface as a build fault (`70`) rather than the parse-time `78` the hatch promises.
+- N4 holds exactly. The copied unit carries no other manifest and no other project's helpers, so an unrelated manifest edit cannot change this project's output path — which is ADR-0058's whole rationale for materializing.
+- The directory form already exists for this. ADR-0045 introduced it so a multi-file artifact can keep helper modules beside it. `extends` is that case, not a new concept.
+- Resolution narrows from "inside the config root" to "inside the manifest's own directory". Nothing is lost: ADR-0060 already rules that a shared baseline is a piece, so a shared `extends` module contradicts its own doctrine.
+- A flat manifest naming `extends` is `78` at parse, naming the required spelling — ADR-0045's ambiguity idiom, which one `mv` resolves.
+- A computed closure is rejected: `imports` accepts arbitrary module expressions, not only literal paths, so it is not enumerable without evaluating — and evaluation needs the tree materialized first.
+- A single-file copy is rejected: ADR-0058 rejected per-file copying already, and a broken relative import would surface as a build fault (`70`) rather than the parse-time `78` the hatch promises.
 
 ## Consequences
 

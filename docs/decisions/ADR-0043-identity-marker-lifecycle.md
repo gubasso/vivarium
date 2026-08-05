@@ -12,10 +12,10 @@
 
 ## Decision Outcome
 
-Chosen option: **the ensure-running routine mints, `destroy` removes** — the marker exists to scope a VM's state, so it appears when a VM first does and leaves when that state is torn down.
+Chosen option: the ensure-running routine mints, `destroy` removes — the marker exists to scope a VM's state, so it appears when a VM first does and leaves when that state is torn down.
 
-- Minting verbs are `viv start` and `exec`/`shell` when they cold-start. Resolution still happens on every invocation; **persistence** does not, so a read-only command resolves in memory and writes nothing.
-- `init --write` does not mint despite writing: the registry keys on the project's **absolute path**, not on `<project-id>` (ADR-0011), so recording a binding needs no identity.
+- Minting verbs are `viv start` and `exec`/`shell` when they cold-start. Resolution still happens on every invocation; persistence does not, so a read-only command resolves in memory and writes nothing.
+- `init --write` does not mint despite writing: the registry keys on the project's absolute path, not on `<project-id>` (ADR-0011), so recording a binding needs no identity.
 - "Every mutating verb" was rejected as self-contradictory — `destroy` must remove the marker rather than create one, and `stop` on a never-started project is a no-op at exit `0`, where minting would surprise.
 - `destroy` removes the marker and clears the identity-index entry, leaving the binding. The teardown boundary must carve this out: the marker is vivarium-owned, never user-authored (N9, N21).
 

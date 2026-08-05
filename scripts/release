@@ -20,7 +20,7 @@ Subcommands:
   semver-check             Check public API compatibility (cargo semver-checks check-release)
 
 None of these publish to crates.io. Publishing happens on merge of the release PR
-(CI), or manually via ./publish once auth is configured. See PUBLISHING.md.
+(CI), or manually via ./publish once auth is configured. See docs/guides/publishing.md.
 USAGE
 }
 

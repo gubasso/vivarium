@@ -13,13 +13,13 @@ vivarium puts every running VM's per-target files — the `flock`, `control.sock
 
 ## Decision Outcome
 
-Chosen option: **require it** — a host without a usable runtime directory is one vivarium cannot serve, so refusing is more honest than synthesizing.
+Chosen option: require it — a host without a usable runtime directory is one vivarium cannot serve, so refusing is more honest than synthesizing.
 
 Unset, empty, non-absolute, or failing owner/mode validation is a hard preflight failure exiting `77`, naming the variable and the fault. There is no fallback root.
 
-A fallback would not help. [`ADR-0036-host-resource-scoping-and-admission-control.md`](./ADR-0036-host-resource-scoping-and-admission-control.md) places every VM's processes in one transient **systemd user scope**, and that manager is reached over a socket under `$XDG_RUNTIME_DIR`; a host missing the directory is missing the manager, so N23's scoping is already unsatisfiable and a synthesized directory would only buy a launch that then violates an invariant. Hosts without one — non-init containers, CI runners, `cron`, `su` without a PAM session — also lack `/dev/kvm` or unprivileged user namespaces.
+A fallback would not help. [`ADR-0036-host-resource-scoping-and-admission-control.md`](./ADR-0036-host-resource-scoping-and-admission-control.md) places every VM's processes in one transient systemd user scope, and that manager is reached over a socket under `$XDG_RUNTIME_DIR`; a host missing the directory is missing the manager, so N23's scoping is already unsatisfiable and a synthesized directory would only buy a launch that then violates an invariant. Hosts without one — non-init containers, CI runners, `cron`, `su` without a PAM session — also lack `/dev/kvm` or unprivileged user namespaces.
 
-Hardcoding `/run/user/$UID` was rejected separately: ignoring a variable that _is_ set is a worse deviation than failing when it is unset.
+Hardcoding `/run/user/$UID` was rejected separately: ignoring a variable that is set is a worse deviation than failing when it is unset.
 
 ## Consequences
 

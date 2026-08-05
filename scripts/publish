@@ -38,7 +38,7 @@ if ! cargo_publish_auth_configured; then
     "CI with plain 'cargo publish':" \
     "  use rust-lang/crates-io-auth-action to mint a short-lived token." \
     "" \
-    "The first publish is always manual. See PUBLISHING.md for full setup." \
+    "The first publish is always manual. See docs/guides/publishing.md for full setup." \
     "Dry runs need no auth: run ./scripts/publish-dry to validate." >&2
   exit 1
 fi

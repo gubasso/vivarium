@@ -308,6 +308,20 @@ repos:
         files: ^(flake\.nix|flake\.lock|nix/flake\.nix|nix/flake\.lock)$
         stages: [pre-commit]
 
+  # --- Lean Markdown (emphasis check, then table pipes, then dprint) ---
+  #
+  # Emphasis is forbidden in shipped Markdown. The standard-library checker is
+  # fence- and inline-code-aware and runs before any formatter can normalize the
+  # syntax it inspects.
+  - repo: local
+    hooks:
+      - id: markdown-no-emphasis
+        name: markdown contains no bold or italics
+        entry: scripts/check-markdown-emphasis
+        language: system
+        types: [markdown]
+        stages: [pre-commit]
+
   # --- Table pipe integrity (MUST run before dprint) ---
   #
   # An unescaped `|` inside a code span in a table row makes GFM split that row
@@ -365,7 +379,9 @@ repos:
 
   # --- Markdown lint (style gate + ordered-list renumber autofix) ---
   #
-  # markdownlint-cli2 runs AFTER dprint. dprint owns all formatting; markdownlint
+  # Final order is emphasis check, table-pipe check, dprint, explicit relative-
+  # link form checks, then markdownlint. markdownlint-cli2 runs AFTER dprint.
+  # dprint owns all formatting; markdownlint
   # flags issues dprint can't normalize (heading hierarchy, link integrity) AND
   # autofixes ordered-list renumbering (MD029). The custom `relative-links` rule
   # (report-only) verifies an explicit relative target actually resolves on disk,

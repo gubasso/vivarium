@@ -6,14 +6,14 @@ vivarium composes a sandbox from many layers — a base VM, language toolchains,
 
 ## Considered Options
 
-- **Custom merge engine** — define an ordered "last layer wins" stack with hand-written rules for scalars, lists, and maps.
-- **The NixOS module system** — express every layer as a NixOS module and let the module system merge them: `imports` collects layers, lists auto-concatenate, and scalar conflicts resolve by priority (`lib.mkDefault` / normal / `lib.mkForce`).
+- Custom merge engine — define an ordered "last layer wins" stack with hand-written rules for scalars, lists, and maps.
+- The NixOS module system — express every layer as a NixOS module and let the module system merge them: `imports` collects layers, lists auto-concatenate, and scalar conflicts resolve by priority (`lib.mkDefault` / normal / `lib.mkForce`).
 
 ## Decision Outcome
 
-Chosen option: **the NixOS module system** — because vivarium builds NixOS microVMs, the module system is already present and is a mature, well-specified merge engine. Reusing it deletes the entire custom-merge surface.
+Chosen option: the NixOS module system — because vivarium builds NixOS microVMs, the module system is already present and is a mature, well-specified merge engine. Reusing it deletes the entire custom-merge surface.
 
-Merge is **priority-based, not order-based**: a base layer sets `mkDefault`, a project leaf uses normal priority, and a hard floor uses `mkForce`. Lists such as package sets and mount lists concatenate across layers. See [`../reference/spec/04-composition-and-determinism.md`](../reference/spec/04-composition-and-determinism.md) for the full semantics.
+Merge is priority-based, not order-based: a base layer sets `mkDefault`, a project leaf uses normal priority, and a hard floor uses `mkForce`. Lists such as package sets and mount lists concatenate across layers. See [`../reference/spec/04-composition-and-determinism.md`](../reference/spec/04-composition-and-determinism.md) for the full semantics.
 
 ## Consequences
 

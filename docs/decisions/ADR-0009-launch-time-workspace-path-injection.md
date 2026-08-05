@@ -6,12 +6,12 @@ The sandbox must mount the user's working directory, whose absolute host path di
 
 ## Considered Options
 
-- **Bake the path into the build** — pass the working-directory path as a build input (for example through an impure environment read), so the VM definition contains it.
-- **Inject the path at launch time** — keep the build path-free and pure; the tool adds the working-directory share when it launches the VM, as a runtime concern.
+- Bake the path into the build — pass the working-directory path as a build input (for example through an impure environment read), so the VM definition contains it.
+- Inject the path at launch time — keep the build path-free and pure; the tool adds the working-directory share when it launches the VM, as a runtime concern.
 
 ## Decision Outcome
 
-Chosen option: **inject the path at launch time**. The build takes no host path; by convention the working directory is always mounted to a fixed in-guest location, so no host path appears in any configuration file. The tool supplies the actual host directory only when starting the VM.
+Chosen option: inject the path at launch time. The build takes no host path; by convention the working directory is always mounted to a fixed in-guest location, so no host path appears in any configuration file. The tool supplies the actual host directory only when starting the VM.
 
 This preserves the core determinism guarantee: identical manifest and lockfile produce an identical VM on every machine and in CI. See [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md) and the determinism invariant in [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md).
 
@@ -26,4 +26,4 @@ This preserves the core determinism guarantee: identical manifest and lockfile p
 
 Accepted
 
-Amended by **ADR-0048** — states how the injection is achieved. vivarium generates the launch itself rather than consuming the upstream runner package, because that package writes each share's host source path into the build output, which is exactly what this decision forbids.
+Amended by ADR-0048 — states how the injection is achieved. vivarium generates the launch itself rather than consuming the upstream runner package, because that package writes each share's host source path into the build output, which is exactly what this decision forbids.

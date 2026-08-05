@@ -12,11 +12,11 @@ N5 and N19 say no host path and no launch-channel value reaches a build input; N
 
 ## Decision Outcome
 
-Chosen option: **canary plus metamorphic equality**, and a tree comparison for non-invasion.
+Chosen option: canary plus metamorphic equality, and a tree comparison for non-invasion.
 
-**Purity.** Each run plants a unique random token in the workspace host path and in every launch-channel value, then asserts it appears nowhere in the recursive derivation graph — its input sources, input derivations, and environment. A unique token has no false negatives, where a deny-list of host-looking paths has an unbounded tail. Separately, the same manifest is built from two different host paths, and again with only launch-channel data changed; the derivation must be identical either way. That states N3, N5, and N19 as an equality, stronger than any scan.
+Purity. Each run plants a unique random token in the workspace host path and in every launch-channel value, then asserts it appears nowhere in the recursive derivation graph — its input sources, input derivations, and environment. A unique token has no false negatives, where a deny-list of host-looking paths has an unbounded tail. Separately, the same manifest is built from two different host paths, and again with only launch-channel data changed; the derivation must be identical either way. That states N3, N5, and N19 as an equality, stronger than any scan.
 
-**Non-invasion.** Every command runs against a fixture project whose complete tree and version-control status are compared before and after. The only permitted difference is the `.vivarium/` marker, N9's sole exception; a read-only command must show none. The comparison is automatic in the fixture, because an opt-in invariant check is the one a new trial forgets.
+Non-invasion. Every command runs against a fixture project whose complete tree and version-control status are compared before and after. The only permitted difference is the `.vivarium/` marker, N9's sole exception; a read-only command must show none. The comparison is automatic in the fixture, because an opt-in invariant check is the one a new trial forgets.
 
 Kernel-enforced confinement was rejected: it proves more, but needs privileges many hosts lack, turning an assertion into a skip — and an observation of the execution environment must never become a fact about a host.
 

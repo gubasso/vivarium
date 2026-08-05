@@ -6,17 +6,17 @@ Earlier decisions had `viv init` write user config — a registry entry in the c
 
 ## Considered Options
 
-- **Keep both sources** — config-root registry plus committed and gitignored repo pointers, with a seven-step precedence (the superseded ADR-0006 model).
-- **Config read-only; binding in state** — the tool never writes config; the binding is per-user runtime state, keyed by project path; repo pointer files are dropped.
-- **Prompt on every unbound run** — resolve interactively instead of persisting.
+- Keep both sources — config-root registry plus committed and gitignored repo pointers, with a seven-step precedence (the superseded ADR-0006 model).
+- Config read-only; binding in state — the tool never writes config; the binding is per-user runtime state, keyed by project path; repo pointer files are dropped.
+- Prompt on every unbound run — resolve interactively instead of persisting.
 
 ## Decision Outcome
 
-Chosen option: **config read-only; binding in state**.
+Chosen option: config read-only; binding in state.
 
-- **P1 — No runtime config mutation.** vivarium only reads the config root; it never writes, creates, or scaffolds there. Everything the tool persists is state, data, or cache (N13).
-- **P2 — The only relativization is an explicit, targeted write.** Persisting is gated behind an explicit flag naming its target (`viv init --write`), off by default, confirmed, reversible — never a silent side effect. In vivarium this write targets **state**, never config.
-- The **project registry** (project path → manifest) moves to the state root. Per-project `.vivarium.toml` / `.vivarium.local.toml` files are dropped; vivarium writes nothing into a project's tree (N9). Precedence collapses to: `--manifest` → `VIVARIUM_MANIFEST` → registry (state) → fail closed. The default-manifest fallback is cut.
+- P1 — No runtime config mutation. vivarium only reads the config root; it never writes, creates, or scaffolds there. Everything the tool persists is state, data, or cache (N13).
+- P2 — The only relativization is an explicit, targeted write. Persisting is gated behind an explicit flag naming its target (`viv init --write`), off by default, confirmed, reversible — never a silent side effect. In vivarium this write targets state, never config.
+- The project registry (project path → manifest) moves to the state root. Per-project `.vivarium.toml` / `.vivarium.local.toml` files are dropped; vivarium writes nothing into a project's tree (N9). Precedence collapses to: `--manifest` → `VIVARIUM_MANIFEST` → registry (state) → fail closed. The default-manifest fallback is cut.
 
 ## Consequences
 
@@ -28,7 +28,7 @@ Chosen option: **config read-only; binding in state**.
 
 Accepted
 
-Amended by [`ADR-0029-project-identity-and-marker.md`](./ADR-0029-project-identity-and-marker.md) — a gitignored `.vivarium/` marker is permitted, but it carries project **identity** only; the manifest **binding** still lives in the state registry and stays gated behind `viv init --write`.
+Amended by [`ADR-0029-project-identity-and-marker.md`](./ADR-0029-project-identity-and-marker.md) — a gitignored `.vivarium/` marker is permitted, but it carries project identity only; the manifest binding still lives in the state registry and stays gated behind `viv init --write`.
 
 Amended by [`ADR-0040-manifest-is-the-personal-layer.md`](./ADR-0040-manifest-is-the-personal-layer.md) — the manifest is the personal layer, so the machine-local registry noted as a drawback above is the intended shape rather than a limitation to evolve away: a per-user binding pointing at a per-user manifest is what makes the shared images and pieces distributable unchanged.
 

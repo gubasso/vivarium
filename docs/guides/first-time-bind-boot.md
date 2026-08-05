@@ -1,6 +1,6 @@
 # Bind and boot a project for the first time
 
-> **Design-intent walkthrough — not yet working.** This guide describes the _target_ experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
+> Design-intent walkthrough — not yet working. This guide describes the target experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
 
 Use this walkthrough when a project has no vivarium binding yet. The command forms are owned by the [command surface](../reference/spec/01-command-surface.md), while boot behavior and identity are owned by the [lifecycle](../reference/spec/10-vm-lifecycle.md) and [project identity](../reference/spec/15-project-identity.md) specifications.
 

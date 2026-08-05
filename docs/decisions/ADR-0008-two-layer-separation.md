@@ -6,12 +6,12 @@ Many projects already define their own development environment — a `flake.nix`
 
 ## Considered Options
 
-- **One combined environment** — vivarium owns both the VM and the in-VM developer environment, generating or absorbing the project's dev config.
-- **Two independent layers** — vivarium owns only the outer sandbox; the project's own dev environment runs inside it, untouched.
+- One combined environment — vivarium owns both the VM and the in-VM developer environment, generating or absorbing the project's dev config.
+- Two independent layers — vivarium owns only the outer sandbox; the project's own dev environment runs inside it, untouched.
 
 ## Decision Outcome
 
-Chosen option: **two independent layers**. The outer layer (vivarium) boots the VM, mounts, network, and security. The inner layer is the project's own environment, which evaluates _inside_ the guest at shell time and is never modified by vivarium. The project's dev config keeps working identically with or without the sandbox.
+Chosen option: two independent layers. The outer layer (vivarium) boots the VM, mounts, network, and security. The inner layer is the project's own environment, which evaluates inside the guest at shell time and is never modified by vivarium. The project's dev config keeps working identically with or without the sandbox.
 
 To make the inner layer work, the guest ships a working Nix toolchain plus direnv, and the project's directory is bind-mounted read-write so its files — including its own `flake.nix` and direnv config — are present and load normally. See [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md).
 

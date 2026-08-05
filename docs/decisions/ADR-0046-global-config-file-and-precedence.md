@@ -12,11 +12,11 @@
 
 ## Decision Outcome
 
-Chosen option: **ship it** — a user-wide "I always want this" home is a baseline expectation of a per-user tool, and the two documents already promising it are the ones worth keeping.
+Chosen option: ship it — a user-wide "I always want this" home is a baseline expectation of a per-user tool, and the two documents already promising it are the ones worth keeping.
 
 - The file is `config.toml` in the config root, hand-authored and read-only to the tool (N13).
-- Precedence for cross-cutting concerns becomes **flag > environment variable > global config file > built-in default**. Today that governs the logging family in [`../reference/spec/16-logging-and-diagnostics.md`](../reference/spec/16-logging-and-diagnostics.md); the chain is the standard every later cross-cutting knob joins.
-- It does **not** participate in manifest selection, which stays `--manifest > VIVARIUM_MANIFEST > registry > fail closed` ([`ADR-0011-config-read-only-binding-in-state.md`](./ADR-0011-config-read-only-binding-in-state.md)): a binding is per-project and machine-local, so a user-wide default would be meaningless.
+- Precedence for cross-cutting concerns becomes flag > environment variable > global config file > built-in default. Today that governs the logging family in [`../reference/spec/16-logging-and-diagnostics.md`](../reference/spec/16-logging-and-diagnostics.md); the chain is the standard every later cross-cutting knob joins.
+- It does not participate in manifest selection, which stays `--manifest > VIVARIUM_MANIFEST > registry > fail closed` ([`ADR-0011-config-read-only-binding-in-state.md`](./ADR-0011-config-read-only-binding-in-state.md)): a binding is per-project and machine-local, so a user-wide default would be meaningless.
 - Colour stays environment-only, preserving the deliberate exception in [`ADR-0015-cli-output-and-failure-contract.md`](./ADR-0015-cli-output-and-failure-contract.md).
 
 ## Consequences

@@ -2,22 +2,22 @@
 
 ## Context and Problem Statement
 
-`spec/06` defines an **orphan** — a volume image on disk that no current layer declares — and `volume list` reports the flag per row, but nothing acts on it in bulk. Separately, a volume is a fresh empty filesystem on its first `viv start`, so the default volume's root is unowned by the guest user who lives there.
+`spec/06` defines an orphan — a volume image on disk that no current layer declares — and `volume list` reports the flag per row, but nothing acts on it in bulk. Separately, a volume is a fresh empty filesystem on its first `viv start`, so the default volume's root is unowned by the guest user who lives there.
 
 ## Considered Options
 
-- **Leave both alone** — `volume rm` in a loop, and a recursive ownership fix at every boot.
-- **A general `prune` with an `--all` that also removes declared volumes.**
-- **An orphan-only `prune`, plus declarative first-boot ownership.**
+- Leave both alone — `volume rm` in a loop, and a recursive ownership fix at every boot.
+- A general `prune` with an `--all` that also removes declared volumes.
+- An orphan-only `prune`, plus declarative first-boot ownership.
 
 ## Decision Outcome
 
-Chosen option: **orphan-only `prune` plus declarative first-boot ownership** — a verb without a new concept, and ownership fixed once instead of every boot.
+Chosen option: orphan-only `prune` plus declarative first-boot ownership — a verb without a new concept, and ownership fixed once instead of every boot.
 
-- `prune` introduces **no new predicate**: its candidates are exactly the orphans `spec/06` defines and `volume list` surfaces. That is what lets it join a family with no `create` — declarative removal produces orphans on purpose, as a recovery buffer, and `prune` is the batch half of that lifecycle.
-- **It never removes a declared volume, under any flag. There is no `--all`.** The prior art that grew one is also the prior art whose scope is still misread.
+- `prune` introduces no new predicate: its candidates are exactly the orphans `spec/06` defines and `volume list` surfaces. That is what lets it join a family with no `create` — declarative removal produces orphans on purpose, as a recovery buffer, and `prune` is the batch half of that lifecycle.
+- It never removes a declared volume, under any flag. There is no `--all`. The prior art that grew one is also the prior art whose scope is still misread.
 - Safety rides existing rails: it refuses while the VM runs, prompts on a TTY, takes the same confirmation flag `destroy` does, and prints the reclaimed measurement.
-- **First-boot ownership is declarative and touches only the mount point**, applied after the volume mounts, with a marker inside the volume so a later boot never re-seeds over user data. A recursive fix would be proportional to a home reaching tens of gibibytes, and would overwrite ownership set deliberately.
+- First-boot ownership is declarative and touches only the mount point, applied after the volume mounts, with a marker inside the volume so a later boot never re-seeds over user data. A recursive fix would be proportional to a home reaching tens of gibibytes, and would overwrite ownership set deliberately.
 
 ## Consequences
 

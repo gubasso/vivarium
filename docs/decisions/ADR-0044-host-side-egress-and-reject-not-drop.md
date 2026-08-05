@@ -2,7 +2,7 @@
 
 ## Context and Problem Statement
 
-ADR-0007 chose default-open egress with an opt-in allowlist and said an **in-guest** firewall enforces it. [`../reference/spec/05-networking-and-egress.md`](../reference/spec/05-networking-and-egress.md) says the opposite — enforcement is host-side, because the guest is treated as adversarial and may hold guest-root, so an in-guest rule set could simply be torn down. No ADR ever recorded that reversal, so the only decision record still points an implementer at the wrong side of the boundary. Separately, spec/05 asked only that a denial be "legible" using **should**, which [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md) makes non-normative — so nothing was actually required of a blocked connection.
+ADR-0007 chose default-open egress with an opt-in allowlist and said an in-guest firewall enforces it. [`../reference/spec/05-networking-and-egress.md`](../reference/spec/05-networking-and-egress.md) says the opposite — enforcement is host-side, because the guest is treated as adversarial and may hold guest-root, so an in-guest rule set could simply be torn down. No ADR ever recorded that reversal, so the only decision record still points an implementer at the wrong side of the boundary. Separately, spec/05 asked only that a denial be "legible" using should, which [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md) makes non-normative — so nothing was actually required of a blocked connection.
 
 ## Considered Options
 
@@ -12,11 +12,11 @@ ADR-0007 chose default-open egress with an opt-in allowlist and said an **in-gue
 
 ## Decision Outcome
 
-Chosen option: **host-side enforcement with a required reject-not-drop denial surface.**
+Chosen option: host-side enforcement with a required reject-not-drop denial surface.
 
-- The allowlist is enforced on the **host end** of the guest's network path. A rule set inside the guest is not a boundary against a guest that may be compromised; the wall must sit where the guest cannot reach it (N8's knob is unchanged — this is about where it is applied).
-- A denied connection **must** fail the guest's `connect()` promptly with an error, and a denied name's DNS lookup **must** fail the same way. It must never be silently discarded. A dropped packet turns a policy decision into an unexplained hang, which reads as a broken sandbox rather than an enforced rule.
-- The enforcement **mechanism** stays open — nftables, a tap/NAT firewall, or a user-mode filter all satisfy this, so the networking backend design remains free to choose.
+- The allowlist is enforced on the host end of the guest's network path. A rule set inside the guest is not a boundary against a guest that may be compromised; the wall must sit where the guest cannot reach it (N8's knob is unchanged — this is about where it is applied).
+- A denied connection must fail the guest's `connect()` promptly with an error, and a denied name's DNS lookup must fail the same way. It must never be silently discarded. A dropped packet turns a policy decision into an unexplained hang, which reads as a broken sandbox rather than an enforced rule.
+- The enforcement mechanism stays open — nftables, a tap/NAT firewall, or a user-mode filter all satisfy this, so the networking backend design remains free to choose.
 
 ## Consequences
 

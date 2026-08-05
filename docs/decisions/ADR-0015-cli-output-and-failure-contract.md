@@ -6,18 +6,18 @@ vivarium's commands must be usable by humans at a terminal and by scripts and ag
 
 ## Considered Options
 
-- **Ad-hoc per-command** — each command decides its streams and exit codes.
-- **One house contract** — a fixed stdout/stderr split, `--json` for machine output, a stable exit-code taxonomy, and a shared preflight pattern.
-- **Custom small exit-code table** (e.g. `10/20/30/40`) instead of a standard one.
+- Ad-hoc per-command — each command decides its streams and exit codes.
+- One house contract — a fixed stdout/stderr split, `--json` for machine output, a stable exit-code taxonomy, and a shared preflight pattern.
+- Custom small exit-code table (e.g. `10/20/30/40`) instead of a standard one.
 
 ## Decision Outcome
 
-Chosen option: **one house contract**.
+Chosen option: one house contract.
 
-- **Streams.** stdout carries the _result only_ — a human table/line for data commands, a `--json` record in machine mode, and **nothing** for side-effect commands like `up`/`down` (their result is a side effect). stderr carries everything else: progress, status, prompts, warnings, errors. Progress is shown only when stderr is a TTY.
-- **Machine output.** `--json` emits one structured record on stdout, so `… --json 2>/dev/null | jq` is always clean. Color is human-only, honoring `NO_COLOR > FORCE_COLOR > isatty`; never color JSON or non-TTY output.
-- **Failure.** Adopt **BSD sysexits** (e.g. `69` unavailable, `77` permission, `78` config, plus build/launch codes) — never a generic `1`. Every error renders **what / where / why / hint**.
-- **Preflight.** One probe catalog, three call sites (`doctor` runs all; each command guards its hard subset; setup reuses it); guards refuse **before any side effect**.
+- Streams. stdout carries the result only — a human table/line for data commands, a `--json` record in machine mode, and nothing for side-effect commands like `up`/`down` (their result is a side effect). stderr carries everything else: progress, status, prompts, warnings, errors. Progress is shown only when stderr is a TTY.
+- Machine output. `--json` emits one structured record on stdout, so `… --json 2>/dev/null | jq` is always clean. Color is human-only, honoring `NO_COLOR > FORCE_COLOR > isatty`; never color JSON or non-TTY output.
+- Failure. Adopt BSD sysexits (e.g. `69` unavailable, `77` permission, `78` config, plus build/launch codes) — never a generic `1`. Every error renders what / where / why / hint.
+- Preflight. One probe catalog, three call sites (`doctor` runs all; each command guards its hard subset; setup reuses it); guards refuse before any side effect.
 
 ## Consequences
 
@@ -37,6 +37,6 @@ Amended by [`ADR-0026-global-flags-and-config-precedence.md`](./ADR-0026-global-
 
 Amended by [`ADR-0028-exit-code-taxonomy-and-stability.md`](./ADR-0028-exit-code-taxonomy-and-stability.md) — makes the sysexits taxonomy program-wide (codes name the failure kind, not the command), moves the canonical legend and per-command mapping into a central matrix, and adds an append-only stability guarantee; the sysexits basis here is unchanged.
 
-Amended by [`ADR-0068-human-error-presentation-and-diagnostic-ids.md`](./ADR-0068-human-error-presentation-and-diagnostic-ids.md) — fixes how "what / where / why / hint" renders, adds a stable diagnostic id ahead of the `what`, and settles the machine-readable failure form: under `--json` a failure emits one semantic object on **stderr**, because stdout carries the result and a failure has none. The stream split and the color chain here are unchanged.
+Amended by [`ADR-0068-human-error-presentation-and-diagnostic-ids.md`](./ADR-0068-human-error-presentation-and-diagnostic-ids.md) — fixes how "what / where / why / hint" renders, adds a stable diagnostic id ahead of the `what`, and settles the machine-readable failure form: under `--json` a failure emits one semantic object on stderr, because stdout carries the result and a failure has none. The stream split and the color chain here are unchanged.
 
 Applied across [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md) and [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md).

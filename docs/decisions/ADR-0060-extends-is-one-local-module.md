@@ -12,14 +12,14 @@
 
 ## Decision Outcome
 
-Chosen option: **a single raw `.nix` module**, and manifest inheritance is rejected outright.
+Chosen option: a single raw `.nix` module, and manifest inheritance is rejected outright.
 
-- **Resolution** is relative to the manifest file's own directory; the result must canonicalize, after symlinks, inside that directory (narrowed by ADR-0063). An escape, an absent file, or a non-module target is `78` at parse.
-- **Exactly one, never transitive.** A Nix module already has `imports`, evaluated by the module system (N6); ordering several `extends` entries ourselves would resurrect the declaration-order tiebreak ADR-0042 deliberately removed.
-- **Its containing directory is copied into the generated flake** (ADR-0058), so it is a store input, its own relative imports work, and N3 holds.
-- **It merges at the same rank as a piece** and chooses its own priority. A shared baseline proposes with `mkDefault`; `mkForce` is what `spec/01`'s tie hint means by "override through extends".
-- **Manifest inheritance is rejected** because it requires publishing, per key, whether a child value replaces or merges with its parent's. That table is precisely the bespoke merge implementation N6 forbids, and it would stand a second priority ladder beside the module system's.
-- **The team baseline is a shared piece.** After ADR-0021 and ADR-0041 a piece carries packages, guest config, mounts, env, resources, and volumes, and may import an image — so it is a genuinely live baseline. The residual drift is the `image` line and the `pieces` list.
+- Resolution is relative to the manifest file's own directory; the result must canonicalize, after symlinks, inside that directory (narrowed by ADR-0063). An escape, an absent file, or a non-module target is `78` at parse.
+- Exactly one, never transitive. A Nix module already has `imports`, evaluated by the module system (N6); ordering several `extends` entries ourselves would resurrect the declaration-order tiebreak ADR-0042 deliberately removed.
+- Its containing directory is copied into the generated flake (ADR-0058), so it is a store input, its own relative imports work, and N3 holds.
+- It merges at the same rank as a piece and chooses its own priority. A shared baseline proposes with `mkDefault`; `mkForce` is what `spec/01`'s tie hint means by "override through extends".
+- Manifest inheritance is rejected because it requires publishing, per key, whether a child value replaces or merges with its parent's. That table is precisely the bespoke merge implementation N6 forbids, and it would stand a second priority ladder beside the module system's.
+- The team baseline is a shared piece. After ADR-0021 and ADR-0041 a piece carries packages, guest config, mounts, env, resources, and volumes, and may import an image — so it is a genuinely live baseline. The residual drift is the `image` line and the `pieces` list.
 
 ## Consequences
 
@@ -34,7 +34,7 @@ Accepted
 
 Amended by [`ADR-0063-extends-requires-the-directory-manifest-form.md`](./ADR-0063-extends-requires-the-directory-manifest-form.md) — a manifest naming `extends` must use the directory form, the target must canonicalize inside that manifest's own directory rather than anywhere in the config root, and the copied unit is that directory. Everything else here stands.
 
-Amends [`ADR-0040-manifest-is-the-personal-layer.md`](./ADR-0040-manifest-is-the-personal-layer.md) — its "no single file pins a team baseline … until `extends` is designed" is answered by a shared **piece**, not by `extends`. That consequence is now closed; the reclassification it records is unchanged.
+Amends [`ADR-0040-manifest-is-the-personal-layer.md`](./ADR-0040-manifest-is-the-personal-layer.md) — its "no single file pins a team baseline … until `extends` is designed" is answered by a shared piece, not by `extends`. That consequence is now closed; the reclassification it records is unchanged.
 
 Amends [`ADR-0004-toml-manifest-compiles-to-flake.md`](./ADR-0004-toml-manifest-compiles-to-flake.md) — the raw-`.nix` escape hatch it sanctioned is bounded here.
 

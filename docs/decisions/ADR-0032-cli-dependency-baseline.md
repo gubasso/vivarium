@@ -6,18 +6,18 @@ The `viv` crate has an empty dependency set, but the command surface, manifest m
 
 ## Considered Options
 
-- **Arg parser:** `clap` v4 (derive + builder) vs a lean parser (`lexopt`/`bpaf`) vs hand-rolled.
-- **TOML:** serde-native `toml` vs format-preserving `toml_edit`.
-- **Async:** `tokio` with a trimmed feature set vs a sync design vs `async-std`.
+- Arg parser: `clap` v4 (derive + builder) vs a lean parser (`lexopt`/`bpaf`) vs hand-rolled.
+- TOML: serde-native `toml` vs format-preserving `toml_edit`.
+- Async: `tokio` with a trimmed feature set vs a sync design vs `async-std`.
 
 ## Decision Outcome
 
-Chosen baseline: **`clap` v4, `serde` + `serde_json` + `toml`, `schemars`, and `tokio`.**
+Chosen baseline: `clap` v4, `serde` + `serde_json` + `toml`, `schemars`, and `tokio`.
 
-- **`clap` v4** — the command surface needs global flags accepted before _and_ after a subcommand ([`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md), [`ADR-0026-global-flags-and-config-precedence.md`](./ADR-0026-global-flags-and-config-precedence.md)), deeply nested subcommands, and a caller-owned exit code. `clap`'s `global(true)` and fallible `try_parse` meet all three; a lean parser would push nested-subcommand dispatch and help generation back onto us. Considered `lexopt`/`bpaf`; rejected on that cost.
-- **`serde` + `serde_json` + `toml`** — every data command emits `--json`; manifests are TOML the tool only _reads_, never rewrites, so serde-native `toml` is enough and `toml_edit`'s format preservation is unwarranted.
-- **`schemars`** — realizes the generate-from-types decision ([`ADR-0012-generate-config-examples-from-types.md`](./ADR-0012-generate-config-examples-from-types.md)).
-- **`tokio`** (`rt-multi-thread, macros, process, net, io-util, time, sync, signal`) — `tokio::process` supervises `nix build`/hypervisor launches; `net` carries the control socket. The guest control-socket transport crate (vsock-class) is deferred to the wire-protocol decision ([`ADR-0016-guest-control-transport-and-exec-contract.md`](./ADR-0016-guest-control-transport-and-exec-contract.md)).
+- `clap` v4 — the command surface needs global flags accepted before and after a subcommand ([`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md), [`ADR-0026-global-flags-and-config-precedence.md`](./ADR-0026-global-flags-and-config-precedence.md)), deeply nested subcommands, and a caller-owned exit code. `clap`'s `global(true)` and fallible `try_parse` meet all three; a lean parser would push nested-subcommand dispatch and help generation back onto us. Considered `lexopt`/`bpaf`; rejected on that cost.
+- `serde` + `serde_json` + `toml` — every data command emits `--json`; manifests are TOML the tool only reads, never rewrites, so serde-native `toml` is enough and `toml_edit`'s format preservation is unwarranted.
+- `schemars` — realizes the generate-from-types decision ([`ADR-0012-generate-config-examples-from-types.md`](./ADR-0012-generate-config-examples-from-types.md)).
+- `tokio` (`rt-multi-thread, macros, process, net, io-util, time, sync, signal`) — `tokio::process` supervises `nix build`/hypervisor launches; `net` carries the control socket. The guest control-socket transport crate (vsock-class) is deferred to the wire-protocol decision ([`ADR-0016-guest-control-transport-and-exec-contract.md`](./ADR-0016-guest-control-transport-and-exec-contract.md)).
 
 ## Consequences
 
@@ -29,4 +29,4 @@ Chosen baseline: **`clap` v4, `serde` + `serde_json` + `toml`, `schemars`, and `
 
 Accepted
 
-Amended by [`ADR-0065-control-socket-wire-protocol.md`](./ADR-0065-control-socket-wire-protocol.md) — the deferred vsock-class transport crate resolves to **none in the CLI**: the control socket's host end is an ordinary Unix stream, so the `tokio` `net` feature already in this baseline suffices. The vsock dependency belongs to the guest agent and is chosen with it. The baseline above is otherwise unchanged.
+Amended by [`ADR-0065-control-socket-wire-protocol.md`](./ADR-0065-control-socket-wire-protocol.md) — the deferred vsock-class transport crate resolves to none in the CLI: the control socket's host end is an ordinary Unix stream, so the `tokio` `net` feature already in this baseline suffices. The vsock dependency belongs to the guest agent and is chosen with it. The baseline above is otherwise unchanged.

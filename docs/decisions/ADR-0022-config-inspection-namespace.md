@@ -12,11 +12,11 @@ Three read-only verbs overlapped: `viv show --resolved` (render the merged, eval
 
 ## Decision Outcome
 
-Chosen option: **retire `show`; `config` owns config inspection; `doctor` stays a pure checker** — it splits the overlap into two honest domains: _inspect config_ vs _diagnose health_.
+Chosen option: retire `show`; `config` owns config inspection; `doctor` stays a pure checker — it splits the overlap into two honest domains: inspect config vs diagnose health.
 
 - `viv config` (no subcommand) — the binding: bound manifest + effective config/state/data/cache paths.
 - `viv config sources [--json]` — provenance: declaring manifest and ordered pieces in merge order; the home for how merge-priority conflicts and content defects render.
-- `viv config eval [--json]` — the fully merged, **evaluated** config. Replaces `show --resolved`; `eval` names the semantic Nix step (echoes `nix eval`) instead of the meaningless `show`. Guards on the hard preflight subset (Nix present) since it evaluates; `config` is a pure metadata read.
+- `viv config eval [--json]` — the fully merged, evaluated config. Replaces `show --resolved`; `eval` names the semantic Nix step (echoes `nix eval`) instead of the meaningless `show`. Guards on the hard preflight subset (Nix present) since it evaluates; `config` is a pure metadata read.
 - `viv doctor` is unchanged: a checker with pass/warn/fail and sysexit codes, never a config renderer.
 
 Grounded in dominant CLI precedent: `nix config show`, `npm config list`, `terraform show`, `kubectl config view` render config, while `nix doctor`, `npm doctor`, `brew doctor`, `flutter doctor` only diagnose — the two are never one verb. All three `config*` paths are read-only (N13); exit codes follow ADR-0015.

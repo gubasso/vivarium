@@ -12,14 +12,14 @@ N3 and [`../reference/spec/04-composition-and-determinism.md`](../reference/spec
 
 ## Decision Outcome
 
-Chosen option: **one lockfile per project target, under the data root** at `projects/<project-id>/<target>/flake.lock`.
+Chosen option: one lockfile per project target, under the data root at `projects/<project-id>/<target>/flake.lock`.
 
-- **Data**, because a lockfile is a pin and the data root is exactly "pinned inputs" (`spec/02`). Cache is documented deletable, and deleting a lock does not rebuild — it re-resolves, which is N3's failure mode. State is cleared by `viv destroy`, which would silently discard the pin.
-- **Per target, not global.** A global lock makes updating one project an unannounced update to every other. ADR-0049 already speaks of "the project's lockfile".
-- **Created by the first build or by `viv update`, whichever comes first; announced, never demanded.** Failing closed governs manifest _resolution_ (N7), not a derived pin the tool owns; refusing a user's first `start` would make ADR-0004's "no Nix fluency required" false. The safeguard is printing what was pinned.
-- **Only `viv update` re-resolves.** A build may create it, never move it.
-- **A team's shared pin is a read-only `flake.lock` in the config root**, which wins when present and is never written — the config root is where ADR-0040 already put shared guarantees. ADR-0062 narrows it to one manifest.
-- **Each generation retains the lock that built it**, not merely a revision: a revision alone cannot reproduce an evaluation.
+- Data, because a lockfile is a pin and the data root is exactly "pinned inputs" (`spec/02`). Cache is documented deletable, and deleting a lock does not rebuild — it re-resolves, which is N3's failure mode. State is cleared by `viv destroy`, which would silently discard the pin.
+- Per target, not global. A global lock makes updating one project an unannounced update to every other. ADR-0049 already speaks of "the project's lockfile".
+- Created by the first build or by `viv update`, whichever comes first; announced, never demanded. Failing closed governs manifest resolution (N7), not a derived pin the tool owns; refusing a user's first `start` would make ADR-0004's "no Nix fluency required" false. The safeguard is printing what was pinned.
+- Only `viv update` re-resolves. A build may create it, never move it.
+- A team's shared pin is a read-only `flake.lock` in the config root, which wins when present and is never written — the config root is where ADR-0040 already put shared guarantees. ADR-0062 narrows it to one manifest.
+- Each generation retains the lock that built it, not merely a revision: a revision alone cannot reproduce an evaluation.
 
 ## Consequences
 

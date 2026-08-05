@@ -6,20 +6,20 @@ ADR-0031 deferred redaction of secrets and personal paths, and `spec/16` describ
 
 ## Considered Options
 
-- **Output filter** — scan every record before writing and mask known secret values.
-- **By construction** — a secret value is never formattable or serializable, so no record can contain one; exact-value masking only as defense in depth.
-- **Opt-in redaction** — off by default, enabled by a flag for sharing a log.
+- Output filter — scan every record before writing and mask known secret values.
+- By construction — a secret value is never formattable or serializable, so no record can contain one; exact-value masking only as defense in depth.
+- Opt-in redaction — off by default, enabled by a flag for sharing a log.
 
 ## Decision Outcome
 
-Chosen option: **by construction**.
+Chosen option: by construction.
 
-- **Never-log-values.** For every secret-class channel vivarium logs names, counts, and shapes — never values. `spec/16` enumerates those channels, additively.
-- **Types enforce it.** Secret-bearing values are wrapped on ingestion in a type whose `Debug` and `Display` render `[REDACTED]` and which is not serializable; exposure is an explicit, greppable call. Sensitivity propagates to anything derived from a secret.
-- **Command lines are structured, never shell-joined.** The resolved backend invocation is a `debug`-level field list; a pasteable single string is `trace`-only, and neither ever reaches `--json`, `doctor`, or stderr.
-- **Personal paths are normalized, not masked** — `~`, `<workspace>`, and the XDG names in the persistent log; exact paths stay on stderr where the user must act on them.
-- **Fail closed.** An unredactable field is omitted, never serialized raw. No verbosity level, output format, or panic path bypasses this.
-- **The guest console is out of scope** — guest-controlled bytes cannot be filtered, and claiming otherwise would be a false guarantee.
+- Never-log-values. For every secret-class channel vivarium logs names, counts, and shapes — never values. `spec/16` enumerates those channels, additively.
+- Types enforce it. Secret-bearing values are wrapped on ingestion in a type whose `Debug` and `Display` render `[REDACTED]` and which is not serializable; exposure is an explicit, greppable call. Sensitivity propagates to anything derived from a secret.
+- Command lines are structured, never shell-joined. The resolved backend invocation is a `debug`-level field list; a pasteable single string is `trace`-only, and neither ever reaches `--json`, `doctor`, or stderr.
+- Personal paths are normalized, not masked — `~`, `<workspace>`, and the XDG names in the persistent log; exact paths stay on stderr where the user must act on them.
+- Fail closed. An unredactable field is omitted, never serialized raw. No verbosity level, output format, or panic path bypasses this.
+- The guest console is out of scope — guest-controlled bytes cannot be filtered, and claiming otherwise would be a false guarantee.
 
 ## Consequences
 

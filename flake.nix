@@ -53,7 +53,8 @@
             # Nix owns runtimes; pre-commit owns hooks. markdownlint-cli2 uses
             # this Node via language_version: system instead of nodeenv.
             pkgs.nodejs
-            # Interpreter for the language:system scripts/check-table-pipes hook.
+            # Interpreter for the language:system check-table-pipes and
+            # check-markdown-emphasis hooks.
             pkgs.python3
             # Binary for the language:system taplo-format hook.
             pkgs.taplo

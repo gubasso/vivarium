@@ -6,12 +6,12 @@ A manifest is the unifier a project binds to (see [`ADR-0003-images-pieces-manif
 
 ## Considered Options
 
-- **Manifest as a raw Nix module** — the user writes `imports = [ ... ]` directly.
-- **Manifest as TOML compiled by the tool** — a thin declarative name-list that the CLI turns into a generated flake whose `imports` are the named image and pieces.
+- Manifest as a raw Nix module — the user writes `imports = [ ... ]` directly.
+- Manifest as TOML compiled by the tool — a thin declarative name-list that the CLI turns into a generated flake whose `imports` are the named image and pieces.
 
 ## Decision Outcome
 
-Chosen option: **manifest as TOML compiled to a generated flake**. The manifest is a name-list (`image = "rust"`, `pieces = [ ... ]`, resource and egress knobs); the CLI resolves those names to module files and emits a flake that imports them, then builds it. The module system still does all merging — the CLI only assembles the `imports` list.
+Chosen option: manifest as TOML compiled to a generated flake. The manifest is a name-list (`image = "rust"`, `pieces = [ ... ]`, resource and egress knobs); the CLI resolves those names to module files and emits a flake that imports them, then builds it. The module system still does all merging — the CLI only assembles the `imports` list.
 
 For compositions the TOML cannot express, a manifest may reference a raw `.nix` module as an escape hatch. See [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md) for the manifest schema.
 

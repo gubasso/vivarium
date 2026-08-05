@@ -1,0 +1,38 @@
+schema: vivarium-tracking-v1
+tracked:
+  - path: docs/reference/backend-capabilities.md
+    last_checked: 2026-08-05
+    cadence: 30d and on nix/flake.lock changes
+    why: Backend revisions and their accepted interfaces change independently of this repository's prose.
+    revalidate: Re-read the exact locked revisions in nix/flake.lock and the linked official upstream sources.
+    dependents:
+      - docs/plan/slices/001-close-host-measurement-gaps/README.md
+      - docs/plan/slices/002-secure-launch-and-supervision/README.md
+      - docs/plan/slices/004-enforce-egress-allowlist/README.md
+      - docs/plan/slices/007-build-test-lanes/README.md
+      - docs/plan/slices/009-automate-backend-advisories/README.md
+  - path: docs/reference/microvm-verification-harness.md
+    last_checked: 2026-08-05
+    cadence: 90d and on harness or backend-pin changes
+    why: Measurements depend on the harness, backend closure, guest closure, and target host.
+    revalidate: Rerun the appropriate evaluation and real-host lanes; never infer a target-host fact from an agent environment.
+    dependents:
+      - docs/plan/slices/001-close-host-measurement-gaps/README.md
+      - docs/explanation/guest-store-and-volumes.md
+      - docs/explanation/shared-filesystems.md
+      - docs/explanation/resources-and-capacity.md
+  - path: docs/reference/testing-lanes.md
+    last_checked: 2026-07-31
+    cadence: 90d
+    why: The purity lane depends on an experimental Nix derivation JSON interface.
+    revalidate: Check nix derivation show -r JSON against the pinned Nix release and its official manual.
+    dependents:
+      - docs/plan/slices/007-build-test-lanes/README.md
+  - path: docs/guides/publishing.md
+    last_checked: 2026-07-31
+    cadence: 90d
+    why: Registry authentication, release automation, repository settings, and workflow names can drift.
+    revalidate: Verify crates.io trusted publishing, release-plz and cargo-dist assumptions, repository settings, and current workflow filenames.
+    dependents:
+      - SECURITY.md
+      - docs/plan/slices/009-automate-backend-advisories/README.md

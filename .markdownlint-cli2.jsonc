@@ -75,7 +75,15 @@
     "MD013": false, // line length — dprint unwraps prose to one physical line
     "MD024": { "siblings_only": true }, // dup headings OK across sections, not within
     "MD033": false, // inline HTML — needed for badges, <details>, <kbd>
-    "MD046": { "style": "fenced" } // require fenced code blocks
+
+    // Existing fence policy, stated explicitly: every fence names a language,
+    // and indented code is refused in favor of fenced blocks.
+    "MD040": true,
+    "MD046": { "style": "fenced" },
+
+    // Fixed heading structures opt in per file. Each slice README carries the
+    // same file-scoped MD043 headings array; sibling tasks.md files do not.
+    "MD043": false
   },
   "customRules": ["markdownlint-rule-relative-links"],
   "ignores": [

@@ -12,12 +12,12 @@ ADR-0015 adopted BSD sysexits ("never a generic `1`"), and `exec`/`shell` (ADR-0
 
 ## Decision Outcome
 
-Chosen option: **program-wide categories + central matrix + append-only stability** — a code names the _kind_ of failure, not the command that raised it.
+Chosen option: program-wide categories + central matrix + append-only stability — a code names the kind of failure, not the command that raised it.
 
-- **Program-wide.** `78` means config error whether it comes from `start`, `init`, or `config`. Commands map their failure conditions onto the fixed set; they never mint private code spaces.
-- **Single source of truth.** The legend and the command × code matrix live once, in [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md); every command spec describes its _conditions_ in prose and links there.
-- **Category vs instance.** The code carries the category; stderr's what / where / why / hint carries the specifics. This is what keeps the code set small.
-- **Append-only stability.** Documented codes are a permanent API: never reassigned, only appended. Consumers branch on `0`/non-zero or the documented categories. `126`/`127` stay reserved for future not-executable/not-found; the `exec`/`shell` pass-through (`0..255`, `128+S`) is reaffirmed.
+- Program-wide. `78` means config error whether it comes from `start`, `init`, or `config`. Commands map their failure conditions onto the fixed set; they never mint private code spaces.
+- Single source of truth. The legend and the command × code matrix live once, in [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md); every command spec describes its conditions in prose and links there.
+- Category vs instance. The code carries the category; stderr's what / where / why / hint carries the specifics. This is what keeps the code set small.
+- Append-only stability. Documented codes are a permanent API: never reassigned, only appended. Consumers branch on `0`/non-zero or the documented categories. `126`/`127` stay reserved for future not-executable/not-found; the `exec`/`shell` pass-through (`0..255`, `128+S`) is reaffirmed.
 
 ## Consequences
 
@@ -29,6 +29,6 @@ Chosen option: **program-wide categories + central matrix + append-only stabilit
 
 Accepted
 
-Amended by [`ADR-0068-human-error-presentation-and-diagnostic-ids.md`](./ADR-0068-human-error-presentation-and-diagnostic-ids.md) — the "category vs instance" split above gains a machine-matchable handle on the instance side: a stable diagnostic id, rendered in the message. It is explicitly **not** a second permanent numeric API — the exit code remains the surface consumers branch on, and the append-only guarantee here is unchanged.
+Amended by [`ADR-0068-human-error-presentation-and-diagnostic-ids.md`](./ADR-0068-human-error-presentation-and-diagnostic-ids.md) — the "category vs instance" split above gains a machine-matchable handle on the instance side: a stable diagnostic id, rendered in the message. It is explicitly not a second permanent numeric API — the exit code remains the surface consumers branch on, and the append-only guarantee here is unchanged.
 
 Amends [`ADR-0015-cli-output-and-failure-contract.md`](./ADR-0015-cli-output-and-failure-contract.md) — makes the sysexits taxonomy program-wide and adds the central matrix and append-only stability; the basis is unchanged. Specified in [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md). Supersedes the retired ad-hoc `10/20/30/40` sketch.

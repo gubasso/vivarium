@@ -1,6 +1,6 @@
 # Inspect a project before running it
 
-> **Design-intent walkthrough — not yet working.** This guide describes the _target_ experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
+> Design-intent walkthrough — not yet working. This guide describes the target experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
 
 Use this flow to review the declared manifest, effective merge, and value provenance without booting a VM. The [command surface](../reference/spec/01-command-surface.md) distinguishes these views; [the decision that gathered them into one inspection namespace](../decisions/ADR-0022-config-inspection-namespace.md) explains why they are three commands rather than flags on one.
 

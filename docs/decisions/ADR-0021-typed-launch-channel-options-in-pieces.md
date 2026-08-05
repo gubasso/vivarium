@@ -2,7 +2,7 @@
 
 ## Context and Problem Statement
 
-ADR-0020 decided the mount/env schema and let pieces contribute, but left the piece-side surface undefined: pieces are NixOS modules, not TOML, and it was unclear how a piece could carry the host mounts its application needs without breaking the pure build (N3) or the personal-data-free rule (N11). A piece should be the _whole_ piece — packages, guest config, runtime env, and host mounts for one concern, in one file — so adopting it never requires re-declaration.
+ADR-0020 decided the mount/env schema and let pieces contribute, but left the piece-side surface undefined: pieces are NixOS modules, not TOML, and it was unclear how a piece could carry the host mounts its application needs without breaking the pure build (N3) or the personal-data-free rule (N11). A piece should be the whole piece — packages, guest config, runtime env, and host mounts for one concern, in one file — so adopting it never requires re-declaration.
 
 ## Considered Options
 
@@ -12,11 +12,11 @@ ADR-0020 decided the mount/env schema and let pieces contribute, but left the pi
 
 ## Decision Outcome
 
-Chosen option: **typed `vivarium.*` options inside the piece module** — one file per concern, natively type-checked, no second language and no translation layer.
+Chosen option: typed `vivarium.*` options inside the piece module — one file per concern, natively type-checked, no second language and no translation layer.
 
 - A tool-owned options module declares `vivarium.mounts` (`listOf` submodule `source`/`target`/ `readonly`) and `vivarium.env` (`attrsOf str`); the module system validates shapes and merges lists/attrsets — no bespoke engine (N6). Manifest `[[mounts]]`/`[env]` compile into the same options.
-- These options are **launch-channel data**: the tool reads `config.vivarium.*` by pure evaluation and applies it at launch; no build output may depend on it (new invariant N19). Host-side `${VAR}` expansion happens only at launch (N5).
-- **Portable variables only in shared layers:** mount sources in shared images and pieces may use `${HOME}` and `${XDG_*}` — unexpanded, machine-independent — never literal personal paths; validation rejects literals before the build. Literal paths remain allowed in the personal/machine-local layer (N11, refined).
+- These options are launch-channel data: the tool reads `config.vivarium.*` by pure evaluation and applies it at launch; no build output may depend on it (new invariant N19). Host-side `${VAR}` expansion happens only at launch (N5).
+- Portable variables only in shared layers: mount sources in shared images and pieces may use `${HOME}` and `${XDG_*}` — unexpanded, machine-independent — never literal personal paths; validation rejects literals before the build. Literal paths remain allowed in the personal/machine-local layer (N11, refined).
 
 ## Consequences
 
@@ -28,7 +28,7 @@ Chosen option: **typed `vivarium.*` options inside the piece module** — one fi
 
 Accepted
 
-Amended by [`ADR-0071-agent-forwarding-over-a-second-vsock-port.md`](./ADR-0071-agent-forwarding-over-a-second-vsock-port.md) — the typed option family gains `vivarium.credentials.agents`, a closed enum naming an authentication-agent channel rather than a host path. It is launch-channel like the options above, and it is the one credential surface a **shared** piece may carry, because a member of a closed enum is not personal data (N11).
+Amended by [`ADR-0071-agent-forwarding-over-a-second-vsock-port.md`](./ADR-0071-agent-forwarding-over-a-second-vsock-port.md) — the typed option family gains `vivarium.credentials.agents`, a closed enum naming an authentication-agent channel rather than a host path. It is launch-channel like the options above, and it is the one credential surface a shared piece may carry, because a member of a closed enum is not personal data (N11).
 
 Amended by [`ADR-0040-manifest-is-the-personal-layer.md`](./ADR-0040-manifest-is-the-personal-layer.md) — the manifest moved to the personal class, so the portable-variable rule binds shared images and pieces only; literal paths are legal in a user's own manifest.
 

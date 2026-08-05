@@ -1,61 +1,23 @@
 # Architecture
 
-The mental model for how vivarium fits together. This page teaches the shape; for exact rules see the spec under [`../reference/spec/`](../reference/spec/README.md), and for the reasoning behind each choice see the decision records under [`../decisions/`](../decisions/).
+This overview describes vivarium's accepted architecture, not its implementation state; consult [implementation status](../reference/implementation-status.md) before relying on a command or runtime component.
 
-## The box and what runs inside it
+vivarium separates two environments. The outer environment is the reproducible microVM boundary that vivarium builds and launches. The inner environment is the project's own development setup, evaluated inside the guest and left usable outside it. Project-authored files remain on the host and are shared into the guest; vivarium-owned state and build artifacts live under per-user XDG roots.
 
-The central idea is a separation of two layers:
+The command-line tool resolves one manifest, composes its image and pieces through the NixOS module system, materializes a generated flake, and asks Nix to build a runner closure. At launch, host-specific paths and other runtime declarations are injected without becoming build inputs. The runner starts the closure-owned virtual machine monitor and guest-facing helpers inside one supervised lifetime.
 
-- **The box** — the sandbox vivarium builds: a microVM with its own kernel, its mounts, its network, and its security policy. vivarium owns this layer entirely.
-- **What you do inside the box** — your project's own development environment, defined by the project and run within the guest. vivarium does not own or touch this layer.
+vivarium owns manifest resolution, state, orchestration, confinement construction, and user-facing contracts. Nix owns evaluation, module merging, builds, locks, and store closure semantics. The selected virtual machine monitor and sharing daemons own virtualization and device transport. This boundary keeps vivarium a thin orchestrator rather than a replacement for any upstream mechanism.
 
-Keeping these apart is what lets a project's environment stay portable — identical on bare metal, in CI, and inside a sandbox — while vivarium independently provides isolation around it. The full rationale is in [`../decisions/ADR-0008-two-layer-separation.md`](../decisions/ADR-0008-two-layer-separation.md).
+## Subsystems
 
-## Two Nix evaluations
+- [Configuration and composition](./configuration-and-composition.md) covers binding, artifacts, module merging, generated flakes, locks, and validation.
+- [State and lifecycle](./state-and-lifecycle.md) covers XDG state, identity, generations, runtime state, and teardown.
+- [Launch and supervision](./launch-and-supervision.md) covers the build-to-launch handoff, confinement, helpers, and console ownership.
+- [Shared filesystems](./shared-filesystems.md) covers workspace, configuration, and host-store shares.
+- [Guest store and volumes](./guest-store-and-volumes.md) covers persistent volumes and the overlay guest store.
+- [Resources and capacity](./resources-and-capacity.md) covers elastic ceilings, admission, reporting, and reclaim.
+- [Networking and egress](./networking-and-egress.md) covers per-VM networking and name-level policy enforcement.
+- [Guest control and secrets](./guest-control-and-secrets.md) covers control sessions, credential relay, and secret boundaries.
+- [CLI and diagnostics](./cli-and-diagnostics.md) covers orchestration, output, errors, logs, inspection, and stability.
 
-Because both layers are described in Nix, there are two evaluations, at different times and on different machines:
-
-- The **outer** evaluation runs on the host at build time. It takes a manifest, resolves it to an image and pieces, merges them with the module system, and produces the VM. This is what `viv
-  up` builds.
-- The **inner** evaluation runs inside the guest at shell time. When a shell enters the mounted workspace, the project's own environment evaluates and loads.
-
-They share nothing: separate configuration, separate lockfiles, separate evaluation moments. A newcomer's most common confusion is treating them as one; they are deliberately orthogonal.
-
-## From manifest to running VM
-
-The outer path is a short pipeline:
-
-1. **Resolve the binding.** The project selects one manifest by a fixed precedence (see [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md)).
-2. **Compile the manifest.** The TOML manifest becomes a generated flake whose module `imports` are the named image and pieces (see [`../decisions/ADR-0004-toml-manifest-compiles-to-flake.md`](../decisions/ADR-0004-toml-manifest-compiles-to-flake.md)).
-3. **Merge and build.** The module system merges the layers and Nix builds the VM. Identical inputs yield an identical store output, which is the freshness key (see [`../reference/spec/04-composition-and-determinism.md`](../reference/spec/04-composition-and-determinism.md)).
-4. **Launch.** The tool boots the VM and, at that moment, mounts the working directory — the one host-specific value, kept out of the pure build (see [`../decisions/ADR-0009-launch-time-workspace-path-injection.md`](../decisions/ADR-0009-launch-time-workspace-path-injection.md)).
-
-## Where the tool stops
-
-vivarium does the orchestration — resolving, compiling, building, mounting, launching — and delegates the hard mechanisms to established building blocks: the virtualization backend provides the kernel and boundary, and the module system provides the merge. This is deliberate: the product's value is a clean, composable surface and sensible defaults over those mechanisms, not a reimplementation of them. The capability classes that keep the backend swappable are fixed by [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md).
-
-The line falls between the guest and the launch. vivarium takes the guest's system configuration — how shares, volumes, and the store are mounted, how the kernel and initrd are wired — from the building blocks, and owns the launch itself: the arguments, the confinement around every process it starts, the resource scope they all share, and the one host-specific value injected at that moment. That is not a preference. A generated launcher would have to bake the workspace's host path into the build output, which the determinism invariant forbids, and it would supervise the filesystem daemons itself, which is where the sandbox is enforced ([`../decisions/ADR-0048-guest-module-only-vivarium-owns-the-runner.md`](../decisions/ADR-0048-guest-module-only-vivarium-owns-the-runner.md)). The backend those arguments name is itself part of what the build produces, pinned by the project's lockfile rather than found on the host ([`../decisions/ADR-0049-backend-is-a-closure-member.md`](../decisions/ADR-0049-backend-is-a-closure-member.md)).
-
-## Why several boxes fit on one machine
-
-A separate kernel per project sounds like it should cost a machine's worth of memory per project. It does not, and the reason is worth holding in mind, because it is what makes running four or five projects at once ordinary rather than exotic.
-
-Nothing a sandbox declares is taken from the host up front. A VM's memory figure is a **ceiling** — the most it may use — and guest memory is faulted in only as the guest actually touches it. The guest then hands back what it finishes with, so the host's bill tracks the working set rather than climbing to the ceiling and staying there. Volume images work the same way: a large declared size is virtual, and the file grows with its contents. vCPUs are threads the host schedules, not cores set aside. So the sum of what your projects _may_ use will exceed your machine, and the sum of what they _do_ use is the number that matters.
-
-This is why vivarium sizes VMs for you and expects you never to touch the numbers ([`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md)).
-
-Two consequences shape the design more than they first appear:
-
-- **The tool measures and reports; it does not arbitrate.** There is no background process deciding which sandbox deserves memory. Squeezing a running guest from the host turns memory pressure into a page-fault storm that every process inside feels, so vivarium refuses to do it automatically: `viv start` warns before you overcommit, `viv status` shows used against ceiling, and reclaiming is an explicit `viv trim`. The decision about which project matters stays with the person who knows.
-- **The overhead that remains is real and bounded.** A guest kernel, a monitor process, and one filesystem daemon per share are the price of the second wall below, per project. Elasticity removes the _variable_ cost, not the fixed one — which is precisely the trade [`../decisions/ADR-0001-microvm-isolation-boundary.md`](../decisions/ADR-0001-microvm-isolation-boundary.md) accepted.
-
-## The boundary and its edges
-
-The isolation model is a **second wall**. Inside a shared-kernel sandbox, one kernel or runtime bug is a host compromise; behind the microVM boundary an attacker must chain a guest-kernel escape _and_ a break of the virtual-machine monitor or the hardware boundary — a categorically harder exploit chain. That risk-class jump, not any single tool, is the reason the boundary is a microVM ([`../decisions/ADR-0001-microvm-isolation-boundary.md`](../decisions/ADR-0001-microvm-isolation-boundary.md), [`../decisions/ADR-0024-backend-security-requirements.md`](../decisions/ADR-0024-backend-security-requirements.md)).
-
-A second wall is not zero risk, and knowing its edges is part of the mental model:
-
-- **The host-side helpers are trusted surface.** The VMM process and the shared-filesystem daemon that serves the workspace both run on the host, so both are confined by construction — seccomp plus capability drop (N20) — rather than trusted. The concrete profile, and the guest-root-to-host-root escape class it closes (an unconfined virtiofsd, CVE-2026-47243), are fixed by [`../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md).
-- **Network reach is not escape.** Open egress lets a compromised agent exfiltrate what it can already read; it does not weaken the boundary. That is why egress is a policy knob, not an isolation setting (N8, [`../decisions/ADR-0007-default-open-egress.md`](../decisions/ADR-0007-default-open-egress.md)).
-- **The boundary protects only what stays inside it.** Files the guest writes into the workspace are later read on the host — by editors, hooks, CI, task runners. A hostile workspace file that a host tool executes walks _around_ the wall, not through it. vivarium never executes workspace content on the host itself (N9); users should extend the same caution to their own host tooling.
-- **Out of scope.** CPU side channels and a hostile host are outside the threat model: the host is trusted, the guest is not.
+The [normative invariants](../reference/spec/08-invariants-and-guarantees.md) govern every subsystem. ADRs record why choices were made; the linked subsystem pages describe how those choices fit together now.

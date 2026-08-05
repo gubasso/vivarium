@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""Reject syntactic Markdown emphasis while ignoring code and fences."""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+import tempfile
+import unicodedata
+from dataclasses import dataclass
+from pathlib import Path
+
+
+ALLOW_PREFIX = "<!-- allow-emphasis:"
+ALLOW_RE = re.compile(r"^<!-- allow-emphasis:\s*(.*?)\s*-->$")
+# A fence may sit inside a container, so allow a blockquote prefix and the
+# indentation a list item gives its content. The closing fence must repeat the
+# same blockquote depth.
+FENCE_RE = re.compile(r"^(?P<prefix>[ \t]*(?:>[ \t]*)*)(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
+# Lines that begin a new leaf block. Inline parsing never runs across one of
+# these, so an unmatched backtick above must not mask emphasis below.
+BLOCK_START_RE = re.compile(r"^ {0,3}(?:#{1,6}(?:\s|$)|>|[-+*](?:\s|$)|\d{1,9}[.)](?:\s|$)|<!--)")
+HEADING_RE = re.compile(r"^ {0,3}#{1,6}(?:\s|$)")
+QUOTE_RE = re.compile(r"^[ \t]*(?:>[ \t]*)*")
+HORIZONTAL_RE = re.compile(r"^[ ]{0,3}(?:(?:\*\s*){3,}|(?:_\s*){3,})$")
+# A glob wildcard is an asterisk run bounded by path syntax, never by a word
+# character: `**/`, `/*/`, `/**`, and a leading `*.ext`. Masking whole tokens
+# instead would swallow `docs/*emphasis*`, which CommonMark parses as emphasis.
+EXTENSION_RE = re.compile(r"\.[A-Za-z0-9_-]+")
+GLOB_LEFT = "\"'`(!=:,["
+GLOB_RIGHT = "\"'`),;:]"
+
+
+@dataclass(frozen=True)
+class Violation:
+    line: int
+    column: int
+    message: str
+
+
+@dataclass(frozen=True)
+class Delimiter:
+    char: str
+    start: int
+    length: int
+    can_open: bool
+    can_close: bool
+
+
+def is_space(char: str | None) -> bool:
+    return char is None or char.isspace()
+
+
+def is_punctuation(char: str | None) -> bool:
+    if char is None:
+        return False
+    return unicodedata.category(char)[0] in {"P", "S"}
+
+
+def escaped(text: str, index: int) -> bool:
+    count = 0
+    index -= 1
+    while index >= 0 and text[index] == "\\":
+        count += 1
+        index -= 1
+    return count % 2 == 1
+
+
+def mask_inline_code(text: str) -> str:
+    chars = list(text)
+    index = 0
+    while index < len(text):
+        if text[index] != "`" or escaped(text, index):
+            index += 1
+            continue
+        end = index
+        while end < len(text) and text[end] == "`":
+            end += 1
+        width = end - index
+        close = text.find("`" * width, end)
+        while close >= 0:
+            before = close == 0 or text[close - 1] != "`"
+            after = close + width == len(text) or text[close + width] != "`"
+            if before and after:
+                for pos in range(index, close + width):
+                    # Keep line ends so the caller can split the masked text
+                    # back into the lines it passed in.
+                    chars[pos] = "\n" if text[pos] == "\n" else " "
+                index = close + width
+                break
+            close = text.find("`" * width, close + 1)
+        else:
+            index = end
+    return "".join(chars)
+
+
+def mask_globs(text: str) -> str:
+    chars = list(text)
+    for match in re.finditer(r"\*+", text):
+        start, end = match.start(), match.end()
+        if escaped(text, start):
+            continue
+        before = text[start - 1] if start else None
+        after = text[end] if end < len(text) else None
+        left_free = before is None or before.isspace() or before in GLOB_LEFT
+        right_free = after is None or after.isspace() or after in GLOB_RIGHT
+        glob = False
+        if before in ("/", "\\") and (right_free or after in "/\\."):
+            glob = True
+        elif after in ("/", "\\") and left_free:
+            glob = True
+        elif left_free and after == ".":
+            # `*.md` is a glob only when the extension ends the token; `*.md*`
+            # is a closed emphasis pair around `.md`.
+            extension = EXTENSION_RE.match(text, end)
+            if extension:
+                tail = text[extension.end()] if extension.end() < len(text) else None
+                glob = tail is None or tail.isspace() or tail in GLOB_RIGHT
+        if glob:
+            for pos in range(start, end):
+                chars[pos] = " "
+    return "".join(chars)
+
+
+def delimiter_runs(text: str) -> list[Delimiter]:
+    runs: list[Delimiter] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char not in "*_" or escaped(text, index):
+            index += 1
+            continue
+        end = index + 1
+        while end < len(text) and text[end] == char and not escaped(text, end):
+            end += 1
+        previous = text[index - 1] if index else None
+        following = text[end] if end < len(text) else None
+        left = not is_space(following) and (
+            not is_punctuation(following) or is_space(previous) or is_punctuation(previous)
+        )
+        right = not is_space(previous) and (
+            not is_punctuation(previous) or is_space(following) or is_punctuation(following)
+        )
+        if char == "_":
+            can_open = left and (not right or is_punctuation(previous))
+            can_close = right and (not left or is_punctuation(following))
+        else:
+            can_open = left
+            can_close = right
+        runs.append(Delimiter(char, index, end - index, can_open, can_close))
+        index = end
+    return runs
+
+
+def violates_multiple_of_three(opener: Delimiter, closer: Delimiter) -> bool:
+    if not (opener.can_close or closer.can_open):
+        return False
+    total = opener.length + closer.length
+    return total % 3 == 0 and (opener.length % 3 != 0 or closer.length % 3 != 0)
+
+
+def emphasis_columns(text: str, code_masked: str | None = None) -> list[int]:
+    if HORIZONTAL_RE.fullmatch(text):
+        return []
+    masked = mask_globs(mask_inline_code(text) if code_masked is None else code_masked)
+    openers: list[Delimiter] = []
+    found: list[int] = []
+    for current in delimiter_runs(masked):
+        if current.can_close:
+            for offset in range(len(openers) - 1, -1, -1):
+                opener = openers[offset]
+                if opener.char != current.char or violates_multiple_of_three(opener, current):
+                    continue
+                found.append(opener.start + 1)
+                del openers[offset]
+                break
+        if current.can_open:
+            openers.append(current)
+    return found
+
+
+def scannable_lines(text: str) -> list[tuple[int, str]]:
+    """Return the lines outside fenced code blocks, in document order."""
+    lines: list[tuple[int, str]] = []
+    fence_char: str | None = None
+    fence_width = 0
+    fence_quote = 0
+    for number, line in enumerate(text.splitlines(), 1):
+        fence = FENCE_RE.match(line)
+        if fence_char is not None and fence_quote and QUOTE_RE.match(line)[0].count(">") < fence_quote:
+            # An unclosed fence ends where its containing blockquote ends, so
+            # this line is outside it and is scanned normally.
+            fence_char = None
+            fence_width = 0
+            fence_quote = 0
+        elif fence_char is not None:
+            # A closing fence carries no info string: only spaces or tabs may
+            # follow it. Anything else is ordinary content inside the block.
+            closes = (
+                fence is not None
+                and fence["marker"][0] == fence_char
+                and len(fence["marker"]) >= fence_width
+                and fence["info"].strip(" \t") == ""
+                and fence["prefix"].count(">") == fence_quote
+            )
+            if closes:
+                fence_char = None
+                fence_width = 0
+                fence_quote = 0
+            continue
+        if fence:
+            # A backtick fence's info string may not contain a backtick, so a
+            # line such as ``x`` is inline code rather than a fence opener.
+            if fence["marker"][0] == "`" and "`" in fence["info"]:
+                lines.append((number, line))
+                continue
+            fence_char = fence["marker"][0]
+            fence_width = len(fence["marker"])
+            fence_quote = fence["prefix"].count(">")
+            continue
+        lines.append((number, line))
+    return lines
+
+
+def mask_code_spans(lines: list[tuple[int, str]]) -> dict[int, str]:
+    """Mask inline code per leaf block, since a code span may cross line ends."""
+    masked: dict[int, str] = {}
+    block: list[tuple[int, str]] = []
+
+    def flush() -> None:
+        if not block:
+            return
+        joined = mask_inline_code("\n".join(line for _, line in block)).split("\n")
+        for (number, _), text in zip(block, joined):
+            masked[number] = text
+        block.clear()
+
+    previous: int | None = None
+    for number, line in lines:
+        blank = not line.strip()
+        starts_block = BLOCK_START_RE.match(line) is not None
+        gap = previous is not None and number != previous + 1
+        if blank or gap or starts_block:
+            flush()
+        if blank:
+            masked[number] = line
+        else:
+            block.append((number, line))
+            if HEADING_RE.match(line):
+                # An ATX heading is a one-line leaf block.
+                flush()
+        previous = number
+    flush()
+    return masked
+
+
+def scan_text(text: str) -> list[Violation]:
+    violations: list[Violation] = []
+    pending_allow: tuple[int, str] | None = None
+    lines = scannable_lines(text)
+    masked = mask_code_spans(lines)
+    for number, line in lines:
+        if line.startswith(ALLOW_PREFIX):
+            match = ALLOW_RE.fullmatch(line)
+            reason = match.group(1).strip() if match else ""
+            if not reason:
+                violations.append(Violation(number, 1, "allow-emphasis requires a non-empty reason"))
+                pending_allow = None
+            elif re.search(r"\b(?:all|entire|file|global|broad)\b", reason, re.IGNORECASE):
+                violations.append(Violation(number, 1, "allow-emphasis reason may not grant broad or file-level scope"))
+                pending_allow = None
+            else:
+                pending_allow = (number, reason)
+            continue
+
+        columns = emphasis_columns(line, masked[number])
+        if pending_allow is not None:
+            allow_line, _ = pending_allow
+            # Adjacency is physical. A fenced block between the comment and the
+            # emphasis is removed from this list, so compare line numbers.
+            if columns and number == allow_line + 1:
+                pending_allow = None
+                continue
+            violations.append(Violation(allow_line, 1, "allow-emphasis must immediately precede a violating line"))
+            pending_allow = None
+        violations.extend(Violation(number, column, "Markdown emphasis is not allowed") for column in columns)
+
+    if pending_allow is not None:
+        violations.append(Violation(pending_allow[0], 1, "allow-emphasis has no following line to exempt"))
+    return violations
+
+
+def self_test() -> int:
+    cases = {
+        "plain text\n": 0,
+        "This is *italic*.\n": 1,
+        "This is **strong**.\n": 1,
+        "This is ***nested***.\n": 1,
+        "foo_bar_baz and __dunder__?\n": 1,
+        "\\*escaped\\* and \\_escaped\\_.\n": 0,
+        "***\n___\n": 0,
+        "Patterns **/*.md, *.md, and src/*/mod.rs are globs.\n": 0,
+        "`*inline*` and ``code with ` and ** markers``\n": 0,
+        "```markdown\n**inside fence**\n```\n~~~text\n_inside_\n~~~\n": 0,
+        "docs/*note* is emphasis, not a glob.\n": 1,
+        "Suffix after an extension is emphasis: *.md* here.\n": 1,
+        "```text\nplain\n```not-a-close\n**still fenced**\n": 0,
+        "A span may cross a line: `code\nwith *stars*` in it.\n": 0,
+        "# heading with an unmatched `\n\n*hidden* and a `span`\n": 1,
+        "# heading with an unmatched `\n*hidden* and a `span`\n": 1,
+        "> ~~~markdown\n> *inside a quoted fence*\n> ~~~\n": 0,
+        "> ~~~text\n> code\n\noutside *emphasis*\n": 1,
+        "- item\n\n  ```text\n  *inside a list fence*\n  ```\n": 0,
+        "<!-- allow-emphasis: cited mathematical notation -->\n\n```text\nplain\n```\n\n*hidden*\n": 2,
+        "<!-- allow-emphasis: mathematical notation in cited syntax -->\n*allowed*\n": 0,
+        "<!-- allow-emphasis: -->\n*not allowed*\n": 2,
+        "<!-- allow-emphasis: needed later -->\nplain\n*not allowed*\n": 2,
+        "<!-- allow-emphasis: whole file -->\n*not allowed*\n": 2,
+    }
+    failed = 0
+    with tempfile.TemporaryDirectory() as directory:
+        for index, (source, expected) in enumerate(cases.items()):
+            path = Path(directory) / f"case-{index}.md"
+            path.write_text(source, encoding="utf-8")
+            actual = len(scan_text(path.read_text(encoding="utf-8")))
+            if actual != expected:
+                print(f"self-test case {index} failed: expected {expected}, got {actual}", file=sys.stderr)
+                failed += 1
+    if failed:
+        return 1
+    print(f"markdown emphasis self-test: all {len(cases)} built-in cases pass")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("paths", nargs="*")
+    args = parser.parse_args()
+    if args.self_test:
+        return self_test()
+    if not args.paths:
+        parser.error("provide at least one Markdown path or --self-test")
+    failed = False
+    for name in args.paths:
+        path = Path(name)
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            print(f"{name}:1:1: cannot read Markdown: {error}", file=sys.stderr)
+            failed = True
+            continue
+        for violation in scan_text(contents):
+            print(f"{name}:{violation.line}:{violation.column}: {violation.message}")
+            failed = True
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

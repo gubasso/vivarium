@@ -6,16 +6,16 @@
 
 ## Considered Options
 
-- **Keep inheriting the hard limit**, and warn when it looks low.
-- **Measure the ceiling** by walking a large tree, and calibrate the warning against what that pins.
-- **Declare the limit** on the daemon's own command line and derive the warning from it.
+- Keep inheriting the hard limit, and warn when it looks low.
+- Measure the ceiling by walking a large tree, and calibrate the warning against what that pins.
+- Declare the limit on the daemon's own command line and derive the warning from it.
 
 ## Decision Outcome
 
-Chosen option: **declare the limit.**
+Chosen option: declare the limit.
 
-- **The wrapper passes the descriptor limit explicitly.** The launch profile already names every value it depends on rather than inheriting it; this is one more.
-- **The budget is then arithmetic, not an observation.** The daemon subtracts a fixed internal reserve from its limit and hands the remainder to the guest, so the guest allowance follows from the declared limit and the pinned worker-pool size, and the health check needs no measured walk.
+- The wrapper passes the descriptor limit explicitly. The launch profile already names every value it depends on rather than inheriting it; this is one more.
+- The budget is then arithmetic, not an observation. The daemon subtracts a fixed internal reserve from its limit and hands the remainder to the guest, so the guest allowance follows from the declared limit and the pinned worker-pool size, and the health check needs no measured walk.
 
 ## Consequences
 
@@ -31,4 +31,4 @@ Amends [`ADR-0027`](./ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md) â€
 
 Specified in [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md); the derivation and the measurement confirming it are registered in [`../reference/microvm-verification-harness.md`](../reference/microvm-verification-harness.md).
 
-**Not implemented.** The launcher passes no explicit limit, so the budget is inherited today.
+Not implemented. The launcher passes no explicit limit, so the budget is inherited today.

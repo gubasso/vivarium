@@ -12,13 +12,13 @@
 
 ## Decision Outcome
 
-Chosen option: **one override lock per manifest**, at `manifests/<name>/flake.lock`, and `viv update` refuses while it is in force.
+Chosen option: one override lock per manifest, at `manifests/<name>/flake.lock`, and `viv update` refuses while it is in force.
 
-- **Per manifest**, for the reason ADR-0059 made the tool-owned lock per target: a pin that covers everything makes adopting one team's pin an unannounced pin of every unrelated project. No new concept is needed — ADR-0045 already makes a non-member file in a library directory readable by the tool and invisible to `viv manifest list`. It therefore requires the directory form, which ADR-0063 requires anyway.
-- **`viv update` refuses**, writing nothing — not even the shadowed lock. Writing it manufactures a pin nothing reads today that becomes effective the moment the override is removed: an unannounced input jump, which is N3's failure mode.
-- **`78`, not a new code.** The condition is decidable from the config root alone, the `78` side of the line spec/03 draws, and `78` already names a configuration in force that makes a command impossible. `77` is scoped to host permission failure and would make "fix the mode bits" indistinguishable from "your team pinned this".
-- **Not a silent success.** Exit `0` already means "an update that moves nothing".
-- The generation record retains the lock **in force**.
+- Per manifest, for the reason ADR-0059 made the tool-owned lock per target: a pin that covers everything makes adopting one team's pin an unannounced pin of every unrelated project. No new concept is needed — ADR-0045 already makes a non-member file in a library directory readable by the tool and invisible to `viv manifest list`. It therefore requires the directory form, which ADR-0063 requires anyway.
+- `viv update` refuses, writing nothing — not even the shadowed lock. Writing it manufactures a pin nothing reads today that becomes effective the moment the override is removed: an unannounced input jump, which is N3's failure mode.
+- `78`, not a new code. The condition is decidable from the config root alone, the `78` side of the line spec/03 draws, and `78` already names a configuration in force that makes a command impossible. `77` is scoped to host permission failure and would make "fix the mode bits" indistinguishable from "your team pinned this".
+- Not a silent success. Exit `0` already means "an update that moves nothing".
+- The generation record retains the lock in force.
 
 ## Consequences
 

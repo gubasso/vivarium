@@ -2,7 +2,7 @@
 
 ## Context and Problem Statement
 
-The manifest is hand-authored TOML, and its compatibility story was left open: whether it declares a `schema_version` and what an unrecognised value would mean. The question is separate from vivarium's _output_ versioning, which [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md) already settled — the library and config readers carry no envelope version because per-command stability is the boundary, and the versioned envelope is reserved for `doctor`. That decision governs what vivarium writes; this one governs what a user writes.
+The manifest is hand-authored TOML, and its compatibility story was left open: whether it declares a `schema_version` and what an unrecognised value would mean. The question is separate from vivarium's output versioning, which [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md) already settled — the library and config readers carry no envelope version because per-command stability is the boundary, and the versioned envelope is reserved for `doctor`. That decision governs what vivarium writes; this one governs what a user writes.
 
 ## Considered Options
 
@@ -12,7 +12,7 @@ The manifest is hand-authored TOML, and its compatibility story was left open: w
 
 ## Decision Outcome
 
-Chosen option: **no version key** — a hand-authored file's version declaration duplicates what the parser can already see in the key set, and becomes a second, staler source of truth about compatibility than the keys themselves.
+Chosen option: no version key — a hand-authored file's version declaration duplicates what the parser can already see in the key set, and becomes a second, staler source of truth about compatibility than the keys themselves.
 
 - The grammar evolves additively. New keys are optional; a key's meaning is never repurposed.
 - Unknown keys fail closed with a message naming the accepted keys and the CLI version, so a manifest written for a newer vivarium is diagnosed rather than half-understood.

@@ -2,7 +2,7 @@
 
 ## Context and Problem Statement
 
-A manifest names its layers by bare identifier — `image = "rust"`, `pieces = [ "git" ]` — but no document says which file that identifier opens. [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md) defers the libraries' shapes to [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md), which shows artifact _content_ and never states a filename convention. The only place the convention is recorded is the acceptance harness, which is exactly the drift [`../reference/implementation-status.md`](../reference/implementation-status.md) warns against. It is not an internal detail either: [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md) puts the resolved `path` in machine output, so whichever file wins is user-visible contract.
+A manifest names its layers by bare identifier — `image = "rust"`, `pieces = [ "git" ]` — but no document says which file that identifier opens. [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md) defers the libraries' shapes to [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md), which shows artifact content and never states a filename convention. The only place the convention is recorded is the acceptance harness, which is exactly the drift [`../reference/implementation-status.md`](../reference/implementation-status.md) warns against. It is not an internal detail either: [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md) puts the resolved `path` in machine output, so whichever file wins is user-visible contract.
 
 ## Considered Options
 
@@ -12,7 +12,7 @@ A manifest names its layers by bare identifier — `image = "rust"`, `pieces = [
 
 ## Decision Outcome
 
-Chosen option: **flat first, directory as a fallback** — flat keeps the common case a one-file edit, and the directory form gives a multi-file artifact somewhere to put its helpers.
+Chosen option: flat first, directory as a fallback — flat keeps the common case a one-file edit, and the directory form gives a multi-file artifact somewhere to put its helpers.
 
 - Images and pieces are Nix modules (`.nix`); manifests are TOML (`.toml`). Resolution tries `<library>/<name>.<ext>`, then `<library>/<name>/default.<ext>`.
 - A name is kebab-case, `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` — the identifier spec/01 already promises.

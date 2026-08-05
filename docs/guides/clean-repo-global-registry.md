@@ -1,6 +1,6 @@
 # Keep a project clean with a global registry binding
 
-> **Design-intent walkthrough — not yet working.** This guide describes the _target_ experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
+> Design-intent walkthrough — not yet working. This guide describes the target experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
 
 Use this flow when the repository should carry no vivarium configuration. The [XDG layout and registry](../reference/spec/02-config-and-xdg-layout.md) specify where authored configuration and machine-local bindings belong, and the [command surface](../reference/spec/01-command-surface.md) specifies the binding assistant.
 

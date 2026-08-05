@@ -12,12 +12,12 @@ The spec said only that build caches "may be mounted as persistent volumes." Bec
 
 ## Decision Outcome
 
-Chosen option: **default home volume plus project-scoped named volumes** — persistence-by-default where users expect it, with room for isolated extra disks.
+Chosen option: default home volume plus project-scoped named volumes — persistence-by-default where users expect it, with room for isolated extra disks.
 
 - The guest filesystem is three layers: immutable image, ephemeral runtime layer, persistent volumes. The workspace remains a share (ADR-0009/0017), outside this model.
-- Every volume is one host-side disk image attached as a block device, stored under the **state** root at `projects/<project-id>/<target>/volumes/<name>.img` — state, never cache, because volume contents are user data and not regenerable.
-- The **default volume** always exists, reserved name `default`, mounted at the guest user's home.
-- **Named volumes** are declared in the manifest (`[[volumes]]` with `name`, `mount`) or contributed by pieces through the module merge (lists concatenate); the piece-side option is named by ADR-0041. The same name declared with conflicting mountpoints fails evaluation; `viv volume list` names each volume's declaring layer.
+- Every volume is one host-side disk image attached as a block device, stored under the state root at `projects/<project-id>/<target>/volumes/<name>.img` — state, never cache, because volume contents are user data and not regenerable.
+- The default volume always exists, reserved name `default`, mounted at the guest user's home.
+- Named volumes are declared in the manifest (`[[volumes]]` with `name`, `mount`) or contributed by pieces through the module merge (lists concatenate); the piece-side option is named by ADR-0041. The same name declared with conflicting mountpoints fails evaluation; `viv volume list` names each volume's declaring layer.
 - `[volume].persist` lists extra guest paths bind-mounted from inside the default volume.
 - Identity is (project, target, name); manifests declare the shape, each bound project instantiates privately, and reattachment on `start` is automatic. No cross-project sharing.
 - CLI is lifecycle-only: `viv volume list | rm <name> | rm --all`; creation is declarative. Removal refuses while the VM runs; absent targets are a no-op exit `0`.
@@ -31,10 +31,10 @@ Chosen option: **default home volume plus project-scoped named volumes** — per
 
 Accepted
 
-Amended by **ADR-0037** — each volume image is sparse raw, created lazily on first `start`, and its declared size is a virtual ceiling reclaimed by trim rather than a preallocated amount. The model above is unchanged.
+Amended by ADR-0037 — each volume image is sparse raw, created lazily on first `start`, and its declared size is a virtual ceiling reclaimed by trim rather than a preallocated amount. The model above is unchanged.
 
-Amended by [`ADR-0041-resource-and-volume-channel-classification.md`](./ADR-0041-resource-and-volume-channel-classification.md) — the piece-side declaration surface is the `vivarium.volumes` option, and volume declarations are classified **build-channel**: the guest mountpoint is guest system configuration, so adding a volume rebuilds. The model above is unchanged.
+Amended by [`ADR-0041-resource-and-volume-channel-classification.md`](./ADR-0041-resource-and-volume-channel-classification.md) — the piece-side declaration surface is the `vivarium.volumes` option, and volume declarations are classified build-channel: the guest mountpoint is guest system configuration, so adding a volume rebuilds. The model above is unchanged.
 
 Amended by [`ADR-0057-manifest-grammar-and-validation-boundary.md`](./ADR-0057-manifest-grammar-and-validation-boundary.md) — the volume shape gains an optional `size_gib`, the key that expresses the raisable virtual ceiling ADR-0037 introduced, and the conflicting-mountpoint check above is fixed at evaluation time (`65`) rather than at parse. The model above is unchanged.
 
-Amended by [`ADR-0067-volume-prune-and-first-boot-home.md`](./ADR-0067-volume-prune-and-first-boot-home.md) — the lifecycle surface gains `viv volume prune`, which removes **orphans only** and never a declared volume. Declarative-only creation, N18, and the rest of the model are unchanged.
+Amended by [`ADR-0067-volume-prune-and-first-boot-home.md`](./ADR-0067-volume-prune-and-first-boot-home.md) — the lifecycle surface gains `viv volume prune`, which removes orphans only and never a declared volume. Declarative-only creation, N18, and the rest of the model are unchanged.

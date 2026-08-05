@@ -6,17 +6,17 @@
 
 ## Considered Options
 
-- **Share the host socket** through the filesystem transport, or mount `${XDG_RUNTIME_DIR}`.
-- **Guest-initiated vsock**, forwarded to a per-port host listener.
-- **A second, host-initiated vsock port** carrying a pool of parked connections.
+- Share the host socket through the filesystem transport, or mount `${XDG_RUNTIME_DIR}`.
+- Guest-initiated vsock, forwarded to a per-port host listener.
+- A second, host-initiated vsock port carrying a pool of parked connections.
 
 ## Decision Outcome
 
-Chosen option: **a second host-initiated vsock port** — the only option that both works and leaves ADR-0065's authorization argument intact.
+Chosen option: a second host-initiated vsock port — the only option that both works and leaves ADR-0065's authorization argument intact.
 
 The first fails on mechanism, not on taste. The second would require the per-port host listener [`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exec-and-shell.md) says vivarium creates none of — ever — which is a leg [`ADR-0065-control-socket-wire-protocol.md`](./ADR-0065-control-socket-wire-protocol.md) rests on. Instead vivarium parks idle host-opened connections on a dedicated credential port; the guest proxy consumes one per client connection and vivarium refills the pool. Every byte flows over a connection the host opened, so both properties hold by construction rather than by policy.
 
-The channel is a **closed allowlist of two** — `ssh` (`$SSH_AUTH_SOCK`) and `gpg` (the restricted extra socket only) — landing at fixed guest paths, declared through a typed `vivarium.credentials.agents` enum, **off by default**. The value carries no host path, so a shared piece may declare it without violating N11.
+The channel is a closed allowlist of two — `ssh` (`$SSH_AUTH_SOCK`) and `gpg` (the restricted extra socket only) — landing at fixed guest paths, declared through a typed `vivarium.credentials.agents` enum, off by default. The value carries no host path, so a shared piece may declare it without violating N11.
 
 ## Consequences
 

@@ -1,20 +1,20 @@
 # Implementation status
 
-The single source of truth for what vivarium **does today** versus what is **designed only**. The specification under [`spec/`](spec/README.md) describes the intended design; this page records how much of it exists in code.
+The single source of truth for what vivarium does today versus what is designed only. The specification under [`spec/`](spec/README.md) describes the intended design; this page records how much of it exists in code.
 
 ## Current state: design stage
 
-**No command is implemented yet.** The repository contains the founding documentation, a binary skeleton that does nothing, and an acceptance harness whose trials are written but cannot run. No command in [`spec/01-command-surface.md`](spec/01-command-surface.md) is functional. Do not treat any spec page as a description of working behavior; treat it as the target.
+No command is implemented yet. The repository contains the founding documentation, a binary skeleton that does nothing, and an acceptance harness whose trials are written but cannot run. No command in [`spec/01-command-surface.md`](spec/01-command-surface.md) is functional. Do not treat any spec page as a description of working behavior; treat it as the target.
 
 ## Surface status
 
 Each command sits at one of three levels:
 
-- **Designed** — specified, with nothing written against it yet.
-- **Acceptance test written (gated)** — a trial in [`../../tests/user_workflows.rs`](../../tests/user_workflows.rs) encodes the intended behavior and is linked below. It does not pass; it is **skipped**, because its runtime gate requires a working `viv` (and, for some, Nix and `/dev/kvm`). A written trial is a specification made executable, not evidence that anything works.
-- **Implemented** — the command runs and its trial passes.
+- Designed — specified, with nothing written against it yet.
+- Acceptance test written (gated) — a trial in [`../../tests/user_workflows.rs`](../../tests/user_workflows.rs) encodes the intended behavior and is linked below. It does not pass; it is skipped, because its runtime gate requires a working `viv` (and, for some, Nix and `/dev/kvm`). A written trial is a specification made executable, not evidence that anything works.
+- Implemented — the command runs and its trial passes.
 
-Nothing is at **Implemented** today.
+Nothing is at Implemented today.
 
 | Command                               | Status                          | Trial                                                                                         |
 | ------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------- |
@@ -42,28 +42,28 @@ Nothing is at **Implemented** today.
 
 This page says what works. This section says what a release may change, which is the reader's other question and belongs beside the first.
 
-**Before 1.0, the minor component is the breaking axis.** A patch release — `0.x.y` to `0.x.y+1` — must not break a documented invocation, a `--json` field, an exit code's meaning, or accepted manifest and registry syntax. Breaking changes land only in a new minor, each named in the release notes with a migration example. Where practical a surface is deprecated for one minor first; an immediate break is reserved for security, correctness, and any surface that never reached **Implemented** above. Decided in [`../decisions/ADR-0075-pre-1.0-cli-stability-and-deprecation-policy.md`](../decisions/ADR-0075-pre-1.0-cli-stability-and-deprecation-policy.md).
+Before 1.0, the minor component is the breaking axis. A patch release — `0.x.y` to `0.x.y+1` — must not break a documented invocation, a `--json` field, an exit code's meaning, or accepted manifest and registry syntax. Breaking changes land only in a new minor, each named in the release notes with a migration example. Where practical a surface is deprecated for one minor first; an immediate break is reserved for security, correctness, and any surface that never reached Implemented above. Decided in [`../decisions/ADR-0075-pre-1.0-cli-stability-and-deprecation-policy.md`](../decisions/ADR-0075-pre-1.0-cli-stability-and-deprecation-policy.md).
 
-**Three surfaces are already permanent, now, pre-1.0** — earlier decisions made them so, and this promise does not weaken them:
+Three surfaces are already permanent, now, pre-1.0 — earlier decisions made them so, and this promise does not weaken them:
 
-- the **exit-code taxonomy** — never reassigned, append-only ([`spec/14-exit-codes.md`](spec/14-exit-codes.md));
-- the **two compatibility messages** and all five parts each must carry — file, failing position, unknown key, accepted key set, CLI version. Neither the manifest nor the registry carries a schema version, so these messages _are_ the compatibility surface rather than a courtesy ([`spec/14-exit-codes.md`](spec/14-exit-codes.md));
-- the **registry record's two keys**, which `viv init` prints for a human to paste ([`spec/02-config-and-xdg-layout.md`](spec/02-config-and-xdg-layout.md)).
+- the exit-code taxonomy — never reassigned, append-only ([`spec/14-exit-codes.md`](spec/14-exit-codes.md));
+- the two compatibility messages and all five parts each must carry — file, failing position, unknown key, accepted key set, CLI version. Neither the manifest nor the registry carries a schema version, so these messages are the compatibility surface rather than a courtesy ([`spec/14-exit-codes.md`](spec/14-exit-codes.md));
+- the registry record's two keys, which `viv init` prints for a human to paste ([`spec/02-config-and-xdg-layout.md`](spec/02-config-and-xdg-layout.md)).
 
-**Diagnostic ids** are stable and never reassigned, and are still not a branch surface — a consumer that must branch branches on the exit code. Both halves hold together; neither implies the other.
+Diagnostic ids are stable and never reassigned, and are still not a branch surface — a consumer that must branch branches on the exit code. Both halves hold together; neither implies the other.
 
-**Outside the promise:** human stderr prose beyond those normative messages and their rendering slots, additive `--json` fields, and the generated flake's internal shape, which is a regenerable cache artifact.
+Outside the promise: human stderr prose beyond those normative messages and their rendering slots, additive `--json` fields, and the generated flake's internal shape, which is a regenerable cache artifact.
 
-There is **no experimental-feature gate** before 1.0. At `0.x` the whole surface is unstable, so a per-feature gate would add a second stability vocabulary saying what the version number already says; the three levels above already stop a written-but-skipped trial from reading as a promise. A gate is the post-1.0 answer, if it is ever the answer.
+There is no experimental-feature gate before 1.0. At `0.x` the whole surface is unstable, so a per-feature gate would add a second stability vocabulary saying what the version number already says; the three levels above already stop a written-but-skipped trial from reading as a promise. A gate is the post-1.0 answer, if it is ever the answer.
 
 ## How to update this page
 
-A command moves from **Designed** to **Acceptance test written (gated)** when a trial encodes its behavior — name the trial, and say plainly if the coverage is partial. It moves to **Implemented** only when the command runs and that trial passes unskipped; link the code that enacts it then. Any change that adds, removes, or renames a command, or changes its acceptance test, updates that command's row **in the same change**.
+A command moves from Designed to Acceptance test written (gated) when a trial encodes its behavior — name the trial, and say plainly if the coverage is partial. It moves to Implemented only when the command runs and that trial passes unskipped; link the code that enacts it then. Any change that adds, removes, or renames a command, or changes its acceptance test, updates that command's row in the same change.
 
 Keep this page honest: a reader deciding whether to rely on a feature consults it first, and a stale "Implemented" here is worse than none. Because the stability promise above leans on this table, honesty here is a checked obligation rather than a good intention. Three checks enforce it, and they belong in CI rather than in review:
 
-1. every trial named in the **Trial** column resolves to a test that exists — this catches a rename;
-2. no row claiming **Implemented** names a trial that the runtime gate skips or that is ignored — this catches the exact lie the paragraph above calls worse than none;
+1. every trial named in the Trial column resolves to a test that exists — this catches a rename;
+2. no row claiming Implemented names a trial that the runtime gate skips or that is ignored — this catches the exact lie the paragraph above calls worse than none;
 3. every subcommand the argument parser defines has a row here — this catches a command that shipped without a status.
 
 The middle level exists precisely so a written-but-skipped trial cannot be mistaken for working software. This page owns status; the spec owns the contract. When a trial and the spec disagree about that contract, [`../../AGENTS.md`](../../AGENTS.md) carries the resolution rule — and a fact a trial is the only record of belongs in the spec page that owns it, not in the test file. Which lane a given trial belongs to, and what that lane proves, is in [`testing-lanes.md`](./testing-lanes.md).

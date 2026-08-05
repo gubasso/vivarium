@@ -1,53 +1,47 @@
 # Agent Guidelines — vivarium
 
-This file is the authored source of truth for how AI coding agents work in the vivarium repository. The `AGENTS.md`-native tools (Codex, Cursor, Copilot, and others) read it directly; Claude Code reads the same guidance through a one-line `@AGENTS.md` import in [`CLAUDE.md`](./CLAUDE.md). These instructions override default behavior; follow them exactly.
+This file is the authored source of truth for how AI coding agents work in the vivarium repository. `AGENTS.md`-native tools read it directly; Claude Code reads the same guidance through the one-line `@AGENTS.md` import in [`CLAUDE.md`](./CLAUDE.md). These instructions override default behavior.
 
 ## What vivarium is
 
-vivarium is a Nix-native tool that boots each project inside its own **microVM** — a separate guest kernel behind a hardware-virtualization boundary — described declaratively in Nix and composed from reusable **images** and **config pieces** unified by a single **manifest**. The command-line tool is a thin wrapper that resolves the manifest, builds the VM with `nix build`, and runs it; the guest kernel, isolation boundary, and configuration-merge semantics are provided by the underlying Nix and virtualization building blocks, not reimplemented here.
+vivarium is a Nix-native tool that boots each project inside its own microVM: a separate guest kernel behind a hardware-virtualization boundary. Nix describes the sandbox and composes reusable images and config pieces through one manifest. The command-line tool resolves that manifest, builds the VM with `nix build`, and runs it; upstream Nix and virtualization components provide the guest kernel, isolation boundary, and configuration merge.
 
-The normative rules and guarantees the product must uphold live in [`docs/reference/spec/08-invariants-and-guarantees.md`](docs/reference/spec/08-invariants-and-guarantees.md). Read that file before changing runtime, build, or composition behavior.
+The normative product rules live in [`docs/reference/spec/08-invariants-and-guarantees.md`](docs/reference/spec/08-invariants-and-guarantees.md). Read it before changing runtime, build, or composition behavior.
 
 <!-- self-containment -->
 
 ## Self-Containment and External References
 
-Non-negotiable: the docs describe **only** vivarium, and must make complete sense to a reader who has this repository and a public internet connection — and nothing else. The line is **public versus local**, not internal versus external.
+The docs describe only vivarium and MUST make complete sense to a reader who has this repository and a public internet connection. The boundary is public versus local.
 
-**Forbidden — anything scoped to one person or one machine.** No absolute personal paths (`/home/alice/…`, `~/my-project/`), no reference to a project or working tree that exists only on a contributor's disk, no private notes shelf or personal documentation collection, no URL only the author can reach, and no fact whose justification is "it is in my other repo". A reader who cannot resolve the reference cannot verify the claim, and the reference is therefore worthless to them.
-
-**Allowed and encouraged — the public record.** Upstream technology in vivarium's own stack (Nix, microvm.nix, NixOS modules, direnv), well-known third-party projects, published articles, specifications, standards, CVEs, and their URLs. Cite them properly: name the thing and link it, so a reader can go read the source. A guide that teaches a real workflow should name the real tools that perform it.
-
-**Still required — the substance travels with the citation.** A link is a pointer, not a load-bearing dependency. Where external knowledge is needed to understand, build, or operate vivarium, carry the essential substance in the repo alongside the citation, so a dead link costs a reader convenience rather than a fact. Cite for provenance and depth; never for the part of the explanation that must be here.
+Do not cite anything scoped to one person or machine: personal absolute paths, contributor-only working trees, private notes, private URLs, or facts justified only by another local repository. Public upstream projects, specifications, standards, CVEs, and articles are welcome when properly named and linked. Carry the substance needed to understand, build, or operate vivarium in this repository so a dead link costs convenience rather than a fact.
 
 ## Documentation Maintenance
 
-Documentation uses four Diátaxis zones under `docs/`, each a reader promise:
+- Use five reader-need zones under `docs/`: decisions in `docs/decisions/`, task guides and runbooks in `docs/guides/`, exact lookup and diagnostics in `docs/reference/`, current subsystem design and background in `docs/explanation/`, and binding scope, milestones, questions, and slices in `docs/plan/`.
+- Keep each subsystem's living design in `docs/explanation/<subsystem>.md`. ADRs preserve the historical why and stay frozen. A finding attached only to a decision dies when that decision is superseded, so findings belong with the topic they describe.
+- Keep filled ADR bodies at or below 350 words with exactly one `## Status` from `Ideation | Proposed | Accepted | Implemented | Deprecated | Superseded | Rejected`. Never delete a record from `Proposed` onward. Supersede or deprecate it, or retain its status and add an `Amended by ADR-NNNN — <change>` line for a partial change.
+- Give every slice a fixed numeric appetite and a separate non-negotiable core. [`docs/plan/charter.md`](docs/plan/charter.md) owns the appetite unit and what one of them means. Cut ordered remainder before moving the appetite; record any post-start change to Goal, Core, Appetite, or Acceptance under `Revisions`.
+- Give every slice one directory under `docs/plan/slices/`, entered through `README.md`. `tasks.md` MUST NOT exist unless the slice is active and work crosses a context reset; delete it when the milestone becomes `done`. `requirements.md` MUST NOT exist without many-to-many acceptance traceability. `design.md` MUST NOT exist.
+- Until the current slice is implemented, do not add a specification page and do not open an ADR outside that slice. A question that arises goes to `docs/plan/open-questions.md`.
+- Work from the current slice and the individual files its `Governed by` section names. Status lives only in `docs/plan/milestones.md`, and open questions MUST name what they block and one exit.
+- Write each durable fact once at its owning home and cross-link with a short reason phrase. Let the filesystem own structure; indexes explain purpose and do not paste directory trees or duplicate inventories.
+- Keep scratch work in the gitignored `.draft/` workspace. Promotion is a rewrite into the owning zone, never a move of draft narration into shipped docs.
+- Track external-system bugs under `docs/reference/known-issues/`; expand a case while hot and collapse it to a searchable summary when resolved. Track perishable facts in `docs/reference/tracking.yaml` with a cadence and `last_checked` date.
+- Use no bold or italics. Put identifiers, paths, flags, and status values in inline code. Use uppercase RFC 8174 keywords for binding requirements only in normative documents. Every fenced block declares a language.
+- Update docs only when a change affects durable behavior, operations, or decisions. Report which owner changed, which links were added, and which checks passed.
 
-- `docs/decisions/` — lean architecture decision records (the durable _why_).
-- `docs/guides/` — task walkthroughs (the _how-to_).
-- `docs/reference/` — exact lookup material, including the product spec under `reference/spec/`.
-- `docs/explanation/` — mental models and architecture (the _understanding_).
+This project carries the substance of its documentation conventions locally rather than linking contributor-local material, as required by the self-containment rule above.
 
-Rules:
-
-- **Lean ADRs.** Record every significant, hard-to-reverse decision as an ADR under `docs/decisions/`, one decision per file, using the five-section `docs/decisions/template.md`. Keep each filled ADR body at or below **350 words**, with exactly one `## Status` from `Proposed | Accepted | Implemented | Deprecated | Superseded | Rejected`. The cap counts the **body only** — the five decision sections. `## Status` is metadata and is excluded, so the amendment bookkeeping below can accumulate on an old ADR without ever forcing a rewrite of its prose.
-- **Never delete** an accepted or implemented decision — but keep old ADRs honest so no reader follows dead rules. Replaced wholesale → mark **Superseded** and link the successor. No longer applicable with no successor → mark **Deprecated** and say why. Changed only in part by a later ADR while the decision still stands → keep the status and add an **"Amended by ADR-NNNN — <what change"** line under `## Status`; edit the old body only where its wording would actively mislead, never to rewrite history.
-- **Single source of truth.** Write each durable fact once at its owning home and cross-link with a short reason phrase from everywhere else. Do not restate a fact that another file owns.
-- **No pasted trees.** Index files (`README.md`, this file) explain purpose per entry; they never reproduce the directory tree — the filesystem owns structure.
-- **Drafts stay out of `docs/`.** Keep scratch material in the gitignored `/.draft/` workspace and promote it into the right zone by rewriting, not moving.
-- **Semantic names, stable headings.** Filenames should reveal purpose before the file is opened.
-- **The spec outranks the tests, but silence does not.** Acceptance tests encode the spec, so the two can disagree — and when they do, the resolution rule is: a shape a test **deliberately exercises** beats spec **silence**, and an **explicit spec line** beats an unargued assertion in a test helper. Where a test wins, promote the fact into the spec page that owns it in the same change, so the test exercises the contract rather than defining it. Where the spec wins, fix the test. Never leave the pair contradicting.
-- Update docs only when a change affects durable behavior, operations, or decisions. Small local rationale belongs in load-bearing code comments.
-
-See [`docs/README.md`](docs/README.md) for the zone index and entry points.
+The specification outranks tests, but silence does not. A shape a test deliberately exercises beats spec silence; an explicit spec line beats an unargued assertion in a test helper. Promote a test-owned contract into its spec in the same change, or fix the test, so the pair never contradicts.
 
 ## Working Conventions
 
 - Keep changes scoped and reversible; prefer editing existing files over adding new ones.
-- Run the project's own lint and test tasks before proposing changes.
-- **The root flake is the development environment; it is not part of the product.** `flake.nix` at the repository root exists to set up how you _work on_ vivarium — the Rust toolchain, the runtimes the pre-commit hooks resolve off `PATH`, the devShell `direnv` activates. It declares no build outputs (`packages`, `checks`, `nixosConfigurations`, …) and no product inputs. What vivarium **builds** — the guest, its launcher, their contract — is its own flake at [`nix/flake.nix`](nix/flake.nix) with its own lock, which also keeps the guest's `nixpkgs` and the toolchain's `nixpkgs` on separate clocks. Adding a hypervisor, a guest kernel, or `microvm.nix` to the root flake is the mistake this rule names; `scripts/check-flake-boundary` enforces it as a pre-commit hook, asserting on the flake's own evaluated attribute names so an output smuggled in through a `//` merge is caught too.
-- **A file's job is a property you have to defend, not one it keeps by itself.** The rule above exists because that boundary was crossed twice, and both times by a single line that read as perfectly reasonable in isolation. Responsibilities accumulate one plausible addition at a time, and each addition is defensible exactly where the accumulation is not. When you add to a file, the question is not "is this line reasonable here" but **"does this file still have one job"**. If the answer needs a paragraph, the line belongs somewhere else.
-- **Inert is not absent, and "not applicable" is not a value.** Two measurement failures with the same root: a knob set to a harmless value is still a knob in the path, so an experiment that needs the path clear must _remove_ it rather than neutralise it; and before reading a number as a quantity, check that the thing being read has one — a filesystem with no fixed inode table reports zero free inodes and means "no such quantity", not "exhausted". Both cost a boot. Both are in the harness's method note with the measurements they spoiled.
-- **The agent's environment is not the target host.** An agent may run in a container, a CI runner, or a sandbox with no `systemd`, no `/dev/kvm`, no session bus, and no `$XDG_RUNTIME_DIR` — none of which says anything about the machines vivarium targets. Never promote an observation of the execution environment into a fact about a host. When such a fact is load-bearing for a decision, mark it unverified in the draft and say so in the write-up until someone confirms it on a real host; a decision may rest on an assumption, but never on an assumption dressed as a measurement.
-- **Durable findings belong in this repository, not in agent-private memory.** Anything worth carrying across sessions — a decision, a constraint, a verified premise, a convention — goes to the zone that owns it under `docs/`, or into this file when it is guidance about how to work. Agent-internal memory is not a home for project facts: it is invisible to reviewers, to the other tools that read this file, and to the next contributor.
+- Run the project's lint and test tasks before proposing changes.
+- The root `flake.nix` is the development environment, not part of the product. It declares no build outputs or product inputs. What vivarium builds is owned by [`nix/flake.nix`](nix/flake.nix), with its own lock. Adding a hypervisor, guest kernel, or `microvm.nix` to the root flake crosses this boundary; `scripts/check-flake-boundary` enforces it against evaluated attribute names.
+- A file's job must be defended. When adding a line, ask whether the file still has one job. If the answer needs a paragraph, the line belongs elsewhere.
+- Inert is not absent, and "not applicable" is not a value. An experiment that needs a path clear removes a knob rather than neutralizing it; before reading a number as a quantity, verify that the measured system defines that quantity. The harness method note owns the related lesson that assumption-shaped checks can pass vacuously or fail for the wrong reason.
+- One clean run is evidence of possibility, not reliability. Repeat observations when the claim depends on stability, variance, or absence of intermittent failure.
+- The agent's environment is not the target host. Do not promote missing `systemd`, `/dev/kvm`, a session bus, or runtime directories in an agent environment into a target-host fact. Mark load-bearing host premises unverified until confirmed on a real host.
+- Durable findings belong in this repository, not in agent-private memory. Put decisions, constraints, verified premises, and conventions in the zone that owns them.

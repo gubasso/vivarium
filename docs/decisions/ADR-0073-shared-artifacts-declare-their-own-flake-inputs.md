@@ -12,9 +12,9 @@ The manifest key table is closed and carries no `inputs` key, yet `viv update [<
 
 ## Decision Outcome
 
-Chosen option: **declare in the piece or image** — the artifact that needs a dependency is the artifact that names it, so adopting it stays a one-file act.
+Chosen option: declare in the piece or image — the artifact that needs a dependency is the artifact that names it, so adopting it stays a one-file act.
 
-An image or piece declares inputs in an `inputs.toml` beside it, which requires the directory form. Each entry gives a `url` — a flake reference — and an optional `flake = false`. It carries **no revision**: pinning belongs to the lockfile alone (ADR-0074). Identifiers use the config-root name grammar, and vivarium's own baseline input names are reserved.
+An image or piece declares inputs in an `inputs.toml` beside it, which requires the directory form. Each entry gives a `url` — a flake reference — and an optional `flake = false`. It carries no revision: pinning belongs to the lockfile alone (ADR-0074). Identifiers use the config-root name grammar, and vivarium's own baseline input names are reserved.
 
 vivarium unions the declarations across the resolved image and ordered pieces into the generated flake's `inputs`, passing them to every layer as `vivariumInputs.<name>`. Identical declarations of one name coalesce; two artifacts declaring one name differently is a resolve-stage defect at `78` naming both.
 

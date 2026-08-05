@@ -12,11 +12,11 @@
 
 ## Decision Outcome
 
-Chosen option: **hold it solo and disclose it** — the honest form of a promise one person keeps.
+Chosen option: hold it solo and disclose it — the honest form of a promise one person keeps.
 
-The role stays; the backup does not. `SECURITY.md` says in its own words that vivarium is maintained by one person, that the role has no backup, and that an advisory which misses a window says so. The response table's column becomes a **target**, not a guarantee. Nothing else in ADR-0078 moves: the two clocks, the boundary-over-severity trigger, and what an advisory must name are unchanged, because none of them depends on headcount.
+The role stays; the backup does not. `SECURITY.md` says in its own words that vivarium is maintained by one person, that the role has no backup, and that an advisory which misses a window says so. The response table's column becomes a target, not a guarantee. Nothing else in ADR-0078 moves: the two clocks, the boundary-over-severity trigger, and what an advisory must name are unchanged, because none of them depends on headcount.
 
-The **acknowledgement** window is untouched. Acknowledging a report is a minutes-long act one person can keep; publishing a release is not, and conflating the two is what made the old wording overreach.
+The acknowledgement window is untouched. Acknowledging a report is a minutes-long act one person can keep; publishing a release is not, and conflating the two is what made the old wording overreach.
 
 The release gate narrows to the owner cell alone. `none` in the backup cell is a disclosed fact, not an unfilled blank. A second maintainer edits the release-process table, never a decision.
 
@@ -31,4 +31,4 @@ Dropping the windows was rejected: a boundary-triggered clock is the substance o
 
 Accepted
 
-Amends [`ADR-0078`](./ADR-0078-backend-advisory-response-is-a-released-pin-move.md). Specified in [`../../SECURITY.md`](../../SECURITY.md); the holder is recorded in [`../PUBLISHING.md`](../PUBLISHING.md).
+Amends [`ADR-0078`](./ADR-0078-backend-advisory-response-is-a-released-pin-move.md). Specified in [`../../SECURITY.md`](../../SECURITY.md); the holder is recorded in [`../guides/publishing.md`](../guides/publishing.md).

@@ -12,7 +12,7 @@
 
 ## Decision Outcome
 
-Chosen option: **refuse** — resolving behind the user is the unannounced input jump N3 exists to prevent, and a second pin would break "exactly one effective lockfile".
+Chosen option: refuse — resolving behind the user is the unannounced input jump N3 exists to prevent, and a second pin would break "exactly one effective lockfile".
 
 Declared inputs are ordinary nodes in the one effective lock: the team override lock beside the manifest when present, otherwise the tool-owned per-target lock. No second pin file, and no revision in the declaration.
 

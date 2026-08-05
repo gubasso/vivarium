@@ -12,15 +12,15 @@ The virtualization-gated acceptance lane exists, but nothing says how the rest o
 
 ## Decision Outcome
 
-Chosen option: **named lanes**, one runner profile each.
+Chosen option: named lanes, one runner profile each.
 
 Six lanes. All but the fourth and fifth run with no Nix, no network, and no virtualization, asserting on a rendered artifact; those two need Nix, nothing more.
 
-1. **Unit** — parse, closed-key rejection, name resolution, precedence, XDG placement, secret-path validation. Property tests for two things only: key-table round-trip, and precedence being total and probe-order independent.
-2. **Structured golden** — the generated flake tree, `--json` records, `config eval`, with absolute paths, project ids, store hashes, and timestamps filtered out. CI fails on a missing or changed snapshot rather than writing one.
-3. **Text-contract golden** — usage output and the five-slot error skeleton.
-4. **Evaluation** — that the generated flake evaluates, without building it. Runs at the existing Nix-present, virtualization-absent gate rung, which nothing uses today; a byte-identical snapshot proves no such thing.
-5. **Purity** and 6. **Non-invasion** — ADR-0077.
+1. Unit — parse, closed-key rejection, name resolution, precedence, XDG placement, secret-path validation. Property tests for two things only: key-table round-trip, and precedence being total and probe-order independent.
+2. Structured golden — the generated flake tree, `--json` records, `config eval`, with absolute paths, project ids, store hashes, and timestamps filtered out. CI fails on a missing or changed snapshot rather than writing one.
+3. Text-contract golden — usage output and the five-slot error skeleton.
+4. Evaluation — that the generated flake evaluates, without building it. Runs at the existing Nix-present, virtualization-absent gate rung, which nothing uses today; a byte-identical snapshot proves no such thing.
+5. Purity and 6. Non-invasion — ADR-0077.
 
 Both egress modes are covered twice: once as a golden, once end-to-end.
 

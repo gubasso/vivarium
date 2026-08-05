@@ -12,11 +12,11 @@ The exit-code taxonomy is a settled, permanent API — a BSD sysexits subset plu
 
 ## Decision Outcome
 
-Chosen option: **`thiserror` + `anyhow`, with a hand-rolled `ExitKind` enum.**
+Chosen option: `thiserror` + `anyhow`, with a hand-rolled `ExitKind` enum.
 
-- **`thiserror`** derives typed, per-layer error enums; **`anyhow`** carries context at the application edge. This matches the lints — errors are returned, never `panic!`-ed.
-- **One `ExitKind` enum owns the mapping.** Its variants cover the whole spec/14 set: the sysexits subset (`64/65/69/70/74/75/77/78`) _and_ the two codes the sysexits set cannot express — `DoctorStrict` (`1`) and `GuestStatus(u8)` (`0..=255`, `128+S`). The `sysexits` crate is rejected precisely because adopting it for the subset would split exit-code ownership in two: it structurally cannot represent the owned codes, so a single hand-rolled enum keeps one source of truth, matching ADR-0028's append-only guarantee.
-- **`main` returns `std::process::ExitCode`** via `From<ExitKind>`; the typed error is rendered (stderr what/where/why/hint or `--json`) and converted once at the boundary. No `std::process::exit`.
+- `thiserror` derives typed, per-layer error enums; `anyhow` carries context at the application edge. This matches the lints — errors are returned, never `panic!`-ed.
+- One `ExitKind` enum owns the mapping. Its variants cover the whole spec/14 set: the sysexits subset (`64/65/69/70/74/75/77/78`) and the two codes the sysexits set cannot express — `DoctorStrict` (`1`) and `GuestStatus(u8)` (`0..=255`, `128+S`). The `sysexits` crate is rejected precisely because adopting it for the subset would split exit-code ownership in two: it structurally cannot represent the owned codes, so a single hand-rolled enum keeps one source of truth, matching ADR-0028's append-only guarantee.
+- `main` returns `std::process::ExitCode` via `From<ExitKind>`; the typed error is rendered (stderr what/where/why/hint or `--json`) and converted once at the boundary. No `std::process::exit`.
 
 ## Consequences
 

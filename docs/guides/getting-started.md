@@ -1,6 +1,6 @@
 # Getting started
 
-> **Design-intent walkthrough — not yet working.** This guide describes the _target_ experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
+> Design-intent walkthrough — not yet working. This guide describes the target experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
 
 This walkthrough follows a developer who wants to run a Rust project inside a vivarium sandbox. It touches the command surface in [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md) and the artifacts in [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md).
 
@@ -71,7 +71,7 @@ data-pipeline    running    1.4 GiB / 8 GiB      8     2.9 GiB / 32 GiB      2  
 host: 9.6 GiB available of 31.2 GiB - memory pressure (60s): 0.4%
 ```
 
-Read that table once and the resource model explains itself: **the ceiling is what a project may use, the used column is what it actually costs.** Three projects declaring 8 GiB each are not holding 24 GiB — [the decision making declared resources ceilings rather than reservations](../decisions/ADR-0035-elastic-guest-memory-model.md) is what buys that. You never set those numbers — vivarium derives them from the host — and if you start a fourth project when memory is genuinely tight, `viv start` says so and lets you decide rather than deciding for you, per [the admission-control decision](../decisions/ADR-0036-host-resource-scoping-and-admission-control.md). The full model is in [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md).
+Read that table once and the resource model explains itself: the ceiling is what a project may use, the used column is what it actually costs. Three projects declaring 8 GiB each are not holding 24 GiB — [the decision making declared resources ceilings rather than reservations](../decisions/ADR-0035-elastic-guest-memory-model.md) is what buys that. You never set those numbers — vivarium derives them from the host — and if you start a fourth project when memory is genuinely tight, `viv start` says so and lets you decide rather than deciding for you, per [the admission-control decision](../decisions/ADR-0036-host-resource-scoping-and-admission-control.md). The full model is in [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md).
 
 If a long-running project has accumulated cached memory you want back, `viv trim` reclaims it on the spot. Nothing reclaims automatically.
 

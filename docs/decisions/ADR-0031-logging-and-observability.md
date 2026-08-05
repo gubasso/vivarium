@@ -12,13 +12,13 @@
 
 ## Decision Outcome
 
-Chosen option: **active-by-default file logging, no `viv logs` command**.
+Chosen option: active-by-default file logging, no `viv logs` command.
 
-- **Three faces:** stdout = result only; stderr = human progress/errors (tuned by global `-v`/`-q`); a **file** = always-on structured diagnostics — a separate channel, not an echo of stderr.
-- **Path:** `${XDG_STATE_HOME:-~/.local/state}/vivarium/logs/vivarium.log` (state class, N12).
-- **Flags (file face):** `--log-file`, `--log-level <error|warn|info|debug|trace|off>`, `--log-format <logfmt|json>`, `--no-log`. **Env:** `VIV_LOG`, `VIV_LOG_FILE`, `VIV_LOG_FORMAT` (not `RUST_LOG` — no impl-stack leak). Precedence flag > env > default, per ADR-0026.
-- **Defaults:** file level `info`, format `logfmt` (jsonl opt-in); `-vv`/`-vvv` raise both faces to debug/trace; `--log-level` overrides the file floor. Rotation is bounded (an impl detail).
-- **Redaction** of secrets/personal paths is deferred to a follow-up ADR.
+- Three faces: stdout = result only; stderr = human progress/errors (tuned by global `-v`/`-q`); a file = always-on structured diagnostics — a separate channel, not an echo of stderr.
+- Path: `${XDG_STATE_HOME:-~/.local/state}/vivarium/logs/vivarium.log` (state class, N12).
+- Flags (file face): `--log-file`, `--log-level <error|warn|info|debug|trace|off>`, `--log-format <logfmt|json>`, `--no-log`. Env: `VIV_LOG`, `VIV_LOG_FILE`, `VIV_LOG_FORMAT` (not `RUST_LOG` — no impl-stack leak). Precedence flag > env > default, per ADR-0026.
+- Defaults: file level `info`, format `logfmt` (jsonl opt-in); `-vv`/`-vvv` raise both faces to debug/trace; `--log-level` overrides the file floor. Rotation is bounded (an impl detail).
+- Redaction of secrets/personal paths is deferred to a follow-up ADR.
 
 ## Consequences
 

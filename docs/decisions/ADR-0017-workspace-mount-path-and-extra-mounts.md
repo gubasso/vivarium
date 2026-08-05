@@ -12,7 +12,7 @@ ADR-0009 already decided launch-time injection and a fixed in-guest path, but th
 
 ## Decision Outcome
 
-Chosen option: **one fixed project-scoped path `/workspaces/<repo>` with launch-time host-path injection and optional additional runtime mounts**.
+Chosen option: one fixed project-scoped path `/workspaces/<repo>` with launch-time host-path injection and optional additional runtime mounts.
 
 The primary workspace mount is `/workspaces/<repo>`. Additional mounts may be declared for other guest paths, but their host sources are launch-time or personal/machine-local inputs and must not enter shared build/config outputs. Multiple `exec`/`shell` sessions for a project share the same VM and see the same mounts.
 

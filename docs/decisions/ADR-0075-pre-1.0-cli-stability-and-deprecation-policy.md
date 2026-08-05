@@ -13,11 +13,11 @@ vivarium is at `0.1.0` and every command is designed rather than implemented. No
 
 ## Decision Outcome
 
-Chosen option: **stable within a minor series**.
+Chosen option: stable within a minor series.
 
 The minor component is the breaking axis before 1.0. A patch release must not break a documented invocation, a `--json` field, an exit code's meaning, or accepted manifest and registry syntax. Breaking changes land only in a new minor, each named in the release notes with a migration example. Where practical a surface is deprecated for one minor first; an immediate break is reserved for security, correctness, and anything never marked Implemented.
 
-Three surfaces are permanent **now**, pre-1.0, because earlier decisions already made them so: the exit-code taxonomy, append-only and never reassigned (ADR-0028); the two compatibility messages and their five required parts (ADR-0068); and the registry record's two keys (ADR-0052). Diagnostic ids are stable and never reassigned, and remain not a branch surface — both halves hold.
+Three surfaces are permanent now, pre-1.0, because earlier decisions already made them so: the exit-code taxonomy, append-only and never reassigned (ADR-0028); the two compatibility messages and their five required parts (ADR-0068); and the registry record's two keys (ADR-0052). Diagnostic ids are stable and never reassigned, and remain not a branch surface — both halves hold.
 
 Outside it: human stderr prose beyond those messages and their slots, additive `--json` fields, and the generated flake's internal shape.
 

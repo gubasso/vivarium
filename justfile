@@ -61,7 +61,7 @@ publish-dry *ARGS:
 publish *ARGS:
     nix develop --command scripts/publish {{ARGS}}
 
-# Local release helper (release-plz / cargo-release / semver-checks; see PUBLISHING.md).
+# Local release helper (release-plz / cargo-release / semver-checks; see docs/guides/publishing.md).
 release *ARGS:
     nix develop --command scripts/release {{ARGS}}
 

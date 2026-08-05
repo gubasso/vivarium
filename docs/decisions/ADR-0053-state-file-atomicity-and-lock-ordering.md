@@ -12,12 +12,12 @@
 
 ## Decision Outcome
 
-Chosen option: **sidecar locks under a total order** — losing a binding to a lost update is silent, and an undocumented order between four locks is a deadlock waiting for the second writer.
+Chosen option: sidecar locks under a total order — losing a binding to a lost update is silent, and an undocumented order between four locks is a deadlock waiting for the second writer.
 
-- **Write**: serialize to a temp file in the same directory, `sync_all`, `rename` over the target, then fsync the parent directory. A reader therefore sees the old file or the new one, never a partial one.
-- **Permissions**: both files `0600`, state root `0700`. Absolute paths are weak but real information about a user's filesystem.
-- **Lock**: a sidecar `<file>.lock` with `flock(2)` through `std::fs::File::lock` — no new dependency. Shared for read-only diagnostics, exclusive for writers; a lock that cannot be taken promptly is `75`, not a hang.
-- **Order**: registry → identity → per-target `flock` → Nix profile. Never acquire upward, release in reverse, and hold no state lock across a VM boot or a Nix build.
+- Write: serialize to a temp file in the same directory, `sync_all`, `rename` over the target, then fsync the parent directory. A reader therefore sees the old file or the new one, never a partial one.
+- Permissions: both files `0600`, state root `0700`. Absolute paths are weak but real information about a user's filesystem.
+- Lock: a sidecar `<file>.lock` with `flock(2)` through `std::fs::File::lock` — no new dependency. Shared for read-only diagnostics, exclusive for writers; a lock that cannot be taken promptly is `75`, not a hang.
+- Order: registry → identity → per-target `flock` → Nix profile. Never acquire upward, release in reverse, and hold no state lock across a VM boot or a Nix build.
 
 ## Consequences
 

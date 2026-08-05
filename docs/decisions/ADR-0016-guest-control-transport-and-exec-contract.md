@@ -12,7 +12,7 @@
 
 ## Decision Outcome
 
-Chosen option: **in-guest agent over a vsock-class host-local transport**.
+Chosen option: in-guest agent over a vsock-class host-local transport.
 
 vivarium uses a small in-guest agent over a vsock-class, host-local, network-independent transport, multiplexed through a host Unix control socket in the per-project runtime directory. Running VMs are detected by authenticated control-socket ping plus boot metadata under a per-project `flock`; PID files are diagnostic only. Exit codes use the guest-process-start boundary: before start, vivarium uses BSD sysexits; after start, it propagates the guest status verbatim.
 
@@ -30,4 +30,4 @@ Specified in [`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exe
 
 Amended by [`ADR-0071-agent-forwarding-over-a-second-vsock-port.md`](./ADR-0071-agent-forwarding-over-a-second-vsock-port.md) — the transport now carries a second guest port beside the control port, for the authentication-agent channel. The control contract above is unchanged: the credential port is a separate port with a separate protocol, and vivarium still originates every connection.
 
-Amended by [`ADR-0065-control-socket-wire-protocol.md`](./ADR-0065-control-socket-wire-protocol.md) — the deferred wire framing and auth handshake are supplied there, and this ADR's phrase **"authenticated control-socket ping"** now means boot-identity attestation over a `0700`-scoped socket, not a shared secret. A reader expecting a secret here will not find one, and that is the decision. The transport and session model above are unchanged.
+Amended by [`ADR-0065-control-socket-wire-protocol.md`](./ADR-0065-control-socket-wire-protocol.md) — the deferred wire framing and auth handshake are supplied there, and this ADR's phrase "authenticated control-socket ping" now means boot-identity attestation over a `0700`-scoped socket, not a shared secret. A reader expecting a secret here will not find one, and that is the decision. The transport and session model above are unchanged.

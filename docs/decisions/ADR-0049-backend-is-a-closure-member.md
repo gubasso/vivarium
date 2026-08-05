@@ -6,18 +6,18 @@
 
 ## Considered Options
 
-- **Host-provided** — resolved from `$PATH`, presence and version probed at runtime.
-- **Closure-provided** — a member of the built runner's closure, pinned by the lockfile.
+- Host-provided — resolved from `$PATH`, presence and version probed at runtime.
+- Closure-provided — a member of the built runner's closure, pinned by the lockfile.
 - Closure by default, with a host-provided binary substitutable per invocation.
 
 ## Decision Outcome
 
-Chosen option: **closure-provided**.
+Chosen option: closure-provided.
 
 - The hypervisor (`cloud-hypervisor`), its control client (`ch-remote`), and every host-side filesystem daemon (`virtiofsd`) are members of the built runner's closure, pinned by the project's lockfile and recorded in the generation record beside the lock that built it. None is ever resolved from `$PATH`.
-- The rule this sets for the catalog: **`viv doctor` probes host conditions only; anything the lockfile determines is an evaluation-time assertion, not a check.** Nix stays probed — it genuinely is host-provided.
+- The rule this sets for the catalog: `viv doctor` probes host conditions only; anything the lockfile determines is an evaluation-time assertion, not a check. Nix stays probed — it genuinely is host-provided.
 - Backend feature floors therefore become assertions that fail at evaluation with `65` ([`ADR-0042-evaluation-time-content-defects.md`](./ADR-0042-evaluation-time-content-defects.md)): free page reporting on the balloon device, Landlock in the hardened profile, and block-device discard with sparse images. The recommended version in `spec/13` was always a tested baseline, never the first release carrying what vivarium needs.
-- **The default still names a backend, never the contract.** Pinning one hypervisor into the closure does not narrow N2: the isolation class stays backend-agnostic, and substituting a backend becomes a Nix option rather than a `$PATH` lookup.
+- The default still names a backend, never the contract. Pinning one hypervisor into the closure does not narrow N2: the isolation class stays backend-agnostic, and substituting a backend becomes a Nix option rather than a `$PATH` lookup.
 
 ## Consequences
 

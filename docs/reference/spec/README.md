@@ -2,7 +2,7 @@
 
 The product contract: what vivarium is and does. These pages are reference material — organized for lookup, not narrative. They describe the intended design; for what is actually implemented today, see [`../implementation-status.md`](../implementation-status.md).
 
-The **why** behind these choices lives in the decision records under [`../../decisions/`](../../decisions/); each page links to the ADRs that govern it rather than restating their reasoning.
+The why behind these choices lives in the decision records under [`../../decisions/`](../../decisions/); each page links to the ADRs that govern it rather than restating their reasoning.
 
 ## Pages
 

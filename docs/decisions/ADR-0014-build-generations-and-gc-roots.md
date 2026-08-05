@@ -6,13 +6,13 @@
 
 ## Considered Options
 
-- **Bare `result` / `--out-link` symlinks** in the project directory — one link per build.
-- **Per-project Nix profile** under the state root — numbered generations, each symlink a GC root.
-- **A JSON index of store paths** the tool manages itself, without GC roots.
+- Bare `result` / `--out-link` symlinks in the project directory — one link per build.
+- Per-project Nix profile under the state root — numbered generations, each symlink a GC root.
+- A JSON index of store paths the tool manages itself, without GC roots.
 
 ## Decision Outcome
 
-Chosen option: **per-project Nix profile under the state root**.
+Chosen option: per-project Nix profile under the state root.
 
 Each successful `up` build appends a numbered generation to the project's profile. Every generation symlink is a garbage-collector root, so retained builds survive `nix-collect-garbage` with no extra bookkeeping (N14). The profile gives listing and rollback semantics directly: `viv up --no-rebuild` boots the current generation, `viv up --generation <n>` a specific one, `viv generations` lists them, and `viv gc` prunes under a retention policy. Generations live under `state/vivarium/projects/<project-id>/<target>/`, never in the project tree (N9).
 

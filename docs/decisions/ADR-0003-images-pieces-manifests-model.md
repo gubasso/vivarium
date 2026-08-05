@@ -6,13 +6,13 @@ Users need to build many related sandboxes without copying configuration. A Rust
 
 ## Considered Options
 
-- **Monolithic per-project config** — each project writes one complete sandbox definition.
-- **Base + overrides only** — a single inheritance chain of whole VM definitions.
-- **Three artifact kinds — images, pieces, manifests** — coarse VM bases, small reusable config fragments, and a unifier that names which image and pieces combine.
+- Monolithic per-project config — each project writes one complete sandbox definition.
+- Base + overrides only — a single inheritance chain of whole VM definitions.
+- Three artifact kinds — images, pieces, manifests — coarse VM bases, small reusable config fragments, and a unifier that names which image and pieces combine.
 
 ## Decision Outcome
 
-Chosen option: **images, pieces, and manifests**. An **image** is a composable VM base (for example a minimal base, or a Rust or Python toolchain). A **piece** is a small config fragment layered onto an image (for example ssh-agent forwarding or an egress allowlist). A **manifest** is the unifier: it names one image plus an ordered set of pieces and is the single source of truth a project binds to.
+Chosen option: images, pieces, and manifests. An image is a composable VM base (for example a minimal base, or a Rust or Python toolchain). A piece is a small config fragment layered onto an image (for example ssh-agent forwarding or an egress allowlist). A manifest is the unifier: it names one image plus an ordered set of pieces and is the single source of truth a project binds to.
 
 This mirrors how projects actually vary: images capture the toolchain, pieces capture cross-cutting concerns, and manifests capture the per-environment combination. See [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md) for the shapes and examples.
 

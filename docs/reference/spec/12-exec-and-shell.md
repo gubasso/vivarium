@@ -35,7 +35,7 @@ The default guest user is non-root `vivarium`; root is allowed only when an imag
 
 Host environment passthrough is deny-by-default. The default allowlist is `TERM`, `COLORTERM`, `NO_COLOR`, `FORCE_COLOR`, `LANG`, and `LC_*`. No other host variables are forwarded unless named by `--env`; vivarium does not auto-forward `SSH_AUTH_SOCK`, cloud tokens, or other credential-bearing variables.
 
-Agent forwarding is **not** an exception to that rule, and naming `--env SSH_AUTH_SOCK` is not a substitute for it. The variable holds a host filesystem path; forwarding it hands the guest a **name**, while the socket it names is an object in the host kernel that a guest `connect()` cannot reach. When the agent channel is declared, the guest's `SSH_AUTH_SOCK` is set by the guest agent to a fixed guest path served by the relay below — a tool-generated value, not a forwarded host one. The channel itself, and the closed allowlist of what may cross it, are owned by [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md).
+Agent forwarding is not an exception to that rule, and naming `--env SSH_AUTH_SOCK` is not a substitute for it. The variable holds a host filesystem path; forwarding it hands the guest a name, while the socket it names is an object in the host kernel that a guest `connect()` cannot reach. When the agent channel is declared, the guest's `SSH_AUTH_SOCK` is set by the guest agent to a fixed guest path served by the relay below — a tool-generated value, not a forwarded host one. The channel itself, and the closed allowlist of what may cross it, are owned by [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md).
 
 ## Workspace mounts
 
@@ -59,13 +59,13 @@ $XDG_RUNTIME_DIR/vivarium/<project-id>/<target>/
   console.log
 ```
 
-`console.log` is present whenever a VM is running, unless `--no-console-log` is set; it holds the guest's raw serial output under the capture contract in [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md). `<project-id>` is the project-identity key and `<target>` the VM instance within the project, both defined in [`15-project-identity.md`](./15-project-identity.md); the runtime layout mirrors the state layout in [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md) component for component. `$XDG_RUNTIME_DIR` is **required and never synthesized** — how it resolves and what a missing or unusable one costs are owned by [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), and none of the files above outlive the session that root belongs to ([`10-vm-lifecycle.md`](./10-vm-lifecycle.md)). The control transport is vsock-class, host-local, and network-independent, bridged to a host Unix socket; the concrete device/backend is below this contract per N2. SSH is not the primary control plane, though it may exist as a debug fallback.
+`console.log` is present whenever a VM is running, unless `--no-console-log` is set; it holds the guest's raw serial output under the capture contract in [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md). `<project-id>` is the project-identity key and `<target>` the VM instance within the project, both defined in [`15-project-identity.md`](./15-project-identity.md); the runtime layout mirrors the state layout in [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md) component for component. `$XDG_RUNTIME_DIR` is required and never synthesized — how it resolves and what a missing or unusable one costs are owned by [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), and none of the files above outlive the session that root belongs to ([`10-vm-lifecycle.md`](./10-vm-lifecycle.md)). The control transport is vsock-class, host-local, and network-independent, bridged to a host Unix socket; the concrete device/backend is below this contract per N2. SSH is not the primary control plane, though it may exist as a debug fallback.
 
 ### One connection per session
 
-The multiplexing in step 6 is the **transport's**, not vivarium's. `control.sock` is a listening socket: each `viv exec` and each `viv shell` opens **its own connection** to it and performs the transport's per-connection session handshake, and the transport carries the resulting streams independently. Session state — the PTY, the argv, the environment, the exit status — is per connection.
+The multiplexing in step 6 is the transport's, not vivarium's. `control.sock` is a listening socket: each `viv exec` and each `viv shell` opens its own connection to it and performs the transport's per-connection session handshake, and the transport carries the resulting streams independently. Session state — the PTY, the argv, the environment, the exit status — is per connection.
 
-Three things therefore do **not** exist, and adding any of them would be a defect rather than an enhancement:
+Three things therefore do not exist, and adding any of them would be a defect rather than an enhancement:
 
 - No framing protocol layering many sessions over one stream.
 - No socket created per session, and no port allocated per session.
@@ -75,33 +75,33 @@ Sessions are counted, not tracked: `viv status` reports the number of live conne
 
 ## Exit status and failures
 
-Exit codes follow the program-wide taxonomy and per-command matrix in [`14-exit-codes.md`](./14-exit-codes.md); the `exec` / `shell` row there names the categories these commands can return. What is specific here is the **guest-process-start boundary**:
+Exit codes follow the program-wide taxonomy and per-command matrix in [`14-exit-codes.md`](./14-exit-codes.md); the `exec` / `shell` row there names the categories these commands can return. What is specific here is the guest-process-start boundary:
 
-- **Before** the guest process starts, vivarium-origin failures use the sysexits categories: usage (`64`, incl. missing `--`, empty argv, `-t` when stdin is not a terminal), no/invalid manifest or incompatible generation metadata (`78`), a merged-configuration content defect on a cold start (`65`, see [`../../decisions/ADR-0042-evaluation-time-content-defects.md`](../../decisions/ADR-0042-evaluation-time-content-defects.md)), Nix eval/build fault before boot (`70`), backend/agent unavailable or boot timeout (`69`), host or agent-reported permission failure (`77`), transient lock/startup race (`75`), and control-socket I/O (`74`).
-- **After** it starts, return the guest status verbatim for `0..255`; a guest killed by signal `S` yields `128+S`. If the transport dies after guest start before the status is known, return `74` (EX_IOERR) with a stderr diagnostic and do not guess a guest code. A guest may itself exit a value such as `69`; that is still the guest's result, because the boundary is guest-process start.
+- Before the guest process starts, vivarium-origin failures use the sysexits categories: usage (`64`, incl. missing `--`, empty argv, `-t` when stdin is not a terminal), no/invalid manifest or incompatible generation metadata (`78`), a merged-configuration content defect on a cold start (`65`, see [`../../decisions/ADR-0042-evaluation-time-content-defects.md`](../../decisions/ADR-0042-evaluation-time-content-defects.md)), Nix eval/build fault before boot (`70`), backend/agent unavailable or boot timeout (`69`), host or agent-reported permission failure (`77`), transient lock/startup race (`75`), and control-socket I/O (`74`).
+- After it starts, return the guest status verbatim for `0..255`; a guest killed by signal `S` yields `128+S`. If the transport dies after guest start before the status is known, return `74` (EX_IOERR) with a stderr diagnostic and do not guess a guest code. A guest may itself exit a value such as `69`; that is still the guest's result, because the boundary is guest-process start.
 
 `127` (not found) and `126` (not executable) stay reserved for a future refinement of the before-start not-found/not-executable cases; v1 uses the categories above.
 
 ## The wire protocol
 
-Settled in [`../../decisions/ADR-0065-control-socket-wire-protocol.md`](../../decisions/ADR-0065-control-socket-wire-protocol.md). What follows is the contract for **one** connection; there is nothing above it, because there is no multiplexer.
+Settled in [`../../decisions/ADR-0065-control-socket-wire-protocol.md`](../../decisions/ADR-0065-control-socket-wire-protocol.md). What follows is the contract for one connection; there is nothing above it, because there is no multiplexer.
 
 ### Establishing a connection
 
-The vsock-class transport is a **hybrid** one: the backend listens on `control.sock`, and a host connection is completed to a guest port by the transport's own preamble before any vivarium byte is exchanged. Two properties fall out of that and are load-bearing:
+The vsock-class transport is a hybrid one: the backend listens on `control.sock`, and a host connection is completed to a guest port by the transport's own preamble before any vivarium byte is exchanged. Two properties fall out of that and are load-bearing:
 
-- **The host end is an ordinary Unix stream.** Nothing on the host side needs a vsock-aware transport; the vsock dependency exists only in the guest agent.
-- **The guest cannot originate a control connection.** A guest-initiated connection would need a host process listening on a per-port socket beside `control.sock`, and vivarium creates none — ever. The control plane is host-initiated by construction, not by policy.
+- The host end is an ordinary Unix stream. Nothing on the host side needs a vsock-aware transport; the vsock dependency exists only in the guest agent.
+- The guest cannot originate a control connection. A guest-initiated connection would need a host process listening on a per-port socket beside `control.sock`, and vivarium creates none — ever. The control plane is host-initiated by construction, not by policy.
 
 A connection that closes before the transport completes it means the agent is not yet listening: wait within the boot timeout, then `69` (step 4 above).
 
 ### The credential port
 
-When a composition declares the agent channel ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md), [`../../decisions/ADR-0071-agent-forwarding-over-a-second-vsock-port.md`](../../decisions/ADR-0071-agent-forwarding-over-a-second-vsock-port.md)), the transport carries a **second guest port** beside the control port. It is a separate port and a separate, deliberately minimal protocol — an opaque byte relay with no control tags — because sharing the control connection would demand the multiplexer this page says does not exist, and would put guest-reachable bytes on the same stream as `Exec` and `Signal` frames.
+When a composition declares the agent channel ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md), [`../../decisions/ADR-0071-agent-forwarding-over-a-second-vsock-port.md`](../../decisions/ADR-0071-agent-forwarding-over-a-second-vsock-port.md)), the transport carries a second guest port beside the control port. It is a separate port and a separate, deliberately minimal protocol — an opaque byte relay with no control tags — because sharing the control connection would demand the multiplexer this page says does not exist, and would put guest-reachable bytes on the same stream as `Exec` and `Signal` frames.
 
 Both properties above survive unchanged, and the design is shaped around keeping them:
 
-- Vivarium holds a small pool of **idle connections it opened** on the credential port. The guest-side proxy accepts a local connection at the fixed guest socket path and consumes one parked connection; vivarium refills the pool. So the guest still originates nothing, and vivarium still creates no host listener beside `control.sock`.
+- Vivarium holds a small pool of idle connections it opened on the credential port. The guest-side proxy accepts a local connection at the fixed guest socket path and consumes one parked connection; vivarium refills the pool. So the guest still originates nothing, and vivarium still creates no host listener beside `control.sock`.
 - The host end of each parked connection remains an ordinary Unix stream, and vivarium relays its bytes to the host agent socket the channel names.
 
 Vivarium never interprets a byte of that stream. The relay's payload is secret-class in full ([`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)); what may be recorded is that a channel exists and which id it carries, never its traffic.
@@ -110,7 +110,7 @@ Vivarium never interprets a byte of that stream. The relay's payload is secret-c
 
 Each message is a length prefix, a one-byte type tag, and a payload. Standard-I/O payloads are raw bytes; every control payload is a serde-encoded structure. Frames are bounded, and a stream frame's bound is far smaller than a control frame's, so a peer can size buffers without trusting the other side.
 
-An unknown tag is a **protocol error, not a message to skip** — silently ignoring one would let two versions believe they agreed. Direction is part of the contract and is enforced, not merely documented: only the client sends standard input, resize, and signal frames; only the agent sends standard output, standard error, and the exit frame.
+An unknown tag is a protocol error, not a message to skip — silently ignoring one would let two versions believe they agreed. Direction is part of the contract and is enforced, not merely documented: only the client sends standard input, resize, and signal frames; only the agent sends standard output, standard error, and the exit frame.
 
 The message set is exactly what a session needs and no more: a handshake pair, `Ping`/`Pong`, a request to start the process, the three standard streams with an explicit end-of-input, `Resize`, `Signal`, `Exit`, and `Error`.
 
@@ -118,17 +118,17 @@ The message set is exactly what a session needs and no more: a handshake pair, `
 
 A resize carries the new dimensions and the agent applies them to the session's PTY; the host re-sends whenever its own terminal changes size. Sent before the process starts, it sets the initial dimensions instead — so a session never briefly renders at the wrong size.
 
-With `-t` the host puts the local terminal in raw mode and forwards the interrupt **as a byte**, letting the guest PTY's line discipline raise the signal against the guest's own foreground process group. This is the only correct behaviour when the guest runs a job-control shell: a synthesized signal would go to the wrong process. Explicit signal frames therefore exist for the non-TTY path, where there is no line discipline to do the work.
+With `-t` the host puts the local terminal in raw mode and forwards the interrupt as a byte, letting the guest PTY's line discipline raise the signal against the guest's own foreground process group. This is the only correct behaviour when the guest runs a job-control shell: a synthesized signal would go to the wrong process. Explicit signal frames therefore exist for the non-TTY path, where there is no line discipline to do the work.
 
 ### Authorization
 
-`control.sock` is **not** protected by a shared secret, and that is a decision rather than an omission. Three facts already settle who may talk to it:
+`control.sock` is not protected by a shared secret, and that is a decision rather than an omission. Three facts already settle who may talk to it:
 
 - The runtime directory is session-scoped and `0700`, so no other host user can reach the socket at all ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), [`../../decisions/ADR-0055-runtime-directory-is-required.md`](../../decisions/ADR-0055-runtime-directory-is-required.md)).
 - The guest cannot originate connections, per above.
 - A secret would have to be delivered into the guest, where guest root — the adversary the sandbox is drawn against — reads it anyway. It would add a handling path and defend against nobody.
 
-What is left to establish is **which** agent answered, and the handshake does exactly that: the agent's reply carries the boot identity, and vivarium compares it against `boot.json` before proceeding — the same comparison step 3 above already requires, against a stale socket, a re-created VM, or a crossed project. `boot.json` is host-written metadata and never authentication material.
+What is left to establish is which agent answered, and the handshake does exactly that: the agent's reply carries the boot identity, and vivarium compares it against `boot.json` before proceeding — the same comparison step 3 above already requires, against a stale socket, a re-created VM, or a crossed project. `boot.json` is host-written metadata and never authentication material.
 
 ## Deferred details
 
