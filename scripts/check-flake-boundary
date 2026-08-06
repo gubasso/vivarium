@@ -26,8 +26,8 @@
 
 set -u
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-REPO_ROOT=${1:-$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)}
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=${1:-$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd -P)}
 
 # Outputs that mean "this flake builds something". `devShells`, `formatter` and
 # `packages`-free helpers are the dev environment's legitimate surface.
@@ -53,9 +53,12 @@ if [[ -z $outputs ]]; then
   exit 1
 fi
 
-inputs=$(nix eval --raw --impure --expr \
+if ! inputs=$(nix eval --raw --impure --expr \
   "builtins.concatStringsSep \" \" (builtins.attrNames (builtins.getFlake \"path:$REPO_ROOT\").inputs)" \
-  2>/dev/null)
+  2>/dev/null) || [[ -z $inputs ]]; then
+  note "check-flake-boundary: could not evaluate the root flake's inputs"
+  exit 1
+fi
 
 for o in "${FORBIDDEN_OUTPUTS[@]}"; do
   case " $outputs " in
@@ -97,6 +100,14 @@ else
       note "check-flake-boundary: nix/flake.nix declares no \`packages\`."
       note "  The build outputs have to live somewhere; if they moved again, point this"
       note "  check at wherever they went."
+      fail=1
+      ;;
+  esac
+  case " $product " in
+    *" checks "*) ;;
+    *)
+      note "check-flake-boundary: nix/flake.nix declares no \`checks\`."
+      note "  Product verification must remain published from the product flake."
       fail=1
       ;;
   esac

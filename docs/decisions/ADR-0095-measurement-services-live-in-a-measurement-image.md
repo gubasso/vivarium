@@ -12,7 +12,7 @@ Four probe units and two upstream Nix test hooks sat in the guest module every u
 
 ## Decision Outcome
 
-Chosen option: a variant seam — `nix/default.nix` takes a `variant` attrset, and `nix/measurement/` composes probe legs that reach an image only through it. The shipped image selects none.
+Chosen option: a variant seam — `nix/default.nix` takes a `variant` attrset, and `tests/nix/measurement/` composes probe legs that reach an image only through it. The shipped image selects none.
 
 Run-time gating is what this record rejects: inert is not absent, an inert unit still ships an `ExecStopPost` and a console writer, and the hook is not inert in any useful sense. A temporary edit cannot be reviewed or reproduced.
 
@@ -29,12 +29,14 @@ Composition, not the leg bodies, owns ordering and stopping. Legs used to name e
 
 Implemented
 
-Enacted by `nix/default.nix`'s `variant` argument, `nix/measurement/`, `nix/store-layout.nix` and `nix/contract.nix`; exposed as `packages.first-microvm-{measurement,scaled,bench-threads-N}` in `nix/flake.nix`.
+Enacted by `nix/default.nix`'s `variant` argument, `tests/nix/measurement/`, `nix/store-layout.nix` and `tests/nix/contract.nix`; exposed as `packages.first-microvm-{measurement,scaled,bench-threads-N}` in `nix/flake.nix`.
 
-The relocation is pure, and that is what licensed not re-running three closed lanes — verified 2026-08-05. The three legs that produced the existing register entries resolve to the same script derivation before and after the move, their `After=` sets are identical, and the tmpfiles rules are an identical set. `scripts/first-microvm-check` against the measurement image returned `PASS=33 FAIL=0 SKIP=1`, matching the pre-refactor cold-boot result. Registered in [`../reference/microvm-verification-harness.md`](../reference/microvm-verification-harness.md).
+The relocation is pure, and that is what licensed not re-running three closed lanes — verified 2026-08-05. The three legs that produced the existing register entries resolve to the same script derivation before and after the move, their `After=` sets are identical, and the tmpfiles rules are an identical set. `tests/host/first-microvm-check` against the measurement image returned `PASS=33 FAIL=0 SKIP=1`, matching the pre-refactor cold-boot result. Registered in [`../reference/microvm-verification-harness.md`](../reference/microvm-verification-harness.md).
 
 The shipped image's stop path is measured, and it was an unverified assumption before this — 2026-08-05. `ch-remote power-button` over the API socket reached the guest, which ran its full shutdown transaction and powered off in 2.0 s. Nothing in the guest module configures ACPI handling or `logind` policy, so this had rested on kernel and `systemd-logind` defaults that no boot had confirmed.
 
 The microVM's outputs live in their own flake, and the repository root's is untouched by them — 2026-08-05. The root `flake.nix` is the development environment: the Rust toolchain, the pre-commit hook runtimes, the devShell direnv activates. It is not part of what vivarium builds, and this record's variants would have put seven product attributes and their rationale into it. They live at `nix/flake.nix` with their own lock instead, which also decouples the guest's nixpkgs from the one the Rust toolchain wants — two pins on two clocks, which is what [`ADR-0078`](./ADR-0078-backend-advisory-response-is-a-released-pin-move.md) already says about backend pins. Verified inert: the base guest system's derivation path is byte-identical across the move.
+
+Amended by [`ADR-0098`](./ADR-0098-product-and-verification-have-one-way-repository-boundaries.md) — the variant seam moved out of `nix/default.nix`. Leg selection now lives in `tests/nix/default.nix` and reaches an image through `mkImage`'s opaque `extraModules`, so the product file no longer names a leg. This record's decision stands: the shipped image still selects none.
 
 Amends [`ADR-0048`](./ADR-0048-guest-module-only-vivarium-owns-the-runner.md) — the flake now exposes several runner attributes rather than one. The rule is unchanged: every one of them is vivarium's own construction, and no upstream runner derivation is forced. The negative-reference check still passes against the shipped attribute.

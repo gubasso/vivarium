@@ -11,11 +11,16 @@ on:
     branches: [develop]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Cache Nix store
@@ -29,6 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Cache Nix store
@@ -40,6 +47,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Cache Nix store

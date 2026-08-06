@@ -63,6 +63,13 @@
             pkgs.nixfmt
             pkgs.statix
             pkgs.deadnix
+            # Shell, Python, and Actions linting use the same Nix-owned runtime
+            # model as the existing local hooks below.
+            pkgs.shellcheck
+            pkgs.shfmt
+            pkgs.ruff
+            pkgs.actionlint
+            pkgs.zizmor
             # typos + committed also run as language:system off PATH. The
             # crate-ci pre-commit hooks are `language: python` and their wheels
             # ship prebuilt, dynamically-linked binaries, which cannot exec in a

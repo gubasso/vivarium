@@ -1,14 +1,16 @@
 # microVM verification harness
 
-`scripts/first-microvm-check` builds the first microVM, boots it on a real host, and checks the things only a real host can answer. It is the base the host lane of [`testing-lanes.md`](./testing-lanes.md) grows from, and it is run by hand today.
+`tests/` verifies product behavior across Rust, Nix, and host lanes. `scripts/` contains repository operations such as release helpers and structural gates.
 
-`scripts/store-gc-interlock-check` is its sibling, described below: same shapes, separate script because it mutates the host store.
+`tests/host/first-microvm-check` builds the first microVM, boots it on a real host, and checks the things only a real host can answer. It is the base the host lane of [`testing-lanes.md`](./testing-lanes.md) grows from, and it is run by hand today.
 
-`scripts/store-density-check` is a third sibling, and the only one that never boots anything. It measures the host store's bytes-per-inode distribution and reads a freshly created store volume's inode table with `dumpe2fs`, both of which answer ADR-0091 questions that no amount of booting could reach. It needs Nix and nothing else — no `/dev/kvm`, no systemd.
+`tests/host/store-gc-interlock-check` is its sibling, described below: same shapes, separate script because it mutates the host store.
 
-`scripts/store-pressure-check` drives the guest store to a real space crossing. Its `--arm c` fakes free space through upstream Nix's own test hook, so it proves the trigger and its arithmetic and nothing about reclamation; `--arm e` boots a different image whose thresholds are scaled at build time and whose store daemon has no hook at all, which is the only shape that can measure a real collection.
+`tests/host/store-density-check` is a third sibling, and the only one that never boots anything. It measures the host store's bytes-per-inode distribution and reads a freshly created store volume's inode table with `dumpe2fs`, both of which answer ADR-0091 questions that no amount of booting could reach. It needs Nix and nothing else — no `/dev/kvm`, no systemd.
 
-`scripts/share-benchmark-check` is the fifth, and the only one that boots more than once per invocation: it sweeps virtiofsd's worker-pool size across four launcher variants that share one guest closure, and measures what working through a share costs against the guest's own volume.
+`tests/host/store-pressure-check` drives the guest store to a real space crossing. Its `--arm c` fakes free space through upstream Nix's own test hook, so it proves the trigger and its arithmetic and nothing about reclamation; `--arm e` boots a different image whose thresholds are scaled at build time and whose store daemon has no hook at all, which is the only shape that can measure a real collection.
+
+`tests/host/share-benchmark-check` is the fifth, and the only one that boots more than once per invocation: it sweeps virtiofsd's worker-pool size across four launcher variants that share one guest closure, and measures what working through a share costs against the guest's own volume.
 
 Since ADR-0095, every probe unit lives in a measurement image rather than the shipped one. The lanes that boot build `nix#first-microvm-measurement` or a purpose-built variant; `packages.first-microvm` — the artifact a user gets — contains no probe, no upstream test hook, and no way to stop itself. That last point is deliberate: the harness stops it with `ch-remote power-button` over the API socket, which is the path a user's `stop` will take.
 
@@ -21,7 +23,7 @@ Each script also accepts `--clean`, which removes that lane's retained images, l
 ## Running it
 
 ```console
-$ scripts/first-microvm-check
+$ tests/host/first-microvm-check
 ```
 
 No arguments. It resolves the flake from its own location, so it works from any working directory. Output is one `[PASS]` / `[FAIL]` / `[SKIP]` / `[RECORD]` line per check plus a verdict, and the whole run is meant to be pasted into a review.
@@ -63,12 +65,12 @@ An evaluation-tier result says nothing about target-host behaviour. A skipped ho
 - Clean shutdown and an empty runtime directory afterward, with the volumes retained.
 - The persistent guest store — the premises, the sharing count, the collection's effect on the lower layer, and both branches of the delete-duplicate scenario. The persistence check itself needs two runs against one store volume: `VIVARIUM_SPIKE_COLD=1` removes the store image so the first is provably cold, and a second run without it is the warm half. On a cold run the persistence check reports `[SKIP]`, because there is nothing yet that could have survived.
 
-## The sibling script: `scripts/store-gc-interlock-check`
+## The sibling script: `tests/host/store-gc-interlock-check`
 
 ADR-0085's measurement runs from its own script, not from `first-microvm-check`, because it deletes from the invoking user's real host store — which must never be a side effect of the routine harness — and because it needs a prerequisite the harness does not: a store this user may delete from. It emits the same four result kinds and the same stable check inventory.
 
 ```console
-$ scripts/store-gc-interlock-check
+$ tests/host/store-gc-interlock-check
 ```
 
 Two properties are worth knowing before reading a result from it.
@@ -234,7 +236,7 @@ That decision's open hazard — a lazily initialised inode table inflating the s
 
 ### A host collection is loud for a fresh lookup and silent for a path the guest still holds
 
-Measured by `scripts/store-gc-interlock-check` (see [`testing-lanes.md`](./testing-lanes.md)) on a real host: the guest read a store path in full, the host deleted it with `nix-store --delete` while the guest ran, and the guest read again. This is the measurement [`../decisions/ADR-0085-a-running-guest-pins-the-store-paths-it-reads.md`](../decisions/ADR-0085-a-running-guest-pins-the-store-paths-it-reads.md) left open. The symptom class is MIXED, and — the part the decision turns on — nothing was ever corrupt: every read that succeeded returned bytes identical to the host's pre-deletion digest.
+Measured by `tests/host/store-gc-interlock-check` (see [`testing-lanes.md`](./testing-lanes.md)) on a real host: the guest read a store path in full, the host deleted it with `nix-store --delete` while the guest ran, and the guest read again. This is the measurement [`../decisions/ADR-0085-a-running-guest-pins-the-store-paths-it-reads.md`](../decisions/ADR-0085-a-running-guest-pins-the-store-paths-it-reads.md) left open. The symptom class is MIXED, and — the part the decision turns on — nothing was ever corrupt: every read that succeeded returned bytes identical to the host's pre-deletion digest.
 
 | Access shape                                                    | After the host deletion                                                                |
 | --------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
@@ -262,7 +264,7 @@ It failed invisibly. systemd stops writing unit status to the console once boot 
 
 ### The store's aggregate density clears ADR-0091's ratio, but the median store path does not
 
-Measured by `scripts/store-density-check` on a real host, over three populations. Bytes are the sum of regular-file sizes; inodes are counted as directory entries, because a store path is materialised from a NAR and a NAR has no hardlink concept — every link becomes its own file in a guest.
+Measured by `tests/host/store-density-check` on a real host, over three populations. Bytes are the sum of regular-file sizes; inodes are counted as directory entries, because a store path is materialised from a NAR and a NAR has no hardlink concept — every link becomes its own file in a guest.
 
 | population                         | paths | aggregate | p10   | median | p90     |
 | ---------------------------------- | ----- | --------- | ----- | ------ | ------- |
@@ -278,7 +280,7 @@ Two directional caveats, both recorded rather than corrected for. The host store
 
 ### `mkfs.ext4` leaves three quarters of the store volume's inode table unwritten, so ADR-0091's hazard is real and merely deferred
 
-Measured directly by `scripts/store-density-check` with `dumpe2fs`, on an image created with the launcher's own arguments read out of the built launch-arguments JSON rather than reconstructed (`sizeMiB=32768`, `inodeRatio=8192`, `label=vivarium-store`). This replaces ADR-0091's inference from allocated-block sampling with a reading of the filesystem's own metadata, before any mount.
+Measured directly by `tests/host/store-density-check` with `dumpe2fs`, on an image created with the launcher's own arguments read out of the built launch-arguments JSON rather than reconstructed (`sizeMiB=32768`, `inodeRatio=8192`, `label=vivarium-store`). This replaces ADR-0091's inference from allocated-block sampling with a reading of the filesystem's own metadata, before any mount.
 
 The table is 4,194,304 inodes × 256 bytes = 1,073,741,824 bytes across 257 block groups. Immediately after `mkfs.ext4`, the sparse image holds 273,104,896 bytes of allocated blocks — about 25% of the table. The feature list includes `metadata_csum`, and `/sys/fs/ext4/features/lazy_itable_init` is present on the host, so mke2fs's lazy default applies and the kernel's `ext4lazyinit` thread zeroes the remainder in the background after first mount. So roughly 800 MiB of allocation is owed the moment the volume is first mounted, with the guest writing nothing — which is the interaction with [`../decisions/ADR-0037-volume-disk-format-and-reclamation.md`](../decisions/ADR-0037-volume-disk-format-and-reclamation.md)'s sparse-image promise that ADR-0091 flagged.
 
@@ -286,7 +288,7 @@ This also reinterprets the persistence spike's own numbers. That run recorded 32
 
 ### ADR-0089's trigger fires, and frees exactly `max-free` minus available
 
-Measured by `scripts/store-pressure-check --arm c` on a real host, guest Nix 2.34.7, through upstream's own `_NIX_TEST_FREE_SPACE_FILE` hook — the one `tests/functional/gc-auto.sh` uses — which makes the daemon read free space from a file instead of `statvfs`. The guest reported `min-free=4294967296`, `max-free=8589934592`, `min-free-check-interval=5`, `auto-optimise-store=false`.
+Measured by `tests/host/store-pressure-check --arm c` on a real host, guest Nix 2.34.7, through upstream's own `_NIX_TEST_FREE_SPACE_FILE` hook — the one `tests/functional/gc-auto.sh` uses — which makes the daemon read free space from a file instead of `statvfs`. The guest reported `min-free=4294967296`, `max-free=8589934592`, `min-free-check-interval=5`, `auto-optimise-store=false`.
 
 | free space presented | auto-GC announced | bytes the collector asked to free |
 | -------------------- | ----------------- | --------------------------------- |
@@ -308,7 +310,7 @@ Measured across every sample of both pressure arms: the raw statvfs fields for `
 
 ### The collection thresholds cannot be reached from outside `nix.settings`, which bounded what arm D could measure
 
-Measured by `scripts/store-pressure-check --arm d`, and recorded because it is the reason a real-reclamation number is still missing. The arm writes real ballast into the real store volume with `min-free` moved up close to actual free space, so a few gibibytes cross a real threshold. Twelve iterations wrote 3 GiB; free space fell from 29.03 GiB to 26.02 GiB, past a planned `min-free` of 27.53 GiB; no iteration hit `ENOSPC`; and no auto-GC was ever announced.
+Measured by `tests/host/store-pressure-check --arm d`, and recorded because it is the reason a real-reclamation number is still missing. The arm writes real ballast into the real store volume with `min-free` moved up close to actual free space, so a few gibibytes cross a real threshold. Twelve iterations wrote 3 GiB; free space fell from 29.03 GiB to 26.02 GiB, past a planned `min-free` of 27.53 GiB; no iteration hit `ENOSPC`; and no auto-GC was ever announced.
 
 The cause is not ADR-0089. `LocalStore::autoGC` reads `settings.minFree` inside the daemon, and two routes to change it were tried and both failed silently: a client-side `--option min-free` is accepted by `nix-build` and ignored by the collector, and `NIX_USER_CONF_FILES` pointed at a config the daemon unit was told to read did not reach it either — with the file on disk and `systemctl restart nix-daemon` returning 0. The daemon kept the real 4 GiB throughout, and a store with 26 GiB free was right not to collect. The only route proven to reach `autoGC` is `nix.settings` at image-build time, which is how the real thresholds get there.
 
@@ -322,7 +324,7 @@ The same sampling closes part of ADR-0091's lazy-inode-table question from the o
 
 ### ADR-0089's trigger fires on a real filesystem, and the collection frees nothing
 
-Measured by `scripts/store-pressure-check --arm e` on a real host — guest kernel 6.18.38, guest Nix 2.34.7, cloud-hypervisor 52.0, virtiofsd 1.13.3, store image on the host's btrfs. This is the arm the earlier ones could not reach: arm C drove the trigger through upstream's own free-space test hook, so `availAfterGC` was faked along with everything else, and arm D never reached the collector at all. Arm E boots an image whose `nix.settings` carry scaled thresholds — the only route into `LocalStore::autoGC` — and whose store daemon has no test hook at all, so every number below comes from real `statvfs` on real ext4.
+Measured by `tests/host/store-pressure-check --arm e` on a real host — guest kernel 6.18.38, guest Nix 2.34.7, cloud-hypervisor 52.0, virtiofsd 1.13.3, store image on the host's btrfs. This is the arm the earlier ones could not reach: arm C drove the trigger through upstream's own free-space test hook, so `availAfterGC` was faked along with everything else, and arm D never reached the collector at all. Arm E boots an image whose `nix.settings` carry scaled thresholds — the only route into `LocalStore::autoGC` — and whose store daemon has no test hook at all, so every number below comes from real `statvfs` on real ext4.
 
 Image: 4 GiB store volume, `min-free` 1 GiB, `max-free` 1.5 GiB. The gap is 33% of `max-free` against `autoGC`'s 3% re-arm damper, so silence between passes could not have been the damper.
 
@@ -343,7 +345,7 @@ What this does not say. It does not say ADR-0089's policy is wrong, and it does 
 
 ### The collection ends after one path, on an uninitialised byte count read through the overlay
 
-Measured by `scripts/store-pressure-check --arm e` on a real host, twice, with the collector's own decisions classified per path. Two independent boots produced the identical result, which matters because a single one would have been an anecdote about a stack value.
+Measured by `tests/host/store-pressure-check --arm e` on a real host, twice, with the collector's own decisions classified per path. Two independent boots produced the identical result, which matters because a single one would have been an anecdote about a stack value.
 
 Every path the collector attempts is announced on the client's stderr by `deleteFromStore` (`src/libstore/gc.cc`), so the attempted set needs no hook. The guest classifies each against the upper layer as it stood before the build and against the lower store's database — 523 valid paths, the boot closure and nothing else.
 
@@ -386,7 +388,7 @@ This is a statement about this host, recorded so the numbers above can be read. 
 
 ### The worker-pool sweep does not discriminate, because the workload the backlog names has no concurrency
 
-Measured by `scripts/share-benchmark-check` across `--thread-pool-size` {0, 1, 2, 4}, four boots sharing one guest closure — the pool size is launch-channel, and the lane asserts that closure equality before spending the boots. 50,000-file tree, generated once host-side and copied to the volume so both filesystems hold byte-identical content, digests compared on every boot. The guest page cache is dropped before every repetition, because the workspace share is `cache = "auto"` and a warm cache issues no filesystem traffic at all — which is the condition under which this measurement would say nothing.
+Measured by `tests/host/share-benchmark-check` across `--thread-pool-size` {0, 1, 2, 4}, four boots sharing one guest closure — the pool size is launch-channel, and the lane asserts that closure equality before spending the boots. 50,000-file tree, generated once host-side and copied to the volume so both filesystems hold byte-identical content, digests compared on every boot. The guest page cache is dropped before every repetition, because the workspace share is `cache = "auto"` and a warm cache issues no filesystem traffic at all — which is the condition under which this measurement would say nothing.
 
 | workload                               | pool 0 | pool 1 | pool 2 | pool 4 |
 | -------------------------------------- | ------ | ------ | ------ | ------ |
@@ -403,7 +405,7 @@ This does not move [`../decisions/ADR-0051-share-worker-pool-small-non-zero-unif
 
 ### A concurrent workload does discriminate, and every non-zero pool is slower
 
-Measured by `scripts/share-benchmark-check` over two independent lane runs — eight boots, four pool sizes each, guest 4 vCPU and 4 GiB. The workload is the one the entry above says was missing: `stat` over a path list built before the timed region, split across `C` concurrent workers, with the guest page cache dropped before every repetition. The share carries exactly one request queue (no `num_queues` is passed to the backend's `--fs` device), so with the pool disabled that queue really is served by one thread.
+Measured by `tests/host/share-benchmark-check` over two independent lane runs — eight boots, four pool sizes each, guest 4 vCPU and 4 GiB. The workload is the one the entry above says was missing: `stat` over a path list built before the timed region, split across `C` concurrent workers, with the guest page cache dropped before every repetition. The share carries exactly one request queue (no `num_queues` is passed to the backend's `--fs` device), so with the pool disabled that queue really is served by one thread.
 
 | workers | pool 0 | pool 1 | pool 2 | pool 4 | ext4 volume |
 | ------- | ------ | ------ | ------ | ------ | ----------- |
@@ -415,7 +417,7 @@ Best of three repetitions in milliseconds, first run; the second run reproduces 
 
 Two things follow, and the second is the one that moves a decision. A disabled pool is not the serialisation penalty it was argued to be: pool 0 went from 642 ms to 211 ms as the client count went from one to four, so a single serving thread pipelines a full queue rather than stalling behind it. And a non-zero pool never won a single cell — its per-request dispatch is a real cost with nothing to recover it. [`../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md`](../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md) is superseded by [`../decisions/ADR-0096-the-share-worker-pool-takes-the-daemon-default.md`](../decisions/ADR-0096-the-share-worker-pool-takes-the-daemon-default.md) on this evidence.
 
-The shipped image was rebuilt at the new value and re-verified by `scripts/first-microvm-check` on the same host: `PASS=33 FAIL=0 SKIP=1`, identical to the result recorded for the previous constant, with the launcher's own arguments carrying `virtiofsdThreadPoolSize=0`.
+The shipped image was rebuilt at the new value and re-verified by `tests/host/first-microvm-check` on the same host: `PASS=33 FAIL=0 SKIP=1`, identical to the result recorded for the previous constant, with the launcher's own arguments carrying `virtiofsdThreadPoolSize=0`.
 
 Stated boundary, and it is what keeps this honest. The host page cache is warm throughout by construction, so every request the daemon serves is satisfied from memory. The case a pool exists for — a request that blocks long enough to hold the queue — is not present in this measurement and remains unmeasured. What is measured is that no pool size above the daemon's own default helped on any workload this project has been able to run.
 
@@ -459,7 +461,7 @@ The three legs that produced this register's existing entries — `vivarium-stor
 
 Two deltas are intended and are the point of the change: the shipped image's unit set is now exactly `vivarium-volume-prepare.service`, with no upstream Nix test hook on its store daemon and no `systemctl poweroff` anywhere; and a composed `vivarium-measurement-stop` unit owns stopping, so an image built with any leg selection stops instead of only the one that happened to include the diagnostic.
 
-Confirmed by boot: `scripts/first-microvm-check` against the measurement image returned `PASS=33 FAIL=0 SKIP=1`, identical to the cold-boot result recorded for the pre-refactor image.
+Confirmed by boot: `tests/host/first-microvm-check` against the measurement image returned `PASS=33 FAIL=0 SKIP=1`, identical to the cold-boot result recorded for the pre-refactor image.
 
 ## The method note
 

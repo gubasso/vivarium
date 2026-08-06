@@ -50,8 +50,8 @@
 # DUP: no `set -euo pipefail`. Every check captures its own exit status and turns
 # it into a result line; a failing check must not abort the run.
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
 SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || uname -m | sed 's/$/-linux/')
 # The microVM is its own flake under `nix/`, not an output of the repository
 # root's. The root flake is the development environment — Rust toolchain,
@@ -82,16 +82,39 @@ VOLUME_DIR=$STATE_HOME/vivarium/diagnostics
 
 # DUP
 if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
-  GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; RESET=$'\033[0m'
+  GREEN=$'\033[32m'
+  RED=$'\033[31m'
+  YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'
+  RESET=$'\033[0m'
 else
-  GREEN=; RED=; YELLOW=; BLUE=; RESET=
+  GREEN=
+  RED=
+  YELLOW=
+  BLUE=
+  RESET=
 fi
 
 # DUP
-pass() { PASS_COUNT=$((PASS_COUNT + 1)); printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"; }
-fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"; [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"; }
-skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"; }
-record() { RECORD_COUNT=$((RECORD_COUNT + 1)); printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"; }
+pass() {
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"
+}
+fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"
+  # sed prefixes every line of multiline evidence.
+  # shellcheck disable=SC2001
+  [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"
+}
+skip() {
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+  printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"
+}
+record() {
+  RECORD_COUNT=$((RECORD_COUNT + 1))
+  printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"
+}
 
 # DUP: named in one place so a run that skips wholesale reports the same
 # inventory as a run that completes.
@@ -152,8 +175,13 @@ clean_lane() {
       pid=$(<"$pidfile")
       [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null && alive="$alive $pid"
     done
-    if [[ -n $alive ]]; then printf 'keeping  %s (live pid(s):%s)\n' "$dir" "$alive"; kept=$((kept + 1))
-    else printf 'removing %s\n' "$dir"; rm -rf -- "$dir" && removed=$((removed + 1)); fi
+    if [[ -n $alive ]]; then
+      printf 'keeping  %s (live pid(s):%s)\n' "$dir" "$alive"
+      kept=$((kept + 1))
+    else
+      printf 'removing %s\n' "$dir"
+      rm -rf -- "$dir" && removed=$((removed + 1))
+    fi
   done
   rmdir "${XDG_RUNTIME_DIR:-/nonexistent}/vivarium" 2>/dev/null
   for dir in "$TEMP_BASE"/run.*; do
@@ -170,18 +198,33 @@ usage() { printf 'usage: %s [--arm c|d|e] [--clean]\n' "$0"; }
 
 while (($#)); do
   case $1 in
-    --arm) ARM=${2:-}; shift 2 ;;
+    --arm)
+      ARM=${2:-}
+      shift 2
+      ;;
     # TEMP_ROOT does not exist yet at this point — it is created after argument
     # parsing — so `clean_lane` can rmdir the base without racing its own scratch
     # directory, and no `cleanup` call is needed here.
-    --clean) clean_lane; exit 0 ;;
-    -h | --help) usage; exit 0 ;;
-    *) usage >&2; exit 64 ;;
+    --clean)
+      clean_lane
+      exit 0
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 64
+      ;;
   esac
 done
 case $ARM in
   c | d | e) ;;
-  *) printf 'unknown arm %s (expected c, d or e)\n' "$ARM" >&2; exit 64 ;;
+  *)
+    printf 'unknown arm %s (expected c, d or e)\n' "$ARM" >&2
+    exit 64
+    ;;
 esac
 
 # Arm E is the real-reclamation arm and it runs against a DIFFERENT image: only
@@ -189,7 +232,7 @@ esac
 # the hard way. The scaled variant's numbers are read out of the image rather
 # than restated here, so this script cannot drift from the flake.
 if [[ $ARM == e ]]; then
-  FLAKE_ATTR=first-microvm-scaled
+  FLAKE_ATTR='first-microvm-scaled'
   # 64 KiB ballast files, not the 8 KiB arm D uses. A 4 GiB volume at the
   # mandated `-i 8192` has 524,288 inodes, and 3 GiB of 8 KiB files is 393,216 of
   # them plus directories — close enough that an inode ENOSPC would read as "the
@@ -205,7 +248,7 @@ if [[ $ARM == e ]]; then
   # RECORD, not a silent truncation that later reads as "the collector stopped".
   BUDGET_SECONDS=${VIVARIUM_PRESSURE_BUDGET:-2400}
 else
-  FLAKE_ATTR=first-microvm-measurement
+  FLAKE_ATTR='first-microvm-measurement'
 fi
 
 mkdir -p "$TEMP_BASE" "$VOLUME_DIR" 2>/dev/null
@@ -218,11 +261,7 @@ WORKSPACE=$TEMP_ROOT/workspace
 HANDSHAKE=$WORKSPACE/.vivarium-store-pressure
 mkdir -p "$HANDSHAKE"
 
-cleanup() {
-  [[ -n ${sampler_pid:-} ]] && kill "$sampler_pid" 2>/dev/null
-  [[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"
-}
-trap cleanup EXIT INT TERM
+trap '[[ -n ${sampler_pid:-} ]] && kill "$sampler_pid" 2>/dev/null; [[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"' EXIT INT TERM
 
 printf 'vivarium store pressure check (ADR-0089/ADR-0091 measurement, arm %s)\n' "$ARM"
 printf '  repo:      %s\n' "$REPO_ROOT"
@@ -277,13 +316,14 @@ fi
 # approached the real threshold, because a config written at run time never
 # reached the daemon. This turns that failure into a pre-boot gate — and arm E
 # asserts the same pair again inside the guest, so a mismatch is loud twice.
-EXPECT_MIN_FREE=; EXPECT_MAX_FREE=
+EXPECT_MIN_FREE=
+EXPECT_MAX_FREE=
 if [[ -n ${launcher:-} ]]; then
   # Read the toplevel out of the LAUNCHER the lane is actually going to run,
   # never from a restated copy of the variant's attrset. The first form of this
   # gate re-declared the scaled variant here, drifted from the flake the moment
   # a key was added, and refused a perfectly good image — the same
-  # two-copies-of-one-constant defect `nix/contract.nix` exists to avoid.
+  # two-copies-of-one-constant defect `tests/nix/contract.nix` exists to avoid.
   # cloud-hypervisor's own `--cmdline` names the system it boots.
   launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$launcher" | head -n1)
   guest_toplevel=$(jq -r '.staticArguments[]' "$launcher_json" 2>/dev/null \
@@ -301,8 +341,8 @@ if [[ -z $EXPECT_MIN_FREE || -z $EXPECT_MAX_FREE ]]; then
 elif [[ $ARM == e ]] && [[ $EXPECT_MIN_FREE != 1073741824 || $EXPECT_MAX_FREE != 1610612736 ]]; then
   fail "store-pressure-thresholds-in-image: arm E needs the scaled image; got min-free=$EXPECT_MIN_FREE max-free=$EXPECT_MAX_FREE"
 else
-  gap=$(( EXPECT_MAX_FREE - EXPECT_MIN_FREE ))
-  rearm=$(( EXPECT_MAX_FREE * 3 / 100 ))
+  gap=$((EXPECT_MAX_FREE - EXPECT_MIN_FREE))
+  rearm=$((EXPECT_MAX_FREE * 3 / 100))
   pass "store-pressure-thresholds-in-image: min-free=$EXPECT_MIN_FREE max-free=$EXPECT_MAX_FREE gap=$gap vs 0.97-damper re-arm=$rearm"
 fi
 
@@ -313,14 +353,17 @@ printf -- '\n--- host tier -----------------------------------------------------
 missing=()
 [[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
 [[ -r /dev/kvm && -w /dev/kvm ]] || missing+=("/dev/kvm openable read/write")
-[[ -r /proc/1/comm && $(< /proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
+[[ -r /proc/1/comm && $(</proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
 systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
 [[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
 command -v python3 >/dev/null 2>&1 || missing+=("python3 console reader")
 [[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]] || missing+=("realised launcher")
 
 if ((${#missing[@]})); then
-  reason=$(IFS=', '; echo "${missing[*]}")
+  reason=$(
+    IFS=', '
+    echo "${missing[*]}"
+  )
   skip_remaining "missing prerequisites: $reason" store-pressure-cold-volume
 else
   run_id="store-pressure-$$"
@@ -343,7 +386,7 @@ else
     pass "store-pressure-cold-volume: both volumes removed before launch, so this run is provably cold"
   fi
 
-  image_allocated() { echo $(( $(stat -c %b -- "$1" 2>/dev/null || echo 0) * $(stat -c %B -- "$1" 2>/dev/null || echo 512) )); }
+  image_allocated() { echo $(($(stat -c %b -- "$1" 2>/dev/null || echo 0) * $(stat -c %B -- "$1" 2>/dev/null || echo 512))); }
 
   # Arm E writes ~3 GiB of ballast plus two sparse images into the state root.
   # An hour lost to a host ENOSPC is the expensive failure, so check both blocks
@@ -351,8 +394,8 @@ else
   # /dev/kvm, systemd as PID 1, the user manager, XDG_RUNTIME_DIR, python3, the
   # realised launcher — is already preflighted above; re-checking it here would
   # be the overchecking this round is explicitly avoiding.)
-  need_mib=$(( BALLAST_TOTAL_MIB + 2048 ))
-  avail_mib=$(( $(stat -f -c '%a * %S' "$VOLUME_DIR" | awk '{print $1 * $3}') / 1048576 ))
+  need_mib=$((BALLAST_TOTAL_MIB + 2048))
+  avail_mib=$(($(stat -f -c '%a * %S' "$VOLUME_DIR" | awk '{print $1 * $3}') / 1048576))
   # A filesystem with no fixed inode table (btrfs, xfs, zfs) reports BOTH a total
   # and a free count of zero, which is "not applicable" and not "exhausted". The
   # first form of this check read 0 as exhaustion and failed a perfectly healthy
@@ -361,11 +404,11 @@ else
   total_inodes=$(stat -f -c %c "$VOLUME_DIR")
   avail_inodes=$(stat -f -c %d "$VOLUME_DIR")
   host_fstype=$(stat -f -c %T "$VOLUME_DIR")
-  if (( avail_mib < need_mib )); then
+  if ((avail_mib < need_mib)); then
     fail "store-pressure-volume-headroom: $avail_mib MiB free under $VOLUME_DIR, need ~$need_mib MiB"
-  elif (( total_inodes > 0 && avail_inodes < 100000 )); then
+  elif ((total_inodes > 0 && avail_inodes < 100000)); then
     fail "store-pressure-volume-headroom: only $avail_inodes free inodes under $VOLUME_DIR"
-  elif (( total_inodes == 0 )); then
+  elif ((total_inodes == 0)); then
     pass "store-pressure-volume-headroom: $avail_mib MiB free, need ~$need_mib MiB (host fs is $host_fstype: inodes are dynamic, so there is no count to check)"
   else
     pass "store-pressure-volume-headroom: $avail_mib MiB and $avail_inodes inodes free, need ~$need_mib MiB"
@@ -404,7 +447,8 @@ else
     launched=yes
     pass "store-pressure-launch: reached the console-socket stage"
   else
-    wait "$vm_pid"; launch_status=$?
+    wait "$vm_pid"
+    launch_status=$?
     launch_output=$(<"$launch_log")
     if grep -Eqi 'systemd-run|unknown option|may not be combined|Failed to (start|create) transient' <<<"$launch_output"; then
       fail "store-pressure-launch: could not start (not Landlock evidence)" "$launch_output"
@@ -466,7 +510,10 @@ PY
     # series and neither is reachable after the fact: how far ext4's lazy inode
     # table gets (ADR-0091), and whether a guest-side collection returns blocks to
     # the host at all (ADR-0037 — it should not, absent discard plumbing).
-    ( while true; do printf '%s %s %s\n' "$(date +%s)" "$(image_allocated "$store_volume")" "$(image_allocated "$volume")" >>"$image_series"; sleep 10; done ) &
+    (while true; do
+      printf '%s %s %s\n' "$(date +%s)" "$(image_allocated "$store_volume")" "$(image_allocated "$volume")" >>"$image_series"
+      sleep 10
+    done) &
     sampler_pid=$!
 
     # DUP: bounded wait for poweroff. Far above the sibling's 1200s: arm D's guest
@@ -482,7 +529,8 @@ PY
       vm_status=124
     fi
     wait "$vm_pid" 2>/dev/null || vm_status=$?
-    kill "$sampler_pid" 2>/dev/null; sampler_pid=
+    kill "$sampler_pid" 2>/dev/null
+    sampler_pid=
     wait "$reader_pid" 2>/dev/null
 
     # The in-run sampler reads every ten seconds, which can miss the accounting
@@ -511,8 +559,10 @@ PY
       else
         pass "store-pressure-instruction-delivered: the guest read the instruction and ran arm $(sp_line ARM | awk '{print $1}')"
 
-        minfree=$(sp_line CONFIG_MINFREE); maxfree=$(sp_line CONFIG_MAXFREE)
-        interval=$(sp_line CONFIG_INTERVAL); optimise=$(sp_line CONFIG_OPTIMISE)
+        minfree=$(sp_line CONFIG_MINFREE)
+        maxfree=$(sp_line CONFIG_MAXFREE)
+        interval=$(sp_line CONFIG_INTERVAL)
+        optimise=$(sp_line CONFIG_OPTIMISE)
         record "store-pressure-daemon-config: min-free=$minfree max-free=$maxfree min-free-check-interval=$interval auto-optimise-store=$optimise"
         if [[ -n $minfree ]]; then
           pass "store-pressure-daemon-config: the daemon's own thresholds are on the record"
@@ -614,8 +664,10 @@ PY
           skip "store-pressure-discard-advertised: only arm E exercises the discard chain"
           skip "store-pressure-fstrim-reclaimed: only arm E exercises the discard chain"
         else
-          dmax=$(sp_line DISCARD_MAX_BYTES); dgran=$(sp_line DISCARD_GRANULARITY)
-          dlsblk=$(sp_line DISCARD_LSBLK); dmount=$(sp_line MOUNT_OPTS)
+          dmax=$(sp_line DISCARD_MAX_BYTES)
+          dgran=$(sp_line DISCARD_GRANULARITY)
+          dlsblk=$(sp_line DISCARD_LSBLK)
+          dmount=$(sp_line MOUNT_OPTS)
           record "store-pressure-discard-advertised: discard_max_bytes=$dmax granularity=$dgran lsblk=$dlsblk mount=$dmount"
           if [[ -n $dmax && $dmax != 0 ]]; then
             pass "store-pressure-discard-advertised: the guest driver negotiated VIRTIO_BLK_F_DISCARD, so cloud-hypervisor advertised it under sparse=on"
@@ -628,7 +680,7 @@ PY
           # to return, and the two must not be read as one result.
           dead_first=$(grep -o 'dead=[0-9]*' <<<"$(sp_lines SAMPLE)" | head -n1 | cut -d= -f2)
           dead_after=$(grep -a 'SAMPLE=BEFORE_FSTRIM ' <<<"$sp_all" | grep -o 'dead=[0-9]*' | cut -d= -f2)
-          free_before_gc=$(grep -a "SAMPLE=ARME_$(( $(grep -c 'SAMPLE=ARME_' <<<"$sp_all") - 2 )) " <<<"$sp_all" | awk '{split($0,a,"merged="); split(a[2],b," "); print b[1]*b[2]}')
+          free_before_gc=$(grep -a "SAMPLE=ARME_$(($(grep -c 'SAMPLE=ARME_' <<<"$sp_all") - 2)) " <<<"$sp_all" | awk '{split($0,a,"merged="); split(a[2],b," "); print b[1]*b[2]}')
           free_after_gc=$(grep -a 'SAMPLE=BEFORE_FSTRIM ' <<<"$sp_all" | awk '{split($0,a,"merged="); split(a[2],b," "); print b[1]*b[2]}')
           record "store-pressure-collector-freed: dead paths first=$dead_first at-trim=$dead_after; guest free bytes before-collection=$free_before_gc after=$free_after_gc"
           if [[ -z $fired_total || $fired_total -eq 0 ]]; then
@@ -687,7 +739,8 @@ PY
           fi
         fi
 
-        it_start=$(sp_line ITABLE_ZEROED); it_end=$(sp_line ITABLE_ZEROED_END)
+        it_start=$(sp_line ITABLE_ZEROED)
+        it_end=$(sp_line ITABLE_ZEROED_END)
         it_groups=$(sp_line ITABLE_GROUPS)
         record "store-pressure-itable-progress: ITABLE_ZEROED groups start=$it_start end=$it_end of $it_groups total"
         if [[ -n $it_end ]]; then

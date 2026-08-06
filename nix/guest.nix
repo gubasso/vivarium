@@ -269,14 +269,17 @@ in
         after = [ "home-vivarium.mount" ];
         requires = [ "home-vivarium.mount" ];
         serviceConfig.Type = "oneshot";
-        script = ''
-          if ! test -e /home/vivarium/.vivarium-first-boot; then
-            chown vivarium:vivarium /home/vivarium
-            chmod 0700 /home/vivarium
-            ${pkgs.coreutils}/bin/touch /home/vivarium/.vivarium-first-boot
-            chown vivarium:vivarium /home/vivarium/.vivarium-first-boot
-          fi
-        '';
+        path = [ pkgs.coreutils ];
+        # The one extracted unit body without `enableStrictShellChecks`, and the
+        # exemption is deliberate rather than an oversight: this unit is in the
+        # SHIPPED image, and turning it on swaps `writeShellScriptBin` for
+        # `writeShellApplication`, which moves the guest's derivation path. That
+        # path's byte-identity across the product/verification split is the proof
+        # that the split changed nothing a user receives (ADR-0098), so it is not
+        # spent on a lint. The body is covered by the `shellcheck` pre-commit hook
+        # like every other `.sh` here; what it lacks is the second, build-time pass.
+        # Flip this in a change that is allowed to move the shipped closure.
+        script = builtins.readFile ./volume-prepare.sh;
       };
     };
   };

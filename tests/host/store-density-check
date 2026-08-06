@@ -47,8 +47,8 @@
 # DUP: no `set -euo pipefail`. Every check captures its own exit status and turns
 # it into a result line; a failing check must not abort the run.
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
 SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || uname -m | sed 's/$/-linux/')
 # The microVM is its own flake under `nix/`, not an output of the repository
 # root's. The root flake is the development environment — Rust toolchain,
@@ -88,16 +88,39 @@ PROBE_IMAGE=$TEMP_ROOT/inode-table-probe.img
 
 # DUP
 if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
-  GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; RESET=$'\033[0m'
+  GREEN=$'\033[32m'
+  RED=$'\033[31m'
+  YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'
+  RESET=$'\033[0m'
 else
-  GREEN=; RED=; YELLOW=; BLUE=; RESET=
+  GREEN=
+  RED=
+  YELLOW=
+  BLUE=
+  RESET=
 fi
 
 # DUP
-pass() { PASS_COUNT=$((PASS_COUNT + 1)); printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"; }
-fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"; [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"; }
-skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"; }
-record() { RECORD_COUNT=$((RECORD_COUNT + 1)); printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"; }
+pass() {
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"
+}
+fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"
+  # sed prefixes every line of multiline evidence.
+  # shellcheck disable=SC2001
+  [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"
+}
+skip() {
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+  printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"
+}
+record() {
+  RECORD_COUNT=$((RECORD_COUNT + 1))
+  printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"
+}
 
 # DUP: every check this script can emit, in order. Named in one place so a run
 # that skips wholesale reports the same inventory as a run that completes — a
@@ -221,20 +244,25 @@ measure_paths() {
 # entire point of Arm A — into an empty string.
 summarise() {
   local out=$1
-  local totals ratios
+  local totals ratios paths bytes entries aggregate
   totals=$(awk '{ b += $1; n += $2 } END { printf "%d %d %d %.0f", NR, b + 0, n + 0, (n > 0 ? b / n : 0) }' "$out")
+  read -r paths bytes entries aggregate <<<"$totals"
   ratios=$(awk '{ printf "%.0f\n", ($2 > 0 ? $1 / $2 : 0) }' "$out" | sort -n)
-  local count; count=$(wc -l <<<"$ratios")
-  if [[ -z $ratios ]] || ((count == 0)); then printf 'paths=0'; return; fi
+  local count
+  count=$(wc -l <<<"$ratios")
+  if [[ -z $ratios ]] || ((count == 0)); then
+    printf 'paths=0'
+    return
+  fi
   local p10 p50 p90
-  p10=$(sed -n "$(( count * 10 / 100 + 1 ))p" <<<"$ratios")
-  p50=$(sed -n "$(( count * 50 / 100 + 1 ))p" <<<"$ratios")
-  p90=$(sed -n "$(( count * 90 / 100 + 1 ))p" <<<"$ratios")
+  p10=$(sed -n "$((count * 10 / 100 + 1))p" <<<"$ratios")
+  p50=$(sed -n "$((count * 50 / 100 + 1))p" <<<"$ratios")
+  p90=$(sed -n "$((count * 90 / 100 + 1))p" <<<"$ratios")
   # The p90 index can run one past the end for small samples.
   [[ -z $p90 ]] && p90=$(tail -n1 <<<"$ratios")
   [[ -z $p50 ]] && p50=$(tail -n1 <<<"$ratios")
   printf 'paths=%s bytes=%s entries=%s aggregate=%s p10=%s median=%s p90=%s' \
-    $totals "$p10" "$p50" "$p90"
+    "$paths" "$bytes" "$entries" "$aggregate" "$p10" "$p50" "$p90"
 }
 
 # Population 1 — a random sample of the host store.
@@ -296,13 +324,14 @@ if [[ -z $host_summary && -z $runner_summary && -z $shell_summary ]]; then
 else
   verdict=
   for pair in "host:$host_summary" "runner:$runner_summary" "devshell:$shell_summary"; do
-    name=${pair%%:*}; body=${pair#*:}
+    name=${pair%%:*}
+    body=${pair#*:}
     [[ -n $body ]] || continue
     agg=$(sed -n 's/.*aggregate=\([0-9]*\).*/\1/p' <<<"$body")
     med=$(sed -n 's/.*median=\([0-9]*\).*/\1/p' <<<"$body")
     [[ -n $agg && -n $med ]] || continue
-    binds_agg=$( ((agg < 8192)) && echo inodes || echo bytes )
-    binds_med=$( ((med < 8192)) && echo inodes || echo bytes )
+    binds_agg=$( ((agg < 8192)) && echo inodes || echo bytes)
+    binds_med=$( ((med < 8192)) && echo inodes || echo bytes)
     verdict+="$name: aggregate=$agg binds=$binds_agg; median=$med binds=$binds_med"$'\n'
   done
   record "store-density-verdict-against-adr0091: which limit binds first at -i 8192"$'\n'"$verdict"

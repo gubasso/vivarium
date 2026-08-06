@@ -79,10 +79,19 @@ def main(paths: list[str]) -> int:
 
         for line_no, column, text in violations(lines):
             failed = True
-            print(f"{path}:{line_no}:{column}: unescaped `|` inside a code span in a table row", file=sys.stderr)
+            print(
+                f"{path}:{line_no}:{column}: unescaped `|` inside a code span in a table row",
+                file=sys.stderr,
+            )
             print(f"  {text.strip()}", file=sys.stderr)
-            print("  fix: write it as \\| — GFM splits the row on a bare pipe and the", file=sys.stderr)
-            print("       formatter then discards every cell past the header's count.", file=sys.stderr)
+            print(
+                "  fix: write it as \\| — GFM splits the row on a bare pipe and the",
+                file=sys.stderr,
+            )
+            print(
+                "       formatter then discards every cell past the header's count.",
+                file=sys.stderr,
+            )
 
     return 1 if failed else 0
 

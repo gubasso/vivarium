@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -uo pipefail
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd -P)
+
+# This check is textual because a Nix path literal is visible in source. Its
+# flake-boundary sibling evaluates attributes because `//` can hide those.
+fail=0
+while IFS= read -r hit; do
+  printf 'check-verification-boundary: forbidden product-to-verification reference: %s\n' "$hit" >&2
+  fail=1
+done < <(grep -RInE '(\.\./)+tests/' "$REPO_ROOT/nix" --include='*.nix' --exclude='flake.nix' || true)
+
+if [[ ! -f $REPO_ROOT/tests/nix/contract.nix ]]; then
+  printf 'check-verification-boundary: expected verification contract is missing: tests/nix/contract.nix\n' >&2
+  fail=1
+fi
+((fail == 0)) && printf 'check-verification-boundary: product tree has no verification edge\n'
+exit "$fail"

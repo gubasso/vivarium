@@ -3,12 +3,12 @@
 - Status: `open`
 - Severity: high — space-triggered collection does not bound the guest store volume.
 - External system: Nix 2.34.7 (`nix-main`), pinned by [`nix/flake.lock`](../../../../nix/flake.lock).
-- Affected checks: `store-pressure-collector-freed` and `store-pressure-collector-per-path` in [`../../../../scripts/store-pressure-check`](../../../../scripts/store-pressure-check).
+- Affected checks: `store-pressure-collector-freed` and `store-pressure-collector-per-path` in [`../../../../tests/host/store-pressure-check`](../../../../tests/host/store-pressure-check).
 - Mask: none. Nothing in vivarium suppresses or works around this, and no check expects the failure.
 
 ## Symptom
 
-An automatic collection inside the guest announces a byte target, deletes nothing, and reports the target met. Guest free space does not recover and the dead-path count does not fall. Reproduced on two independent boots of `scripts/store-pressure-check --arm e`.
+An automatic collection inside the guest announces a byte target, deletes nothing, and reports the target met. Guest free space does not recover and the dead-path count does not fall. Reproduced on two independent boots of `tests/host/store-pressure-check --arm e`.
 
 ## Root cause
 
@@ -48,4 +48,4 @@ Reproduced directly on the host on 2026-08-06 against Nix 2.34.8, outside vivari
 
 ## Revert condition
 
-Recheck on the next backend or Nix pin ([`../../../decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md`](../../../decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md) owns that cadence): re-run `scripts/store-pressure-check --arm e` and read `store-pressure-collector-per-path`. The issue is resolved when a collection attempts more than one path and the dead-path count falls.
+Recheck on the next backend or Nix pin ([`../../../decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md`](../../../decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md) owns that cadence): re-run `tests/host/store-pressure-check --arm e` and read `store-pressure-collector-per-path`. The issue is resolved when a collection attempts more than one path and the dead-path count falls.

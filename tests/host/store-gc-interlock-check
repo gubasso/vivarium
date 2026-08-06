@@ -58,8 +58,8 @@
 # DUP: no `set -euo pipefail`. Every check captures its own exit status and turns
 # it into a result line; a failing check must not abort the run.
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
 SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || uname -m | sed 's/$/-linux/')
 # The microVM is its own flake under `nix/`, not an output of the repository
 # root's. The root flake is the development environment — Rust toolchain,
@@ -94,16 +94,39 @@ mkdir -p "$HANDSHAKE"
 
 # DUP
 if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
-  GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; RESET=$'\033[0m'
+  GREEN=$'\033[32m'
+  RED=$'\033[31m'
+  YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'
+  RESET=$'\033[0m'
 else
-  GREEN=; RED=; YELLOW=; BLUE=; RESET=
+  GREEN=
+  RED=
+  YELLOW=
+  BLUE=
+  RESET=
 fi
 
 # DUP
-pass() { PASS_COUNT=$((PASS_COUNT + 1)); printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"; }
-fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"; [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"; }
-skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"; }
-record() { RECORD_COUNT=$((RECORD_COUNT + 1)); printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"; }
+pass() {
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"
+}
+fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"
+  # sed prefixes every line of multiline evidence.
+  # shellcheck disable=SC2001
+  [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"
+}
+skip() {
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+  printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"
+}
+record() {
+  RECORD_COUNT=$((RECORD_COUNT + 1))
+  printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"
+}
 
 # Every check this script can emit, in order. Named in one place so a run that
 # skips wholesale reports the same inventory as a run that completes — a shorter
@@ -297,7 +320,8 @@ fi
 # `nix-build`, not `nix build`: the expressions use `builtins.storePath`, which
 # flake pure evaluation forbids. Read from the launcher's own JSON so the two
 # sides cannot drift.
-target= control=
+target=''
+control=''
 if [[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]]; then
   launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$launcher" | head -n1)
   target_expr=$(jq -r .gcInterlockCanaryExpression "$launcher_json" 2>/dev/null || true)
@@ -324,7 +348,6 @@ if [[ -z $realise_bad ]]; then
   # before the deletion) and everything after them (what it reads afterwards).
   host_payload_sha=$(sha256sum <"$target/payload" | cut -d' ' -f1)
   host_sibling_sha=$(sha256sum <"$target/sibling" | cut -d' ' -f1)
-  host_fd9_head_sha=$(head -c 4096 "$target/payload" | sha256sum | cut -d' ' -f1)
   host_fd9_rest_sha=$(tail -c +4097 "$target/payload" | sha256sum | cut -d' ' -f1)
   record "target=$target payload_sha=$host_payload_sha sibling_sha=$host_sibling_sha"
   record "control=$control"
@@ -397,7 +420,7 @@ printf -- '\n--- host tier -----------------------------------------------------
 missing=()
 [[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
 [[ -r /dev/kvm && -w /dev/kvm ]] || missing+=("/dev/kvm openable read/write")
-[[ -r /proc/1/comm && $(< /proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
+[[ -r /proc/1/comm && $(</proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
 systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
 [[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
 command -v python3 >/dev/null 2>&1 || missing+=("python3 console reader")
@@ -406,7 +429,10 @@ command -v python3 >/dev/null 2>&1 || missing+=("python3 console reader")
 [[ $deletable == yes ]] || missing+=("a host store this user can delete from")
 
 if ((${#missing[@]})); then
-  reason=$(IFS=', '; echo "${missing[*]}")
+  reason=$(
+    IFS=', '
+    echo "${missing[*]}"
+  )
   skip_remaining "missing prerequisites: $reason" gc-interlock-launch
 else
   run_id="gc-interlock-$$"
@@ -455,7 +481,8 @@ else
   if wait_for_console; then
     pass "gc-interlock-launch: reached the console-socket stage"
   else
-    wait "$vm_pid"; launch_status=$?
+    wait "$vm_pid"
+    launch_status=$?
     launch_output=$(<"$launch_log")
     if grep -Eqi 'systemd-run|unknown option|may not be combined|Failed to (start|create) transient' <<<"$launch_output"; then
       fail "gc-interlock-launch: could not start (not Landlock evidence)" "$launch_output"
@@ -514,13 +541,18 @@ PY
   # it.
   ready=no ready_waited=0
   for _ in {1..2800}; do
-    if [[ -e $HANDSHAKE/ready ]]; then ready=yes; break; fi
+    if [[ -e $HANDSHAKE/ready ]]; then
+      ready=yes
+      break
+    fi
     kill -0 "$vm_pid" 2>/dev/null || break
     sleep 0.25
     ready_waited=$((ready_waited + 1))
   done
 
-  delete_status=1 delete_out= host_absent=no
+  delete_status=1
+  delete_out=''
+  host_absent=no
   if [[ $ready == yes ]]; then
     ready_run_id=$(sed -n 's/^RUN_ID=//p' "$HANDSHAKE/ready" | tail -n1)
     if [[ $ready_run_id == "$run_id" ]]; then
@@ -532,8 +564,10 @@ PY
     # ---- the deletion ------------------------------------------------------
     delete_out=$(nix-store --delete "$target" "$control" 2>&1)
     delete_status=$?
-    target_present=no; [[ -e $target ]] && target_present=yes
-    control_present=no; [[ -e $control ]] && control_present=yes
+    target_present=no
+    [[ -e $target ]] && target_present=yes
+    control_present=no
+    [[ -e $control ]] && control_present=yes
     if [[ $target_present == no && $control_present == no ]]; then
       host_absent=yes
       pass "gc-interlock-host-deletion: both canaries are gone from the host store while the guest runs"
@@ -565,11 +599,15 @@ PY
     vm_status=124
   fi
   wait "$vm_pid" 2>/dev/null || vm_status=$?
-  wait "$reader_pid" 2>/dev/null; reader_status=$?
+  wait "$reader_pid" 2>/dev/null || true
 
-  bytes=0; [[ -s $console_log ]] && bytes=$(wc -c <"$console_log")
+  bytes=0
+  [[ -s $console_log ]] && bytes=$(wc -c <"$console_log")
   if ((bytes == 0)); then
-    fail "gc-interlock-console: the reader produced nothing" "$(cat "$TEMP_ROOT/reader.log" 2>/dev/null; tail -n 40 "$launch_log")"
+    fail "gc-interlock-console: the reader produced nothing" "$(
+      cat "$TEMP_ROOT/reader.log" 2>/dev/null
+      tail -n 40 "$launch_log"
+    )"
   fi
 
   # DUP: read markers BY NAME, never by position, after stripping the journal's
@@ -578,7 +616,11 @@ PY
     sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null \
       | grep -ao "VIVARIUM_GC_INTERLOCK_$1=.*" | tail -n1 | cut -d= -f2- || true
   }
-  gc_status() { local v; v=$(gc_line "$1"); [[ $v =~ status=([0-9]+) ]] && echo "${BASH_REMATCH[1]}"; }
+  gc_status() {
+    local v
+    v=$(gc_line "$1")
+    [[ $v =~ status=([0-9]+) ]] && echo "${BASH_REMATCH[1]}"
+  }
   gc_digest() { gc_line "$1" | grep -oE '\b[0-9a-f]{64}\b' | head -n1; }
   gc_all=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null | grep -ao 'VIVARIUM_GC_INTERLOCK_[A-Z_0-9]*=.*' || true)
 
@@ -670,9 +712,9 @@ PY
       # the deletion is only harmless if the bytes are still right.
       integrity=
       for pair in "AFTER_REOPEN:$host_payload_sha" "AFTER_DROP_REOPEN:$host_payload_sha" \
-                  "SETTLED_REOPEN:$host_payload_sha" "AFTER_DROP_SIBLING:$host_sibling_sha" \
-                  "SETTLED_SIBLING:$host_sibling_sha" "AFTER_FD9_REST:$host_fd9_rest_sha" \
-                  "AFTER_DROP_FD8:$host_payload_sha"; do
+        "SETTLED_REOPEN:$host_payload_sha" "AFTER_DROP_SIBLING:$host_sibling_sha" \
+        "SETTLED_SIBLING:$host_sibling_sha" "AFTER_FD9_REST:$host_fd9_rest_sha" \
+        "AFTER_DROP_FD8:$host_payload_sha"; do
         marker=${pair%%:*} expect=${pair#*:}
         if [[ $(gc_status "$marker") == 0 ]]; then
           if [[ $(gc_digest "$marker") == "$expect" ]]; then
@@ -689,7 +731,7 @@ PY
       # ---- the derived class, the one line ADR-0085 consumes ------------------
       loud=0 silent=0 corrupt=0
       for marker in AFTER_REOPEN AFTER_LIST AFTER_STAT AFTER_FD9_REST AFTER_DROP_SIBLING \
-                    AFTER_DROP_REOPEN AFTER_DROP_LIST AFTER_DROP_FD8 SETTLED_REOPEN SETTLED_SIBLING; do
+        AFTER_DROP_REOPEN AFTER_DROP_LIST AFTER_DROP_FD8 SETTLED_REOPEN SETTLED_SIBLING; do
         st=$(gc_status "$marker")
         [[ -z $st ]] && continue
         if [[ $st != 0 ]]; then
@@ -716,11 +758,14 @@ PY
       record "gc-interlock-symptom-class: $class (loud=$loud silent=$silent corrupt=$corrupt)"
       case $class in
         SILENT-CORRECT | CORRUPT)
-          record "ADR-0085 CONSEQUENCE: the symptom is not loud, so store-roots-intact cannot stay invoked-only — amend the ADR's trigger" ;;
+          record "ADR-0085 CONSEQUENCE: the symptom is not loud, so store-roots-intact cannot stay invoked-only — amend the ADR's trigger"
+          ;;
         MIXED)
-          record "ADR-0085 CONSEQUENCE: loud for some access shapes and silent for others; the ADR's trigger turns on which shapes a build actually uses" ;;
+          record "ADR-0085 CONSEQUENCE: loud for some access shapes and silent for others; the ADR's trigger turns on which shapes a build actually uses"
+          ;;
         LOUD)
-          record "ADR-0085 CONSEQUENCE: the symptom is loud, so store-roots-intact may stay a doctor check as decided" ;;
+          record "ADR-0085 CONSEQUENCE: the symptom is loud, so store-roots-intact may stay a doctor check as decided"
+          ;;
       esac
     fi
 

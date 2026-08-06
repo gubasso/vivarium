@@ -2,10 +2,6 @@
   nixpkgs,
   microvm,
   system,
-  # The one seam a measurement image needs (ADR-0095). Defaults reproduce the
-  # shipped image exactly at every value; `legs = [ ]` is what makes the shipped
-  # image probe-free, which is a *change* from what this file used to build.
-  variant ? { },
 }:
 
 let
@@ -28,7 +24,8 @@ let
       src = crateRoot;
       # Admits the crate and nothing else. The tree root is now the repository,
       # so a blanket `type == "directory"` would descend into `docs/`, `.git/`
-      # and a Cargo build directory; every admitted path is named instead.
+      # and a Cargo build directory; every admitted path is named instead. `tests/`
+      # is deliberately not admitted, so verification cannot affect the product derivation.
       filter =
         path: _type:
         let
@@ -40,37 +37,19 @@ let
     doCheck = false;
   };
 
-  variantDefaults = {
-    # Subset of nix/measurement's known legs. Empty is the shipped image.
-    legs = [ ];
+  imageDefaults = {
     homeVolumeSizeMiB = 32768;
     storeVolumeSizeMiB = 32768;
     storeMinFree = 4294967296; # 4 GiB — spec/17
     storeMaxFree = 8589934592; # 8 GiB — spec/17
-    # Upstream Nix's own free-space TEST hook, which arms C and D drive. It is
-    # seeded above `max-free` so it is inert on an ordinary boot — but an arm
-    # that measures a REAL crossing needs it absent, not merely inert, because a
-    # daemon reading it never consults `statvfs` at all.
-    storeFreeSpaceHook = true;
     virtiofsdThreadPoolSize = 0; # ADR-0096, measured; was 4 under ADR-0051
+    # The composition seam, and the reason this file no longer knows what a
+    # measurement leg is: an opaque list of NixOS modules it appends without
+    # asking what is in it. Empty is the shipped image.
+    extraModules = [ ];
   };
-
-  # A shallow `//` accepts a typo and yields an image that looks right and is
-  # not — the same shape as the failure that already cost a boot, where scaled
-  # thresholds never reached the daemon. Three lines buy that back.
-  unknownKeys = builtins.attrNames (
-    builtins.removeAttrs variant (builtins.attrNames variantDefaults)
-  );
-  v =
-    lib.throwIf (unknownKeys != [ ])
-      "vivarium variant: unknown key(s) ${lib.concatStringsSep ", " unknownKeys} (known: ${lib.concatStringsSep ", " (builtins.attrNames variantDefaults)})"
-      (variantDefaults // variant);
 
   storeLayout = import ./store-layout.nix { inherit pkgs lib; };
-  measurementModules = import ./measurement {
-    inherit lib storeLayout storeCanaryExpression;
-    inherit (v) legs storeFreeSpaceHook;
-  };
   volumeLabel = "vivarium-default";
   storeVolumeLabel = "vivarium-store";
   workspaceSourceSentinel = "VIVARIUM_LAUNCH_WORKSPACE_SOURCE";
@@ -143,90 +122,77 @@ let
   # step. A guest that still sees *this* proves the deletion did not propagate at
   # all, which makes the run inconclusive rather than a pass.
   gcInterlockControlExpression = gcInterlockExpression "gc-interlock-control" "vivarium-gc-interlock-control";
-  guest = nixpkgs.lib.nixosSystem {
-    inherit system;
-    specialArgs = {
-      inherit
-        storeLayout
-        volumeLabel
-        storeVolumeLabel
-        workspaceSourceSentinel
-        volumeImageSentinel
-        storeVolumeImageSentinel
-        ;
-      inherit (v)
-        homeVolumeSizeMiB
-        storeVolumeSizeMiB
-        storeMinFree
-        storeMaxFree
-        ;
+  mkImage =
+    variant:
+    let
+      # A shallow `//` accepts a typo and yields an image that looks right and is
+      # not — the same shape as the failure that already cost a boot, where scaled
+      # thresholds never reached the daemon. Three lines buy that back.
+      unknownKeys = builtins.attrNames (builtins.removeAttrs variant (builtins.attrNames imageDefaults));
+      v =
+        lib.throwIf (unknownKeys != [ ])
+          "vivarium image: unknown key(s) ${lib.concatStringsSep ", " unknownKeys} (known: ${lib.concatStringsSep ", " (builtins.attrNames imageDefaults)})"
+          (imageDefaults // variant);
+    in
+    rec {
+      guest = nixpkgs.lib.nixosSystem {
+        inherit system;
+        specialArgs = {
+          inherit
+            storeLayout
+            volumeLabel
+            storeVolumeLabel
+            workspaceSourceSentinel
+            volumeImageSentinel
+            storeVolumeImageSentinel
+            ;
+          inherit (v)
+            homeVolumeSizeMiB
+            storeVolumeSizeMiB
+            storeMinFree
+            storeMaxFree
+            ;
+        };
+        # The complete, readable statement of what is in this image. A measurement
+        # input never travels in `specialArgs`, where it would be in scope for the
+        # whole module tree and auditable only by grepping it.
+        modules = [
+          microvm.nixosModules.microvm
+          ./guest.nix
+        ]
+        ++ v.extraModules;
+      };
+      launchArguments = import ./launch-arguments.nix {
+        inherit
+          pkgs
+          storeCanaryExpression
+          gcInterlockCanaryExpression
+          gcInterlockControlExpression
+          supervisorPackage
+          ;
+        # Launch-channel, so it must not reach the guest: this is what keeps the four
+        # pool-size variants on one guest closure and makes the sweep four short
+        # boots rather than four full rebuilds.
+        inherit (v) virtiofsdThreadPoolSize;
+        inherit (guest) config;
+        inherit (nixpkgs) lib;
+      };
+      runner = import ./runner.nix { inherit pkgs launchArguments supervisorPackage; };
+      settings = v;
     };
-    # The complete, readable statement of what is in this image. A measurement
-    # input never travels in `specialArgs`, where it would be in scope for the
-    # whole module tree and auditable only by grepping it.
-    modules = [
-      microvm.nixosModules.microvm
-      ./guest.nix
-    ]
-    ++ measurementModules;
-  };
-  launchArguments = import ./launch-arguments.nix {
-    inherit
-      pkgs
-      storeCanaryExpression
-      gcInterlockCanaryExpression
-      gcInterlockControlExpression
-      supervisorPackage
-      ;
-    # Launch-channel, so it must not reach the guest: this is what keeps the four
-    # pool-size variants on one guest closure and makes the sweep four short
-    # boots rather than four full rebuilds.
-    inherit (v) virtiofsdThreadPoolSize;
-    inherit (guest) config;
-    inherit (nixpkgs) lib;
-  };
-  runner = import ./runner.nix { inherit pkgs launchArguments supervisorPackage; };
-  contract = import ./contract.nix {
-    inherit
-      pkgs
-      guest
-      runner
-      volumeLabel
-      storeVolumeLabel
-      ;
-    expect = {
-      inherit (v)
-        storeMinFree
-        storeMaxFree
-        storeVolumeSizeMiB
-        virtiofsdThreadPoolSize
-        ;
-      units = map (l: "vivarium-${l}.service") (
-        lib.optionals (v.legs != [ ]) (
-          lib.filter (u: u != null) (
-            map (
-              l:
-              {
-                spike = "store-spike";
-                gc-interlock = "gc-interlock";
-                pressure = "store-pressure";
-                bench = "share-benchmark";
-                diagnostic = "first-microvm-diagnostic";
-              }
-              .${l} or null
-            ) v.legs
-          )
-          ++ [ "measurement-stop" ]
-        )
-      );
-    };
-  };
+
+  shipped = mkImage { };
 in
 {
   inherit
-    guest
-    launchArguments
-    runner
-    contract
+    pkgs
+    lib
+    storeLayout
+    storeCanaryExpression
+    volumeLabel
+    storeVolumeLabel
+    imageDefaults
+    mkImage
+    shipped
     ;
 }

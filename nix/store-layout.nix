@@ -35,21 +35,16 @@ rec {
   upperLayer = "${upperRoot}/store";
   upperStateDir = "${upperRoot}/state";
   lowerStoreUri = "local?real=${lowerStoreViewDir}&state=${lowerStateDir}&read-only=true";
-  remountHook = pkgs.writeShellScript "vivarium-local-overlay-remount" ''
-    set -eu
-    # util-linux's new mount API cannot remount overlayfs (#2528, #2576), and
-    # upstream Nix's own test harness sets this globally for the same reason.
-    # Load-bearing here, not vestigial: overlayfs runs in the *guest*, whose
-    # kernel is below the 6.19 at which upstream stops reproducing the stale
-    # handle — an observation upstream records without accounting for it.
-    export LIBMOUNT_FORCE_MOUNT2=always
-    exec ${pkgs.util-linux}/bin/mount -o remount "$1"
-  '';
+  remountHook = pkgs.writeShellApplication {
+    name = "vivarium-local-overlay-remount";
+    runtimeInputs = [ pkgs.util-linux ];
+    text = builtins.readFile ./remount-lower-store.sh;
+  };
   storeUri =
     "local-overlay://?lower-store=${lib.escapeURL lowerStoreUri}"
     + "&upper-layer=${lib.escapeURL upperLayer}"
     + "&state=${lib.escapeURL upperStateDir}"
-    + "&remount-hook=${lib.escapeURL (toString remountHook)}"
+    + "&remount-hook=${lib.escapeURL (lib.getExe remountHook)}"
     # The initrd assembles the overlay below /sysroot; after switch-root the mount
     # is correct but /proc/self/mounts still records the initrd lowerdir prefix,
     # which the check string-matches. ADR-0088 replaces it with a vivarium-side

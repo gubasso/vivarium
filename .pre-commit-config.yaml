@@ -21,7 +21,9 @@ repos:
       - id: check-xml
       - id: destroyed-symlinks
       - id: detect-private-key
-      # - id: no-commit-to-branch
+      - id: no-commit-to-branch
+        args: [--branch, master]
+      - id: forbid-submodules
 
   - repo: https://github.com/maresb/check-json5
     rev: v1.0.1
@@ -34,8 +36,8 @@ repos:
   # dprint's json plugin formats JSON and JSONC (comments + trailing commas),
   # which the stdlib-based pretty-format-json cannot. check-json5 above stays the
   # syntax gate; dprint owns formatting. Config in the sibling `./dprint.json`
-  # (plugin version pinned there). External dependency: dprint must be on PATH
-  # (`cargo install dprint` or your package manager). pre-commit only — git push
+  # (plugin version pinned there). `flake.nix` supplies dprint on PATH.
+  # pre-commit only — git push
   # may strip PATH, and formatting is already applied by commit time.
   - repo: local
     hooks:
@@ -49,7 +51,7 @@ repos:
 
   # --- EditorConfig ---
   - repo: https://github.com/editorconfig-checker/editorconfig-checker
-    rev: v3.8.0
+    rev: v3.9.0
     hooks:
       - id: editorconfig-checker
         alias: ec
@@ -62,6 +64,50 @@ repos:
         exclude: '\.md$'
 
   # --- Rust: format & lint (auto-fix) ---
+  - repo: local
+    hooks:
+      # Nix supplies these binaries because managed hooks that ship prebuilt
+      # ELF wheels cannot execute in the repository's non-FHS environments.
+      # Type selectors cover both executable extensionless programs and the
+      # co-located `.sh` sources Nix loads.
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: system
+        types: [shell]
+        require_serial: true
+      - id: shfmt
+        name: shfmt
+        entry: shfmt --write -i 2 -ci -bn
+        language: system
+        types: [shell]
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format
+        language: system
+        types_or: [python, pyi]
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint-system
+
+  - repo: local
+    hooks:
+      # Offline mode keeps this deterministic when no GitHub token is present;
+      # repository policy still accepts immutable release/tag references.
+      - id: zizmor
+        name: zizmor (GitHub Actions security)
+        entry: zizmor --no-progress --offline
+        language: system
+        types: [yaml]
+        files: ^\.github/workflows/
+
   - repo: local
     hooks:
       - id: cargo-fmt
@@ -278,8 +324,8 @@ repos:
   # independent of the type's own JSON dprint.json, and the `dprint-markdown` id
   # never collides with the type's `dprint` hook.
   #
-  # External dependency: dprint must be on PATH (`cargo install dprint` or your
-  # package manager), the same model as the json/nix hooks. pre-commit only —
+  # `flake.nix` supplies dprint on PATH, the same model as the json/nix hooks.
+  # pre-commit only —
   # git push may strip PATH and the format is already applied by commit time.
 
   # --- Flake boundary ---
@@ -305,7 +351,14 @@ repos:
         entry: scripts/check-flake-boundary
         language: system
         pass_filenames: false
-        files: ^(flake\.nix|flake\.lock|nix/flake\.nix|nix/flake\.lock)$
+        files: ^(flake\.nix|flake\.lock|nix/.*\.nix|nix/flake\.lock|tests/nix/.*\.nix)$
+        stages: [pre-commit]
+      - id: verification-boundary
+        name: product imports verification only through its publication surface
+        entry: scripts/check-verification-boundary
+        language: system
+        pass_filenames: false
+        files: ^(nix/|tests/nix/)
         stages: [pre-commit]
 
   # --- Lean Markdown (emphasis check, then table pipes, then dprint) ---
@@ -391,7 +444,7 @@ repos:
   # selects the flake's nodejs runtime — the same Nix-owns-the-runtime pattern
   # used by the typos/committed/dprint system hooks above.
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.22.1
+    rev: v0.23.2
     hooks:
       - id: markdownlint-cli2
         language_version: system

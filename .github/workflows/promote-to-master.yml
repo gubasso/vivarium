@@ -47,7 +47,7 @@ jobs:
           # Without this, the token inherits every installation permission the
           # shared App holds (including pull-requests: write).
           permission-contents: write
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7 # zizmor: ignore[artipacked] the later authorized push requires the App checkout credential
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}

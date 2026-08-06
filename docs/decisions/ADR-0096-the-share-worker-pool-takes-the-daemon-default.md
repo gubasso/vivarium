@@ -30,6 +30,6 @@ Implemented
 
 Supersedes [`ADR-0051-share-worker-pool-small-non-zero-uniform.md`](./ADR-0051-share-worker-pool-small-non-zero-uniform.md), which carries the same reasoning for the value it chose and stays as the record of it. Amends [`ADR-0039-share-cache-policy.md`](./ADR-0039-share-cache-policy.md) in the same way its predecessor did, which owns the rule that these daemon settings are performance rather than confinement.
 
-Enacted 2026-08-05 by `virtiofsdThreadPoolSize` in [`nix/default.nix`](../../nix/default.nix), asserted by the build-to-launch contract in [`nix/contract.nix`](../../nix/contract.nix). Specified in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md), which states the property and not the number, so this change moves a constant and not a specified sentence.
+Enacted 2026-08-05 by `virtiofsdThreadPoolSize` in [`nix/default.nix`](../../nix/default.nix), asserted by the build-to-launch contract in [`tests/nix/contract.nix`](../../tests/nix/contract.nix). Specified in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md), which states the property and not the number, so this change moves a constant and not a specified sentence.
 
-Revisit on a measurement with cold backing storage, or on a host whose share traffic blocks. `scripts/share-benchmark-check` is the lane, and its concurrent sweep is the leg that would show it.
+Revisit on a measurement with cold backing storage, or on a host whose share traffic blocks. `tests/host/share-benchmark-check` is the lane, and its concurrent sweep is the leg that would show it.

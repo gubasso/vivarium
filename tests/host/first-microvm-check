@@ -1,0 +1,982 @@
+#!/usr/bin/env bash
+
+# Boot the first microVM and check what only a real host can answer.
+#
+# Two tiers, and the split is the *gate*, not the topic:
+#
+#   Evaluation tier — runs anywhere Nix is present. Purity, the ADR-0048
+#   negative reference, launch-channel token flow, lints, and binary-cache
+#   reachability. These describe Nix artifacts only and say nothing whatever
+#   about target-host behaviour.
+#
+#   Host tier — gated on /dev/kvm, systemd as PID 1, a systemd user manager and
+#   $XDG_RUNTIME_DIR. Actually boots the guest and reads its console.
+#
+# Output is one `[PASS]`/`[FAIL]`/`[SKIP]`/`[RECORD]` line per check plus a
+# verdict, so the whole run pastes back into a review. A `[SKIP]` means
+# *unproven*, never *absent*. A `[RECORD]` is a measurement, not a judgement.
+#
+# This is the base the host/integration lane grows from; see
+# docs/reference/microvm-verification-harness.md for what each check proves and
+# for the findings register, and docs/reference/testing-lanes.md for the lanes.
+#
+# Three defects this file has already been bitten by, all the same shape — a
+# check whose *form* encoded a wrong assumption and so passed or failed for the
+# wrong reason. They are why the comments below argue rather than describe:
+#   * demanding a seccomp filter of a thread-group leader that never carries one;
+#   * a PASS that tested process exit status while claiming the guest diagnostic
+#     had completed;
+#   * a burst-fidelity check comparing *bytes* against a threshold the guest log
+#     daemon's own line prefixes cleared on their own, while lines were missing.
+# A check that fails is cheap. A check that passes vacuously is worse than none.
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
+SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || uname -m | sed 's/$/-linux/')
+# The microVM is its own flake under `nix/`, not an output of the repository
+# root's. The root flake is the development environment — Rust toolchain,
+# pre-commit runtimes, the devShell direnv activates — and carries no product
+# input or output. `path:` form so the write-mode file set is included without
+# git operations.
+#
+# `?dir=nix` rather than `/nix`: a flake's source tree is fixed by the reference
+# used to enter it, not by where its file sits. This form leaves the flake and
+# its lock at `nix/` while making the repository the tree, so `nix/default.nix`
+# can read the Rust crate at `../` in its default layout. Entering as
+# `path:$REPO_ROOT/nix` pins the tree one level too deep, and the crate becomes
+# unreachable under pure evaluation — which is the whole reason this form exists.
+FLAKE_REF="path:$REPO_ROOT?dir=nix"
+# The lint tools come from the repository root's devShell, which is the *other*
+# flake and the only one that has one. Keeping the two references separate is
+# the point of the split: product artifacts resolve through `nix/`, developer
+# tooling through the root.
+DEV_FLAKE_REF="path:$REPO_ROOT"
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+RECORD_COUNT=0
+TEMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/vivarium-first-microvm.XXXXXX" 2>/dev/null || true)
+if [[ -z $TEMP_ROOT ]]; then
+  printf '[FAIL] cannot create a private temporary directory\n' >&2
+  exit 1
+fi
+
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+  GREEN=$'\033[32m'
+  RED=$'\033[31m'
+  YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'
+  RESET=$'\033[0m'
+else
+  GREEN=
+  RED=
+  YELLOW=
+  BLUE=
+  RESET=
+fi
+
+trap '[[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"' EXIT INT TERM
+
+pass() {
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"
+}
+fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"
+  # sed prefixes every line of multiline evidence.
+  # shellcheck disable=SC2001
+  [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"
+}
+skip() {
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+  printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"
+}
+record() {
+  RECORD_COUNT=$((RECORD_COUNT + 1))
+  printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"
+}
+
+run_check() {
+  local name=$1
+  shift
+  local output status
+  output=$("$@" 2>&1)
+  status=$?
+  if ((status == 0)); then
+    pass "$name"
+    # sed prefixes every line of multiline evidence.
+    # shellcheck disable=SC2001
+    [[ -n $output ]] && sed 's/^/       /' <<<"$output"
+  else fail "$name (exit $status)" "$output"; fi
+  return "$status"
+}
+
+# DUP: `--clean` removes this lane's retained artefacts and any orphaned run
+# directories, then exits. Deliberately opt-in and deliberately NOT on the normal
+# exit path, for two independent reasons: the retained store volume is precisely
+# what makes the *warm* half of the persistence pair possible, so tidying it away
+# automatically would silently turn every run cold; and the console log is the
+# run's primary evidence, unrecoverable without another boot.
+#
+# A run directory is skipped if any `.pid` file in it still names a live process
+# — an orphan is a directory whose daemons are gone, and deleting a live run's
+# sockets out from under it would be a far worse failure than leaving a stale
+# directory behind.
+LANE_RUN_PREFIX=first-microvm
+lane_artefacts() {
+  local volume_dir=$1
+  printf '%s\n' \
+    "$volume_dir/first-microvm.img" \
+    "$volume_dir/first-microvm-store.img" \
+    "$volume_dir/console.log" \
+    "$volume_dir/memfd-series.txt"
+}
+clean_lane() {
+  local state_home=${XDG_STATE_HOME:-$HOME/.local/state}
+  local volume_dir=$state_home/vivarium/diagnostics
+  local removed=0 kept=0 entry dir pidfile pid alive
+
+  while IFS= read -r entry; do
+    [[ -e $entry ]] || continue
+    printf 'removing %s (%s bytes allocated)\n' "$entry" "$(($(stat -c %b "$entry") * $(stat -c %B "$entry")))"
+    rm -f -- "$entry" && removed=$((removed + 1))
+  done < <(lane_artefacts "$volume_dir")
+
+  for dir in "${XDG_RUNTIME_DIR:-/nonexistent}"/vivarium/"$LANE_RUN_PREFIX"-*; do
+    [[ -d $dir ]] || continue
+    alive=
+    for pidfile in "$dir"/*.pid; do
+      [[ -f $pidfile ]] || continue
+      pid=$(<"$pidfile")
+      [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null && alive="$alive $pid"
+    done
+    if [[ -n $alive ]]; then
+      printf 'keeping  %s (live pid(s):%s)\n' "$dir" "$alive"
+      kept=$((kept + 1))
+    else
+      printf 'removing %s\n' "$dir"
+      rm -rf -- "$dir" && removed=$((removed + 1))
+    fi
+  done
+  rmdir "${XDG_RUNTIME_DIR:-/nonexistent}/vivarium" 2>/dev/null
+
+  printf 'clean: removed=%d kept-live=%d\n' "$removed" "$kept"
+}
+
+if [[ ${1:-} == --clean ]]; then
+  clean_lane
+  exit 0
+fi
+
+printf 'vivarium first microVM check\n'
+printf 'repository: %s\n' "$REPO_ROOT"
+printf 'guest workspace mount: /workspaces/vivarium (host source: %s)\n' "$REPO_ROOT"
+printf 'system: %s\n' "$SYSTEM"
+printf 'kernel: %s\n' "$(uname -sr 2>/dev/null || echo unavailable)"
+printf 'nix: %s\n' "$(nix --version 2>/dev/null || echo unavailable)"
+if [[ -r $REPO_ROOT/.git/HEAD ]]; then printf 'HEAD: %s\n' "$(<"$REPO_ROOT/.git/HEAD")"; else printf 'HEAD: unavailable\n'; fi
+printf 'flake source: %s (path form includes this write-mode file set without git operations)\n' "$FLAKE_REF"
+printf 'NOTE: evaluation-tier results describe Nix artifacts only. They say nothing about\n'
+printf '      target-host behaviour, and a SKIPped host-tier check is unproven, not absent.\n\n'
+
+printf 'Evaluation tier\n'
+if ! command -v nix >/dev/null 2>&1; then
+  for check in drv-path environment-metamorphism location-metamorphism derivation-graph negative-runner-reference sentinel-provenance flake-check build closure lint-nixfmt lint-statix lint-deadnix binary-cache-x86_64 binary-cache-aarch64; do
+    fail "$check: Nix is absent"
+  done
+else
+  drv_file=$TEMP_ROOT/drv-path
+  eval_output=$(nix eval --raw "$FLAKE_REF#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/eval.err")
+  eval_status=$?
+  if ((eval_status == 0)); then
+    printf '%s' "$eval_output" >"$drv_file"
+    pass "drv-path evaluates without realisation: $eval_output"
+  else fail "drv-path evaluation" "$eval_output$(<"$TEMP_ROOT/eval.err")"; fi
+
+  if ((eval_status == 0)); then
+    env_drv=$(cd / && env HOME=/homeless-shelter USER=vivarium-canary TMPDIR=/var/empty/vivarium-canary XDG_RUNTIME_DIR=/run/user/424242 XDG_STATE_HOME=/var/empty/vivarium-state nix eval --raw "$FLAKE_REF#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/env-eval.err")
+    env_status=$?
+    if ((env_status == 0)) && [[ $env_drv == "$eval_output" ]]; then
+      pass "environment and cwd metamorphism preserves drvPath"
+    else fail "environment and cwd metamorphism" "$env_drv$(<"$TEMP_ROOT/env-eval.err")"; fi
+  else skip "environment metamorphism: base drvPath unavailable"; fi
+
+  copy_root=$TEMP_ROOT/location-copy
+  if cp -a "$REPO_ROOT" "$copy_root" 2>"$TEMP_ROOT/copy.err"; then
+    copy_drv=$(nix eval --raw "path:$copy_root?dir=nix#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/copy-eval.err")
+    copy_status=$?
+    if ((eval_status == 0 && copy_status == 0)) && [[ $copy_drv == "$eval_output" ]]; then
+      pass "location metamorphism preserves drvPath"
+    else fail "location metamorphism" "$copy_drv$(<"$TEMP_ROOT/copy-eval.err")"; fi
+  else skip "location metamorphism: worktree copy failed: $(<"$TEMP_ROOT/copy.err")"; fi
+
+  graph=$TEMP_ROOT/derivations.json
+  graph_output=$(nix derivation show -r "$FLAKE_REF#first-microvm" 2>"$TEMP_ROOT/graph.err")
+  graph_status=$?
+  if ((graph_status == 0)); then
+    printf '%s' "$graph_output" >"$graph"
+    pass "recursive derivation graph evaluates without realisation"
+  else fail "recursive derivation graph" "$graph_output$(<"$TEMP_ROOT/graph.err")"; fi
+
+  if ((graph_status == 0)); then
+    bad_names=$(jq -r '.derivations | keys[]' "$graph" | grep -E '(^|-)supervisord(-|\.|$)|virtiofsd-run|supervisord-event-handler|microvm-.*-run|microvm-cloud-hypervisor-' || true)
+    if [[ -z $bad_names ]]; then
+      pass "ADR-0048 negative reference: no upstream runner/supervisor derivation was forced"
+    else fail "ADR-0048 negative reference" "$bad_names"; fi
+
+    sentinel_hits=$(grep -oE 'VIVARIUM_LAUNCH_(WORKSPACE_SOURCE|VOLUME_IMAGE|STORE_VOLUME_IMAGE)' "$graph" | sort | uniq -c || true)
+    if [[ -z $sentinel_hits ]]; then
+      pass "sentinel provenance: neither launch-channel sentinel occurs in the graph (any occurrence is a defect)"
+    else fail "sentinel provenance: sentinels must occur nowhere" "$sentinel_hits"; fi
+
+    concrete_hits=
+    for canary in "${HOME:-}" "${XDG_RUNTIME_DIR:-}" "${XDG_STATE_HOME:-}"; do
+      [[ -n $canary && $canary != / ]] || continue
+      if grep -Fq -- "$canary" "$graph"; then concrete_hits+="$canary"$'\n'; fi
+    done
+    if [[ -z $concrete_hits ]]; then
+      pass "derivation graph contains no concrete host paths (the equal /workspaces/vivarium guest constant is covered by metamorphism and sentinels)"
+    else fail "derivation graph contains concrete host paths" "$concrete_hits"; fi
+    # Read the graph this block already realised rather than evaluating it a second
+    # time. `$graph` is the recursive derivation JSON for the same attribute and is
+    # known good here — the surrounding branch is guarded on its exit status — so a
+    # fresh `nix derivation show -r` would only add a full re-evaluation and a
+    # second place for the read to fail silently behind `2>/dev/null`.
+    graph_names=$(jq -r '.derivations | keys[]' "$graph")
+    if grep -Eq 'vivarium-(store-spike|store-pressure|share-benchmark|first-microvm-diagnostic|measurement-stop)|unit.*vivarium-gc-interlock' <<<"$graph_names"; then
+      fail "shipped derivation graph contains measurement material"
+    else
+      pass "shipped derivation graph contains no measurement material"
+    fi
+  else
+    skip "negative runner-reference check: graph unavailable"
+    skip "sentinel provenance: graph unavailable"
+    skip "concrete host-path scan: graph unavailable"
+  fi
+
+  run_check "flake checks" nix flake check "$FLAKE_REF"
+  # nixfmt 1.3+ deprecates directory arguments; expand the file set explicitly.
+  # `globstar` because `nix/*.nix` does not descend, and the measurement legs
+  # live in `tests/nix/measurement/` — a non-descending glob would silently drop ~1000
+  # lines from the nixfmt and deadnix lanes. (statix walks the tree itself and
+  # was never affected, which is exactly why this would have gone unnoticed.)
+  shopt -s nullglob globstar
+  explicit_nix_files=("$REPO_ROOT/flake.nix" "$REPO_ROOT"/nix/**/*.nix "$REPO_ROOT"/tests/nix/**/*.nix)
+  shopt -u nullglob globstar
+  mapfile -t glob_nix_files < <(printf '%s\n' "${explicit_nix_files[@]#"$REPO_ROOT"/}" | sort -u)
+  mapfile -t git_nix_files < <(
+    git -C "$REPO_ROOT" ls-files --cached --others --exclude-standard -- '*.nix' \
+      | while IFS= read -r path; do [[ -f $REPO_ROOT/$path ]] && printf '%s\n' "$path"; done \
+      | sort -u
+  )
+  # Invoked through run_check's command vector.
+  # shellcheck disable=SC2329
+  coverage_check() {
+    local missing extra
+    missing=$(comm -13 <(printf '%s\n' "${glob_nix_files[@]}") <(printf '%s\n' "${git_nix_files[@]}"))
+    extra=$(comm -23 <(printf '%s\n' "${glob_nix_files[@]}") <(printf '%s\n' "${git_nix_files[@]}"))
+    [[ -z $missing && -z $extra ]] || {
+      printf 'missing from lint glob:\n%s\nextra in lint glob:\n%s\n' "$missing" "$extra"
+      return 1
+    }
+  }
+  # Invoked through run_check's command vector.
+  # shellcheck disable=SC2329
+  run_check "Nix lint coverage equals the working file set" coverage_check
+  mapfile -t all_nix_files < <(printf '%s\n' "${glob_nix_files[@]}" "${git_nix_files[@]}" | sort -u)
+  nix_files=()
+  for path in "${all_nix_files[@]}"; do nix_files+=("$REPO_ROOT/$path"); done
+  run_check "nixfmt formatting" nix develop "$DEV_FLAKE_REF" --command nixfmt --check "${nix_files[@]}"
+  # Invoked indirectly by `run_check` through its command argument vector.
+  # shellcheck disable=SC2329
+  statix_check() { (cd "$REPO_ROOT" && nix develop "$DEV_FLAKE_REF" --command statix check); }
+  run_check "statix" statix_check
+  run_check "deadnix" nix develop "$DEV_FLAKE_REF" --command deadnix --fail "${nix_files[@]}"
+
+  # The HOST tier boots, and every host-tier check here — console fidelity, free
+  # page reporting, the store spike, the persistence pair, delete-duplicate,
+  # diagnostic completion — is a statement about a probe. Those live in the
+  # measurement image now (ADR-0095). The EVALUATION tier above deliberately
+  # stays on `#first-microvm`, because purity, metamorphism and the negative
+  # reference are statements about the artifact users actually get.
+  build_output=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm-measurement" 2>"$TEMP_ROOT/build.err")
+  build_status=$?
+  if ((build_status == 0)); then
+    launcher=$(printf '%s\n' "$build_output" | tail -n 1)/bin/vivarium-first-microvm
+    pass "launcher and guest closure realised: $launcher"
+    closure_output=$(nix path-info -r "$(dirname "$(dirname "$launcher")")" 2>&1)
+    closure_status=$?
+    if ((closure_status == 0)) && grep -q cloud-hypervisor <<<"$closure_output" && grep -q virtiofsd <<<"$closure_output"; then
+      pass "realised closure contains cloud-hypervisor, ch-remote package, and virtiofsd"
+    else fail "realised backend closure" "$closure_output"; fi
+
+    common=(--workspace "$REPO_ROOT" --runtime-dir /run/user/1000/vivarium/canary-a --volume /var/lib/vivarium/canary-a.img --store-volume /var/lib/vivarium/canary-a-store.img --uid 1000 --gid 1000 --memory-mib 2048 --vcpu 2 --print-static-arguments)
+    static_a=$("$launcher" "${common[@]}" 2>&1)
+    static_status=$?
+    static_b=$("$launcher" --workspace /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume /srv/vivarium/canary-b.img --store-volume /srv/vivarium/canary-b-store.img --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1)
+    static_b_status=$?
+    if ((static_status == 0 && static_b_status == 0)); then
+      normalize_launch_spec='del(.runtimePaths) | .socketLegs.api="@API@" | .socketLegs.console="@CONSOLE@" | .resources.vcpus=0 | .resources.memoryMiB=0 | .identityTranslation.hostUid=0 | .identityTranslation.hostGid=0 | (.shares[].source)="@SOURCE@" | (.shares[].socket)="@SOCKET@" | (.volumes[].path)="@VOLUME@" | .vmCreate.cpus.boot_vcpus=0 | .vmCreate.cpus.max_vcpus=0 | .vmCreate.memory.size=0 | (.vmCreate.disks[].path)="@VOLUME@" | (.vmCreate.fs[].socket)="@SOCKET@" | .vmCreate.serial.socket="@CONSOLE@"'
+      normalized_a=$(jq -cS "$normalize_launch_spec" <<<"$static_a")
+      normalized_b=$(jq -cS "$normalize_launch_spec" <<<"$static_b")
+      if [[ $normalized_a == "$normalized_b" ]]; then
+        pass "launcher static argv structure is invariant under runtime arguments"
+      else fail "launcher static argv contract differs" "$static_a"$'\n---\n'"$static_b"; fi
+
+      # The checks above are all negative — they prove nothing bad appears.
+      # A launcher that hardcoded a launch-channel value would pass every one of
+      # them (both invocations would render the same constant and compare equal).
+      # These are the positive counterparts: each launch-channel value must
+      # actually track the argument it was given.
+      missing_flow=
+      [[ $(jq -r .resources.memoryMiB <<<"$static_a") == 2048 && $(jq -r .vmCreate.memory.size <<<"$static_a") == 2147483648 ]] || missing_flow+="memory-mib not rendered from argv (A)"$'\n'
+      [[ $(jq -r .resources.memoryMiB <<<"$static_b") == 4096 && $(jq -r .vmCreate.memory.size <<<"$static_b") == 4294967296 ]] || missing_flow+="memory-mib not rendered from argv (B)"$'\n'
+      [[ $(jq -r .resources.vcpus <<<"$static_a") == 2 && $(jq -r .vmCreate.cpus.boot_vcpus <<<"$static_a") == 2 ]] || missing_flow+="vcpu not rendered from argv (A)"$'\n'
+      [[ $(jq -r .resources.vcpus <<<"$static_b") == 8 && $(jq -r .vmCreate.cpus.boot_vcpus <<<"$static_b") == 8 ]] || missing_flow+="vcpu not rendered from argv (B)"$'\n'
+      grep -Fq '/var/lib/vivarium/canary-a.img' <<<"$static_a" || missing_flow+="volume image not rendered from argv (A)"$'\n'
+      grep -Fq '/srv/vivarium/canary-b.img' <<<"$static_b" || missing_flow+="volume image not rendered from argv (B)"$'\n'
+      grep -Fq '/var/lib/vivarium/canary-a-store.img' <<<"$static_a" || missing_flow+="store volume image not rendered from argv (A)"$'\n'
+      grep -Fq '/srv/vivarium/canary-b-store.img' <<<"$static_b" || missing_flow+="store volume image not rendered from argv (B)"$'\n'
+      grep -Fq '/run/user/4242/vivarium/canary-b' <<<"$static_b" || missing_flow+="runtime dir not rendered from argv (B)"$'\n'
+      # ADR-0087 makes the store volume a second --disk, and cloud-hypervisor
+      # assigns drive letters in --disk order. Assert the order, not just the
+      # presence: swapping the two would boot a guest whose store volume is its
+      # home and whose home is its store, silently.
+      disk_order=$(jq -r '.vmCreate.disks[].path' <<<"$static_a" | tr '\n' ' ')
+      [[ $disk_order == '/var/lib/vivarium/canary-a.img /var/lib/vivarium/canary-a-store.img ' ]] \
+        || missing_flow+="--disk order is not (volume, store-volume): $disk_order"$'\n'
+      if [[ -z $missing_flow ]]; then
+        pass "launch-channel values flow from arguments, not constants (positive counterpart to the negative scans)"
+      else fail "launch-channel value is hardcoded rather than taken from argv" "$missing_flow"; fi
+
+      # Typed-token retention: every declared token must still be present in the
+      # build-channel JSON. A token replaced by a concrete value — including one
+      # that happens to equal a legitimate guest constant — removes it from here.
+      launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$launcher" | head -n1)
+      if [[ -n $launcher_json && -r $launcher_json ]]; then
+        missing_tokens=
+        token_count=$(jq -r '.tokens | length' "$launcher_json")
+        while IFS= read -r token; do
+          grep -Fq -- "$token" "$launcher_json" || missing_tokens+="$token"$'\n'
+        done < <(jq -r '.tokens[]' "$launcher_json")
+        if ((token_count == 0)); then
+          fail "launch-channel token declaration is empty"
+        elif [[ -z $missing_tokens ]]; then
+          pass "every declared launch-channel token is retained in the build-channel arguments"
+        else fail "a launch-channel token was replaced by a concrete value" "$missing_tokens"; fi
+        supervisor=$(jq -r .supervisor "$launcher_json")
+        supervisor_count=$(nix path-info -r "$(dirname "$(dirname "$launcher")")" | grep -c 'vivarium-launch-supervisor' || true)
+        if [[ $supervisor_count == 1 && -x $supervisor ]]; then
+          pass "exactly one Rust vivarium supervisor is present in the realised closure"
+        else fail "Rust supervisor closure membership" "count=$supervisor_count path=$supervisor"; fi
+        if grep -Eq 'pids=|trap .*EXIT|wait .*pid|ulimit -n' "$launcher"; then
+          fail "runner contains shell supervision constructs" "$launcher"
+        else pass "runner is a thin launch-contract adapter with no shell supervision constructs"; fi
+      else fail "launch-arguments JSON not locatable in the launcher" "$launcher"; fi
+    else fail "launcher print-static-arguments" "$static_a"$'\n'"$static_b"; fi
+  else
+    launcher=
+    skip "realisation unavailable; purity evidence above remains valid: $build_output"
+    if ((graph_status == 0)) && grep -q cloud-hypervisor "$graph" && grep -q virtiofsd "$graph"; then
+      pass "derivation graph contains backend and virtiofsd (realisation caveat)"
+    else skip "backend closure membership: neither realised closure nor usable graph"; fi
+    skip "launcher static argv comparison: launcher not realised"
+  fi
+
+  cache_check() {
+    local arch=$1 package=$2 out status query qstatus
+    out=$(nix eval --impure --raw --expr "let f = builtins.getFlake \"$FLAKE_REF\"; p = import f.inputs.nixpkgs { system = \"$arch-linux\"; }; in p.$package.outPath" 2>"$TEMP_ROOT/cache-$arch-$package.err")
+    status=$?
+    if ((status != 0)); then
+      fail "binary cache $arch $package evaluation" "$out"
+      return
+    fi
+    query=$(nix path-info --store https://cache.nixos.org "$out" 2>&1)
+    qstatus=$?
+    if ((qstatus == 0)); then
+      pass "binary cache $arch $package: confirmed hit"
+    elif grep -Eqi 'not found|does not exist|404|valid path' <<<"$query"; then
+      fail "binary cache $arch $package: confirmed miss" "$query"
+    else skip "binary cache $arch $package: network/query error (not a confirmed miss): $query"; fi
+  }
+  cache_check x86_64 cloud-hypervisor
+  cache_check x86_64 virtiofsd
+  cache_check aarch64 cloud-hypervisor
+  cache_check aarch64 virtiofsd
+fi
+
+printf '\nHost tier\n'
+missing=()
+[[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
+[[ -r /dev/kvm && -w /dev/kvm ]] || missing+=("/dev/kvm openable read/write")
+[[ -r /proc/1/comm && $(</proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
+systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
+[[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
+command -v python3 >/dev/null 2>&1 || missing+=("python3 measurement sampler")
+[[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]] || missing+=("realised launcher")
+
+if ((${#missing[@]})); then
+  reason=$(
+    IFS=', '
+    echo "${missing[*]}"
+  )
+  for check in launch-with-landlock console-reader console-burst-fidelity boot-and-mount free-page-reporting shared-store-spike store-canary-realisation persistent-store-premises persistent-store-sharing persistent-store-collection delete-duplicate persistent-store-persistence confinement diagnostic-completion shutdown-cleanup; do
+    skip "$check: missing prerequisites: $reason"
+  done
+else
+  state_home=${XDG_STATE_HOME:-$HOME/.local/state}
+  run_id="first-microvm-$$"
+  runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
+  volume_dir=$state_home/vivarium/diagnostics
+  volume=$volume_dir/first-microvm.img
+  store_volume=$volume_dir/first-microvm-store.img
+  mkdir -p "$runtime_dir" "$volume_dir"
+  chmod 0700 "$runtime_dir"
+  launch_log=$TEMP_ROOT/launcher.log
+  console_log=$TEMP_ROOT/console.log
+
+  # ADR-0087's central claim — that the guest's store survives a restart — is not
+  # observable from one boot, so this script is run twice against the same store
+  # volume. VIVARIUM_SPIKE_COLD=1 makes the first run provably cold rather than
+  # merely presumed so; without it the volume is reused and the run is the warm
+  # half of the pair.
+  if [[ ${VIVARIUM_SPIKE_COLD:-} == 1 ]]; then
+    rm -f -- "$store_volume"
+    record "store volume removed before launch: this is the cold half of the persistence pair"
+  elif [[ -f $store_volume ]]; then
+    record "store volume reused from a previous run: this is the warm half of the persistence pair"
+  else
+    record "store volume absent and VIVARIUM_SPIKE_COLD unset: this run is cold by accident, not by request"
+  fi
+  # The canary must exist in the *host* store before the guest boots, so its
+  # bytes are in the lower layer while its output path is absent from the guest's
+  # boot closure — the only way to reach the delete-duplicate shape without a
+  # writable lower store. Realised from the very expression file the guest
+  # evaluates, taken from the launcher's own JSON, so the two cannot drift.
+  # `nix-build` rather than `nix build`: the expression uses builtins.storePath,
+  # which flake pure evaluation forbids.
+  host_launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$launcher" | head -n1)
+  canary_expr=$(jq -r .storeCanaryExpression "$host_launcher_json" 2>/dev/null || true)
+  if [[ -n $canary_expr && -r $canary_expr ]]; then
+    canary_out=$(nix-build --no-out-link "$canary_expr" 2>"$TEMP_ROOT/canary.err")
+    canary_status=$?
+    if ((canary_status == 0)) && [[ -e $canary_out ]]; then
+      pass "store canary realised host-side: $canary_out (present in the lower layer, absent from the guest's boot closure)"
+    else
+      fail "store canary could not be realised host-side" "$canary_out$(<"$TEMP_ROOT/canary.err")"
+    fi
+  else
+    fail "store canary expression not locatable in the launcher JSON" "${canary_expr:-unset}"
+  fi
+
+  # ADR-0091's open hazard: mkfs.ext4 may leave the inode table lazily
+  # initialised, in which case the kernel zeroes it in the background after first
+  # mount and the sparse image gains around a gibibyte with the guest writing
+  # nothing — which would interact with ADR-0037's sparse-image promise. Sample
+  # allocated blocks, never apparent size.
+  image_allocated() { stat -c '%b*%B=%s' -- "$1" 2>/dev/null || echo unavailable; }
+  store_alloc_before=$(image_allocated "$store_volume")
+
+  launch_args=(--workspace "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume "$volume" --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 --project-id first-microvm --target "$run_id")
+  unit_name="vivarium-first-microvm-$run_id.service"
+
+  launch_attempt=0
+  launch_vm() {
+    launch_attempt=$((launch_attempt + 1))
+    "$launcher" "${launch_args[@]}" >"$launch_log" 2>&1 &
+    launch_pid=$!
+  }
+  wait_for_console() {
+    for _ in {1..300}; do
+      [[ -S $runtime_dir/console.sock && -f $runtime_dir/console.log ]] && return 0
+      if ! kill -0 "$launch_pid" 2>/dev/null; then
+        wait "$launch_pid" || return 1
+        systemctl --user is-active --quiet "$unit_name" || return 1
+      fi
+      sleep 0.1
+    done
+    return 1
+  }
+
+  launch_vm
+  if wait_for_console; then
+    wait "$launch_pid" || fail "manager-owned launch handoff" "$(<"$launch_log")"
+    pass "manager-owned launch reached the supervisor-owned console stage"
+    unit_properties=$(systemctl --user show "$unit_name" -p Slice -p KillMode -p CPUAccounting -p MemoryAccounting -p IOAccounting -p CPUWeight -p LimitNOFILE -p MemoryMax -p MemoryHigh -p IOWeight 2>&1 || true)
+    required_unit='Slice=vivarium.slice KillMode=control-group CPUAccounting=yes MemoryAccounting=yes IOAccounting=yes CPUWeight=100 LimitNOFILE=524288'
+    missing_unit=
+    for property in $required_unit; do grep -qxF "$property" <<<"$unit_properties" || missing_unit+="$property"$'\n'; done
+    if [[ -z $missing_unit ]] && ! grep -Eq '^Memory(Max|High)=[0-9]+$|^IOWeight=[0-9]+$' <<<"$unit_properties"; then
+      pass "transient service carries accounting, CPU weight, group kill, and the declared descriptor limit without memory/I/O limits"
+    else
+      fail "transient service property contract" "$missing_unit$unit_properties"
+    fi
+    if [[ -r /sys/kernel/security/lsm ]] && grep -qw landlock /sys/kernel/security/lsm; then
+      if grep -q -- '--landlock' "$launch_log"; then
+        pass "Landlock-supported host launched with Landlock"
+      else
+        record "Landlock support was reported but argv evidence was unavailable"
+      fi
+    else
+      record "Landlock unavailable: launch contract recorded the soft degradation and no retry flag exists"
+    fi
+  else
+    wait "$launch_pid"
+    launch_status=$?
+    launch_output=$(<"$launch_log")
+    fail "host-tier manager-owned launch failed; no Landlock-off retry exists" "exit=$launch_status; output=$launch_output"
+    launch_args=()
+  fi
+
+  if [[ -n ${launch_args[*]} ]]; then
+    : >"$console_log"
+    # Follow the supervisor-owned file, never the serial socket. Holding the file
+    # descriptor keeps the final bytes readable across allowlisted unlink.
+    tail -c +1 -f "$runtime_dir/console.log" >"$console_log" 2>"$TEMP_ROOT/reader.log" &
+    console_follower_pid=$!
+
+    # /proc entries vanish under the scan as short-lived processes exit; the failed
+    # redirection is reported by the shell itself, so the guard has to wrap it.
+    proc_cmdline() { { tr '\0' ' ' <"/proc/$1/cmdline"; } 2>/dev/null || true; }
+    proc_field() { awk -v key="$2:" '$1 == key {print $2}' "/proc/$1/status" 2>/dev/null || true; }
+    # `Seccomp:` is per-task, and neither daemon filters the task we can see first:
+    # virtiofsd installs its filter in the `--sandbox namespace` child it forks, and
+    # cloud-hypervisor's `--seccomp true` filters worker threads, which never appear
+    # in a /proc/[0-9]* glob at all. Take the maximum across the thread group.
+    max_seccomp() {
+      local leader=$1 best=0 value task
+      for task in /proc/"$leader"/task/[0-9]*/status; do
+        value=$(awk '/^Seccomp:/ {print $2}' "$task" 2>/dev/null || true)
+        [[ $value =~ ^[0-9]+$ ]] && ((value > best)) && best=$value
+      done
+      printf '%s' "$best"
+    }
+
+    vmm_pid=
+    for _ in {1..300}; do
+      for proc_stat in /proc/[0-9]*/stat; do
+        child=${proc_stat#/proc/}
+        child=${child%/stat}
+        cmd=$(proc_cmdline "$child")
+        if [[ $cmd == *cloud-hypervisor* && $cmd == *"$runtime_dir"* ]]; then
+          vmm_pid=$child
+          break 2
+        fi
+      done
+      sleep 0.1
+    done
+    rss_before=$(awk '/VmRSS:/ {print $2}' "/proc/${vmm_pid:-missing}/status" 2>/dev/null || echo unavailable)
+
+    # Measurement (a) needs a metric that moves only when memory is really returned.
+    # With `--memory shared=on` the guest's RAM is a memfd mapped MAP_SHARED, so
+    # MADV_DONTNEED drops the VMM's PTEs — and VmRSS with them — while the shmem
+    # pages stay allocated. fallocate(PUNCH_HOLE) is the call that frees them, and
+    # the only thing that observes it is the memfd's own st_blocks. Sample that as
+    # the primary series and smaps_rollup Pss as the cross-check, on a timer for the
+    # VM's whole life so every guest-announced phase has host samples either side.
+    sampler_py=$TEMP_ROOT/memfd-sampler.py
+    memfd_series=$TEMP_ROOT/memfd-series.txt
+    sampler_log=$TEMP_ROOT/memfd-sampler.log
+    cat >"$sampler_py" <<'PY'
+import os, sys, time
+
+pid, out_path, interval = sys.argv[1], sys.argv[2], float(sys.argv[3])
+
+
+def memfd_kib(pid):
+    """Allocated blocks of every memfd the VMM holds, in KiB.
+
+    st_blocks is in 512-byte units and counts blocks actually allocated to the
+    shmem inode, so it drops exactly when a hole is punched -- unlike VmRSS.
+    """
+    total = None
+    fd_dir = f"/proc/{pid}/fd"
+    try:
+        entries = os.listdir(fd_dir)
+    except OSError:
+        return None
+    for entry in entries:
+        path = f"{fd_dir}/{entry}"
+        try:
+            if "memfd:" not in os.readlink(path):
+                continue
+            total = (total or 0) + os.stat(path).st_blocks // 2
+        except OSError:
+            continue
+    return total
+
+
+def pss_kib(pid):
+    try:
+        with open(f"/proc/{pid}/smaps_rollup") as handle:
+            for line in handle:
+                if line.startswith("Pss:"):
+                    return int(line.split()[1])
+    except OSError:
+        return None
+    return None
+
+
+with open(out_path, "w") as out:
+    while os.path.exists(f"/proc/{pid}"):
+        stamp = time.monotonic()
+        memfd, pss = memfd_kib(pid), pss_kib(pid)
+        if memfd is None and pss is None:
+            break
+        out.write(f"t={stamp:.1f},memfd={memfd},pss={pss}\n")
+        out.flush()
+        time.sleep(interval)
+PY
+    : >"$memfd_series"
+    if [[ -n ${vmm_pid:-} ]]; then
+      python3 "$sampler_py" "$vmm_pid" "$memfd_series" 1.0 >"$sampler_log" 2>&1 &
+      sampler_pid=$!
+    else
+      sampler_pid=
+      printf 'no VMM pid to sample\n' >"$sampler_log"
+    fi
+
+    # Sample confinement while the daemons are certainly alive, before the guest
+    # reaches poweroff. The launcher's own bash wrapper is recorded but never
+    # asserted on: `setpriv --no-new-privs` applies to the children it execs, not
+    # to the caller, so demanding nnp=1 of the wrapper is a guaranteed false alarm.
+    proc_evidence=
+    declare -A role_seccomp=() role_count=()
+    bad_conf=
+    declared_nofile=$(jq -r .descriptorBudget.limit "$host_launcher_json")
+    for status_file in /proc/[0-9]*/status; do
+      pid=${status_file#/proc/}
+      pid=${pid%/status}
+      cmd=$(proc_cmdline "$pid")
+      [[ $cmd == *"$runtime_dir"* ]] || continue
+      uid=$(proc_field "$pid" Uid)
+      nnp=$(proc_field "$pid" NoNewPrivs)
+      leader_seccomp=$(proc_field "$pid" Seccomp)
+      group_seccomp=$(max_seccomp "$pid")
+      caps=$(proc_field "$pid" CapEff)
+      cap_ambient=$(proc_field "$pid" CapAmb)
+      cap_bounding=$(proc_field "$pid" CapBnd)
+      role=wrapper
+      case $cmd in
+        *virtiofsd*store.sock*) role=virtiofsd:store ;;
+        *virtiofsd*workspace.sock*) role=virtiofsd:workspace ;;
+        *cloud-hypervisor*) role=cloud-hypervisor ;;
+      esac
+      proc_evidence+="role=$role pid=$pid uid=$uid nnp=$nnp seccomp=$leader_seccomp seccomp-threadgroup-max=$group_seccomp cap-effective=$caps cap-ambient=$cap_ambient cap-bounding=$cap_bounding cmd=$cmd"$'\n'
+      [[ $role == wrapper ]] && continue
+      role_count[$role]=$((${role_count[$role]:-0} + 1))
+      ((group_seccomp > ${role_seccomp[$role]:-0})) && role_seccomp[$role]=$group_seccomp
+      [[ $uid == "$(id -u)" ]] || bad_conf+="$role pid=$pid is not owned by the invoking user (uid=$uid)"$'\n'
+      [[ $nnp == 1 ]] || bad_conf+="$role pid=$pid has NoNewPrivs=$nnp"$'\n'
+      [[ $caps == 0000000000000000 && $cap_ambient == 0000000000000000 && $cap_bounding == 0000000000000000 ]] || bad_conf+="$role pid=$pid retained capabilities effective=$caps ambient=$cap_ambient bounding=$cap_bounding"$'\n'
+      if [[ $role == virtiofsd:* ]]; then
+        process_nofile=$(awk '$1 == "Max" && $2 == "open" && $3 == "files" { print $4 }' "/proc/$pid/limits" 2>/dev/null || true)
+        [[ $process_nofile == "$declared_nofile" ]] || bad_conf+="$role pid=$pid has LimitNOFILE=$process_nofile, declared=$declared_nofile"$'\n'
+        [[ $cmd == *"--rlimit-nofile=$declared_nofile"* ]] || bad_conf+="$role pid=$pid argv lacks --rlimit-nofile=$declared_nofile"$'\n'
+      fi
+      if [[ $role == cloud-hypervisor && -r /sys/kernel/security/lsm ]] && grep -qw landlock /sys/kernel/security/lsm; then
+        [[ $cmd == *--landlock* ]] || bad_conf+="cloud-hypervisor argv lacks --landlock on a host that reports Landlock"$'\n'
+      fi
+    done
+    sleep 15
+    rss_late=$(awk '/VmRSS:/ {print $2}' "/proc/${vmm_pid:-missing}/status" 2>/dev/null || echo unavailable)
+
+    # Bounded: a guest that never powers off must FAIL with a timeout rather than
+    # hang the script and deny the maintainer any summary at all. The guest's own
+    # spike allows nix-develop 120s, so the ceiling has to sit well above that.
+    vm_status=0
+    rss_peak=${rss_before//[!0-9]/}
+    for _ in {1..840}; do
+      systemctl --user is-active --quiet "$unit_name" || break
+      sample=$(awk '/VmRSS:/ {print $2}' "/proc/${vmm_pid:-missing}/status" 2>/dev/null || true)
+      [[ $sample =~ ^[0-9]+$ && -n $rss_peak ]] && ((sample > rss_peak)) && rss_peak=$sample
+      sleep 0.5
+    done
+    if systemctl --user is-active --quiet "$unit_name"; then
+      fail "guest did not shut down within 420s; terminating" "$(tail -n 40 "$launch_log")"
+      systemctl --user stop "$unit_name" 2>/dev/null || true
+      vm_status=124
+    fi
+    sleep 0.2
+    kill "$console_follower_pid" 2>/dev/null || true
+    wait "$console_follower_pid" 2>/dev/null || true
+    reader_status=0
+    # The sampler exits on its own when /proc/<vmm> disappears; bound the wait so a
+    # sampler that outlives its target cannot hang the whole run.
+    if [[ -n ${sampler_pid:-} ]]; then
+      for _ in {1..40}; do
+        kill -0 "$sampler_pid" 2>/dev/null || break
+        sleep 0.25
+      done
+      kill "$sampler_pid" 2>/dev/null || true
+      wait "$sampler_pid" 2>/dev/null || true
+    fi
+
+    bytes=0
+    [[ -s $console_log ]] && bytes=$(wc -c <"$console_log")
+    if ((reader_status != 0)) && ((bytes == 0)); then
+      fail "console reader produced nothing" "$(
+        cat "$TEMP_ROOT/reader.log" 2>/dev/null
+        tail -n 40 "$launch_log"
+      )"
+    elif grep -Fq VIVARIUM_DIAGNOSTIC_FIRST_MARKER "$console_log"; then
+      pass "console reader attached before first output: $bytes bytes captured"
+    else
+      fail "console captured $bytes bytes but never saw the guest's first marker" "$(head -c 2000 "$console_log")"
+    fi
+    # With a reader attached for the whole run the early burst is a lossless-delivery
+    # check, which is worth more than the replay question the first run already
+    # answered (Cloud Hypervisor does not replay to a late client). Count marker
+    # occurrences, never bytes: the guest's journal+console path prefixes every line,
+    # so the wire total runs ~3.7x the guest's own figure and a `bytes >= 1 MiB`
+    # threshold passes vacuously while lines are missing — the exact shape this
+    # script has been bitten by before. The guest states its own expected count, so
+    # the constant lives on the side that produced the burst.
+    claimed=$(grep -ao 'VIVARIUM_CONSOLE_BYTES_CLAIMED=[0-9]*' "$console_log" | tail -n1 || true)
+    expected=$(grep -ao 'VIVARIUM_CONSOLE_LINES_EXPECTED=[0-9]*' "$console_log" | tail -n1 | cut -d= -f2)
+    captured=$(grep -ao VIVARIUM_CONSOLE_BURST "$console_log" | wc -l)
+    # A split marker and a dropped marker both lower the count, but they are
+    # different findings: one is another writer interleaving on the shared console,
+    # the other is the transport losing bytes. Only the second impugns ADR-0070.
+    # Recover the count with newlines and ANSI/status noise stripped: if the markers
+    # reappear, every byte arrived and the token was merely broken in transit.
+    rejoined=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null \
+      | tr -d '\n' | grep -ao VIVARIUM_CONSOLE_BURST | wc -l)
+    if [[ $expected =~ ^[0-9]+$ ]] && ((captured >= expected)); then
+      pass "console delivered the full early burst without loss ($captured/$expected marker lines; $bytes bytes on the wire, guest ${claimed:-claim-absent})"
+    elif [[ $expected =~ ^[0-9]+$ ]] && ((rejoined >= expected)); then
+      fail "console interleaved another writer into the guest's burst (no bytes lost)" \
+        "intact-markers=$captured rejoined-markers=$rejoined expected=$expected wire-bytes=$bytes
+this is a shared-console contention finding, NOT transport loss: every byte arrived.
+the guest is expected to silence PID 1 status output for the burst (systemd SIGRTMIN+21)."
+    else
+      fail "console lost part of the guest's early burst" \
+        "intact-markers=$captured rejoined-markers=$rejoined expected=${expected:-unstated} wire-bytes=$bytes guest-${claimed:-bytes-claim-absent}
+rejoined count is below expected, so bytes are genuinely missing rather than split."
+    fi
+
+    if grep -Fq 'VIVARIUM_WORKSPACE_CONTRACT=virtiofs-rw' "$console_log"; then
+      pass "workspace is virtiofs rw at /workspaces/vivarium; no write probe touched it"
+    else fail "guest workspace mount contract" "$(grep -a VIVARIUM_WORKSPACE "$console_log" || tail -n 100 "$console_log")"; fi
+    free_lines=$(grep -ao 'VIVARIUM_MEM_PHASE=[a-z]* MEMFREE=[0-9]* MEMAVAIL=[0-9]*' "$console_log" || true)
+    # VmRSS is not authoritative here and must not be reported as if it were.
+    # `--memory shared=on` backs guest RAM with a memfd; MADV_DONTNEED tears down
+    # the VMM's page-table entries — dropping VmRSS — without freeing the shmem
+    # pages. Only the memfd's own allocated block count moves when
+    # fallocate(PUNCH_HOLE) actually returns memory, so that is the primary series
+    # and PSS is the cross-check. Both are sampled by the phase sampler below.
+    record "guest free-page phases: ${free_lines:-unavailable}"
+    if [[ -s $memfd_series ]]; then
+      record "host memfd allocated-KiB series (authoritative for measurement (a)): $(tr '\n' ' ' <"$memfd_series")"
+    else
+      record "host memfd series unavailable: $(head -c 300 "$sampler_log" 2>/dev/null)"
+    fi
+    record "VMM VmRSS KiB (context only, not the measurement): before=$rss_before peak=${rss_peak:-unavailable} late=$rss_late"
+    store_lines=$(grep -aE 'VIVARIUM_STORE_(SYSTEM_PATH|KNOWN_PATH|SAMPLE_IN_CLOSURE|DB_VALID_[A-Z]*)|VIVARIUM_INNER_NIX_DEVELOP_STATUS' "$console_log" || true)
+    record "shared-store inner-layer spike: ${store_lines:-unavailable}"
+    # A non-zero inner status is the spike's answer, but the *reason* is the finding
+    # and it only exists in the guest's own log tail. Surfacing it here keeps the
+    # verdict pasteable without a second run to recover what the console already said.
+    inner_reason=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$console_log" 2>/dev/null \
+      | grep -aE 'error:|warning: Git tree' | head -n 6 || true)
+    record "inner-develop failure reason (the spike's actual result): ${inner_reason:-none reported}"
+
+    # ---- ADR-0087/ADR-0088/ADR-0091: the persistent local-overlay guest store ----
+    # Every value below is stated by the guest on its own console. Read them by
+    # marker rather than by position, and treat an absent marker as unproven — a
+    # missing line must never satisfy a check by default, which is the defect shape
+    # this file's method note names.
+    spike_value() {
+      sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null \
+        | grep -ao "VIVARIUM_STORE_SPIKE_$1=.*" | tail -n1 | cut -d= -f2- || true
+    }
+    spike_lines=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null \
+      | grep -ao 'VIVARIUM_STORE_SPIKE_[A-Z_]*=.*' || true)
+    record "persistent guest store, guest-reported: ${spike_lines:-unavailable}"
+    record "store image allocated blocks: before=$store_alloc_before after=$(image_allocated "$store_volume") (ADR-0091's lazy-inode-table hazard; growth with no guest writes is the finding)"
+
+    spike_boot=$(spike_value BOOT)
+    if [[ -z ${spike_lines:-} ]]; then
+      for check in persistent-store-premises persistent-store-sharing persistent-store-collection delete-duplicate; do
+        fail "$check: the guest never reported a store-spike line"
+      done
+      skip "persistent-store-persistence: no guest report to compare against"
+    else
+      # Premises (b) and (c). The mount-id comparison is the observational half of
+      # what `neededForBoot` promises at evaluation: ids are handed out in mount
+      # order, so the writable layer carrying a lower one than the overlay built
+      # from it is evidence it really was established first.
+      premise_bad=
+      [[ $(spike_value UPPER_DEVICE) == block ]] || premise_bad+="writable layer is not a block device: $(spike_value UPPER_MOUNT)"$'\n'
+      [[ $(spike_value UPPER_BEFORE_STORE) == yes ]] || premise_bad+="writable layer was not mounted before /nix/store: $(spike_value MOUNT_IDS)"$'\n'
+      [[ $(spike_value LOWER_DB_HAS_SYSTEM) == yes ]] || premise_bad+="the lower store's database does not describe the boot closure"$'\n'
+      [[ $(spike_value DAEMON_NIX_REMOTE) == NIX_REMOTE=local-overlay://* ]] || premise_bad+="nix-daemon did not open a local-overlay store: $(spike_value DAEMON_NIX_REMOTE)"$'\n'
+      [[ $(spike_value CHECK_POST_INIT) == 'merged=yes lower=yes verified=yes' ]] || premise_bad+="lower and merged views disagree: $(spike_value CHECK_POST_INIT)"$'\n'
+      # ADR-0067's stage-2 first-boot machinery must be confirmed *absent* here,
+      # not assumed away: this volume mounts before stage 2 exists.
+      [[ $(spike_value STAGE2_OWNERSHIP) == absent ]] || premise_bad+="ADR-0067's first-boot marker appeared on the store volume"$'\n'
+      if [[ -z $premise_bad ]]; then
+        pass "persistent-store-premises: block-backed writable layer mounted before /nix/store, boot closure in the lower database, daemon on the overlay store (boot ${spike_boot:-?})"
+      else
+        fail "persistent-store-premises" "$premise_bad"
+      fi
+
+      # ADR-0087's sharing claim, stated as a number rather than as a hope: a path
+      # already valid in the lower database must not be copied up. Any non-zero
+      # count means the volume grows by a closure instead of by what the guest
+      # actually fetched.
+      copied=$(spike_value BOOT_CLOSURE_COPIED_UP)
+      if [[ $copied == 0/* ]]; then
+        pass "persistent-store-sharing: no boot-closure path was copied into the writable layer ($copied)"
+      elif [[ -n $copied ]]; then
+        fail "persistent-store-sharing: boot-closure paths were copied up" "$copied — ADR-0087 says a path valid in the lower database is used in place"
+      else
+        fail "persistent-store-sharing: the guest did not report a copy-up count"
+      fi
+
+      # ADR-0088's whole reason for existing: a collection must not whiteout the
+      # lower layer. The lower directory count is the host-visible half of the same
+      # claim; whiteouts are character devices, so they are countable directly.
+      gc_report=$(spike_value GC)
+      gc_bad=
+      # Judge the whiteouts by what they sit over, not by counting them. Upstream's
+      # else branch writes one whenever an upper-layer path is absent from the lower
+      # database — for the guest's own instantiated derivations, that is specified
+      # behaviour, not a defect, and the first host run mistook it for one. What
+      # must never happen is a whiteout over a path the lower database *does* know,
+      # because that is the guest blinding itself to its own boot closure.
+      over_valid=$(spike_value WHITEOUT_OVER_VALID)
+      [[ $over_valid == 0 ]] || gc_bad+="a collection whiteouted a path valid in the lower database: $(spike_value WHITEOUT_OVER_VALID_NAME)"$'\n'
+      [[ $gc_report == *"system_valid=yes"* ]] || gc_bad+="the boot closure did not survive a collection"$'\n'
+      [[ $gc_report == *"system_present=yes"* ]] || gc_bad+="the running system's path was removed from the merged view"$'\n'
+      lower_before=${gc_report#*lower_before=}
+      lower_before=${lower_before%% *}
+      lower_after=${gc_report#*lower_after=}
+      lower_after=${lower_after%% *}
+      [[ -n $lower_before && $lower_before == "$lower_after" ]] || gc_bad+="the lower layer's entry count changed across a collection: $lower_before -> $lower_after"$'\n'
+      if [[ -z $gc_report ]]; then
+        fail "persistent-store-collection: the guest did not report a collection"
+      elif [[ -z $gc_bad ]]; then
+        pass "persistent-store-collection: a rooted collection left the lower layer and the boot closure intact, and whiteouted nothing the lower database knows ($gc_report; whiteouts over unregistered paths: $(spike_value WHITEOUT_NAMES))"
+      else
+        fail "persistent-store-collection" "$gc_bad$gc_report"
+      fi
+
+      # The delete-duplicate substitute for upstream's stale-file-handle scenario,
+      # which is unrunnable here: it garbage-collects the lower store three times
+      # and ours is served --readonly. The first host run showed the design
+      # checklist had this half wrong, so the two branches are asserted separately.
+      #
+      # Arm 1 — bytes below, unknown to the lower database. `deleteStorePath`
+      # guards on lower-store *validity*, not on bytes, so this takes the else
+      # branch and a whiteout is the correct outcome, not a defect.
+      unreg=$(spike_value DELETE_UNREGISTERED)
+      rebuild=$(spike_value REBUILD_AFTER_UNREGISTERED)
+      case $unreg in
+        'upper=char-device merged=absent whiteout=char-device' | 'upper=present merged=absent whiteout=char-device')
+          if [[ $rebuild == 0 ]]; then
+            pass "delete-duplicate (unregistered): deleted through the merged view, leaving the whiteout upstream's else branch specifies, and the rebuild replaced it with no stale handle"
+          else
+            fail "delete-duplicate (unregistered): the rebuild after deletion failed" "$rebuild $(spike_value REBUILD_ERROR)"
+          fi
+          ;;
+        skipped-*) skip "delete-duplicate (unregistered): $unreg (unproven, not absent)" ;;
+        '') skip "delete-duplicate (unregistered): the guest did not report the scenario" ;;
+        *) fail "delete-duplicate (unregistered) did not match upstream's else branch" "$unreg rebuild=$rebuild $(spike_value DELETE_OUTPUT_UNREGISTERED)" ;;
+      esac
+
+      # Arm 2 — the branch the remount hook exists for. With the path registered in
+      # the lower database, the delete must go through the upper layer, leave no
+      # whiteout, and let the merged view fall back to the lower inode.
+      reg=$(spike_value DELETE_REGISTERED)
+      inodes=$(spike_value DELETE_INODES)
+      case $reg in
+        'upper=absent merged=present whiteout=none')
+          lower_inode=${inodes#*lower=}
+          merged_after=${inodes#*merged_after=}
+          merged_after=${merged_after%% *}
+          if [[ -n $lower_inode && $lower_inode == "$merged_after" ]]; then
+            pass "delete-duplicate (registered): the upper copy was removed without a whiteout and the merged view now resolves to the lower inode ($inodes)"
+          else
+            fail "delete-duplicate (registered): the merged view does not resolve to the lower inode" "$inodes"
+          fi
+          ;;
+        skipped-*) skip "delete-duplicate (registered): $reg (unproven, not absent)" ;;
+        '') skip "delete-duplicate (registered): the guest did not report the scenario" ;;
+        *) fail "delete-duplicate (registered) did not behave as ADR-0088 describes" "$reg $(spike_value DELETE_OUTPUT_REGISTERED)" ;;
+      esac
+      record "process executing from the store across a collection's remount: $(spike_value EXEC_ACROSS_REMOUNT)"
+      record "non-store names in the layers (one aborts a guest collection before the guard is reached): $(spike_value STRAY_NAMES) upper=$(spike_value STRAY_UPPER_NAMES)"
+      record "store volume capacity, guest-reported: $(spike_value DF_H_LATE) | inodes: $(spike_value DF_I_LATE) | writable layer: $(spike_value UPPER_USAGE)"
+
+      # The one claim a single boot structurally cannot make. On the cold half
+      # there is nothing recorded yet and this is correctly unproven.
+      recorded=$(spike_value PERSIST_RECORDED)
+      if [[ $recorded == none-cold-volume ]]; then
+        skip "persistent-store-persistence: cold volume, so nothing had been recorded to survive (run again without VIVARIUM_SPIKE_COLD)"
+      elif [[ -z $recorded ]]; then
+        fail "persistent-store-persistence: the guest reported no canary record"
+      elif [[ $(spike_value PERSIST_VALID_BEFORE_WRITE) == yes && $(spike_value PERSIST_UPPER_BEFORE_WRITE) == present ]]; then
+        pass "persistent-store-persistence: the canary was valid before anything was written and its bytes were still in the writable layer — the database persisted, not merely the bytes (boot ${spike_boot:-?})"
+      else
+        fail "persistent-store-persistence: the canary did not survive the restart" \
+          "recorded=$recorded valid=$(spike_value PERSIST_VALID_BEFORE_WRITE) upper=$(spike_value PERSIST_UPPER_BEFORE_WRITE)"
+      fi
+    fi
+
+    # A RECORD that always fires would let the verdict read PASS while nothing was
+    # observed. Confinement has an expected shape — one VMM plus one virtiofsd per
+    # share, every one owned by the invoking user with NoNewPrivs=1, and each of the
+    # three roles carrying a seccomp filter *somewhere* in its thread group — so
+    # absent or malformed evidence is a FAIL, not a measurement.
+    if [[ -z $proc_evidence ]]; then
+      fail "confinement: no VMM or virtiofsd process was observable at sample time" "$(tail -n 40 "$launch_log")"
+    else
+      for role in cloud-hypervisor virtiofsd:store virtiofsd:workspace; do
+        ((${role_count[$role]:-0} == 1)) || {
+          bad_conf+="expected exactly one $role process, observed ${role_count[$role]:-0}"$'\n'
+          continue
+        }
+        ((${role_seccomp[$role]:-0} == 2)) || bad_conf+="$role has no task in seccomp filter mode (thread-group max=${role_seccomp[$role]:-0})"$'\n'
+      done
+      grep -q 'sandbox none' <<<"$proc_evidence" && bad_conf+="a daemon ran with --sandbox none"$'\n'
+      if [[ -z $bad_conf ]]; then
+        pass "confinement: all daemons unprivileged with NoNewPrivs=1 and a seccomp filter per role (not the N20 allowlist test)"
+      else fail "confinement contract" "$bad_conf"; fi
+    fi
+    record "confinement/process evidence (not the N20 allowlist test): ${proc_evidence:-none}"
+    if ((vm_status != 0)); then
+      fail "VM exit status $vm_status" "$(<"$launch_log")"
+    elif grep -Fq VIVARIUM_DIAGNOSTIC_COMPLETE "$console_log"; then
+      pass "guest ran the diagnostic to completion and shut down cleanly"
+    else fail "guest shut down with status 0 but never reported VIVARIUM_DIAGNOSTIC_COMPLETE" "$(tail -n 60 "$console_log")"; fi
+    if find "$runtime_dir" -mindepth 1 -print -quit | grep -q .; then
+      fail "runtime directory not empty after shutdown" "$(find "$runtime_dir" -mindepth 1 -maxdepth 1 -print)"
+    else pass "runtime directory empty after shutdown; persistent volume retained at $volume"; fi
+    # Checking the directory is empty is not the same as removing it, and for a
+    # long time this script did only the former: every run since 2026-07-31 left
+    # its own `$XDG_RUNTIME_DIR/vivarium/first-microvm-<pid>/` behind, 17 of them
+    # by the time anyone counted. Empty directories on a tmpfs cost nothing, which
+    # is exactly why nothing noticed. The sibling script has always done this.
+    rmdir "$runtime_dir" 2>/dev/null
+
+    # The console capture is the run's primary evidence and TEMP_ROOT is removed on
+    # exit, so anything not grepped above used to be unrecoverable without a second
+    # boot. Keep the artefacts beside the volume; they are the reason to run this.
+    if cp -- "$console_log" "$volume_dir/console.log" 2>/dev/null; then
+      cp -- "$memfd_series" "$volume_dir/memfd-series.txt" 2>/dev/null || true
+      record "artefacts retained: $volume_dir/console.log (guest console, $bytes bytes), $volume_dir/memfd-series.txt"
+    fi
+  fi
+fi
+
+printf '\nSummary\n'
+printf 'PASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+if ((FAIL_COUNT == 0)); then
+  printf 'VERDICT: PASS (RECORD findings are measurements; SKIPs require a capable host)\n'
+  exit 0
+else
+  printf 'VERDICT: FAIL (%d hard check(s) failed)\n' "$FAIL_COUNT"
+  exit 1
+fi

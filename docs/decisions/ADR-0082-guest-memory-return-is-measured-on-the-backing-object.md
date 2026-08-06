@@ -31,4 +31,4 @@ Chosen option: allocated blocks of the backing memory object.
 
 Accepted
 
-Gives [`ADR-0035-elastic-guest-memory-model.md`](./ADR-0035-elastic-guest-memory-model.md) the method that verifies its headline; the reading itself is recorded in [`../reference/microvm-verification-harness.md`](../reference/microvm-verification-harness.md). Implemented by `scripts/first-microvm-check` and the guest phase markers in `nix/guest.nix`.
+Gives [`ADR-0035-elastic-guest-memory-model.md`](./ADR-0035-elastic-guest-memory-model.md) the method that verifies its headline; the reading itself is recorded in [`../reference/microvm-verification-harness.md`](../reference/microvm-verification-harness.md). Implemented by `tests/host/first-microvm-check` and the guest phase markers in `nix/guest.nix`.

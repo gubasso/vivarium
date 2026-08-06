@@ -29,8 +29,8 @@
 # DUP: no `set -euo pipefail`. Every check captures its own exit status and turns
 # it into a result line; a failing check must not abort the run.
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
 SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || uname -m | sed 's/$/-linux/')
 # The microVM is its own flake under `nix/`, not an output of the repository
 # root's. The root flake is the development environment — Rust toolchain,
@@ -60,16 +60,39 @@ VOLUME_DIR=$STATE_HOME/vivarium/diagnostics
 
 # DUP
 if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
-  GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; RESET=$'\033[0m'
+  GREEN=$'\033[32m'
+  RED=$'\033[31m'
+  YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'
+  RESET=$'\033[0m'
 else
-  GREEN=; RED=; YELLOW=; BLUE=; RESET=
+  GREEN=
+  RED=
+  YELLOW=
+  BLUE=
+  RESET=
 fi
 
 # DUP
-pass() { PASS_COUNT=$((PASS_COUNT + 1)); printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"; }
-fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"; [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"; }
-skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"; }
-record() { RECORD_COUNT=$((RECORD_COUNT + 1)); printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"; }
+pass() {
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"
+}
+fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"
+  # sed prefixes every line of multiline evidence.
+  # shellcheck disable=SC2001
+  [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"
+}
+skip() {
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+  printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"
+}
+record() {
+  RECORD_COUNT=$((RECORD_COUNT + 1))
+  printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"
+}
 
 # DUP: named in one place so a run that skips wholesale reports the same
 # inventory as a run that completes.
@@ -114,7 +137,11 @@ clean_lane() {
       rm -f -- "$entry" && removed=$((removed + 1))
     done
   done
-  [[ -e $VOLUME_DIR/share-bench-results.txt ]] && { printf 'removing %s\n' "$VOLUME_DIR/share-bench-results.txt"; rm -f -- "$VOLUME_DIR/share-bench-results.txt"; removed=$((removed + 1)); }
+  [[ -e $VOLUME_DIR/share-bench-results.txt ]] && {
+    printf 'removing %s\n' "$VOLUME_DIR/share-bench-results.txt"
+    rm -f -- "$VOLUME_DIR/share-bench-results.txt"
+    removed=$((removed + 1))
+  }
   for dir in "${XDG_RUNTIME_DIR:-/nonexistent}"/vivarium/"$LANE_RUN_PREFIX"-*; do
     [[ -d $dir ]] || continue
     alive=
@@ -143,9 +170,18 @@ while (($#)); do
   case $1 in
     # TEMP_ROOT does not exist yet at this point — it is created after argument
     # parsing — so `clean_lane` can rmdir the base without racing its own scratch.
-    --clean) clean_lane; exit 0 ;;
-    -h | --help) usage; exit 0 ;;
-    *) usage >&2; exit 64 ;;
+    --clean)
+      clean_lane
+      exit 0
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 64
+      ;;
   esac
 done
 
@@ -160,10 +196,7 @@ HANDSHAKE=$WORKSPACE/.vivarium-share-benchmark
 mkdir -p "$HANDSHAKE"
 RESULTS=$VOLUME_DIR/share-bench-results.txt
 
-cleanup() {
-  [[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"
-}
-trap cleanup EXIT INT TERM
+trap '[[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"' EXIT INT TERM
 
 printf 'vivarium share benchmark check (ADR-0096 worker-pool sweep)\n'
 printf '  repo:      %s\n' "$REPO_ROOT"
@@ -206,11 +239,11 @@ fi
 guest_drv_of() {
   nix eval --raw --impure --expr "
     let f = builtins.getFlake \"$FLAKE_REF\";
-        p = import $REPO_ROOT/nix {
-              nixpkgs = f.inputs.nixpkgs; microvm = f.inputs.microvm; system = \"$SYSTEM\";
-              variant = { legs = [ \"bench\" ]; virtiofsdThreadPoolSize = $1; };
-            };
-    in p.guest.config.system.build.toplevel.drvPath" 2>/dev/null
+        product = import $REPO_ROOT/nix {
+          nixpkgs = f.inputs.nixpkgs; microvm = f.inputs.microvm; system = \"$SYSTEM\";
+        };
+        verification = import $REPO_ROOT/tests/nix { inherit product; };
+    in verification.images.bench.\"$1\".guest.config.system.build.toplevel.drvPath" 2>/dev/null
 }
 ref_drv=$(guest_drv_of "${POOL_SIZES[0]}")
 shared=yes
@@ -250,7 +283,7 @@ printf -- '\n--- host tier -----------------------------------------------------
 missing=()
 [[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
 [[ -r /dev/kvm && -w /dev/kvm ]] || missing+=("/dev/kvm openable read/write")
-[[ -r /proc/1/comm && $(< /proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
+[[ -r /proc/1/comm && $(</proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
 systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
 [[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
 command -v python3 >/dev/null 2>&1 || missing+=("python3 console reader")
@@ -258,7 +291,10 @@ command -v git >/dev/null 2>&1 || missing+=("git (host-side tree generation)")
 for n in "${POOL_SIZES[@]}"; do [[ -x ${LAUNCHER[$n]:-/nonexistent} ]] || missing+=("realised launcher for pool $n"); done
 
 if ((${#missing[@]})); then
-  reason=$(IFS=', '; echo "${missing[*]}")
+  reason=$(
+    IFS=', '
+    echo "${missing[*]}"
+  )
   skip_remaining "missing prerequisites: $reason" share-bench-tree-generated
 else
   # --- the workload tree, generated ONCE, host-side ------------------------
@@ -272,7 +308,7 @@ else
   gen_status=0
   {
     per_dir=100
-    dirs=$(( (TREE_FILES + per_dir - 1) / per_dir ))
+    dirs=$(((TREE_FILES + per_dir - 1) / per_dir))
     i=0
     while ((i < dirs)); do
       d=$tree/d$i
@@ -341,7 +377,8 @@ PY
       runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
       volume=$VOLUME_DIR/share-bench-threads-$n.img
       store_volume=$VOLUME_DIR/share-bench-threads-$n-store.img
-      mkdir -p "$runtime_dir"; chmod 0700 "$runtime_dir"
+      mkdir -p "$runtime_dir"
+      chmod 0700 "$runtime_dir"
       launch_log=$TEMP_ROOT/launch-$n.log
       console_log=$TEMP_ROOT/console-$n.log
 
@@ -378,7 +415,8 @@ PY
       if wait_for_console; then
         launched=yes
       else
-        wait "$vm_pid"; launch_status=$?
+        wait "$vm_pid"
+        launch_status=$?
         launch_output=$(<"$launch_log")
         if grep -Eqi 'systemd-run|unknown option|may not be combined|Failed to (start|create) transient' <<<"$launch_output"; then
           fail "share-bench-boots: pool $n could not start (not Landlock evidence)" "$launch_output"
@@ -409,14 +447,15 @@ PY
         record "share-bench-boots: pool $n did not shut down within 2000s; terminating"
         kill -TERM "$vm_pid" 2>/dev/null || true
       fi
-      wait "$vm_pid" 2>/dev/null; vm_status=$?
+      wait "$vm_pid" 2>/dev/null
+      vm_status=$?
       wait "$reader_pid" 2>/dev/null
 
       # DUP-with-a-difference: mixed case, because upstream's metric names are
       # mixed case and vivarium's echo their shape without stealing their words.
       bench_all=$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\r//g' "$console_log" 2>/dev/null | grep -ao 'VIVARIUM_BENCH_[A-Za-z_0-9]*=.*' || true)
       {
-        printf 'pool=%s vm_status=%s launcher_to_socket_ms=%s\n' "$n" "$vm_status" $(( (socket_ns - launch_epoch_ns) / 1000000 ))
+        printf 'pool=%s vm_status=%s launcher_to_socket_ms=%s\n' "$n" "$vm_status" $(((socket_ns - launch_epoch_ns) / 1000000))
         printf '%s\n' "$bench_all"
       } >>"$RESULTS"
 
@@ -449,9 +488,14 @@ PY
     fi
 
     for pair in "metadata:workspace_git_status_ms:volume_git_status_ms" "content:workspace_rg_ms:volume_rg_ms"; do
-      label=${pair%%:*}; rest=${pair#*:}; share_m=${rest%%:*}; vol_m=${rest#*:}
-      check="share-bench-metadata-sweep"; [[ $label == content ]] && check="share-bench-content-sweep"
-      s=$(sweep_of "$share_m"); v=$(sweep_of "$vol_m")
+      label=${pair%%:*}
+      rest=${pair#*:}
+      share_m=${rest%%:*}
+      vol_m=${rest#*:}
+      check="share-bench-metadata-sweep"
+      [[ $label == content ]] && check="share-bench-content-sweep"
+      s=$(sweep_of "$share_m")
+      v=$(sweep_of "$vol_m")
       if [[ -z $s ]]; then
         skip "$check: the guest reported no $label timings"
       else
@@ -485,7 +529,8 @@ PY
       skip "share-bench-concurrent-sweep: the guest reported no concurrent timings"
     fi
 
-    cache_share=$(bench_field 'cache_on_share_ms'); cache_vol=$(bench_field 'cache_on_volume_ms')
+    cache_share=$(bench_field 'cache_on_share_ms')
+    cache_vol=$(bench_field 'cache_on_volume_ms')
     if [[ -z $cache_share && -z $cache_vol ]]; then
       skip "share-bench-cache-placement: the guest reported no cache-placement timings"
     else
@@ -495,7 +540,8 @@ PY
       pass "share-bench-cache-placement: both placements are on the record"
     fi
 
-    w=$(bench_field 'home_volume_write_MiBps'); r=$(bench_field 'home_volume_read_MiBps')
+    w=$(bench_field 'home_volume_write_MiBps')
+    r=$(bench_field 'home_volume_read_MiBps')
     if [[ -z $w && -z $r ]]; then
       skip "share-bench-block-throughput: the guest reported no block figures"
     else

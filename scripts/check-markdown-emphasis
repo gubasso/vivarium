@@ -17,10 +17,14 @@ ALLOW_RE = re.compile(r"^<!-- allow-emphasis:\s*(.*?)\s*-->$")
 # A fence may sit inside a container, so allow a blockquote prefix and the
 # indentation a list item gives its content. The closing fence must repeat the
 # same blockquote depth.
-FENCE_RE = re.compile(r"^(?P<prefix>[ \t]*(?:>[ \t]*)*)(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
+FENCE_RE = re.compile(
+    r"^(?P<prefix>[ \t]*(?:>[ \t]*)*)(?P<marker>`{3,}|~{3,})(?P<info>.*)$"
+)
 # Lines that begin a new leaf block. Inline parsing never runs across one of
 # these, so an unmatched backtick above must not mask emphasis below.
-BLOCK_START_RE = re.compile(r"^ {0,3}(?:#{1,6}(?:\s|$)|>|[-+*](?:\s|$)|\d{1,9}[.)](?:\s|$)|<!--)")
+BLOCK_START_RE = re.compile(
+    r"^ {0,3}(?:#{1,6}(?:\s|$)|>|[-+*](?:\s|$)|\d{1,9}[.)](?:\s|$)|<!--)"
+)
 HEADING_RE = re.compile(r"^ {0,3}#{1,6}(?:\s|$)")
 QUOTE_RE = re.compile(r"^[ \t]*(?:>[ \t]*)*")
 HORIZONTAL_RE = re.compile(r"^[ ]{0,3}(?:(?:\*\s*){3,}|(?:_\s*){3,})$")
@@ -137,10 +141,14 @@ def delimiter_runs(text: str) -> list[Delimiter]:
         previous = text[index - 1] if index else None
         following = text[end] if end < len(text) else None
         left = not is_space(following) and (
-            not is_punctuation(following) or is_space(previous) or is_punctuation(previous)
+            not is_punctuation(following)
+            or is_space(previous)
+            or is_punctuation(previous)
         )
         right = not is_space(previous) and (
-            not is_punctuation(previous) or is_space(following) or is_punctuation(following)
+            not is_punctuation(previous)
+            or is_space(following)
+            or is_punctuation(following)
         )
         if char == "_":
             can_open = left and (not right or is_punctuation(previous))
@@ -170,7 +178,9 @@ def emphasis_columns(text: str, code_masked: str | None = None) -> list[int]:
         if current.can_close:
             for offset in range(len(openers) - 1, -1, -1):
                 opener = openers[offset]
-                if opener.char != current.char or violates_multiple_of_three(opener, current):
+                if opener.char != current.char or violates_multiple_of_three(
+                    opener, current
+                ):
                     continue
                 found.append(opener.start + 1)
                 del openers[offset]
@@ -188,7 +198,11 @@ def scannable_lines(text: str) -> list[tuple[int, str]]:
     fence_quote = 0
     for number, line in enumerate(text.splitlines(), 1):
         fence = FENCE_RE.match(line)
-        if fence_char is not None and fence_quote and QUOTE_RE.match(line)[0].count(">") < fence_quote:
+        if (
+            fence_char is not None
+            and fence_quote
+            and QUOTE_RE.match(line)[0].count(">") < fence_quote
+        ):
             # An unclosed fence ends where its containing blockquote ends, so
             # this line is outside it and is scanned normally.
             fence_char = None
@@ -265,10 +279,20 @@ def scan_text(text: str) -> list[Violation]:
             match = ALLOW_RE.fullmatch(line)
             reason = match.group(1).strip() if match else ""
             if not reason:
-                violations.append(Violation(number, 1, "allow-emphasis requires a non-empty reason"))
+                violations.append(
+                    Violation(number, 1, "allow-emphasis requires a non-empty reason")
+                )
                 pending_allow = None
-            elif re.search(r"\b(?:all|entire|file|global|broad)\b", reason, re.IGNORECASE):
-                violations.append(Violation(number, 1, "allow-emphasis reason may not grant broad or file-level scope"))
+            elif re.search(
+                r"\b(?:all|entire|file|global|broad)\b", reason, re.IGNORECASE
+            ):
+                violations.append(
+                    Violation(
+                        number,
+                        1,
+                        "allow-emphasis reason may not grant broad or file-level scope",
+                    )
+                )
                 pending_allow = None
             else:
                 pending_allow = (number, reason)
@@ -282,12 +306,25 @@ def scan_text(text: str) -> list[Violation]:
             if columns and number == allow_line + 1:
                 pending_allow = None
                 continue
-            violations.append(Violation(allow_line, 1, "allow-emphasis must immediately precede a violating line"))
+            violations.append(
+                Violation(
+                    allow_line,
+                    1,
+                    "allow-emphasis must immediately precede a violating line",
+                )
+            )
             pending_allow = None
-        violations.extend(Violation(number, column, "Markdown emphasis is not allowed") for column in columns)
+        violations.extend(
+            Violation(number, column, "Markdown emphasis is not allowed")
+            for column in columns
+        )
 
     if pending_allow is not None:
-        violations.append(Violation(pending_allow[0], 1, "allow-emphasis has no following line to exempt"))
+        violations.append(
+            Violation(
+                pending_allow[0], 1, "allow-emphasis has no following line to exempt"
+            )
+        )
     return violations
 
 
@@ -325,7 +362,10 @@ def self_test() -> int:
             path.write_text(source, encoding="utf-8")
             actual = len(scan_text(path.read_text(encoding="utf-8")))
             if actual != expected:
-                print(f"self-test case {index} failed: expected {expected}, got {actual}", file=sys.stderr)
+                print(
+                    f"self-test case {index} failed: expected {expected}, got {actual}",
+                    file=sys.stderr,
+                )
                 failed += 1
     if failed:
         return 1

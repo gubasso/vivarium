@@ -21,4 +21,4 @@ Exact calculations, output fields, thresholds, and invariants N22/N23 live in [r
 
 ## Unresolved
 
-- [Q-003](../plan/open-questions.md#q-003--why-is-guest-userspace-boot-time-empty-and-what-metric-replaces-it-if-unavailable) and [slice 001](../plan/slices/001-close-host-measurement-gaps/README.md) own the remaining timing evidence.
+- [Slice 001](../plan/slices/001-close-host-measurement-gaps/README.md) owns the remaining timing evidence. It closed Q-003, which this line used to link; the [open-question register](../plan/open-questions.md) no longer carries that entry, so the anchor is gone rather than moved.

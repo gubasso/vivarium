@@ -27,7 +27,8 @@
 
 let
   # The declared order is the run order. Adding a leg means one entry here, one
-  # in `legModules`, one in `legUnit`, and the file.
+  # in `legModules`, one in `legUnit`, and the file. Unit names are derived
+  # here once and carry their `.service` suffix for contract consumers.
   legOrder = [
     "spike"
     "gc-interlock"
@@ -82,6 +83,8 @@ let
     { pkgs, ... }:
     {
       systemd.services.vivarium-measurement-stop = {
+        enableStrictShellChecks = true;
+        environment.VIVARIUM_MEASUREMENT_LEGS = lib.concatStringsSep "," selected;
         description = "Stop the measurement image once every selected leg has run";
         wantedBy = [ "multi-user.target" ];
         after = map (l: "${legUnit.${l}}.service") selected;
@@ -97,20 +100,20 @@ let
           pkgs.coreutils
           pkgs.systemd
         ];
-        script = ''
-          set -u
-          exec >/dev/console 2>&1
-          echo "VIVARIUM_MEASUREMENT_COMPLETE=yes legs=${lib.concatStringsSep "," selected}"
-          systemctl poweroff
-        '';
+        script = builtins.readFile ./measurement-stop.sh;
       };
     };
 in
 
 lib.throwIf (unknown != [ ])
   "vivarium measurement: unknown leg(s) ${lib.concatStringsSep ", " unknown} (known: ${lib.concatStringsSep ", " legOrder})"
-  (
-    lib.optionals (selected != [ ]) (
+  {
+    modules = lib.optionals (selected != [ ]) (
       [ legArgs ] ++ map (l: legModules.${l}) selected ++ chain ++ [ stopUnit ]
-    )
-  )
+    );
+    # The contract sorts the union before rendering, so selected-order here
+    # is not load-bearing for derivation identity.
+    units = lib.optionals (selected != [ ]) (
+      map (l: "${legUnit.${l}}.service") selected ++ [ "vivarium-measurement-stop.service" ]
+    );
+  }
