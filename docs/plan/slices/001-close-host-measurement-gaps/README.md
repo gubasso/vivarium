@@ -34,7 +34,7 @@ Instrument a real collection so per-path decisions and actual upper-filesystem r
 - [`../../../reference/backend-capabilities.md`](../../../reference/backend-capabilities.md) — owns pinned upstream facts used by the arms.
 - [`../../../explanation/guest-store-and-volumes.md`](../../../explanation/guest-store-and-volumes.md) — owns the storage topology and collection boundary.
 - [`../../../explanation/shared-filesystems.md`](../../../explanation/shared-filesystems.md) — owns the worker-pool boundary.
-- [`../../../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md`](../../../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md) — fixes the current pool policy.
+- [`../../../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md`](../../../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md) — fixed the pool policy this slice measured, and was superseded by its evidence.
 - [`../../../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md`](../../../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md) — fixes the collection policy.
 - [`../../../decisions/ADR-0095-measurement-services-live-in-a-measurement-image.md`](../../../decisions/ADR-0095-measurement-services-live-in-a-measurement-image.md) — fixes the measurement-image seam.
 
@@ -54,8 +54,10 @@ When boot timing runs, the measurement harness SHALL record guest userspace time
 
 ## Done when
 
-Every acceptance assertion above holds and is demonstrated by the evidence it names, Q-001, Q-002, and Q-003 exit through recorded measurements, and the [`milestones.md`](../../milestones.md) row flips to `done`.
+Every acceptance assertion above holds and is demonstrated by the evidence it names, the three questions this slice carried exit through recorded measurements, and the [`milestones.md`](../../milestones.md) row flips to `done`.
 
 ## Revisions
 
-None.
+2026-08-05 — `In scope` item 3 exits through its acceptance clause's second branch. `systemd-analyze time` is refused, not empty: it requires `FinishTimestampMonotonic`, which PID 1 sets only when the boot transaction's job queue empties, and every measurement leg plus the stop unit is a job in that transaction. Recorded as unavailable with `guest_userspace_to_probe_ms` named in its place. No change to Goal, Core, Appetite or Acceptance.
+
+2026-08-05 — `In scope` item 2 spent one extra lane run. The first concurrent workload discovered its own file list, so `readdirplus` answered it and it never reached the daemon; the numbers were discarded and the leg rebuilt around a list built before the timed region. Within appetite.

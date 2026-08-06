@@ -29,5 +29,4 @@ Collection and reclamation are distinct. The collector decides which paths may b
 
 ## Unresolved
 
-- [Q-001](../plan/open-questions.md#q-001--why-does-the-guest-store-collector-satisfy-its-byte-target-without-reclaiming-upper-layer-blocks) owns the unexplained collection result.
-- [Q-003](../plan/open-questions.md#q-003--why-is-guest-userspace-boot-time-empty-and-what-metric-replaces-it-if-unavailable) matters where timing affects the storage experiment. Both are bounded by [slice 001](../plan/slices/001-close-host-measurement-gaps/README.md).
+- Space-triggered collection does not bound the store volume while [KI-0001](../reference/known-issues/KI-0001/README.md) is open: the pinned collector ends every pass after one path, on an uninitialised byte count it reads for a lower-only path. The trigger and its arithmetic are measured exact; the pass that follows does nothing. Whether vivarium guards against this, and how, is undecided and needs its own record.

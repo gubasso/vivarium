@@ -24,7 +24,7 @@ let
     # that measures a REAL crossing needs it absent, not merely inert, because a
     # daemon reading it never consults `statvfs` at all.
     storeFreeSpaceHook = true;
-    virtiofsdThreadPoolSize = 4; # ADR-0051
+    virtiofsdThreadPoolSize = 0; # ADR-0096, measured; was 4 under ADR-0051
   };
 
   # A shallow `//` accepts a typo and yields an image that looks right and is

@@ -5,11 +5,13 @@
   storeCanaryExpression,
   gcInterlockCanaryExpression,
   gcInterlockControlExpression,
-  # ADR-0051 pins a small non-zero pool, uniform across shares. The *value* lives
+  # ADR-0096 takes the daemon's own default, uniform across shares — measured, on
+  # a concurrent sweep in which no non-zero pool won a cell. The *value* lives
   # here rather than in `spec/06`, which states the property only, precisely so a
-  # benchmark can move it without touching a specified sentence. Parameterised so
-  # the sweep varies it without rebuilding the guest (ADR-0095).
-  virtiofsdThreadPoolSize ? 4,
+  # benchmark can move it without touching a specified sentence; that is what
+  # happened. Parameterised so the sweep varies it without rebuilding the guest
+  # (ADR-0095).
+  virtiofsdThreadPoolSize ? 0,
 }:
 
 let

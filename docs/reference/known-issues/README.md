@@ -19,8 +19,9 @@ Expand the dossier while the issue is hot. When resolved, collapse it into one s
 
 ## Active
 
-| id | status | severity | affected tests | external system | upstream reference | mask |
-| -- | ------ | -------- | -------------- | --------------- | ------------------ | ---- |
+| id                             | status | severity | affected tests                                                        | external system | upstream reference | mask |
+| ------------------------------ | ------ | -------- | --------------------------------------------------------------------- | --------------- | ------------------ | ---- |
+| [KI-0001](./KI-0001/README.md) | open   | high     | `store-pressure-collector-freed`, `store-pressure-collector-per-path` | Nix 2.34.7      | not yet reported   | none |
 
 ## Resolved
 

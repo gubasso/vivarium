@@ -2,18 +2,6 @@
 
 This is triage, not a queue. Every question blocks named work and leaves through exactly one recorded exit.
 
-## Q-001 — Why does the guest store collector satisfy its byte target without reclaiming upper-layer blocks?
-
-Blocks: slice 001, `Core`. Raised: the 2026-08-05 real-host run. Exit: recorded measurement of per-path deletion decisions and block deltas.
-
-## Q-002 — Which small non-zero share worker pool survives a genuinely concurrent workload?
-
-Blocks: slice 001, `Acceptance` line 2, and any revision of ADR-0051. Raised: the single-process sweep. Exit: recorded concurrent benchmark measurement.
-
-## Q-003 — Why is guest userspace boot time empty, and what metric replaces it if unavailable?
-
-Blocks: slice 001, `In scope` item 3. Raised: four empty `systemd-analyze time` observations. Exit: recorded measurement, or source-grounded recorded unavailability plus a replacement metric.
-
 ## Q-004 — Which supervision model keeps every child and the console reader inside the VM lifetime?
 
 Blocks: slice 002, `Core`, and its detached-start acceptance assertion. Raised: promotion of the Stage 3 supervision and console work. Exit: an ADR opened within slice 002.

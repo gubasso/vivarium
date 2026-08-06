@@ -1,5 +1,6 @@
 # The share and boot benchmark: what it costs a user to work in the sandbox, and
-# whether ADR-0051's pinned worker-pool size is the right number.
+# whether the pinned worker-pool size is the right number (ADR-0096, which this
+# leg's concurrent sweep moved off ADR-0051's `4`).
 #
 # **Metric names are vivarium's own, deliberately.** The backlog asked for
 # upstream Cloud Hypervisor's names so the figures would be comparable; reading
@@ -82,7 +83,28 @@ in
       # Guest-side only. The host measures its own launcher-exec-to-first-marker
       # interval separately and reports it under a different name; two numbers,
       # both named, neither impersonating the other.
+      #
+      # `systemd-analyze time` is unreachable from here, and the reason is in
+      # systemd's own source rather than in this probe: `analyze-time-data.c`
+      # refuses with "Bootup is not yet finished" unless
+      # `FinishTimestampMonotonic` is set, and PID 1 sets that only when the boot
+      # transaction's job queue empties. Every measurement leg is a job in that
+      # transaction, and so is the unit that powers the machine off, so a leg
+      # that waited for the timestamp would be the reason it never arrives. Its
+      # stderr is CAPTURED rather than discarded, because the refusal is the
+      # evidence for that claim; the first round read the empty stdout as zero.
+      analyze_err=$(systemd-analyze time 2>&1 >/dev/null | head -n1)
       echo "VIVARIUM_BENCH_guest_userspace_ms=$(systemd-analyze time 2>/dev/null | head -n1 | tr '\n' ' ')"
+      echo "VIVARIUM_BENCH_guest_userspace_unavailable=$analyze_err"
+      # The replacement metric, and it is a different quantity with its own name:
+      # userspace start to this probe, which sits at a fixed position in the
+      # transaction, so it is comparable across boots even though it is not a
+      # boot time. The timestamps beside it are set early and are always
+      # readable. `/proc/uptime` resolves to 10 ms, orders below the interval.
+      us=$(systemctl show -p UserspaceTimestampMonotonic --value 2>/dev/null)
+      now=$(awk '{printf "%d", $1 * 1000000}' /proc/uptime)
+      echo "VIVARIUM_BENCH_guest_userspace_to_probe_ms=$(( (now - ''${us:-0}) / 1000 )) userspace_us=''${us:-none}"
+      echo "VIVARIUM_BENCH_guest_timestamps=$(systemctl show -p KernelTimestampMonotonic -p InitRDTimestampMonotonic -p UnitsLoadFinishTimestampMonotonic -p FinishTimestampMonotonic 2>/dev/null | tr '\n' ';')"
       echo "VIVARIUM_BENCH_guest_blame_top=$(systemd-analyze blame 2>/dev/null | head -n5 | tr '\n' ';')"
 
       # --- the workload tree --------------------------------------------------
@@ -148,6 +170,45 @@ in
       timed volume_git_status_ms    "$vol_tree"   git status --porcelain
       timed workspace_rg_ms         "$share_tree" rg --no-messages --count-matches vivarium
       timed volume_rg_ms            "$vol_tree"   rg --no-messages --count-matches vivarium
+
+      # --- the concurrent sweep -----------------------------------------------
+      # The one shape that can move the pool constant. A non-zero pool exists to serve
+      # requests CONCURRENTLY; with the pool disabled the daemon executes every
+      # request for a share on one thread, in order, with head-of-line blocking.
+      # Both workloads above are a single process, so neither reaches the thing
+      # the constant is for — which is why the first sweep did not discriminate
+      # and why this is not another repetition of it.
+      #
+      # The workload is `stat` over a path list built BEFORE the timed region,
+      # and that ordering is the whole measurement. A walk that discovers the
+      # paths as it goes is answered from `readdirplus`, which returns attributes
+      # in bulk and pre-populates the guest's inode cache — measured here first,
+      # and it made the share as fast as the local volume, which is the signature
+      # of a workload that never reached the daemon. Statting a precomputed list
+      # after a cache drop issues one lookup per file with nothing to batch it,
+      # which is the same access shape as `git status` over its index — the one
+      # this lane has already measured as share-bound.
+      concurrent() { # concurrent <metric> <dir>
+        local metric=$1 dir=$2 c r t0 w list
+        list=/home/vivarium/bench-list-$metric
+        find "$dir" -type f > "$list"
+        for c in 1 4 16; do
+          for r in $(seq 1 "$REPS"); do
+            drop_caches
+            t0=$(date +%s%N)
+            for w in $(seq 1 "$c"); do
+              awk -v w="$w" -v c="$c" 'NR % c == w % c' "$list" \
+                | xargs -r stat -c '%i %s' >/dev/null 2>&1 &
+            done
+            wait
+            echo "VIVARIUM_BENCH_$metric=$(ms_since "$t0") conc=$c rep=$r pool=$POOL"
+          done
+        done
+        rm -f "$list"
+      }
+
+      concurrent workspace_concurrent_lstat_ms "$share_tree"
+      concurrent volume_concurrent_lstat_ms    "$vol_tree"
 
       # --- caches on the volume vs on the share -------------------------------
       # `spec/06` says "keep regenerable caches off the share" and argues it from

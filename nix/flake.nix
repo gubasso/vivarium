@@ -93,11 +93,12 @@
             storeFreeSpaceHook = false;
           };
 
-          # ADR-0051's constant, under test. Upstream's own default is 0 and the
-          # one at-scale consumer that measured a metadata-heavy workload pins 1,
-          # so 4 is defensible but is nobody's published default — and no amount
-          # of reading can pick it, because it depends on host cores, request mix
-          # and blocking operations.
+          # The pool constant, under test. ADR-0051 pinned 4 on mechanism alone;
+          # the concurrent sweep these variants run is what moved it to the
+          # daemon's own 0 (ADR-0096). They stay because the constant is only
+          # ever as good as its last measurement, and this is the lane that
+          # produces one — it depends on host cores, request mix and blocking
+          # operations, none of which reading can settle.
           #
           # The pool size is launch-channel, so these four variants share ONE
           # guest closure and the sweep costs four launcher builds rather than

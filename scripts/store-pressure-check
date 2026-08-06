@@ -112,6 +112,7 @@ ALL_CHECKS=(
   store-pressure-inodes-not-binding
   store-pressure-discard-advertised
   store-pressure-collector-freed
+  store-pressure-collector-per-path
   store-pressure-fstrim-reclaimed
   store-pressure-discard-returns-blocks
   store-pressure-host-image-reclamation
@@ -634,6 +635,24 @@ PY
             pass "store-pressure-collector-freed: the collector's real effect is on the record"
           else
             pass "store-pressure-collector-freed: dead paths fell from $dead_first to $dead_after, so the collection removed store paths"
+          fi
+
+          # The collector's own decisions, path by path. `deleteFromStore` prints
+          # `deleting '<path>'` for everything it attempts; the guest classifies
+          # each against the upper layer and the lower database, which is the
+          # difference between "the collector had nothing to free" and "the
+          # collector freed nothing it could have". This check RECORDS the
+          # classification and does not judge the mechanism — that belongs in the
+          # register, with the source citation beside it.
+          path_lines=$(sp_lines ARME_PATHS)
+          if [[ -z $fired_total || $fired_total -eq 0 ]]; then
+            skip "store-pressure-collector-per-path: no collection was announced, so no path was attempted"
+          elif [[ -z $path_lines ]]; then
+            fail "store-pressure-collector-per-path: a collection fired and the guest reported no classification"
+          else
+            record "store-pressure-collector-per-path: lower database holds $(sp_line ARME_LOWER_VALID) valid paths"$'\n'"$path_lines"
+            record "store-pressure-collector-per-path: bounded per-class samples"$'\n'"$(sp_lines ARME_SAMPLE)"
+            pass "store-pressure-collector-per-path: every attempted path is classified against the upper layer and the lower database"
           fi
 
           trim=$(sp_line FSTRIM)

@@ -337,9 +337,28 @@ And the collection freed nothing. This is the finding.
 
 Free space did not recover — it fell by the 256 MiB the same iteration wrote — and the dead-path count rose monotonically across the whole run and never fell. No path was reclaimed. The host image's allocated blocks tell the same story from the outside.
 
-Stated gap: the cause is a hypothesis, not a measurement. The dead set here is ~24,900 paths, which is essentially the entire host store seen through the overlay's lower layer, and a `local-overlay` store deliberately declines to delete a path that is valid only below. The collector's own `bytesFreed` is apparent size rather than allocated blocks — already on record — so it could satisfy a byte target by walking lower-only paths that cost the upper filesystem nothing, and stop. That is consistent with everything observed and none of it is measured. Closing it needs the collector's own deletion decisions instrumented per path, not another boot of this shape.
+The cause was a hypothesis when this entry was first written — that the collector satisfied its target by walking lower-only paths that cost the upper filesystem nothing. The next entry measures it, and the real mechanism is narrower and worse.
 
-What this does not say. It does not say ADR-0089's policy is wrong, and it does not license a second collection mechanism. It says the policy does not currently bound the store volume in this topology, and that the reason is unknown.
+What this does not say. It does not say ADR-0089's policy is wrong, and it does not license a second collection mechanism. It says the policy does not currently bound the store volume in this topology.
+
+### The collection ends after one path, on an uninitialised byte count read through the overlay
+
+Measured by `scripts/store-pressure-check --arm e` on a real host, twice, with the collector's own decisions classified per path. Two independent boots produced the identical result, which matters because a single one would have been an anecdote about a stack value.
+
+Every path the collector attempts is announced on the client's stderr by `deleteFromStore` (`src/libstore/gc.cc`), so the attempted set needs no hook. The guest classifies each against the upper layer as it stood before the build and against the lower store's database — 523 valid paths, the boot closure and nothing else.
+
+| iteration | announced target (bytes) | paths attempted | in the upper layer | absent from it | stopped at target |
+| --------- | ------------------------ | --------------- | ------------------ | -------------- | ----------------- |
+| 10        | 754,741,248              | 1               | 0                  | 1              | yes               |
+| 11        | 1,023,356,928            | 1               | 0                  | 1              | yes               |
+
+One path per collection. The same path each time, and it is neither the guest's own garbage nor a member of either database: `nix-main-2.34.8`, a path from the host store, physically present through the lower share and formally unknown to the guest, which the collector reaches because it `readdir()`s the store directory and treats every unregistered entry as garbage — the behaviour recorded above. So the earlier hypothesis is refuted in its detail: the collector does not walk thousands of lower-only paths to satisfy its target. It walks one, and then reports the target met.
+
+There is no numeric "bytes freed" to put beside the request, and that absence is itself upstream's: `LocalStore::autoGC` constructs a `GCResults`, passes it to `collectGarbage`, and discards it without logging. The only report the collection makes about its own total is the stop line, which asserts that the total passed the target. So the reported figure in the table is that assertion, and it is exactly the quantity the next paragraph shows to be indeterminate.
+
+The mechanism is a defect in the pinned collector, and it is visible in three lines of upstream source rather than inferred. `gc.cc`'s `deleteFromStore` declares `uint64_t bytesFreed;` without an initialiser, passes it by reference to `deleteStorePath`, adds it to `results.bytesFreed`, and throws `GCLimitReached` once that total passes the target. `LocalOverlayStore::deleteStorePath` (`src/libstore/local-overlay-store.cc`) returns without touching the variable whenever the path is absent from the upper layer, which is exactly this case. The only assignment in the chain is `deletePath`'s own `bytesFreed = 0` (`src/libutil/unix/file-system.cc`), and that call is never reached. So the first unregistered lower-only entry the collector meets adds an indeterminate value to the total, the limit is declared reached, and the pass ends having freed nothing. Tracked as [`known-issues/KI-0001`](./known-issues/KI-0001/README.md).
+
+Two consequences worth keeping apart. The reachability is vivarium's, not upstream's: this needs a `local-overlay` store whose lower layer physically holds paths its database does not know, which is what [`../decisions/ADR-0038-guest-store-sharing.md`](../decisions/ADR-0038-guest-store-sharing.md) creates by sharing the host's literal store. And the effect is not a rounding error but the whole policy: [`../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md`](../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md)'s trigger and arithmetic are confirmed exact, and every pass they start terminates after one no-op.
 
 ### Guest `fstrim` does return blocks to the host, measured on a probe the collector cannot confound
 
@@ -382,6 +401,24 @@ The content leg does separate them, and it runs backwards — repetitions are ti
 
 This does not move [`../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md`](../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md)'s constant, and the reason is the important part. A non-zero pool exists to serve concurrent requests; with the pool disabled the daemon executes every request for that share on one thread, in order, with head-of-line blocking. Both workloads here are a single process, so neither exercises the thing the pool is for. What the numbers show is per-request dispatch overhead with nothing to overlap — a real cost, measured, and not the case the decision turns on. `todo.md`'s prescription of `git status` + `rg` cannot settle this constant; a concurrent workload is needed.
 
+### A concurrent workload does discriminate, and every non-zero pool is slower
+
+Measured by `scripts/share-benchmark-check` over two independent lane runs — eight boots, four pool sizes each, guest 4 vCPU and 4 GiB. The workload is the one the entry above says was missing: `stat` over a path list built before the timed region, split across `C` concurrent workers, with the guest page cache dropped before every repetition. The share carries exactly one request queue (no `num_queues` is passed to the backend's `--fs` device), so with the pool disabled that queue really is served by one thread.
+
+| workers | pool 0 | pool 1 | pool 2 | pool 4 | ext4 volume |
+| ------- | ------ | ------ | ------ | ------ | ----------- |
+| 1       | 642    | 797    | 863    | 973    | 161         |
+| 4       | 211    | 240    | 275    | 315    | 65          |
+| 16      | 192    | 214    | 192    | 212    | 74          |
+
+Best of three repetitions in milliseconds, first run; the second run reproduces the ordering with every figure 5-25% higher. At one and four workers the ordering is monotone in the pool size in both runs, and the gap between pool 0 and pool 4 is wider than any pool's own spread. At sixteen the pools converge and the sweep does not separate them.
+
+Two things follow, and the second is the one that moves a decision. A disabled pool is not the serialisation penalty it was argued to be: pool 0 went from 642 ms to 211 ms as the client count went from one to four, so a single serving thread pipelines a full queue rather than stalling behind it. And a non-zero pool never won a single cell — its per-request dispatch is a real cost with nothing to recover it. [`../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md`](../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md) is superseded by [`../decisions/ADR-0096-the-share-worker-pool-takes-the-daemon-default.md`](../decisions/ADR-0096-the-share-worker-pool-takes-the-daemon-default.md) on this evidence.
+
+The shipped image was rebuilt at the new value and re-verified by `scripts/first-microvm-check` on the same host: `PASS=33 FAIL=0 SKIP=1`, identical to the result recorded for the previous constant, with the launcher's own arguments carrying `virtiofsdThreadPoolSize=0`.
+
+Stated boundary, and it is what keeps this honest. The host page cache is warm throughout by construction, so every request the daemon serves is satisfied from memory. The case a pool exists for — a request that blocks long enough to hold the queue — is not present in this measurement and remains unmeasured. What is measured is that no pool size above the daemon's own default helped on any workload this project has been able to run.
+
 ### Working over the share costs about four times a local volume for metadata
 
 Same run. Against a byte-identical tree on the guest's own ext4 volume, `git status` over virtiofs is 4.5–5× slower (271–304 ms against 58–68 ms) and `rg` is 2.3–3× slower (693–1058 ms against 296–343 ms). That is the first measured figure behind [`spec/06`](./spec/06-workspace-and-project-environment.md)'s "keep regenerable caches off the share", which until now was argued from negative-lookup semantics alone.
@@ -390,7 +427,13 @@ The cache-placement leg did not discriminate — 62–81 ms with the tool cache 
 
 Block throughput on the guest's volume, for context: sustained writes 1.4–1.5 GB/s and reads 6.8–7.8 GB/s with `O_DIRECT`, uniform across pool sizes as expected — the block path does not go through the filesystem daemon. First-pass writes ranged from 64 MB/s to 1.5 GB/s and are not comparable: the volume is a sparse image on copy-on-write btrfs, so a first write measures allocation. The second pass is the number.
 
-Stated gap: `guest_userspace_ms` came back empty on all four boots. `systemd-analyze time` produced nothing from inside the measurement unit, so the guest-side half of boot timing is unmeasured. The host-side interval — launcher `exec` to console socket — was 247–371 ms across the four boots, and the shipped image reached `multi-user.target` in 7.1 s. Neither is upstream Cloud Hypervisor's `boot_time_ms`, which measures a kernel-internal debug-I/O-port interval; see the naming note below.
+The host-side interval — launcher `exec` to console socket — was 247–371 ms across the four boots, and the shipped image reached `multi-user.target` in 7.1 s. Neither is upstream Cloud Hypervisor's `boot_time_ms`, which measures a kernel-internal debug-I/O-port interval; see the naming note below.
+
+### Guest boot time is unreachable from inside the boot transaction, and the replacement is a different quantity
+
+`guest_userspace_ms` came back empty on the first four boots, and the reason is not that the guest had no answer. `systemd-analyze time` refuses unless `FinishTimestampMonotonic` is set (`src/analyze/analyze-time-data.c`), PID 1 sets it only when the boot transaction's job queue empties, and every measurement leg plus the unit that powers the machine off is a job in that transaction. A leg that waited for the timestamp would be the reason it never arrived. The refusal is now captured rather than discarded, and it is quoted verbatim in the lane's output: `Bootup is not yet finished (org.freedesktop.systemd1.Manager.FinishTimestampMonotonic=0)`. Reading its empty stdout as a zero was the defect; a value that is unavailable is not a quantity.
+
+The replacement metric is `guest_userspace_to_probe_ms` — the interval from `UserspaceTimestampMonotonic` to the benchmark leg, which sits at a fixed position in the transaction. It is not a boot time and does not claim to be one; it is comparable across boots because its endpoints are. Measured at 2,414–2,492 ms across four boots, against host launcher-to-console-socket intervals of 267–420 ms on the same boots.
 
 ### Cloud Hypervisor's published metric names are not reusable, so vivarium's benchmark uses its own
 
@@ -422,7 +465,7 @@ Confirmed by boot: `scripts/first-microvm-check` against the measurement image r
 
 One clean run proves that an outcome is possible; it is not evidence of reliability, low variance, or the absence of intermittent failure. Repeat runs whenever the claim depends on any of those properties.
 
-Five of this harness's own checks have been defects of the same shape — a check whose form encoded a wrong assumption, so it passed or failed for the wrong reason:
+Six of this harness's own checks have been defects of the same shape — a check whose form encoded a wrong assumption, so it passed or failed for the wrong reason:
 
 - demanding a seccomp filter of a thread-group leader that never carries one;
 - a `[PASS]` that tested process exit status while claiming the guest diagnostic had completed;
@@ -430,9 +473,11 @@ Five of this harness's own checks have been defects of the same shape — a chec
 - an inode-headroom gate that read a free-inode count of zero as exhaustion, when a filesystem with no fixed inode table reports zero for both the total and the free count and means "not applicable". It failed a host with 160 GiB free;
 - an image that carried upstream Nix's free-space test hook into an arm measuring a real crossing. The hook was seeded far above the threshold, so it was inert by value — and the arm needed it absent by construction. A daemon reading a file that says one tebibyte never consults `statvfs` at all, so the run reported "the trigger did not fire" about a trigger that was never shown the crossing.
 
+- a concurrent share workload whose file list was discovered by the walk that timed it. `readdirplus` returns attributes in bulk, so the per-file requests the measurement was queueing up never left the guest — and the share came out as fast as the local volume, which is the signature of a workload that never reached the daemon at all. Building the list before the timed region turned the same tool into a 4x share-versus-volume ratio and a sweep that discriminates.
+
 A check that fails is cheap. A check that passes vacuously, or fails for the wrong reason, sends the fix to the wrong layer — and the third one above hid a real transport defect behind a green result for two rounds. When a check's subject and its assertion can drift apart, assert on the thing the check is named after.
 
-The last two are worth separating from the first three, because they are not about assertions at all. Inert is not absent. A knob set to a harmless value is still a knob in the path, and an experiment that needs the path clear must remove it rather than neutralise it. And a value that is "not applicable" is not a value: before treating a reading as a quantity, check that the thing being read has one.
+The last three are worth separating from the first three, because they are not about assertions at all. Inert is not absent. A knob set to a harmless value is still a knob in the path, and an experiment that needs the path clear must remove it rather than neutralise it. A value that is "not applicable" is not a value: before treating a reading as a quantity, check that the thing being read has one. And a workload is not a workload until it reaches its subject — when a share performs like a local disk, suspect the measurement before believing the result.
 
 These are all defects in checks. The same round produced one in the repository's own shape, and it is worth naming beside them because the failure mode is identical: the root flake had been accumulating product outputs one plausible line at a time, until a dev-environment file was building guests. Prose alone would not have caught the next one, so `scripts/check-flake-boundary` now asserts it as a pre-commit hook — on the flake's evaluated attribute names, not its source text, because an output merged in with `//` is invisible to a grep and that is exactly the shape that got through. The rule itself lives in `AGENTS.md`.
 

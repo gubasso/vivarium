@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
 # Sweep virtiofsd's worker-pool size and measure what it costs a user to work in
-# the sandbox. ADR-0051 pins `4`; upstream's own default is `0` and the one
-# at-scale consumer that measured a metadata-heavy workload pins `1`, so `4` is
-# defensible but is nobody's published default. No amount of reading can pick it
-# — it depends on host cores, request mix and blocking operations — so this lane
-# is the only thing that can move the constant.
+# the sandbox. ADR-0096 pins the daemon's own `0` — measured here, and it replaced
+# ADR-0051's `4`, which rested on mechanism alone. No amount of reading can pick
+# this constant: it depends on host cores, request mix and blocking operations,
+# so this lane is the only thing that can move it, and the concurrent sweep is
+# the leg that does. A single-process workload measures dispatch overhead and
+# never the head-of-line blocking a pool exists to relieve.
 #
 # The pool size is launch-channel, so the four variants share ONE guest closure
 # and this is four launcher builds rather than four image builds. That equality
@@ -78,6 +79,7 @@ ALL_CHECKS=(
   share-bench-trees-identical
   share-bench-metadata-sweep
   share-bench-content-sweep
+  share-bench-concurrent-sweep
   share-bench-cache-placement
   share-bench-block-throughput
   share-bench-boot-timing
@@ -160,7 +162,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-printf 'vivarium share benchmark check (ADR-0051 worker-pool sweep)\n'
+printf 'vivarium share benchmark check (ADR-0096 worker-pool sweep)\n'
 printf '  repo:      %s\n' "$REPO_ROOT"
 printf '  system:    %s\n' "$SYSTEM"
 printf '  scratch:   %s\n' "$TEMP_ROOT"
@@ -221,7 +223,7 @@ else
 fi
 
 # Each launcher must actually carry its own pool size. Four identical runners
-# would produce four plausible, identical numbers and move ADR-0051 on nothing.
+# would produce four plausible, identical numbers and move the pool constant on nothing.
 declare -A LAUNCHER
 distinct=yes
 for n in "${POOL_SIZES[@]}"; do
@@ -456,6 +458,30 @@ PY
       fi
     done
 
+    # The only leg that can move the pool constant. A pool serves requests concurrently,
+    # so a single-process workload measures dispatch overhead and never the
+    # constant — which is what the first sweep measured. Report each concurrency
+    # level separately: a pool that helps at 16 workers and costs at 1 is the
+    # answer, and an average across levels would hide it.
+    conc_reported=no
+    for c in 1 4 16; do
+      s=$(grep -a "^VIVARIUM_BENCH_workspace_concurrent_lstat_ms=" "$RESULTS" | grep -a "conc=$c ")
+      [[ -z $s ]] && continue
+      conc_reported=yes
+      for n in "${POOL_SIZES[@]}"; do
+        vals=$(grep -a "pool=$n\$" <<<"$s" | sed 's/^VIVARIUM_BENCH_workspace_concurrent_lstat_ms=//' | awk '{print $1}' | sort -n | tr '\n' ' ')
+        [[ -n $vals ]] && record "share-bench-concurrent-sweep: conc=$c pool=$n virtiofs (ms, sorted): $vals"
+      done
+      v=$(grep -a "^VIVARIUM_BENCH_volume_concurrent_lstat_ms=" "$RESULTS" | grep -a "conc=$c " | sed 's/^VIVARIUM_BENCH_volume_concurrent_lstat_ms=//' | awk '{print $1}' | sort -n | tr '\n' ' ')
+      [[ -n $v ]] && record "share-bench-concurrent-sweep: conc=$c ext4 volume baseline (ms, sorted, all pools): $v"
+    done
+    if [[ $conc_reported == yes ]]; then
+      record "share-bench-concurrent-sweep: read the pools against each other WITHIN one concurrency level. A spread inside one pool's repetitions that is wider than the spread between pools does not discriminate, and must be reported as not discriminating rather than as a winner."
+      pass "share-bench-concurrent-sweep: the concurrent metadata sweep across pools ${POOL_SIZES[*]} is on the record"
+    else
+      skip "share-bench-concurrent-sweep: the guest reported no concurrent timings"
+    fi
+
     cache_share=$(bench_field 'cache_on_share_ms'); cache_vol=$(bench_field 'cache_on_volume_ms')
     if [[ -z $cache_share && -z $cache_vol ]]; then
       skip "share-bench-cache-placement: the guest reported no cache-placement timings"
@@ -476,14 +502,19 @@ PY
     fi
 
     host_boot=$(grep -a 'launcher_to_socket_ms=' "$RESULTS" | tr '\n' ' ')
-    guest_boot=$(bench_field 'guest_userspace_ms' | tr '\n' ';')
-    if [[ -z $host_boot && -z $guest_boot ]]; then
+    guest_probe=$(bench_field 'guest_userspace_to_probe_ms' | tr '\n' ';')
+    guest_why=$(bench_field 'guest_userspace_unavailable' | tail -n1)
+    if [[ -z $host_boot && -z $guest_probe ]]; then
       skip "share-bench-boot-timing: no boot timings were captured"
     else
       record "share-bench-boot-timing: host launcher-to-console-socket: $host_boot"
-      record "share-bench-boot-timing: guest userspace-ready: $guest_boot"
-      record "share-bench-boot-timing: two numbers, both named, neither impersonating the other — and neither is upstream's boot_time_ms, which measures a kernel-internal debug-port interval."
-      pass "share-bench-boot-timing: both intervals are on the record"
+      record "share-bench-boot-timing: guest userspace-start-to-probe: $guest_probe"
+      # `systemd-analyze time` is refused, not empty, and the refusal is quoted
+      # rather than paraphrased. Reading its empty stdout as a zero is the defect
+      # the method note keeps: a value that is unavailable is not a quantity.
+      record "share-bench-boot-timing: systemd-analyze time is unavailable inside the boot transaction: ${guest_why:-no reason captured}"
+      record "share-bench-boot-timing: three numbers, each named, none impersonating another — and none is upstream's boot_time_ms, which measures a kernel-internal debug-port interval."
+      pass "share-bench-boot-timing: the host interval, the replacement guest metric and the reason the guest boot time is unavailable are all on the record"
     fi
 
     completed=$(grep -ac '^VIVARIUM_BENCH_COMPLETE=yes' "$RESULTS")

@@ -41,7 +41,7 @@ The pinned closure used by the latest host evidence contains virtiofsd 1.13.3; t
 - `--rlimit-nofile` declares the maximum descriptor count; when omitted the daemon derives a limit from the process and kernel ceiling.
 - UID/GID translation flags are present and cannot be combined with POSIX ACLs.
 
-These shapes are used directly by slices 001 and 002. The source is the [v1.13.3 README](https://gitlab.com/virtio-fs/virtiofsd/-/blob/v1.13.3/README.md) and [v1.13.3 command-line definition](https://gitlab.com/virtio-fs/virtiofsd/-/blob/v1.13.3/src/main.rs). The accepted vivarium policies belong to [ADR-0050](../decisions/ADR-0050-share-cache-policy-named-by-mechanism.md), [ADR-0051](../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md), [ADR-0066](../decisions/ADR-0066-share-uid-gid-translation.md), and [ADR-0093](../decisions/ADR-0093-the-share-descriptor-budget-is-declared.md).
+These shapes are used directly by slices 001 and 002. The source is the [v1.13.3 README](https://gitlab.com/virtio-fs/virtiofsd/-/blob/v1.13.3/README.md) and [v1.13.3 command-line definition](https://gitlab.com/virtio-fs/virtiofsd/-/blob/v1.13.3/src/main.rs). The accepted vivarium policies belong to [ADR-0050](../decisions/ADR-0050-share-cache-policy-named-by-mechanism.md), [ADR-0096](../decisions/ADR-0096-the-share-worker-pool-takes-the-daemon-default.md), [ADR-0066](../decisions/ADR-0066-share-uid-gid-translation.md), and [ADR-0093](../decisions/ADR-0093-the-share-descriptor-budget-is-declared.md).
 
 ## Guest kernel and NixOS
 
@@ -51,4 +51,4 @@ The guest kernel, NixOS modules, and Nix package manager are closure members sel
 
 The `local-overlay` store and collector facts retained from the draft are already fully owned by the [workspace specification](./spec/06-workspace-and-project-environment.md), [resource specification](./spec/17-resources-and-capacity.md), storage ADRs [ADR-0087](../decisions/ADR-0087-the-inner-store-persists-on-its-own-volume.md) through [ADR-0092](../decisions/ADR-0092-the-guest-masks-the-host-link-farm.md), and the [verification harness](./microvm-verification-harness.md). They are intentionally not repeated.
 
-The unresolved collector behavior is [Q-001](../plan/open-questions.md#q-001--why-does-the-guest-store-collector-satisfy-its-byte-target-without-reclaiming-upper-layer-blocks). Its evidence requirement belongs to [slice 001](../plan/slices/001-close-host-measurement-gaps/README.md), not to this lookup page.
+The collector behavior that was unresolved here is measured and is a defect in the pinned Nix, tracked as [KI-0001](./known-issues/KI-0001/README.md). A pin move MUST re-read it: the case closes when a collection attempts more than one path.

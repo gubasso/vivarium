@@ -18,7 +18,7 @@
 }:
 
 let
-  inherit (storeLayout) upperRoot;
+  inherit (storeLayout) upperRoot upperLayer;
   # Read by `LocalStore::autoGC` in place of `statvfs` when the variable is set —
   # upstream's own hook, the one `tests/functional/gc-auto.sh` uses. Seeded far
   # above `max-free` so it is inert until a measurement arm lowers it.
@@ -318,6 +318,51 @@ in
           gap=$(( have_max - have_min ))
           echo "VIVARIUM_STORE_PRESSURE_ARME_DAMPER=gap=$gap max_free=$have_max damper_rearm=$(( have_max * 3 / 100 ))"
 
+          # --- what the collector actually decides, per path -------------------
+          # `deleteFromStore` prints `deleting '<path>'` at info level for EVERY
+          # path it attempts, and the daemon forwards that to the client's
+          # stderr, which this arm already captures. So the attempted set is free
+          # and needs no hook. What it does not say is which of upstream's two
+          # branches each path took, and that is the whole question: for a path
+          # absent from the upper layer `LocalOverlayStore::deleteStorePath`
+          # returns without touching `bytesFreed`, while `deleteFromStore` adds
+          # that untouched variable to its running total and stops at the target.
+          #
+          # Classification is derived from two sets this side rather than from
+          # the daemon's debug output, so the reading does not depend on a log
+          # level. The lower store's database holds the boot closure and nothing
+          # else, so enumerating it is one cheap call, not a walk of the share.
+          lower_valid=/tmp/vivarium-lower-valid
+          $nix_cli path-info --store "${storeLayout.lowerStoreUri}" --all 2>/tmp/lower.err \
+            | sed 's|.*/||' | sort > "$lower_valid"
+          echo "VIVARIUM_STORE_PRESSURE_ARME_LOWER_VALID=$(wc -l < "$lower_valid") err=$(tail -c 200 /tmp/lower.err | tr '\n' '|')"
+
+          # Per iteration: classify the attempted paths against the upper layer
+          # as it stood BEFORE the build, and against the lower database.
+          upper_before=/tmp/vivarium-upper-before
+          classify() { # classify <iteration>
+            local it=$1 attempted upper_lower upper_only absent
+            grep -o "deleting '/nix/store/[^']*'" /tmp/e.err \
+              | sed -e "s|.*/||" -e "s|'$||" | sort -u > /tmp/vivarium-attempted
+            attempted=$(wc -l < /tmp/vivarium-attempted)
+            if [ "$attempted" -eq 0 ]; then
+              return 0
+            fi
+            # In the upper layer before the collection: the collector could act.
+            comm -12 /tmp/vivarium-attempted "$upper_before" > /tmp/vivarium-att-upper
+            # Of those, valid in the lower database: deleted through the upper
+            # layer and remounted. Otherwise deleted through the merged view,
+            # leaving a whiteout. Absent from the upper layer: a no-op.
+            upper_lower=$(comm -12 /tmp/vivarium-att-upper "$lower_valid" | wc -l)
+            upper_only=$(comm -23 /tmp/vivarium-att-upper "$lower_valid" | wc -l)
+            absent=$(comm -23 /tmp/vivarium-attempted "$upper_before" | wc -l)
+            echo "VIVARIUM_STORE_PRESSURE_ARME_PATHS=$it attempted=$attempted upper_and_lower_valid=$upper_lower upper_only=$upper_only absent_from_upper=$absent stopped_at_target=$(grep -c 'deleted more than' /tmp/e.err)"
+            # A bounded sample per class, so a reader can check the counts
+            # against real names without 25,000 lines on the console.
+            echo "VIVARIUM_STORE_PRESSURE_ARME_SAMPLE=$it absent_from_upper $(comm -23 /tmp/vivarium-attempted "$upper_before" | head -n 20 | tr '\n' ' ')"
+            echo "VIVARIUM_STORE_PRESSURE_ARME_SAMPLE=$it in_upper $(head -n 20 /tmp/vivarium-att-upper | tr '\n' ' ')"
+          }
+
           i=0
           chunk=256
           while [ $(( i * chunk )) -lt $BALLAST_TOTAL_MIB ]; do
@@ -327,10 +372,14 @@ in
               break
             fi
             export BALLAST_NAME="e$i" BALLAST_MIB=$chunk
+            # The upper layer as it stands BEFORE this build, which is the state
+            # the collector will see if it fires during it.
+            ls -U ${upperLayer} 2>/dev/null | sort > "$upper_before"
             # No `--option min-free`: it does not reach the collector, and
             # passing it here would make this arm indistinguishable from arm D.
             out=$($nix_build --no-out-link --option substituters "" "$expr" 2>/tmp/e.err)
             status=$?
+            classify "$i"
             fired=$(grep -c 'running auto-GC' /tmp/e.err)
             want=$(grep -o 'running auto-GC to free [0-9]* bytes' /tmp/e.err | grep -o '[0-9]*' | tail -n1)
             enospc=$(grep -ci 'No space left' /tmp/e.err)
