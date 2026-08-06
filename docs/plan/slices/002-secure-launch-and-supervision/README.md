@@ -38,10 +38,12 @@ N20 is true by construction for the VMM and every guest-facing helper, all child
 - [`../../../reference/spec/12-exec-and-shell.md`](../../../reference/spec/12-exec-and-shell.md) — defines control-socket readiness.
 - [`../../../reference/spec/13-doctor-and-health-checks.md`](../../../reference/spec/13-doctor-and-health-checks.md) — defines descriptor diagnostics.
 - [`../../../reference/spec/16-logging-and-diagnostics.md`](../../../reference/spec/16-logging-and-diagnostics.md) — defines console capture.
+- [`../../../reference/spec/14-exit-codes.md`](../../../reference/spec/14-exit-codes.md) — defines the failure categories this slice's two binaries return.
 - [`../../../explanation/launch-and-supervision.md`](../../../explanation/launch-and-supervision.md) — owns the launch topology.
 - [`../../../explanation/shared-filesystems.md`](../../../explanation/shared-filesystems.md) — owns share-daemon budgets.
 - [`../../../reference/backend-capabilities.md`](../../../reference/backend-capabilities.md) — owns pinned argument shapes.
 - [`../../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](../../../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md) — fixes the confinement profile.
+- [`../../../decisions/ADR-0033-error-handling-and-exit-codes.md`](../../../decisions/ADR-0033-error-handling-and-exit-codes.md) — fixes the error-type stack and how a typed error becomes a process code.
 - [`../../../decisions/ADR-0036-host-resource-scoping-and-admission-control.md`](../../../decisions/ADR-0036-host-resource-scoping-and-admission-control.md) — fixes per-VM scope ownership.
 - [`../../../decisions/ADR-0048-guest-module-only-vivarium-owns-the-runner.md`](../../../decisions/ADR-0048-guest-module-only-vivarium-owns-the-runner.md) — assigns launch construction to vivarium.
 - [`../../../decisions/ADR-0070-guest-console-capture-and-rotation.md`](../../../decisions/ADR-0070-guest-console-capture-and-rotation.md) — fixes console ownership.

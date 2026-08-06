@@ -5,6 +5,7 @@
   storeCanaryExpression,
   gcInterlockCanaryExpression,
   gcInterlockControlExpression,
+  supervisorPackage,
   # ADR-0096 takes the daemon's own default, uniform across shares — measured, on
   # a concurrent sweep in which no non-zero pool won a cell. The *value* lives
   # here rather than in `spec/06`, which states the property only, precisely so a
@@ -77,6 +78,11 @@ let
   }) shares;
 in
 {
+  schemaVersion = 1;
+  descriptorBudget = {
+    limit = 524288;
+    workerPoolSize = virtiofsdThreadPoolSize;
+  };
   inherit volumeLaunch;
   # The host realises this same expression before booting, so the canary's bytes
   # reach the lower layer without its output path entering the guest's boot
@@ -93,6 +99,8 @@ in
   chRemote = lib.getExe' config.microvm.cloud-hypervisor.package "ch-remote";
   virtiofsd = lib.getExe config.microvm.virtiofsd.package;
   setpriv = lib.getExe' pkgs.util-linux "setpriv";
+  systemdRun = lib.getExe' pkgs.systemd "systemd-run";
+  supervisor = lib.getExe' supervisorPackage "vivarium-supervisor";
   truncate = lib.getExe' pkgs.coreutils "truncate";
   mkfsExt4 = lib.getExe' pkgs.e2fsprogs "mkfs.ext4";
   staticArguments = [
@@ -163,5 +171,58 @@ in
     storeVolumeImage = "@STORE_VOLUME_IMAGE@";
     workspaceSocket = "@WORKSPACE_SOCKET@";
     workspaceSource = "@WORKSPACE_SOURCE@";
+  };
+  socketLegs = {
+    api = "@API_SOCKET@";
+    console = "@CONSOLE_SOCKET@";
+    agent = null;
+    shares = map (share: {
+      inherit (share) tag;
+      socket = share.socketToken;
+    }) shareLaunch;
+  };
+  # Cloud Hypervisor v52.0's `VmConfig` JSON, submitted to `ch-remote create`
+  # before the separate `boot` call. Field spellings are asserted in
+  # contract.nix so a backend pin move cannot silently collapse this ordering.
+  vmCreate = {
+    cpus = {
+      boot_vcpus = 1;
+      max_vcpus = 1;
+    };
+    memory = {
+      size = 536870912;
+      shared = true;
+    };
+    payload = {
+      kernel = kernelPath;
+      initramfs = config.microvm.initrdPath;
+      cmdline = "${kernelConsole} reboot=t panic=-1 ${toString config.microvm.kernelParams}";
+    };
+    disks = map (volume: {
+      path = volume.imageToken;
+      direct = false;
+      readonly = false;
+      image_type = if volume.imageType == "raw" then "Raw" else "Qcow2";
+      sparse = true;
+    }) volumeLaunch;
+    fs = map (share: {
+      inherit (share) tag;
+      socket = share.socketToken;
+    }) shareLaunch;
+    balloon = {
+      size = 0;
+      free_page_reporting = true;
+      deflate_on_oom = true;
+    };
+    console = {
+      mode = "Off";
+    };
+    serial = {
+      mode = "Socket";
+      socket = "@CONSOLE_SOCKET@";
+    };
+    watchdog = true;
+    landlock_enable = true;
+    landlock_rules = [ ];
   };
 }

@@ -8,6 +8,12 @@
 # own lock, so the guest's nixpkgs and the toolchain's nixpkgs move on separate
 # clocks (ADR-0078's reasoning about backend pins, one level up).
 #
+# The product flake is addressed as `path:$REPO_ROOT?dir=nix`, not
+# `path:$REPO_ROOT/nix`. A flake's source tree is fixed by the reference used to
+# enter it, not by where its file sits: `?dir=` keeps the flake and its lock at
+# `nix/` while making the repository the tree, which is what lets the product
+# build read the Rust crate in its default layout instead of a snapshot of it.
+#
 # This check exists because the boundary was crossed twice, and both times by a
 # line that looked reasonable on its own. A file acquires responsibilities one
 # plausible addition at a time; the question is never "is this line reasonable"
@@ -83,7 +89,7 @@ if [[ ! -f $REPO_ROOT/nix/flake.nix ]]; then
   fail=1
 else
   product=$(nix eval --raw --impure --expr \
-    "builtins.concatStringsSep \" \" (builtins.attrNames (builtins.getFlake \"path:$REPO_ROOT/nix\"))" \
+    "builtins.concatStringsSep \" \" (builtins.attrNames (builtins.getFlake \"path:$REPO_ROOT?dir=nix\"))" \
     2>/dev/null)
   case " $product " in
     *" packages "*) ;;

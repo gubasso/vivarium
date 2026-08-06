@@ -16,3 +16,9 @@
 # invoked by the launcher. Its siblings — `dumpe2fs`, `tune2fs`, `resize2fs`,
 # `e2fsck` — tokenize cleanly and need no entry.
 mke2fs = "mke2fs"
+
+# `setpriv`'s inheritable-capability flag, spelled `--inh-caps` by util-linux and
+# asserted verbatim by the launch policy and the first-microvm contract. The
+# dictionary maps the `inh` token to `in`, which would rewrite a real flag into
+# one `setpriv` rejects at runtime.
+inh = "inh"

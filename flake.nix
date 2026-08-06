@@ -78,7 +78,17 @@
           # native deps for -sys crates, uncomment as needed:
           # buildInputs = [ pkgs.openssl ];
           # nativeBuildInputs = [ pkgs.pkg-config ];
-          shellHook = ''echo "rust dev shell ready (toolchain from rust-toolchain.toml)"'';
+          # Cargo's build directory is kept OUT of the working tree, and this is
+          # load-bearing rather than tidiness. The product flake is entered as
+          # `path:$REPO_ROOT?dir=nix` so that the repository root is its source
+          # tree and the crate can be built from its default layout — no
+          # duplicate. `path:` fetches the whole working tree and does not honour
+          # `.gitignore`, so a multi-gigabyte `target/` would be copied into the
+          # store on every evaluation. Out of the tree, it costs nothing.
+          shellHook = ''
+            export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-''${XDG_CACHE_HOME:-$HOME/.cache}/vivarium/target}"
+            echo "rust dev shell ready (toolchain from rust-toolchain.toml; CARGO_TARGET_DIR=$CARGO_TARGET_DIR)"
+          '';
         };
       }
     );

@@ -12,6 +12,34 @@ let
   pkgs = import nixpkgs { inherit system; };
   inherit (nixpkgs) lib;
 
+  # The crate in its default Cargo layout at the repository root — read directly,
+  # with no snapshot to keep in sync. This resolves under pure evaluation because
+  # every lane enters the product flake as `path:$REPO_ROOT?dir=nix`, which makes
+  # the repository root the flake's source tree; `nix/` is merely where the flake
+  # file sits. Entering it as `path:$REPO_ROOT/nix` pins the tree root one level
+  # too deep and `../` becomes unreachable.
+  crateRoot = ../.;
+
+  supervisorPackage = pkgs.rustPlatform.buildRustPackage {
+    pname = "vivarium-launch-supervisor";
+    version = "0.1.0";
+    src = lib.cleanSourceWith {
+      name = "vivarium-crate-source";
+      src = crateRoot;
+      # Admits the crate and nothing else. The tree root is now the repository,
+      # so a blanket `type == "directory"` would descend into `docs/`, `.git/`
+      # and a Cargo build directory; every admitted path is named instead.
+      filter =
+        path: _type:
+        let
+          rel = lib.removePrefix (toString crateRoot + "/") (toString path);
+        in
+        rel == "Cargo.toml" || rel == "Cargo.lock" || rel == "src" || lib.hasPrefix "src/" rel;
+    };
+    cargoLock.lockFile = crateRoot + "/Cargo.lock";
+    doCheck = false;
+  };
+
   variantDefaults = {
     # Subset of nix/measurement's known legs. Empty is the shipped image.
     legs = [ ];
@@ -148,6 +176,7 @@ let
       storeCanaryExpression
       gcInterlockCanaryExpression
       gcInterlockControlExpression
+      supervisorPackage
       ;
     # Launch-channel, so it must not reach the guest: this is what keeps the four
     # pool-size variants on one guest closure and makes the sweep four short
@@ -156,7 +185,7 @@ let
     inherit (guest) config;
     inherit (nixpkgs) lib;
   };
-  runner = import ./runner.nix { inherit pkgs launchArguments; };
+  runner = import ./runner.nix { inherit pkgs launchArguments supervisorPackage; };
   contract = import ./contract.nix {
     inherit
       pkgs

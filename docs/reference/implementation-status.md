@@ -2,9 +2,11 @@
 
 The single source of truth for what vivarium does today versus what is designed only. The specification under [`spec/`](spec/README.md) describes the intended design; this page records how much of it exists in code.
 
-## Current state: design stage
+## Current state: secure launch subsystem implemented
 
-No command is implemented yet. The repository contains the founding documentation, a binary skeleton that does nothing, and an acceptance harness whose trials are written but cannot run. No command in [`spec/01-command-surface.md`](spec/01-command-surface.md) is functional. Do not treat any spec page as a description of working behavior; treat it as the target.
+The Nix-built diagnostic runner now hands a strict launch contract to the Rust [policy constructor](../../src/launch/policy.rs), [transient-service renderer](../../src/launch/systemd.rs), and [supervisor](../../src/launch/supervisor.rs). The supervisor implements API create-before-boot ordering, one daemon per share, console ownership, group cancellation, and allowlisted runtime cleanup. The descriptor check is a pure implemented boundary in [`src/doctor/descriptors.rs`](../../src/doctor/descriptors.rs).
+
+This is capability implementation, not completion of a public command. Manifest resolution, guest boot-identity readiness, and the existing end-to-end `viv start` trial remain gated. Target-host behavior for the new service and KVM path is unverified until the capable-host harness runs without skipping. No row below is `Implemented`.
 
 ## Surface status
 
@@ -14,7 +16,7 @@ Each command sits at one of three levels:
 - Acceptance test written (gated) — a trial in [`../../tests/user_workflows.rs`](../../tests/user_workflows.rs) encodes the intended behavior and is linked below. It does not pass; it is skipped, because its runtime gate requires a working `viv` (and, for some, Nix and `/dev/kvm`). A written trial is a specification made executable, not evidence that anything works.
 - Implemented — the command runs and its trial passes.
 
-Nothing is at Implemented today.
+Nothing in the public command surface is at `Implemented` today.
 
 | Command                               | Status                          | Trial                                                                                         |
 | ------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------- |

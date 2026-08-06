@@ -1,7 +1,7 @@
 schema: vivarium-tracking-v1
 tracked:
   - path: docs/reference/backend-capabilities.md
-    last_checked: 2026-08-05
+    last_checked: 2026-08-06
     cadence: 30d and on nix/flake.lock changes
     why: Backend revisions and their accepted interfaces change independently of this repository's prose.
     revalidate: Re-read the exact locked revisions in nix/flake.lock and the linked official upstream sources.

@@ -5,36 +5,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use vivarium::exit::ExitKind;
 
-// The sysexits categories from the spec/14 matrix, named once so a trial never
-// asserts a bare integer. The five below are unreachable until the commands that
-// can fail their way exist; each carries its own attribute so that the first
-// trial to use one is told to drop it.
-pub const EX_USAGE: i32 = 64;
-pub const EX_DATAERR: i32 = 65;
-#[expect(
-    dead_code,
-    reason = "no trial can reach a backend/VM failure until start launches one"
-)]
-pub const EX_UNAVAILABLE: i32 = 69;
-#[expect(
-    dead_code,
-    reason = "no trial can reach a Nix eval/build fault until composition exists"
-)]
-pub const EX_SOFTWARE: i32 = 70;
-#[expect(
-    dead_code,
-    reason = "no trial can reach a vivarium-owned I/O failure yet"
-)]
-pub const EX_IOERR: i32 = 74;
-#[expect(
-    dead_code,
-    reason = "no trial can reach a lock race or in-use volume yet"
-)]
-pub const EX_TEMPFAIL: i32 = 75;
-#[expect(dead_code, reason = "no trial can reach a host permission denial yet")]
-pub const EX_NOPERM: i32 = 77;
-pub const EX_CONFIG: i32 = 78;
+// The categories trials currently assert, taken from the product's own `ExitKind` rather than
+// respelled here, so a trial and the binary it runs cannot disagree about what a number means.
+// `ExitStatus::code` yields `i32`, which is the only reason these are not `u8`.
+//
+// Only the reachable three are named. A trial that gains a way to provoke another category writes
+// `ExitKind::TempFail.code()` at its assertion; an unused constant kept alive by a dead-code
+// suppression would be a knob neutralized rather than absent.
+pub const EX_USAGE: i32 = ExitKind::Usage.code() as i32;
+pub const EX_DATAERR: i32 = ExitKind::DataErr.code() as i32;
+pub const EX_CONFIG: i32 = ExitKind::Config.code() as i32;
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 static GATE: OnceLock<GateDecision> = OnceLock::new();

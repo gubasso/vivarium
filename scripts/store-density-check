@@ -55,7 +55,14 @@ SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || un
 # pre-commit runtimes, the devShell direnv activates — and carries no product
 # input or output. `path:` form so the write-mode file set is included without
 # git operations.
-FLAKE_REF="path:$REPO_ROOT/nix"
+# `?dir=nix` rather than `/nix` so the repository is the flake's source tree and
+# the product build can read the Rust crate in its default layout; see
+# docs/reference/microvm-verification-harness.md.
+FLAKE_REF="path:$REPO_ROOT?dir=nix"
+# The devShell lives in the repository root's flake, which is the *other* flake
+# and the only one that has one. Population 3 below asked the product flake for a
+# `devShells` output it has never had, so it could only ever skip.
+DEV_FLAKE_REF="path:$REPO_ROOT"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
@@ -267,7 +274,7 @@ fi
 # Population 3 — a dev shell's dependency closure, via `inputDerivation`. This is
 # the shape of what a *user's* project pulls into the guest store, which is the
 # growth ADR-0089's threshold is sized against.
-shell_out=$(nix build --no-link --print-out-paths "$FLAKE_REF#devShells.$SYSTEM.default.inputDerivation" 2>"$TEMP_ROOT/shell.err" | tail -n1)
+shell_out=$(nix build --no-link --print-out-paths "$DEV_FLAKE_REF#devShells.$SYSTEM.default.inputDerivation" 2>"$TEMP_ROOT/shell.err" | tail -n1)
 if [[ -z $shell_out ]]; then
   skip "store-density-devshell-closure: the devShell inputDerivation could not be realised"
   record "devshell stderr: $(tail -n 5 "$TEMP_ROOT/shell.err" | tr '\n' '|' | tail -c 300)"

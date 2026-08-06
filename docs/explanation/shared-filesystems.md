@@ -1,10 +1,14 @@
 # Shared filesystems
 
-This page describes the accepted design rather than implemented behavior; see [implementation status](../reference/implementation-status.md) for what runs today.
+The share launch profile and descriptor arithmetic are implemented in [`src/launch`](../../src/launch/mod.rs) and [`src/doctor/descriptors.rs`](../../src/doctor/descriptors.rs). Guest mounts remain Nix-owned, and public doctor rendering remains later CLI work; see [implementation status](../reference/implementation-status.md).
 
 vivarium shares three classes of host content into a guest: the project workspace, explicitly declared configuration or extra mounts, and the immutable host Nix store. Host source paths are supplied only at launch. Guest targets are stable and project-scoped, and sources representing host temporary or session directories are refused.
 
 Each share is served by its own confined daemon. The daemon translates a fixed guest identity to the invoking host user so build outputs remain host-independent. Cache mode expresses coherency, not confinement, and is selected per share by the mechanism it enables. Worker-pool and descriptor settings form one capacity budget: pool size affects concurrent service, while explicit file-descriptor limits make the maximum safe load inspectable.
+
+The launch contract declares `VIRTIOFSD_RLIMIT_NOFILE = 524288`. The closed daemon constructor renders that value as `--rlimit-nofile=524288`, and the transient unit renders the same serialized value as `LimitNOFILE=524288`. Nothing inherits or probes the caller's shell limit as a replacement.
+
+For pinned virtiofsd 1.13.3 the reserve is `609 + effective_worker_count`. ADR-0096 fixes the worker pool at `0`, so the current guest allowance is `524288 - (609 + 0) = 523679` descriptors. The pure `host-fd-limit-sufficient` calculation returns the declaration, both reserve inputs, and the derived allowance; a limit at or below the reserve is invalid. Changing a test contract's one descriptor field changes the daemon argument, unit property, and doctor datum together.
 
 The host store is exposed read-only. Guest writes never modify it and belong to the guest-local store overlay described in [guest store and volumes](./guest-store-and-volumes.md). Exact mount fields, source restrictions, identities, and cache values are owned by the [workspace specification](../reference/spec/06-workspace-and-project-environment.md) and [invariants](../reference/spec/08-invariants-and-guarantees.md).
 
@@ -24,4 +28,3 @@ The host store is exposed read-only. Guest writes never modify it and belong to 
 ## Unresolved
 
 - Whether a pool ever wins when a request blocks on cold backing storage. The concurrent sweep that settled the constant ran with the host page cache warm throughout, so the head-of-line case is measured absent rather than measured harmless — the boundary is stated with the numbers in [`../reference/microvm-verification-harness.md`](../reference/microvm-verification-harness.md).
-- Descriptor enactment belongs to [slice 002](../plan/slices/002-secure-launch-and-supervision/README.md).

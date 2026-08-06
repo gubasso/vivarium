@@ -32,3 +32,5 @@ Chosen option: a per-VM scope for accounting, with no per-VM limits and a launch
 Accepted
 
 Amends [`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](./ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md) by giving its "cgroup limits" concrete content. Adds N23 to [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md); the check, thresholds, and reported fields live in [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md).
+
+Amended by [`ADR-0097`](./ADR-0097-the-transient-user-service-owns-the-vm-lifetime.md) — the per-VM resource scope is a manager-owned transient user service rather than a caller-owned `.scope` unit.

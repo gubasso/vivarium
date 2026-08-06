@@ -38,7 +38,14 @@ SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || un
 # pre-commit runtimes, the devShell direnv activates — and carries no product
 # input or output. `path:` form so the write-mode file set is included without
 # git operations.
-FLAKE_REF="path:$REPO_ROOT/nix"
+#
+# `?dir=nix` rather than `/nix`: a flake's source tree is fixed by the reference
+# used to enter it, not by where its file sits. This form leaves the flake and
+# its lock at `nix/` while making the repository the tree, so `nix/default.nix`
+# can read the Rust crate at `../` in its default layout. Entering as
+# `path:$REPO_ROOT/nix` pins the tree one level too deep, and the crate becomes
+# unreachable under pure evaluation — which is the whole reason this form exists.
+FLAKE_REF="path:$REPO_ROOT?dir=nix"
 # The lint tools come from the repository root's devShell, which is the *other*
 # flake and the only one that has one. Keeping the two references separate is
 # the point of the split: product artifacts resolve through `nix/`, developer
@@ -166,7 +173,7 @@ else
 
   copy_root=$TEMP_ROOT/location-copy
   if cp -a "$REPO_ROOT" "$copy_root" 2>"$TEMP_ROOT/copy.err"; then
-    copy_drv=$(nix eval --raw "path:$copy_root/nix#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/copy-eval.err"); copy_status=$?
+    copy_drv=$(nix eval --raw "path:$copy_root?dir=nix#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/copy-eval.err"); copy_status=$?
     if ((eval_status == 0 && copy_status == 0)) && [[ $copy_drv == "$eval_output" ]]; then pass "location metamorphism preserves drvPath"
     else fail "location metamorphism" "$copy_drv$(<"$TEMP_ROOT/copy-eval.err")"; fi
   else skip "location metamorphism: worktree copy failed: $(<"$TEMP_ROOT/copy.err")"; fi
@@ -230,8 +237,9 @@ else
     static_a=$("$launcher" "${common[@]}" 2>&1); static_status=$?
     static_b=$("$launcher" --workspace /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume /srv/vivarium/canary-b.img --store-volume /srv/vivarium/canary-b-store.img --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1); static_b_status=$?
     if ((static_status == 0 && static_b_status == 0)); then
-      normalized_a=$(sed -e 's/boot=2/boot=@VCPU@/' -e 's/size=2048M/size=@MEMORY@M/' -e 's#/run/user/1000/vivarium/canary-a#@RUNTIME@#g' -e 's#/var/lib/vivarium/canary-a-store.img#@STORE_VOLUME@#g' -e 's#/var/lib/vivarium/canary-a.img#@VOLUME@#g' <<<"$static_a")
-      normalized_b=$(sed -e 's/boot=8/boot=@VCPU@/' -e 's/size=4096M/size=@MEMORY@M/' -e 's#/run/user/4242/vivarium/canary-b#@RUNTIME@#g' -e 's#/srv/vivarium/canary-b-store.img#@STORE_VOLUME@#g' -e 's#/srv/vivarium/canary-b.img#@VOLUME@#g' <<<"$static_b")
+      normalize_launch_spec='del(.runtimePaths) | .socketLegs.api="@API@" | .socketLegs.console="@CONSOLE@" | .resources.vcpus=0 | .resources.memoryMiB=0 | .identityTranslation.hostUid=0 | .identityTranslation.hostGid=0 | (.shares[].source)="@SOURCE@" | (.shares[].socket)="@SOCKET@" | (.volumes[].path)="@VOLUME@" | .vmCreate.cpus.boot_vcpus=0 | .vmCreate.cpus.max_vcpus=0 | .vmCreate.memory.size=0 | (.vmCreate.disks[].path)="@VOLUME@" | (.vmCreate.fs[].socket)="@SOCKET@" | .vmCreate.serial.socket="@CONSOLE@"'
+      normalized_a=$(jq -cS "$normalize_launch_spec" <<<"$static_a")
+      normalized_b=$(jq -cS "$normalize_launch_spec" <<<"$static_b")
       if [[ $normalized_a == "$normalized_b" ]]; then pass "launcher static argv structure is invariant under runtime arguments"
       else fail "launcher static argv contract differs" "$static_a"$'\n---\n'"$static_b"; fi
 
@@ -241,10 +249,10 @@ else
       # These are the positive counterparts: each launch-channel value must
       # actually track the argument it was given.
       missing_flow=
-      grep -Fq 'size=2048M' <<<"$static_a" || missing_flow+="memory-mib not rendered from argv (A)"$'\n'
-      grep -Fq 'size=4096M' <<<"$static_b" || missing_flow+="memory-mib not rendered from argv (B)"$'\n'
-      grep -Fq 'boot=2' <<<"$static_a" || missing_flow+="vcpu not rendered from argv (A)"$'\n'
-      grep -Fq 'boot=8' <<<"$static_b" || missing_flow+="vcpu not rendered from argv (B)"$'\n'
+      [[ $(jq -r .resources.memoryMiB <<<"$static_a") == 2048 && $(jq -r .vmCreate.memory.size <<<"$static_a") == 2147483648 ]] || missing_flow+="memory-mib not rendered from argv (A)"$'\n'
+      [[ $(jq -r .resources.memoryMiB <<<"$static_b") == 4096 && $(jq -r .vmCreate.memory.size <<<"$static_b") == 4294967296 ]] || missing_flow+="memory-mib not rendered from argv (B)"$'\n'
+      [[ $(jq -r .resources.vcpus <<<"$static_a") == 2 && $(jq -r .vmCreate.cpus.boot_vcpus <<<"$static_a") == 2 ]] || missing_flow+="vcpu not rendered from argv (A)"$'\n'
+      [[ $(jq -r .resources.vcpus <<<"$static_b") == 8 && $(jq -r .vmCreate.cpus.boot_vcpus <<<"$static_b") == 8 ]] || missing_flow+="vcpu not rendered from argv (B)"$'\n'
       grep -Fq '/var/lib/vivarium/canary-a.img' <<<"$static_a" || missing_flow+="volume image not rendered from argv (A)"$'\n'
       grep -Fq '/srv/vivarium/canary-b.img' <<<"$static_b" || missing_flow+="volume image not rendered from argv (B)"$'\n'
       grep -Fq '/var/lib/vivarium/canary-a-store.img' <<<"$static_a" || missing_flow+="store volume image not rendered from argv (A)"$'\n'
@@ -254,7 +262,7 @@ else
       # assigns drive letters in --disk order. Assert the order, not just the
       # presence: swapping the two would boot a guest whose store volume is its
       # home and whose home is its store, silently.
-      disk_order=$(grep -oE '/(var/lib|srv)/vivarium/canary-[ab](-store)?\.img' <<<"$static_a" | tr '\n' ' ')
+      disk_order=$(jq -r '.vmCreate.disks[].path' <<<"$static_a" | tr '\n' ' ')
       [[ $disk_order == '/var/lib/vivarium/canary-a.img /var/lib/vivarium/canary-a-store.img ' ]] \
         || missing_flow+="--disk order is not (volume, store-volume): $disk_order"$'\n'
       if [[ -z $missing_flow ]]; then pass "launch-channel values flow from arguments, not constants (positive counterpart to the negative scans)"
@@ -271,6 +279,12 @@ else
         done < <(jq -r '.tokens[]' "$launcher_json")
         if [[ -z $missing_tokens ]]; then pass "every declared launch-channel token is retained in the build-channel arguments"
         else fail "a launch-channel token was replaced by a concrete value" "$missing_tokens"; fi
+        supervisor=$(jq -r .supervisor "$launcher_json")
+        supervisor_count=$(nix path-info -r "$(dirname "$(dirname "$launcher")")" | grep -c 'vivarium-launch-supervisor' || true)
+        if [[ $supervisor_count == 1 && -x $supervisor ]]; then pass "exactly one Rust vivarium supervisor is present in the realised closure"
+        else fail "Rust supervisor closure membership" "count=$supervisor_count path=$supervisor"; fi
+        if grep -Eq 'pids=|trap .*EXIT|wait .*pid|ulimit -n' "$launcher"; then fail "runner contains shell supervision constructs" "$launcher"
+        else pass "runner is a thin launch-contract adapter with no shell supervision constructs"; fi
       else fail "launch-arguments JSON not locatable in the launcher" "$launcher"; fi
     else fail "launcher print-static-arguments" "$static_a"$'\n'"$static_b"; fi
   else
@@ -303,7 +317,7 @@ missing=()
 [[ -r /proc/1/comm && $(< /proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
 systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
 [[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
-command -v python3 >/dev/null 2>&1 || missing+=("python3 console reader")
+command -v python3 >/dev/null 2>&1 || missing+=("python3 measurement sampler")
 [[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]] || missing+=("realised launcher")
 
 if ((${#missing[@]})); then
@@ -364,23 +378,22 @@ else
   image_allocated() { stat -c '%b*%B=%s' -- "$1" 2>/dev/null || echo unavailable; }
   store_alloc_before=$(image_allocated "$store_volume")
 
-  launch_args=(--workspace "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume "$volume" --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2)
+  launch_args=(--workspace "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume "$volume" --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 --project-id first-microvm --target "$run_id")
+  unit_name="vivarium-first-microvm-$run_id.service"
 
   launch_attempt=0
-  # NOTE: `--wait` may not be combined with `--scope` — systemd rejects that
-  # combination outright, which would make every host check fail with a usage
-  # error dressed up as a Landlock finding. A scope runs the command in
-  # systemd-run's own process, so backgrounding it and `wait`ing is the
-  # synchronous behaviour we want.
   launch_vm() {
     launch_attempt=$((launch_attempt + 1))
-    systemd-run --user --scope --quiet --collect --unit="$run_id-$launch_attempt" "$launcher" "${launch_args[@]}" "$@" >"$launch_log" 2>&1 &
-    vm_pid=$!
+    "$launcher" "${launch_args[@]}" "$@" >"$launch_log" 2>&1 &
+    launch_pid=$!
   }
   wait_for_console() {
     for _ in {1..300}; do
-      [[ -S $runtime_dir/console.sock ]] && return 0
-      kill -0 "$vm_pid" 2>/dev/null || return 1
+      [[ -S $runtime_dir/console.sock && -f $runtime_dir/console.log ]] && return 0
+      if ! kill -0 "$launch_pid" 2>/dev/null; then
+        wait "$launch_pid" || return 1
+        systemctl --user is-active --quiet "$unit_name" || return 1
+      fi
       sleep 0.1
     done
     return 1
@@ -388,61 +401,35 @@ else
 
   launch_vm
   if wait_for_console; then
-    pass "Landlock-on launch reached the console-socket stage"
-  else
-    wait "$vm_pid"; launch_status=$?
-    launch_output=$(<"$launch_log")
-    # Distinguish "the launch never started" from "Landlock denied a path".
-    if grep -Eqi 'systemd-run|unknown option|may not be combined|Failed to (start|create) transient' <<<"$launch_output"; then
-      fail "host-tier launch could not start (not Landlock evidence)" "$launch_output"
-      launch_args=()
+    wait "$launch_pid" || fail "manager-owned launch handoff" "$(<"$launch_log")"
+    pass "manager-owned launch reached the supervisor-owned console stage"
+    unit_properties=$(systemctl --user show "$unit_name" -p Slice -p KillMode -p CPUAccounting -p MemoryAccounting -p IOAccounting -p CPUWeight -p LimitNOFILE -p MemoryMax -p MemoryHigh -p IOWeight 2>&1 || true)
+    required_unit='Slice=vivarium.slice KillMode=control-group CPUAccounting=yes MemoryAccounting=yes IOAccounting=yes CPUWeight=100 LimitNOFILE=524288'
+    missing_unit=
+    for property in $required_unit; do grep -qxF "$property" <<<"$unit_properties" || missing_unit+="$property"$'\n'; done
+    if [[ -z $missing_unit ]] && ! grep -Eq '^Memory(Max|High)=[0-9]+$|^IOWeight=[0-9]+$' <<<"$unit_properties"; then
+      pass "transient service carries accounting, CPU weight, group kill, and the declared descriptor limit without memory/I/O limits"
     else
-      record "Landlock-on launch failed (later N20 evidence), retrying once without it; exit=$launch_status; output=$launch_output"
-      : >"$launch_log"
-      launch_vm --no-landlock
-      wait_for_console || fail "launch failed with Landlock off as well" "$(<"$launch_log")"
+      fail "transient service property contract" "$missing_unit$unit_properties"
     fi
+    if [[ -r /sys/kernel/security/lsm ]] && grep -qw landlock /sys/kernel/security/lsm; then
+      grep -q -- '--landlock' "$launch_log" && pass "Landlock-supported host launched with Landlock" || record "Landlock support was reported but argv evidence was unavailable"
+    else
+      record "Landlock unavailable: launch contract recorded the soft degradation and no retry flag exists"
+    fi
+  else
+    wait "$launch_pid"; launch_status=$?
+    launch_output=$(<"$launch_log")
+    fail "host-tier manager-owned launch failed; no Landlock-off retry exists" "exit=$launch_status; output=$launch_output"
+    launch_args=()
   fi
 
-  # Cloud Hypervisor's `--serial socket=` does not buffer and does not replay:
-  # bytes the guest writes while no client is attached are discarded outright.
-  # The first host run proved this the expensive way — the reader connected only
-  # after the process scan and a 15s settle, by which time the guest had finished
-  # its whole diagnostic (~17s) and the launcher's cleanup trap had unlinked the
-  # socket, so every guest-side finding was lost to a FileNotFoundError. Attach
-  # the reader the instant the socket exists and keep it attached for the run.
-  reader_py=$TEMP_ROOT/console-reader.py
-  cat >"$reader_py" <<'PY'
-import socket, sys, time
-
-path, out_path, idle_timeout = sys.argv[1], sys.argv[2], float(sys.argv[3])
-# The socket file can exist a moment before the VMM listens on it.
-deadline = time.monotonic() + 30.0
-while True:
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        sock.connect(path)
-        break
-    except OSError:
-        sock.close()
-        if time.monotonic() >= deadline:
-            raise
-        time.sleep(0.2)
-sock.settimeout(idle_timeout)
-with open(out_path, "wb") as out:
-    while True:
-        try:
-            data = sock.recv(65536)
-        except socket.timeout:
-            break
-        if not data:
-            break
-        out.write(data)
-        out.flush()
-PY
+  if [[ -n ${launch_args[*]} ]]; then
   : >"$console_log"
-  python3 "$reader_py" "$runtime_dir/console.sock" "$console_log" 180 >"$TEMP_ROOT/reader.log" 2>&1 &
-  reader_pid=$!
+  # Follow the supervisor-owned file, never the serial socket. Holding the file
+  # descriptor keeps the final bytes readable across allowlisted unlink.
+  tail -c +1 -f "$runtime_dir/console.log" >"$console_log" 2>"$TEMP_ROOT/reader.log" &
+  console_follower_pid=$!
 
   # /proc entries vanish under the scan as short-lived processes exit; the failed
   # redirection is reported by the shell itself, so the guard has to wrap it.
@@ -548,6 +535,7 @@ PY
   proc_evidence=
   declare -A role_seccomp=() role_count=()
   bad_conf=
+  declared_nofile=$(jq -r .descriptorBudget.limit "$host_launcher_json")
   for status_file in /proc/[0-9]*/status; do
     pid=${status_file#/proc/}; pid=${pid%/status}
     cmd=$(proc_cmdline "$pid")
@@ -555,18 +543,29 @@ PY
     uid=$(proc_field "$pid" Uid); nnp=$(proc_field "$pid" NoNewPrivs)
     leader_seccomp=$(proc_field "$pid" Seccomp); group_seccomp=$(max_seccomp "$pid")
     caps=$(proc_field "$pid" CapEff)
+    cap_ambient=$(proc_field "$pid" CapAmb)
+    cap_bounding=$(proc_field "$pid" CapBnd)
     role=wrapper
     case $cmd in
       *virtiofsd*store.sock*) role=virtiofsd:store ;;
       *virtiofsd*workspace.sock*) role=virtiofsd:workspace ;;
       *cloud-hypervisor*) role=cloud-hypervisor ;;
     esac
-    proc_evidence+="role=$role pid=$pid uid=$uid nnp=$nnp seccomp=$leader_seccomp seccomp-threadgroup-max=$group_seccomp caps=$caps cmd=$cmd"$'\n'
+    proc_evidence+="role=$role pid=$pid uid=$uid nnp=$nnp seccomp=$leader_seccomp seccomp-threadgroup-max=$group_seccomp cap-effective=$caps cap-ambient=$cap_ambient cap-bounding=$cap_bounding cmd=$cmd"$'\n'
     [[ $role == wrapper ]] && continue
     role_count[$role]=$(( ${role_count[$role]:-0} + 1 ))
     (( group_seccomp > ${role_seccomp[$role]:-0} )) && role_seccomp[$role]=$group_seccomp
     [[ $uid == "$(id -u)" ]] || bad_conf+="$role pid=$pid is not owned by the invoking user (uid=$uid)"$'\n'
     [[ $nnp == 1 ]] || bad_conf+="$role pid=$pid has NoNewPrivs=$nnp"$'\n'
+    [[ $caps == 0000000000000000 && $cap_ambient == 0000000000000000 && $cap_bounding == 0000000000000000 ]] || bad_conf+="$role pid=$pid retained capabilities effective=$caps ambient=$cap_ambient bounding=$cap_bounding"$'\n'
+    if [[ $role == virtiofsd:* ]]; then
+      process_nofile=$(awk '$1 == "Max" && $2 == "open" && $3 == "files" { print $4 }' "/proc/$pid/limits" 2>/dev/null || true)
+      [[ $process_nofile == "$declared_nofile" ]] || bad_conf+="$role pid=$pid has LimitNOFILE=$process_nofile, declared=$declared_nofile"$'\n'
+      [[ $cmd == *"--rlimit-nofile=$declared_nofile"* ]] || bad_conf+="$role pid=$pid argv lacks --rlimit-nofile=$declared_nofile"$'\n'
+    fi
+    if [[ $role == cloud-hypervisor && -r /sys/kernel/security/lsm ]] && grep -qw landlock /sys/kernel/security/lsm; then
+      [[ $cmd == *--landlock* ]] || bad_conf+="cloud-hypervisor argv lacks --landlock on a host that reports Landlock"$'\n'
+    fi
   done
   sleep 15
   rss_late=$(awk '/VmRSS:/ {print $2}' "/proc/${vmm_pid:-missing}/status" 2>/dev/null || echo unavailable)
@@ -577,18 +576,20 @@ PY
   vm_status=0
   rss_peak=${rss_before//[!0-9]/}
   for _ in {1..840}; do
-    kill -0 "$vm_pid" 2>/dev/null || break
+    systemctl --user is-active --quiet "$unit_name" || break
     sample=$(awk '/VmRSS:/ {print $2}' "/proc/${vmm_pid:-missing}/status" 2>/dev/null || true)
     [[ $sample =~ ^[0-9]+$ && -n $rss_peak ]] && ((sample > rss_peak)) && rss_peak=$sample
     sleep 0.5
   done
-  if kill -0 "$vm_pid" 2>/dev/null; then
+  if systemctl --user is-active --quiet "$unit_name"; then
     fail "guest did not shut down within 420s; terminating" "$(tail -n 40 "$launch_log")"
-    kill -TERM "$vm_pid" 2>/dev/null || true
+    systemctl --user stop "$unit_name" 2>/dev/null || true
     vm_status=124
   fi
-  wait "$vm_pid" 2>/dev/null || vm_status=$?
-  wait "$reader_pid" 2>/dev/null; reader_status=$?
+  sleep 0.2
+  kill "$console_follower_pid" 2>/dev/null || true
+  wait "$console_follower_pid" 2>/dev/null || true
+  reader_status=0
   # The sampler exits on its own when /proc/<vmm> disappears; bound the wait so a
   # sampler that outlives its target cannot hang the whole run.
   if [[ -n ${sampler_pid:-} ]]; then
@@ -808,7 +809,7 @@ rejoined count is below expected, so bytes are genuinely missing rather than spl
     fail "confinement: no VMM or virtiofsd process was observable at sample time" "$(tail -n 40 "$launch_log")"
   else
     for role in cloud-hypervisor virtiofsd:store virtiofsd:workspace; do
-      (( ${role_count[$role]:-0} > 0 )) || { bad_conf+="no $role process observed"$'\n'; continue; }
+      (( ${role_count[$role]:-0} == 1 )) || { bad_conf+="expected exactly one $role process, observed ${role_count[$role]:-0}"$'\n'; continue; }
       (( ${role_seccomp[$role]:-0} == 2 )) || bad_conf+="$role has no task in seccomp filter mode (thread-group max=${role_seccomp[$role]:-0})"$'\n'
     done
     grep -q 'sandbox none' <<<"$proc_evidence" && bad_conf+="a daemon ran with --sandbox none"$'\n'
@@ -834,6 +835,7 @@ rejoined count is below expected, so bytes are genuinely missing rather than spl
   if cp -- "$console_log" "$volume_dir/console.log" 2>/dev/null; then
     cp -- "$memfd_series" "$volume_dir/memfd-series.txt" 2>/dev/null || true
     record "artefacts retained: $volume_dir/console.log (guest console, $bytes bytes), $volume_dir/memfd-series.txt"
+  fi
   fi
 fi
 
