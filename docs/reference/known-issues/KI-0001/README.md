@@ -32,15 +32,19 @@ So an attempt on a path that exists below and not above adds an indeterminate va
 
 ## Why vivarium reaches it
 
-The branch needs a `local-overlay` store whose lower layer physically holds paths its database does not know. [`../../../decisions/ADR-0038-guest-store-sharing.md`](../../../decisions/ADR-0038-guest-store-sharing.md) shares the host's literal store as the lower layer, so the guest's store directory is full of them and the collector treats each as garbage — it reads the directory, not only its database. A store whose lower layer is a generated image of registered paths never takes this branch.
+The branch needs one dead path present in the lower layer and absent from the upper one, which is the ordinary state of a `local-overlay` store. Registration is not what decides it: a lower store of properly registered paths reaches the branch just as reliably, confirmed on the host below. [`../../../decisions/ADR-0038-guest-store-sharing.md`](../../../decisions/ADR-0038-guest-store-sharing.md) shares the host's literal store as the lower layer, so every entry the collector reads from the guest's store directory is such a path — it reads the directory, not only its database — and the first one ends each pass.
+
+The limit is never absent in the guest. `LocalStore::autoGC` sets `options.maxFreed = maxFree - avail`, a finite number that the garbage value exceeds. A collection with no limit escapes, because the default `maxFreed` is `UINT64_MAX` and no accumulated garbage can exceed it. That default is also why upstream's own `tests/functional/local-overlay-store/gc.sh` builds this situation and still passes.
 
 ## Evidence
 
-Recorded in the findings register under "The collection ends after one path, on an uninitialised byte count read through the overlay" in [`../../microvm-verification-harness.md`](../../microvm-verification-harness.md), with the per-iteration classification table.
+Two guest boots are recorded in the findings register under "The collection ends after one path, on an uninitialised byte count read through the overlay" in [`../../microvm-verification-harness.md`](../../microvm-verification-harness.md), with the per-iteration classification table.
+
+Reproduced directly on the host on 2026-08-06 against Nix 2.34.8, outside vivarium: a `local-overlay` store over a registered lower store, collected with a limit a million times the size of the store, attempts one lower-layer path, deletes nothing, leaves the upper layer's own deletable garbage in place, and reports 85.7 TiB freed from a store holding roughly 1.5 MB. Nine consecutive runs behaved identically. `valgrind --track-origins=yes` names the `collectGarbage` lambda as both the reading frame and the origin of the stack allocation. So the guest boundary is not load-bearing for this defect, and the wasted-space consequence is wider than the two boots could show: garbage the collector is able to delete survives the pass.
 
 ## Upstream reference
 
-Not yet reported.
+[NixOS/nix#16269](https://github.com/NixOS/nix/issues/16269), filed 2026-08-06. It carries the host reproducer, the `valgrind` origin trace, and a one-line fix at the call site verified against a patched 2.34.8 build.
 
 ## Revert condition
 
