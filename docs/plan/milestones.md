@@ -4,7 +4,6 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 002 secure-launch-and-supervision — shaped — 4 sessions
 - 003 guest-agent-and-credential-relay — shaped — 3 sessions
 - 004 enforce-egress-allowlist — shaped — 4 sessions
 - 005 cli-runtime-plumbing — shaped — 2 sessions
@@ -16,3 +15,4 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 ## closed
 
 - 001 close-host-measurement-gaps — done — 3 sessions
+- 002 secure-launch-and-supervision — done — 4 sessions

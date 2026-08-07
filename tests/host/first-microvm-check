@@ -951,6 +951,33 @@ rejoined count is below expected, so bytes are genuinely missing rather than spl
     elif grep -Fq VIVARIUM_DIAGNOSTIC_COMPLETE "$console_log"; then
       pass "guest ran the diagnostic to completion and shut down cleanly"
     else fail "guest shut down with status 0 but never reported VIVARIUM_DIAGNOSTIC_COMPLETE" "$(tail -n 60 "$console_log")"; fi
+
+    # The lifetime half of ADR-0070, which the marker above cannot reach. That marker
+    # is emitted while the guest is still running its diagnostic, so a reader that
+    # died at any point during the shutdown that follows would still leave it in the
+    # log and the check would pass. The guest's power-off output is its last console
+    # traffic before the VMM exits, so finding it *after* the marker is what says the
+    # supervisor-owned reader was still attached at VM exit rather than for most of
+    # the run. The in-process half — that the reader ends on the supervisor's
+    # cancellation and on nothing else — is asserted at the seam in
+    # `tests/launch_supervision.rs`.
+    if ((vm_status == 0)); then
+      complete_line=$(grep -an VIVARIUM_DIAGNOSTIC_COMPLETE "$console_log" | tail -n1 | cut -d: -f1)
+      poweroff_line=$(grep -aEn 'reboot: (Power down|System halted)|System Power Off|Reached target Power-?Off' "$console_log" | tail -n1 | cut -d: -f1)
+      if [[ -n $poweroff_line && -n $complete_line ]] && ((poweroff_line > complete_line)); then
+        pass "console reader survived until VM exit: the guest's power-off output was captured after the diagnostic marker (lines $complete_line -> $poweroff_line)"
+      elif [[ -n $poweroff_line ]]; then
+        fail "console captured power-off output, but not after the diagnostic marker" \
+          "diagnostic-complete=${complete_line:-absent} power-off=$poweroff_line
+the reader's capture window does not span the guest's final phase."
+      else
+        fail "console never captured the guest's power-off output; the reader did not survive to VM exit" \
+          "$(tail -n 40 "$console_log")"
+      fi
+    else
+      skip "console reader lifetime: the guest did not reach a clean power-off, so there is no VM exit to have survived"
+    fi
+
     if find "$runtime_dir" -mindepth 1 -print -quit | grep -q .; then
       fail "runtime directory not empty after shutdown" "$(find "$runtime_dir" -mindepth 1 -maxdepth 1 -print)"
     else pass "runtime directory empty after shutdown; persistent volume retained at $volume"; fi
