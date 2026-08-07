@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""Validate ownership and application of fixed Markdown heading shapes."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+SHAPE_GLOB = "*.markdownlint-cli2.jsonc"
+SKIP_PARTS = {".draft", ".git", "node_modules"}
+INLINE_CONFIG_RE = re.compile(
+    r"<!--(?:(?!-->).)*markdownlint-configure-file(?:(?!-->).)*-->",
+    re.DOTALL,
+)
+CONFIG_ARG_RE = re.compile(
+    r"args\s*:\s*\[\s*(['\"])--config\1\s*,\s*(['\"])(?P<path>\.markdownlint/[^'\"]+\.markdownlint-cli2\.jsonc)\2\s*\]"
+)
+SHAPE_PATH_RE = re.compile(r"\.markdownlint/[A-Za-z0-9._/-]+\.markdownlint-cli2\.jsonc")
+
+
+def strip_jsonc(text: str) -> str:
+    """Remove JSONC comments and trailing commas without changing strings."""
+    output = list(text)
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            index += 1
+            continue
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            end = len(text) if end < 0 else end
+            for position in range(index, end):
+                output[position] = " "
+            index = end
+            continue
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            if end < 0:
+                raise ValueError("unterminated block comment")
+            for position in range(index, end + 2):
+                if output[position] != "\n":
+                    output[position] = " "
+            index = end + 2
+            continue
+        index += 1
+
+    cleaned = "".join(output)
+    output = list(cleaned)
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(cleaned):
+        char = cleaned[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == ",":
+            lookahead = index + 1
+            while lookahead < len(cleaned) and cleaned[lookahead].isspace():
+                lookahead += 1
+            if lookahead < len(cleaned) and cleaned[lookahead] in "]}":
+                output[index] = " "
+        index += 1
+    return "".join(output)
+
+
+def load_jsonc(path: Path) -> Any:
+    return json.loads(strip_jsonc(path.read_text(encoding="utf-8")))
+
+
+def contains_key(value: Any, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value or any(contains_key(child, key) for child in value.values())
+    if isinstance(value, list):
+        return any(contains_key(child, key) for child in value)
+    return False
+
+
+def relative(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def project_configs(root: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in root.rglob(SHAPE_GLOB)
+        if ".markdownlint" not in path.relative_to(root).parts
+        and not SKIP_PARTS.intersection(path.relative_to(root).parts)
+    )
+
+
+def markdown_files(root: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in {".md", ".markdown"}
+        and not SKIP_PARTS.intersection(path.relative_to(root).parts)
+    )
+
+
+def validate(root: Path) -> list[str]:
+    diagnostics: list[str] = []
+
+    for path in project_configs(root):
+        label = relative(path, root)
+        try:
+            config = load_jsonc(path)
+        except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+            diagnostics.append(f"{label}: cannot parse JSONC ({error})")
+            continue
+        if contains_key(config, "MD043"):
+            diagnostics.append(
+                f"{label}: project config must not contain a live MD043 key"
+            )
+
+    shape_dir = root / ".markdownlint"
+    shapes = sorted(shape_dir.glob(SHAPE_GLOB)) if shape_dir.is_dir() else []
+    if not shapes:
+        diagnostics.append(".markdownlint/: no heading-shape overlays found")
+
+    valid_shapes: set[str] = set()
+    for path in shapes:
+        label = relative(path, root)
+        try:
+            config = load_jsonc(path)
+        except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+            diagnostics.append(f"{label}: cannot parse JSONC ({error})")
+            continue
+        if not isinstance(config, dict) or set(config) != {"config"}:
+            diagnostics.append(
+                f"{label}: shape overlay may contain only the config key"
+            )
+            continue
+        rules = config.get("config")
+        if not isinstance(rules, dict) or set(rules) != {"MD043"}:
+            diagnostics.append(f"{label}: shape overlay may contain only config.MD043")
+            continue
+        required = rules.get("MD043")
+        if not isinstance(required, dict) or set(required) != {"headings"}:
+            diagnostics.append(f"{label}: config.MD043 must contain only headings")
+            continue
+        headings = required.get("headings")
+        if (
+            not isinstance(headings, list)
+            or not headings
+            or not all(isinstance(heading, str) for heading in headings)
+        ):
+            diagnostics.append(
+                f"{label}: config.MD043.headings must be a non-empty list of strings"
+            )
+            continue
+        valid_shapes.add(label)
+
+    hook_path = root / ".pre-commit-config.yaml"
+    try:
+        hook_text = hook_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        diagnostics.append(f".pre-commit-config.yaml: cannot read ({error})")
+        hook_text = ""
+
+    exact_refs = [match.group("path") for match in CONFIG_ARG_RE.finditer(hook_text)]
+    mentioned_refs = SHAPE_PATH_RE.findall(hook_text)
+    for reference in sorted(set(mentioned_refs) - set(exact_refs)):
+        diagnostics.append(
+            f".pre-commit-config.yaml: {reference} is not an exact --config argument"
+        )
+    for reference in exact_refs:
+        if not (root / reference).is_file():
+            diagnostics.append(
+                f".pre-commit-config.yaml: referenced overlay does not exist: {reference}"
+            )
+    for path in shapes:
+        label = relative(path, root)
+        count = exact_refs.count(label)
+        if count == 0:
+            diagnostics.append(f"{label}: overlay is not referenced by a hook")
+        elif count > 1:
+            diagnostics.append(f"{label}: overlay is referenced by {count} hooks")
+
+    for path in markdown_files(root):
+        text = path.read_text(encoding="utf-8")
+        if INLINE_CONFIG_RE.search(text):
+            diagnostics.append(
+                f"{relative(path, root)}: document-local markdownlint-configure-file comment is forbidden"
+            )
+
+    return diagnostics
+
+
+def write_fixture(root: Path) -> None:
+    (root / ".markdownlint").mkdir()
+    (root / "docs").mkdir()
+    (root / ".markdownlint-cli2.jsonc").write_text(
+        '{\n  // MD043 is allowed in a comment.\n  "config": {"default": true,},\n}\n',
+        encoding="utf-8",
+    )
+    (root / ".markdownlint" / "shape.markdownlint-cli2.jsonc").write_text(
+        '{"config":{"MD043":{"headings":["*","## Status"]}}}\n',
+        encoding="utf-8",
+    )
+    (root / ".pre-commit-config.yaml").write_text(
+        "args: ['--config', '.markdownlint/shape.markdownlint-cli2.jsonc']\n",
+        encoding="utf-8",
+    )
+    (root / "docs" / "page.md").write_text("# Page\n", encoding="utf-8")
+
+
+def expect_case(name: str, mutate: Any, expected: str) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        write_fixture(root)
+        mutate(root)
+        diagnostics = validate(root)
+        if not any(expected in diagnostic for diagnostic in diagnostics):
+            raise AssertionError(f"{name}: expected {expected!r}, got {diagnostics!r}")
+
+
+def self_test() -> None:
+    parsed = json.loads(
+        strip_jsonc(
+            '{"url":"https://example.test/a//b",'
+            '"literal":"/* not a comment */",/* comment */"items":[1,],}'
+        )
+    )
+    assert parsed == {
+        "url": "https://example.test/a//b",
+        "literal": "/* not a comment */",
+        "items": [1],
+    }
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        write_fixture(root)
+        assert validate(root) == []
+
+    expect_case(
+        "missing headings",
+        lambda root: (
+            root / ".markdownlint" / "shape.markdownlint-cli2.jsonc"
+        ).write_text('{"config":{"MD043":{}}}\n', encoding="utf-8"),
+        "must contain only headings",
+    )
+    expect_case(
+        "empty headings",
+        lambda root: (
+            root / ".markdownlint" / "shape.markdownlint-cli2.jsonc"
+        ).write_text('{"config":{"MD043":{"headings":[]}}}\n', encoding="utf-8"),
+        "non-empty list",
+    )
+    expect_case(
+        "root MD043",
+        lambda root: (root / ".markdownlint-cli2.jsonc").write_text(
+            '{"config":{"MD043":false}}\n', encoding="utf-8"
+        ),
+        "project config must not contain a live MD043 key",
+    )
+    expect_case(
+        "orphan overlay",
+        lambda root: (
+            root / ".markdownlint" / "orphan.markdownlint-cli2.jsonc"
+        ).write_text('{"config":{"MD043":{"headings":["*"]}}}\n', encoding="utf-8"),
+        "overlay is not referenced",
+    )
+    expect_case(
+        "duplicate hook reference",
+        lambda root: (root / ".pre-commit-config.yaml").write_text(
+            "args: ['--config', '.markdownlint/shape.markdownlint-cli2.jsonc']\n"
+            "args: ['--config', '.markdownlint/shape.markdownlint-cli2.jsonc']\n",
+            encoding="utf-8",
+        ),
+        "referenced by 2 hooks",
+    )
+    expect_case(
+        "missing referenced overlay",
+        lambda root: (root / ".pre-commit-config.yaml").write_text(
+            "args: ['--config', '.markdownlint/shape.markdownlint-cli2.jsonc']\n"
+            "args: ['--config', '.markdownlint/missing.markdownlint-cli2.jsonc']\n",
+            encoding="utf-8",
+        ),
+        "referenced overlay does not exist",
+    )
+    expect_case(
+        "inline configuration",
+        lambda root: (root / "docs" / "page.md").write_text(
+            '<!-- markdownlint-configure-file {"MD043": false} -->\n# Page\n',
+            encoding="utf-8",
+        ),
+        "document-local markdownlint-configure-file comment is forbidden",
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        print("markdown heading shape self-test passed")
+        return 0
+
+    root = Path(__file__).resolve().parent.parent
+    diagnostics = validate(root)
+    for diagnostic in diagnostics:
+        print(diagnostic, file=sys.stderr)
+    if diagnostics:
+        return 1
+    shape_count = len(list((root / ".markdownlint").glob(SHAPE_GLOB)))
+    print(f"markdown heading shapes valid: {shape_count} overlays wired one-to-one")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

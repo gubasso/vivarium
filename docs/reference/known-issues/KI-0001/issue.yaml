@@ -1,0 +1,18 @@
+schema: vivarium-known-issue
+version: 1
+id: KI-0001
+slug: local-overlay-uninitialised-byte-count
+status: open
+severity: high
+external_system:
+  name: Nix
+  pinned_version: 2.34.7
+affected_checks:
+  - store-pressure-collector-freed
+  - store-pressure-collector-per-path
+upstream_issue: https://github.com/NixOS/nix/issues/16269
+mask:
+  state: none
+recheck:
+  command: tests/host/store-pressure-check --arm e
+  condition: A collection attempts more than one path and the dead-path count falls.

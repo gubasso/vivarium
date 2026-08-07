@@ -1,0 +1,15 @@
+{
+  // The md-adr hook selects the files governed by this shape.
+  "config": {
+    "MD043": {
+      "headings": [
+        "*",
+        "## Context and Problem Statement",
+        "## Considered Options",
+        "## Decision Outcome",
+        "## Consequences",
+        "## Status"
+      ]
+    }
+  }
+}

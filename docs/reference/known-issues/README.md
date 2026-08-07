@@ -1,6 +1,6 @@
 # Known issues
 
-This registry covers bugs in external systems that vivarium integrates or tests. It begins empty; do not invent a case to populate it. Create the machine-readable registry with the first real case, when a check has a consumer for it.
+This registry covers bugs in external systems that vivarium integrates or tests. The Markdown tables are the human status index; add a separate `registry.yaml` only when a deterministic consumer exists.
 
 ## Status values
 

@@ -6,9 +6,8 @@
 // docs benefit from — single top-level H1, first-line H1, ordered heading levels —
 // is left ON via `default: true`.
 //
-// Single source of truth: this .jsonc is the ONLY markdownlint config. Do not add
-// a `.markdownlint.{yaml,json,...}` — when both exist, the `.markdownlint.*` rules
-// win and silently override the `config` block below.
+// This is the sole discovered project-wide config. Hook-selected overlays under
+// `.markdownlint/` add fixed heading shapes for their filtered document sets.
 //
 // Tooling split (researched): markdownlint is a LINTER with surgical per-span
 // autofixes, NOT a formatter. It cannot reflow/unwrap prose, normalize GFM table
@@ -79,11 +78,7 @@
     // Existing fence policy, stated explicitly: every fence names a language,
     // and indented code is refused in favor of fenced blocks.
     "MD040": true,
-    "MD046": { "style": "fenced" },
-
-    // Fixed heading structures opt in per file. Each slice README carries the
-    // same file-scoped MD043 headings array; sibling tasks.md files do not.
-    "MD043": false
+    "MD046": { "style": "fenced" }
   },
   "customRules": ["markdownlint-rule-relative-links"],
   "ignores": [

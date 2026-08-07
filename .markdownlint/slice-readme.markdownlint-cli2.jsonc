@@ -1,0 +1,20 @@
+{
+  // The md-slice-readme hook selects the files governed by this shape.
+  "config": {
+    "MD043": {
+      "headings": [
+        "*",
+        "## Goal",
+        "## Appetite",
+        "## Core",
+        "## In scope",
+        "## Out of scope",
+        "## Governed by",
+        "## Acceptance",
+        "## Rabbit holes",
+        "## Done when",
+        "## Revisions"
+      ]
+    }
+  }
+}

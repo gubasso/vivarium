@@ -433,19 +433,49 @@ repos:
   # --- Markdown lint (style gate + ordered-list renumber autofix) ---
   #
   # Final order is emphasis check, table-pipe check, dprint, explicit relative-
-  # link form checks, then markdownlint. markdownlint-cli2 runs AFTER dprint.
-  # dprint owns all formatting; markdownlint
-  # flags issues dprint can't normalize (heading hierarchy, link integrity) AND
-  # autofixes ordered-list renumbering (MD029). The custom `relative-links` rule
-  # (report-only) verifies an explicit relative target actually resolves on disk,
-  # complementing the pygrep FORM guards above (form vs. existence). Configure via
-  # the sibling ./.markdownlint-cli2.jsonc. Uses the node variant.
+  # link form checks, heading-shape wiring, then markdownlint. The generic
+  # markdownlint hook keeps repository-wide style, relative-link integrity, and
+  # ordered-list repair; three filtered hooks add the fixed document shapes from
+  # `.markdownlint/`. markdownlint-cli2 runs AFTER dprint.
+  # dprint owns all formatting; markdownlint flags issues dprint can't normalize.
+  # Uses the node variant.
   # nodeenv cannot provision a usable Node here, so language_version: system
   # selects the flake's nodejs runtime — the same Nix-owns-the-runtime pattern
   # used by the typos/committed/dprint system hooks above.
+  - repo: local
+    hooks:
+      - id: markdown-heading-shapes
+        name: markdown heading shapes are owned and wired one-to-one
+        entry: scripts/check-markdown-heading-shapes
+        language: system
+        pass_filenames: false
+        files: '^(\.markdownlint/|\.markdownlint-cli2\.jsonc$|\.pre-commit-config\.yaml$|scripts/check-markdown-heading-shapes$|.*\.(md|markdown)$)'
+        stages: [pre-commit]
+
   - repo: https://github.com/DavidAnson/markdownlint-cli2
     rev: v0.23.2
     hooks:
       - id: markdownlint-cli2
+        language_version: system
+        additional_dependencies: ['markdownlint-rule-relative-links']
+      - id: markdownlint-cli2
+        alias: md-slice-readme
+        name: markdownlint slice entry heading shape
+        files: '^docs/plan/slices/[^/]+/README\.md$'
+        args: ['--config', '.markdownlint/slice-readme.markdownlint-cli2.jsonc']
+        language_version: system
+        additional_dependencies: ['markdownlint-rule-relative-links']
+      - id: markdownlint-cli2
+        alias: md-milestones
+        name: markdownlint milestone heading shape
+        files: '^docs/plan/milestones\.md$'
+        args: ['--config', '.markdownlint/milestones.markdownlint-cli2.jsonc']
+        language_version: system
+        additional_dependencies: ['markdownlint-rule-relative-links']
+      - id: markdownlint-cli2
+        alias: md-adr
+        name: markdownlint decision heading shape
+        files: '^docs/decisions/(ADR-.*|template)\.md$'
+        args: ['--config', '.markdownlint/adr.markdownlint-cli2.jsonc']
         language_version: system
         additional_dependencies: ['markdownlint-rule-relative-links']
