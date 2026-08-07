@@ -2,8 +2,10 @@
 
 use crate::launch::secure_fs::{self, SocketState};
 use crate::launch::{
-    CommandSpec, ConfinementProfile, ConsoleReader, ConsoleSink, LaunchError, LaunchSpec,
+    BootMetadata, CommandSpec, ConfinementProfile, ConsoleReader, ConsoleSink, LaunchError,
+    LaunchSpec,
 };
+use crate::protocol::validate_boot_identity;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -11,7 +13,6 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::fs;
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
@@ -19,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 const STARTUP_POLLS: usize = 400;
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,8 +138,10 @@ impl Supervisor {
         self.write_vmm_pid().await?;
         let api_socket = self.spec.runtime_paths.api_socket.clone();
         self.wait_for_socket(&api_socket, None).await?;
-        self.write_boot_json().await?;
-        self.remote("create", Some(&self.spec.runtime_paths.boot_json))
+        let metadata = self.prepare_boot_metadata().await?;
+        self.write_vm_create_json().await?;
+        self.write_boot_json(&metadata).await?;
+        self.remote("create", Some(&self.spec.runtime_paths.vm_create_json))
             .await?;
         let console_socket = self.spec.runtime_paths.console_socket.clone();
         self.wait_for_socket(&console_socket, None).await?;
@@ -159,14 +163,24 @@ impl Supervisor {
         connected_rx
             .await
             .map_err(|_| LaunchError::Readiness("console connection"))?;
-        if let Some(agent) = self.spec.socket_legs.agent.clone() {
-            let stream = UnixStream::connect(agent)
-                .await
-                .map_err(|error| LaunchError::io("connect exact agent socket", error))?;
-            let cancellation = self.cancellation.clone();
-            self.tasks.spawn(agent_leg(stream, cancellation));
-        }
         self.remote("boot", None).await?;
+        crate::launch::control::wait_for_agent(
+            &self.spec.runtime_paths.control_socket,
+            &metadata,
+            STARTUP_TIMEOUT,
+        )
+        .await?;
+        let credential_tasks = crate::launch::credentials::start(
+            self.spec.runtime_paths.control_socket.clone(),
+            &self.spec.socket_legs.credentials,
+            self.cancellation.clone(),
+            STARTUP_TIMEOUT,
+        )
+        .await?;
+        for task in credential_tasks {
+            self.tasks
+                .spawn(async move { task.await.map_err(|_| LaunchError::Task)? });
+        }
         ready
             .send(LaunchReady::ProcessReady)
             .await
@@ -286,9 +300,51 @@ impl Supervisor {
         .await
     }
 
-    async fn write_boot_json(&self) -> Result<(), LaunchError> {
+    async fn prepare_boot_metadata(&mut self) -> Result<BootMetadata, LaunchError> {
+        let boot_identity = fs::read_to_string("/proc/sys/kernel/random/uuid")
+            .await
+            .map_err(|error| LaunchError::io("read boot identity", error))?;
+        let boot_identity = boot_identity.trim();
+        validate_boot_identity(boot_identity)
+            .map_err(|_| LaunchError::InvalidSpec("kernel UUID is malformed"))?;
+        let cmdline = self
+            .spec
+            .vm_create
+            .get_mut("payload")
+            .and_then(|payload| payload.get_mut("cmdline"))
+            .and_then(|value| value.as_str())
+            .ok_or(LaunchError::InvalidSpec("VM create cmdline is missing"))?;
+        let cmdline = format!("{cmdline} vivarium.boot_identity={boot_identity}");
+        self.spec.vm_create["payload"]["cmdline"] = serde_json::Value::String(cmdline);
+        let workspace_host_path = self
+            .spec
+            .shares
+            .iter()
+            .find(|share| share.tag == "workspace")
+            .map(|share| share.source.clone())
+            .ok_or(LaunchError::InvalidSpec("workspace share is missing"))?;
+        Ok(BootMetadata {
+            schema_version: crate::protocol::SCHEMA_VERSION,
+            boot_identity: boot_identity.to_owned(),
+            project_id: self.spec.project_id.clone(),
+            target: self.spec.target.clone(),
+            backend: "cloud-hypervisor".to_owned(),
+            workspace_host_path,
+        })
+    }
+
+    async fn write_boot_json(&self, metadata: &BootMetadata) -> Result<(), LaunchError> {
         secure_fs::private_write(
             &self.spec.runtime_paths.boot_json,
+            &serde_json::to_vec(metadata)
+                .map_err(|_| LaunchError::InvalidSpec("boot metadata cannot be serialized"))?,
+        )
+        .await
+    }
+
+    async fn write_vm_create_json(&self) -> Result<(), LaunchError> {
+        secure_fs::private_write(
+            &self.spec.runtime_paths.vm_create_json,
             &serde_json::to_vec(&self.spec.vm_create)
                 .map_err(|_| LaunchError::InvalidSpec("VM create JSON cannot be serialized"))?,
         )
@@ -437,20 +493,6 @@ async fn drain<R: AsyncRead + Unpin>(mut reader: R) -> Result<(), LaunchError> {
     }
 }
 
-async fn agent_leg(
-    mut stream: UnixStream,
-    cancellation: CancellationToken,
-) -> Result<(), LaunchError> {
-    let mut byte = [0_u8; 1];
-    tokio::select! {
-        () = cancellation.cancelled() => Ok(()),
-        result = stream.read(&mut byte) => {
-            result.map_err(|error| LaunchError::io("hold exact agent socket", error))?;
-            Err(LaunchError::Readiness("agent socket closed"))
-        }
-    }
-}
-
 async fn socket_exists(path: &Path) -> Result<bool, LaunchError> {
     Ok(secure_fs::socket_state(path).await? == SocketState::Socket)
 }
@@ -461,9 +503,11 @@ async fn cleanup_runtime(spec: &LaunchSpec) -> Result<(), LaunchError> {
         spec.runtime_paths.ready_socket.clone(),
         spec.runtime_paths.api_socket.clone(),
         spec.runtime_paths.console_socket.clone(),
+        spec.runtime_paths.control_socket.clone(),
         spec.runtime_paths.console_log.clone(),
         spec.runtime_paths.vm_pid.clone(),
         spec.runtime_paths.boot_json.clone(),
+        spec.runtime_paths.vm_create_json.clone(),
         PathBuf::from(format!("{}.1", spec.runtime_paths.console_log.display())),
         PathBuf::from(format!("{}.2", spec.runtime_paths.console_log.display())),
     ];

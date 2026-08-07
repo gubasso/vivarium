@@ -11,16 +11,17 @@ memory_mib=""
 vcpu=""
 project_id=first-microvm
 target=default
-agent_socket=""
+ssh_agent_socket=""
+gpg_agent_socket=""
 console_log=true
 print_only=false
 usage() {
-  echo "usage: $0 --workspace ABS --runtime-dir ABS --volume ABS --store-volume ABS --uid N --gid N --memory-mib N --vcpu N [--project-id ID] [--target NAME] [--agent-socket ABS] [--no-console-log] [--print-static-arguments]" >&2
+  echo "usage: $0 --workspace ABS --runtime-dir ABS --volume ABS --store-volume ABS --uid N --gid N --memory-mib N --vcpu N [--project-id ID] [--target NAME] [--ssh-agent-socket ABS] [--gpg-agent-socket ABS] [--no-console-log] [--print-static-arguments]" >&2
   exit 64
 }
 while (($#)); do
   case $1 in
-    --workspace | --runtime-dir | --volume | --store-volume | --uid | --gid | --memory-mib | --vcpu | --project-id | --target | --agent-socket)
+    --workspace | --runtime-dir | --volume | --store-volume | --uid | --gid | --memory-mib | --vcpu | --project-id | --target | --ssh-agent-socket | --gpg-agent-socket)
       (($# >= 2)) || usage
       name=${1#--}
       name=${name//-/_}
@@ -44,7 +45,25 @@ for value in workspace runtime_dir volume store_volume; do
 done
 for value in uid gid memory_mib vcpu; do [[ ${!value:-} =~ ^[0-9]+$ ]] || usage; done
 [[ -n $project_id && -n $target ]] || usage
-[[ -z $agent_socket || $agent_socket = /* ]] || usage
+for value in ssh_agent_socket gpg_agent_socket; do
+  candidate=${!value}
+  [[ -z $candidate || $candidate = /* ]] || usage
+done
+declared_ssh=false
+declared_gpg=false
+while IFS= read -r id; do
+  case $id in ssh) declared_ssh=true ;; gpg) declared_gpg=true ;; *) usage ;; esac
+done < <(jq -r '.credentialIds[]' "$contract")
+if $declared_ssh; then
+  [[ -n $ssh_agent_socket && -S $ssh_agent_socket && ! -L $ssh_agent_socket ]] || usage
+else
+  [[ -z $ssh_agent_socket ]] || usage
+fi
+if $declared_gpg; then
+  [[ -n $gpg_agent_socket && -S $gpg_agent_socket && ! -L $gpg_agent_socket ]] || usage
+else
+  [[ -z $gpg_agent_socket ]] || usage
+fi
 workspace=$(realpath -m -- "$workspace")
 runtime_dir=$(realpath -m -- "$runtime_dir")
 volume=$(realpath -m -- "$volume")
@@ -52,6 +71,7 @@ store_volume=$(realpath -m -- "$store_volume")
 spec=$runtime_dir/launch.json
 api=$runtime_dir/api.sock
 console=$runtime_dir/console.sock
+control=$runtime_dir/control.sock
 ready=$runtime_dir/ready.sock
 store_socket=$runtime_dir/store.sock
 workspace_socket=$runtime_dir/workspace.sock
@@ -69,9 +89,9 @@ fi
 jq \
   --arg project "$project_id" --arg target "$target" --arg runtime "$runtime_dir" \
   --arg workspace "$workspace" --arg volume "$volume" --arg storeVolume "$store_volume" \
-  --arg api "$api" --arg console "$console" --arg ready "$ready" \
+  --arg api "$api" --arg console "$console" --arg control "$control" --arg ready "$ready" \
   --arg storeSocket "$store_socket" --arg workspaceSocket "$workspace_socket" \
-  --arg agent "$agent_socket" --argjson uid "$uid" --argjson gid "$gid" \
+  --arg sshAgent "$ssh_agent_socket" --arg gpgAgent "$gpg_agent_socket" --argjson uid "$uid" --argjson gid "$gid" \
   --argjson memoryMiB "$memory_mib" --argjson vcpu "$vcpu" \
   --argjson landlock "$landlock" --argjson consoleLog "$console_log" '
   def token:
@@ -83,6 +103,7 @@ jq \
       | gsub("@WORKSPACE_SOCKET@"; $workspaceSocket)
       | gsub("@API_SOCKET@"; $api)
       | gsub("@CONSOLE_SOCKET@"; $console)
+      | gsub("@CONTROL_SOCKET@"; $control)
     end;
   . as $c |
   {
@@ -90,12 +111,13 @@ jq \
     projectId: $project,
     target: $target,
     runtimePaths: { root: $runtime, launchSpec: ($runtime + "/launch.json"), readySocket: $ready,
-      apiSocket: $api, consoleSocket: $console, consoleLog: ($runtime + "/console.log"),
-      vmPid: ($runtime + "/vm.pid"), bootJson: ($runtime + "/boot.json") },
+      apiSocket: $api, consoleSocket: $console, consoleLog: ($runtime + "/console.log"), controlSocket: $control,
+      vmPid: ($runtime + "/vm.pid"), bootJson: ($runtime + "/boot.json"), vmCreateJson: ($runtime + "/vm-create.json") },
     backendPrograms: { cloudHypervisor: .cloudHypervisor, chRemote: .chRemote,
       virtiofsd: .virtiofsd, setpriv: .setpriv, truncate: .truncate,
       mkfsExt4: .mkfsExt4, systemdRun: .systemdRun, supervisor: .supervisor },
-    socketLegs: { api: $api, console: $console, agent: (if $agent == "" then null else $agent end) },
+    socketLegs: { api: $api, console: $console, credentials: [.credentialIds[] as $id |
+      { id: $id, hostSocket: (if $id == "ssh" then $sshAgent else $gpgAgent end) }] },
     resources: { vcpus: $vcpu, memoryMiB: $memoryMiB, cpuWeight: 100 },
     descriptorBudget: .descriptorBudget,
     identityTranslation: (.idTranslation + { hostUid: $uid, hostGid: $gid }),

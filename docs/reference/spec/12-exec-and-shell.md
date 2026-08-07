@@ -93,6 +93,8 @@ The vsock-class transport is a hybrid one: the backend listens on `control.sock`
 - The host end is an ordinary Unix stream. Nothing on the host side needs a vsock-aware transport; the vsock dependency exists only in the guest agent.
 - The guest cannot originate a control connection. A guest-initiated connection would need a host process listening on a per-port socket beside `control.sock`, and vivarium creates none — ever. The control plane is host-initiated by construction, not by policy.
 
+The host consumes and validates the backend acknowledgement before reading a vivarium frame. The pinned backend's exact preamble and acknowledgement belong to [backend capabilities](../backend-capabilities.md#cloud-hypervisor); this contract requires the same complete transport establishment for any backend.
+
 A connection that closes before the transport completes it means the agent is not yet listening: wait within the boot timeout, then `69` (step 4 above).
 
 ### The credential port
@@ -101,24 +103,44 @@ When a composition declares the agent channel ([`07-secrets-and-config-sharing.m
 
 Both properties above survive unchanged, and the design is shaped around keeping them:
 
-- Vivarium holds a small pool of idle connections it opened on the credential port. The guest-side proxy accepts a local connection at the fixed guest socket path and consumes one parked connection; vivarium refills the pool. So the guest still originates nothing, and vivarium still creates no host listener beside `control.sock`.
+- Vivarium holds four idle connections per declared credential id that it opened on the credential port. A one-byte setup prelude selects `ssh` (`0x01`) or `gpg` (`0x02`), and the guest acknowledges admission to that id's bounded queue with `0x00`. The guest-side proxy accepts a local connection at the fixed guest socket path and consumes one parked connection; vivarium refills the pool. So the guest still originates nothing, and vivarium still creates no host listener beside `control.sock`.
 - The host end of each parked connection remains an ordinary Unix stream, and vivarium relays its bytes to the host agent socket the channel names.
 
 Vivarium never interprets a byte of that stream. The relay's payload is secret-class in full ([`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)); what may be recorded is that a channel exists and which id it carries, never its traffic.
 
 ### Framing
 
-Each message is a length prefix, a one-byte type tag, and a payload. Standard-I/O payloads are raw bytes; every control payload is a serde-encoded structure. Frames are bounded, and a stream frame's bound is far smaller than a control frame's, so a peer can size buffers without trusting the other side.
+Each message begins with a four-byte unsigned big-endian length. The length counts the one-byte tag plus the payload. Standard-I/O payloads are raw bytes; every control payload is JSON encoded through serde. A standard-stream payload is at most 64 KiB and any other control payload is at most 1 MiB. A zero length, an oversized frame, truncated content, malformed JSON, an unknown tag, or a tag from the wrong direction closes the connection.
+
+| Tag    | Sender | Message    |
+| ------ | ------ | ---------- |
+| `0x01` | client | `Hello`    |
+| `0x02` | agent  | `Hello`    |
+| `0x03` | client | `Ping`     |
+| `0x04` | agent  | `Pong`     |
+| `0x05` | client | `Start`    |
+| `0x06` | client | `Stdin`    |
+| `0x07` | client | `StdinEnd` |
+| `0x08` | client | `Resize`   |
+| `0x09` | client | `Signal`   |
+| `0x0a` | agent  | `Stdout`   |
+| `0x0b` | agent  | `Stderr`   |
+| `0x0c` | agent  | `Exit`     |
+| `0x0d` | agent  | `Error`    |
 
 An unknown tag is a protocol error, not a message to skip — silently ignoring one would let two versions believe they agreed. Direction is part of the contract and is enforced, not merely documented: only the client sends standard input, resize, and signal frames; only the agent sends standard output, standard error, and the exit frame.
 
 The message set is exactly what a session needs and no more: a handshake pair, `Ping`/`Pong`, a request to start the process, the three standard streams with an explicit end-of-input, `Resize`, `Signal`, `Exit`, and `Error`.
+
+A client first sends `Hello` with schema version 1 and the boot identity. After the matching agent `Hello`, the connection carries either `Ping`/`Pong` or a single session. `Resize` may precede `Start`. A pre-spawn failure produces `Error`; successful spawn produces streams followed by exactly one `Exit`. There is no `Started` frame, session id, multiplexer, or registry.
 
 ### Terminal size and signals
 
 A resize carries the new dimensions and the agent applies them to the session's PTY; the host re-sends whenever its own terminal changes size. Sent before the process starts, it sets the initial dimensions instead — so a session never briefly renders at the wrong size.
 
 With `-t` the host puts the local terminal in raw mode and forwards the interrupt as a byte, letting the guest PTY's line discipline raise the signal against the guest's own foreground process group. This is the only correct behaviour when the guest runs a job-control shell: a synthesized signal would go to the wrong process. Explicit signal frames therefore exist for the non-TTY path, where there is no line discipline to do the work.
+
+For a PTY, standard input, output, and error share the terminal as required by the operating system, and all PTY output is sent as `Stdout`. Without a PTY, stdout and stderr remain distinct.
 
 ### Authorization
 
@@ -129,7 +151,3 @@ With `-t` the host puts the local terminal in raw mode and forwards the interrup
 - A secret would have to be delivered into the guest, where guest root — the adversary the sandbox is drawn against — reads it anyway. It would add a handling path and defend against nobody.
 
 What is left to establish is which agent answered, and the handshake does exactly that: the agent's reply carries the boot identity, and vivarium compares it against `boot.json` before proceeding — the same comparison step 3 above already requires, against a stale socket, a re-created VM, or a crossed project. `boot.json` is host-written metadata and never authentication material.
-
-## Deferred details
-
-- Implementation backend/device.

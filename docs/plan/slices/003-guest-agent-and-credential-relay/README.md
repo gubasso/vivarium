@@ -59,4 +59,4 @@ Every acceptance assertion above holds and is demonstrated by the evidence it na
 
 ## Revisions
 
-None.
+- 2026-08-07: resolved the implementation seam to `tokio-vsock` 0.7.2, `pty-process` 0.5.3 with `async`, and rustix 1.1.4 with `process`. Published manifests and local `cargo info` checks establish their licensing, feature, and Rust 1.97.1 compatibility; the workspace and product Nix builds remain the adoption gate.

@@ -22,7 +22,7 @@ fn fixture(name: &str) -> LaunchSpec {
     let root = std::env::temp_dir().join(format!("vivarium-supervision-{name}-{nonce}"));
     let child = |name: &str| root.join(name);
     LaunchSpec {
-        schema_version: 1,
+        schema_version: 2,
         project_id: "project".into(),
         target: "target".into(),
         runtime_paths: RuntimePaths {
@@ -32,8 +32,10 @@ fn fixture(name: &str) -> LaunchSpec {
             api_socket: child("api.sock"),
             console_socket: child("console.sock"),
             console_log: child("console.log"),
+            control_socket: child("control.sock"),
             vm_pid: child("vm.pid"),
             boot_json: child("boot.json"),
+            vm_create_json: child("vm-create.json"),
         },
         backend_programs: BackendPrograms {
             cloud_hypervisor: "/nix/store/fake/bin/cloud-hypervisor".into(),
@@ -48,7 +50,7 @@ fn fixture(name: &str) -> LaunchSpec {
         socket_legs: SocketLegs {
             api: child("api.sock"),
             console: child("console.sock"),
-            agent: None,
+            credentials: Vec::new(),
         },
         resources: ResourceSpec {
             vcpus: 2,

@@ -2,6 +2,8 @@
 
 mod command;
 mod console;
+mod control;
+mod credentials;
 mod error;
 mod policy;
 mod readiness;
@@ -16,8 +18,9 @@ pub use error::LaunchError;
 pub use policy::ConfinementProfile;
 pub use readiness::{ReadinessError, ReadinessReport, ReadinessStatus};
 pub use spec::{
-    BackendPrograms, DescriptorBudget, IdentityTranslation, LaunchSpec, ResourceSpec, RuntimePaths,
-    ShareSpec, SocketLegs, VIRTIOFSD_RLIMIT_NOFILE, VolumeSpec,
+    BackendPrograms, BootMetadata, CredentialSpec, DescriptorBudget, IdentityTranslation,
+    LaunchSpec, ResourceSpec, RuntimePaths, ShareSpec, SocketLegs, VIRTIOFSD_RLIMIT_NOFILE,
+    VolumeSpec,
 };
 pub use supervisor::{
     ChildExit, ChildKind, GuestReadiness, LaunchReady, ShutdownReason, Supervisor,

@@ -4,7 +4,7 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 003 guest-agent-and-credential-relay — shaped — 3 sessions
+- 003 guest-agent-and-credential-relay — active — 3 sessions
 - 004 enforce-egress-allowlist — shaped — 4 sessions
 - 005 cli-runtime-plumbing — shaped — 2 sessions
 - 006 generate-config-contract — shaped — 2 sessions

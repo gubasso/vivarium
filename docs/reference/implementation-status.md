@@ -2,11 +2,11 @@
 
 The single source of truth for what vivarium does today versus what is designed only. The specification under [`spec/`](spec/README.md) describes the intended design; this page records how much of it exists in code.
 
-## Current state: secure launch subsystem implemented
+## Current state: guest control capability implemented, host proof pending
 
-The Nix-built diagnostic runner now hands a strict launch contract to the Rust [policy constructor](../../src/launch/policy.rs), [transient-service renderer](../../src/launch/systemd.rs), and [supervisor](../../src/launch/supervisor.rs). The supervisor implements API create-before-boot ordering, one daemon per share, console ownership, group cancellation, and allowlisted runtime cleanup. The descriptor check is a pure implemented boundary in [`src/doctor/descriptors.rs`](../../src/doctor/descriptors.rs).
+The Nix-built diagnostic runner now hands a strict launch contract to the Rust [policy constructor](../../src/launch/policy.rs), [transient-service renderer](../../src/launch/systemd.rs), and [supervisor](../../src/launch/supervisor.rs). The supervisor implements API create-before-boot ordering, one daemon per share, console ownership, group cancellation, allowlisted runtime cleanup, a current-boot agent ping, and initial credential-pool readiness. The shared [protocol](../../src/protocol/mod.rs) and private [guest agent](../../crates/vivarium-guest-agent/src/main.rs) implement bounded framing, process and PTY sessions, guest AF_VSOCK listeners, and declared SSH/GPG relays.
 
-This is capability implementation, not completion of a public command. Manifest resolution, guest boot-identity readiness, and the existing end-to-end `viv start` trial remain gated. Target-host behavior for the new service and KVM path is unverified until the capable-host harness runs without skipping. No row below is `Implemented`.
+This is capability implementation, not completion of a public command. Manifest resolution and the existing end-to-end `viv start`, `viv exec`, and `viv shell` trials remain gated. Unit and fake-Unix-transport integration tests run here; actual guest boot, AF_VSOCK transport, guest PTY job control, socket ownership, opaque credential bytes, and pool refill remain unverified until `tests/guest_agent_host.rs` passes on a capable host. No row below is `Implemented`.
 
 ## Surface status
 

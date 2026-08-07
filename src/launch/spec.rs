@@ -1,13 +1,14 @@
 //! Versioned, strict launch contract consumed from the Nix-built JSON handoff.
 
 use crate::launch::LaunchError;
+use crate::protocol::CredentialId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Component, Path, PathBuf};
 
-pub const LAUNCH_SCHEMA_VERSION: u32 = 1;
+pub const LAUNCH_SCHEMA_VERSION: u32 = 2;
 pub const VIRTIOFSD_RLIMIT_NOFILE: u64 = 524_288;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -74,8 +75,17 @@ pub struct RuntimePaths {
     pub api_socket: PathBuf,
     pub console_socket: PathBuf,
     pub console_log: PathBuf,
+    pub control_socket: PathBuf,
     pub vm_pid: PathBuf,
     pub boot_json: PathBuf,
+    pub vm_create_json: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CredentialSpec {
+    pub id: CredentialId,
+    pub host_socket: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -83,7 +93,19 @@ pub struct RuntimePaths {
 pub struct SocketLegs {
     pub api: PathBuf,
     pub console: PathBuf,
-    pub agent: Option<PathBuf>,
+    #[serde(default)]
+    pub credentials: Vec<CredentialSpec>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BootMetadata {
+    pub schema_version: u32,
+    pub boot_identity: String,
+    pub project_id: String,
+    pub target: String,
+    pub backend: String,
+    pub workspace_host_path: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -207,8 +229,10 @@ impl LaunchSpec {
             &self.runtime_paths.api_socket,
             &self.runtime_paths.console_socket,
             &self.runtime_paths.console_log,
+            &self.runtime_paths.control_socket,
             &self.runtime_paths.vm_pid,
             &self.runtime_paths.boot_json,
+            &self.runtime_paths.vm_create_json,
         ];
         for path in runtime_paths {
             require_exact_child(path, &self.runtime_paths.root)?;
@@ -221,21 +245,29 @@ impl LaunchSpec {
             ));
         }
         let mut sockets = HashSet::new();
-        for socket in [&self.socket_legs.api, &self.socket_legs.console] {
+        for socket in [
+            &self.socket_legs.api,
+            &self.socket_legs.console,
+            &self.runtime_paths.control_socket,
+        ] {
             if !sockets.insert(socket) {
                 return Err(LaunchError::InvalidSpec("duplicate socket path"));
             }
         }
-        if let Some(agent) = &self.socket_legs.agent {
-            require_absolute_resolved(agent)?;
-            let metadata = std::fs::symlink_metadata(agent)
-                .map_err(|error| LaunchError::io("inspect agent socket", error))?;
+        let mut credential_ids = HashSet::new();
+        for credential in &self.socket_legs.credentials {
+            if !credential_ids.insert(credential.id) {
+                return Err(LaunchError::InvalidSpec("duplicate credential id"));
+            }
+            require_absolute_resolved(&credential.host_socket)?;
+            let metadata = std::fs::symlink_metadata(&credential.host_socket)
+                .map_err(|error| LaunchError::io("inspect credential socket", error))?;
             if metadata.file_type().is_symlink() || !metadata.file_type().is_socket() {
                 return Err(LaunchError::InvalidSpec(
-                    "agent leg must name the exact socket object",
+                    "credential must name the exact socket object",
                 ));
             }
-            if !sockets.insert(agent) {
+            if !sockets.insert(&credential.host_socket) {
                 return Err(LaunchError::InvalidSpec("duplicate socket path"));
             }
         }
@@ -335,7 +367,7 @@ mod tests {
         let root = PathBuf::from(format!("/run/user/1000/vivarium/p/t-{unique}"));
         let child = |name: &str| root.join(name);
         LaunchSpec {
-            schema_version: 1,
+            schema_version: LAUNCH_SCHEMA_VERSION,
             project_id: "p".into(),
             target: "t".into(),
             runtime_paths: RuntimePaths {
@@ -345,8 +377,10 @@ mod tests {
                 api_socket: child("api.sock"),
                 console_socket: child("console.sock"),
                 console_log: child("console.log"),
+                control_socket: child("control.sock"),
                 vm_pid: child("vm.pid"),
                 boot_json: child("boot.json"),
+                vm_create_json: child("vm-create.json"),
             },
             backend_programs: BackendPrograms {
                 cloud_hypervisor: "/nix/store/a/bin/cloud-hypervisor".into(),
@@ -361,7 +395,7 @@ mod tests {
             socket_legs: SocketLegs {
                 api: child("api.sock"),
                 console: child("console.sock"),
-                agent: None,
+                credentials: Vec::new(),
             },
             resources: ResourceSpec {
                 vcpus: 2,
@@ -394,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_positive_absent_and_exact_agent_cases() {
+    fn validates_positive_absent_and_exact_credential_cases() {
         let mut spec = fixture();
         assert_eq!(spec.shares.len(), 1);
         spec.validate().unwrap();
@@ -404,9 +438,12 @@ mod tests {
             .as_nanos();
         let agent = std::env::temp_dir().join(format!("vivarium-agent-{unique}.sock"));
         let listener = std::os::unix::net::UnixListener::bind(&agent).unwrap();
-        spec.socket_legs.agent = Some(agent.clone());
+        spec.socket_legs.credentials.push(CredentialSpec {
+            id: CredentialId::Ssh,
+            host_socket: agent.clone(),
+        });
         spec.validate().unwrap();
-        spec.socket_legs.agent = Some(agent.parent().unwrap().to_path_buf());
+        spec.socket_legs.credentials[0].host_socket = agent.parent().unwrap().to_path_buf();
         assert!(spec.validate().is_err());
         drop(listener);
         std::fs::remove_file(agent).unwrap();

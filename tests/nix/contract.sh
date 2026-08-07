@@ -8,11 +8,14 @@ set -eu
 launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' \
   "$VIVARIUM_RUNNER/bin/vivarium-first-microvm" | head -n1)
 test -n "$launcher_json"
-test "$(jq -r .schemaVersion "$launcher_json")" = 1
+test "$(jq -r .schemaVersion "$launcher_json")" = 2
 test "$(jq -r .descriptorBudget.limit "$launcher_json")" = 524288
 test "$(jq -r .descriptorBudget.workerPoolSize "$launcher_json")" = "$VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE"
 test "$(jq -r .socketLegs.api "$launcher_json")" = '@API_SOCKET@'
 test "$(jq -r .socketLegs.console "$launcher_json")" = '@CONSOLE_SOCKET@'
+test "$(jq -r .tokens.controlSocket "$launcher_json")" = '@CONTROL_SOCKET@'
+test "$(jq -r .vmCreate.vsock.cid "$launcher_json")" = 3
+test "$(jq -r .vmCreate.vsock.socket "$launcher_json")" = '@CONTROL_SOCKET@'
 test "$(jq -r .vmCreate.serial.mode "$launcher_json")" = Socket
 test "$(jq -r .vmCreate.console.mode "$launcher_json")" = Off
 test "$(jq -r .vmCreate.landlock_enable "$launcher_json")" = true
@@ -28,6 +31,21 @@ grep -qF -- '--ambient-caps=-all' supervisor.strings
 grep -qF -- '--inh-caps=-all' supervisor.strings
 grep -qF -- '--no-new-privs' supervisor.strings
 grep -qF -- '--rlimit-nofile=' supervisor.strings
+agent_unit=$VIVARIUM_GUEST_SYSTEM/etc/systemd/system/vivarium-agent.service
+grep -qF 'User=vivarium' "$agent_unit"
+grep -qF 'Group=vivarium' "$agent_unit"
+grep -qF 'RuntimeDirectory=vivarium' "$agent_unit"
+grep -qF 'RuntimeDirectoryMode=0700' "$agent_unit"
+grep -qF 'UMask=0077' "$agent_unit"
+grep -qF 'NoNewPrivileges=true' "$agent_unit"
+grep -qE '^CapabilityBoundingSet=$' "$agent_unit"
+grep -qE '^AmbientCapabilities=$' "$agent_unit"
+agent_executable=$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$agent_unit")
+test -x "$agent_executable"
+strings "$agent_executable" >agent.strings
+grep -qF '/run/vivarium/ssh-agent.sock' agent.strings
+grep -qF '/run/vivarium/gpg-agent.sock' agent.strings
+if grep -Rq 'control\.sock_[0-9]' "$VIVARIUM_RUNNER" "$VIVARIUM_GUEST_SYSTEM"; then exit 1; fi
 fstab=$VIVARIUM_GUEST_SYSTEM/etc/fstab
 for label in $VIVARIUM_VOLUME_LABEL $VIVARIUM_STORE_VOLUME_LABEL; do
   grep -F "\"label\":\"$label\"" "$launcher_json"

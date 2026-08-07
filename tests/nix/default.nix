@@ -132,6 +132,19 @@ let
       storeFreeSpaceHook = false;
     };
 
+    agent =
+      let
+        image = product.mkImage {
+          extraModules = [
+            ({ pkgs, ... }: {
+              vivarium.credentials.agents = [ "ssh" ];
+              environment.systemPackages = [ pkgs.socat ];
+            })
+          ];
+        };
+      in
+      image // { contract = contractFor image [ ]; };
+
     # The pool constant, under test. ADR-0051 pinned 4 on mechanism alone; the
     # concurrent sweep these variants run is what moved it to the daemon's own 0
     # (ADR-0096). They stay because the constant is only ever as good as its last
@@ -158,6 +171,7 @@ let
     first-microvm = images.shipped.runner;
     first-microvm-measurement = images.measurement.runner;
     first-microvm-scaled = images.scaled.runner;
+    first-microvm-agent-check = images.agent.runner;
     first-microvm-bench-threads-0 = images.bench."0".runner;
     first-microvm-bench-threads-1 = images.bench."1".runner;
     first-microvm-bench-threads-2 = images.bench."2".runner;

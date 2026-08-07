@@ -78,6 +78,16 @@ impl ConsoleSink {
             }
         }
     }
+
+    async fn flush(&mut self) -> Result<(), LaunchError> {
+        match self {
+            Self::Drain => Ok(()),
+            Self::File { file, .. } => file
+                .flush()
+                .await
+                .map_err(|error| LaunchError::io("flush console log", error)),
+        }
+    }
 }
 
 pub struct ConsoleReader {
@@ -121,6 +131,9 @@ impl ConsoleReader {
                     }
                 }
             }
+            // Tokio files may retain a completed write in their blocking adapter;
+            // the reader task's completion is the durability boundary observed by cleanup/tests.
+            sink.flush().await?;
             Ok(())
         })
     }

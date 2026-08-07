@@ -31,9 +31,31 @@ let
         let
           rel = lib.removePrefix (toString crateRoot + "/") (toString path);
         in
-        rel == "Cargo.toml" || rel == "Cargo.lock" || rel == "src" || lib.hasPrefix "src/" rel;
+        rel == "Cargo.toml"
+        || rel == "Cargo.lock"
+        || rel == "src"
+        || lib.hasPrefix "src/" rel
+        || rel == "crates"
+        || lib.hasPrefix "crates/vivarium-guest-agent" rel;
     };
     cargoLock.lockFile = crateRoot + "/Cargo.lock";
+    cargoBuildFlags = [
+      "--package"
+      "vivarium"
+      "--bins"
+    ];
+    doCheck = false;
+  };
+
+  guestAgentPackage = pkgs.rustPlatform.buildRustPackage {
+    pname = "vivarium-guest-agent";
+    version = "0.1.0";
+    inherit (supervisorPackage) src;
+    cargoLock.lockFile = crateRoot + "/Cargo.lock";
+    cargoBuildFlags = [
+      "--package"
+      "vivarium-guest-agent"
+    ];
     doCheck = false;
   };
 
@@ -145,6 +167,7 @@ let
             workspaceSourceSentinel
             volumeImageSentinel
             storeVolumeImageSentinel
+            guestAgentPackage
             ;
           inherit (v)
             homeVolumeSizeMiB
@@ -194,5 +217,6 @@ in
     imageDefaults
     mkImage
     shipped
+    guestAgentPackage
     ;
 }

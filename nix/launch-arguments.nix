@@ -78,7 +78,7 @@ let
   }) shares;
 in
 {
-  schemaVersion = 1;
+  schemaVersion = 2;
   descriptorBudget = {
     limit = 524288;
     workerPoolSize = virtiofsdThreadPoolSize;
@@ -123,6 +123,8 @@ in
     "null"
     "--serial"
     "socket=@CONSOLE_SOCKET@"
+    "--vsock"
+    "cid=3,socket=@CONTROL_SOCKET@"
   ]
   ++ lib.concatMap (volume: [
     "--disk"
@@ -162,6 +164,7 @@ in
   tokens = {
     apiSocket = "@API_SOCKET@";
     consoleSocket = "@CONSOLE_SOCKET@";
+    controlSocket = "@CONTROL_SOCKET@";
     gid = "@GID@";
     memoryMiB = "@MEMORY_MIB@";
     storeSocket = "@STORE_SOCKET@";
@@ -175,12 +178,13 @@ in
   socketLegs = {
     api = "@API_SOCKET@";
     console = "@CONSOLE_SOCKET@";
-    agent = null;
+    credentials = [ ];
     shares = map (share: {
       inherit (share) tag;
       socket = share.socketToken;
     }) shareLaunch;
   };
+  credentialIds = config.vivarium.credentials.agents;
   # Cloud Hypervisor v52.0's `VmConfig` JSON, submitted to `ch-remote create`
   # before the separate `boot` call. Field spellings are asserted in
   # contract.nix so a backend pin move cannot silently collapse this ordering.
@@ -220,6 +224,10 @@ in
     serial = {
       mode = "Socket";
       socket = "@CONSOLE_SOCKET@";
+    };
+    vsock = {
+      cid = 3;
+      socket = "@CONTROL_SOCKET@";
     };
     watchdog = true;
     landlock_enable = true;

@@ -8,7 +8,7 @@ Confinement combines unprivileged execution, capability removal, seccomp, Landlo
 
 One manager-owned transient user service per `(project, target)` is the VM lifetime. It is nested under `vivarium.slice`; the Rust supervisor is its `MainPID`, and the monitor, one virtiofsd per share, stream drains, and console reader stay in that unit's control group. The unit carries accounting, CPU weight, `LimitNOFILE`, and `KillMode=control-group`; it carries no memory or I/O limit. [ADR-0097](../decisions/ADR-0097-the-transient-user-service-owns-the-vm-lifetime.md) records why the owner is a `.service` rather than ADR-0036's former literal `.scope` wording.
 
-Startup is split at Cloud Hypervisor's pinned API boundary. The supervisor starts the share daemons and observes every exact share socket, starts the VMM in API-only mode, submits `vm.create`, waits for the exact serial socket, and starts the sole console reader. The reader acknowledges a live connection before the supervisor may issue `vm.boot`. Only then does the handoff report process readiness. Guest boot-identity readiness remains an injected seam for slice 003 and is not inferred from a process or socket.
+Startup is split at Cloud Hypervisor's pinned API boundary. The supervisor starts the share daemons and observes every exact share socket, starts the VMM in API-only mode, writes `vm-create.json`, submits `vm.create`, waits for the exact serial socket, and starts the sole console reader. The reader acknowledges a live connection before the supervisor may issue `vm.boot`. Process readiness follows only after the current boot's guest agent answers `Ping` and every declared credential pool has its initial parked capacity.
 
 The console task writes raw bytes to the private bounded `console.log` sink and fans the same stream to bounded attach subscribers. Subscriber lag can discard only that subscriber's view; it cannot block or replace the file or draining sink. `--no-console-log` selects the drain while retaining the reader. Reader ownership extends through VMM exit.
 
@@ -20,7 +20,7 @@ The handoff between them runs over the readiness socket the launcher binds befor
 
 The private modes that make that handoff trustworthy are named once, in [`secure_fs`](../../src/launch/secure_fs.rs): the launcher creates the runtime directory and writes the specification through the same two constants the supervisor's trust check reads back, so producer and validator cannot disagree about what private means.
 
-The optional agent leg is either absent or the exact declared Unix socket object. It never substitutes a parent directory and never creates a runtime-directory share. Actual agent traffic and its readiness protocol belong to slice 003.
+Each declared credential leg names a closed id and its exact validated Unix socket object. It never substitutes a parent directory and never creates a runtime-directory share. Four host-opened relay workers per id remain in the supervisor's cancellation tree.
 
 The normative boundaries are in the [workspace](../reference/spec/06-workspace-and-project-environment.md), [invariants](../reference/spec/08-invariants-and-guarantees.md), [lifecycle](../reference/spec/10-vm-lifecycle.md), [exec and shell](../reference/spec/12-exec-and-shell.md), [doctor](../reference/spec/13-doctor-and-health-checks.md), and [logging](../reference/spec/16-logging-and-diagnostics.md) specifications. Exact pinned backend facts live in [backend capabilities](../reference/backend-capabilities.md).
 

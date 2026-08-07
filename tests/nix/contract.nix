@@ -30,7 +30,13 @@ pkgs.runCommand "vivarium-first-microvm-contract" {
   VIVARIUM_STORE_VOLUME_SIZE_MIB = toString expect.storeVolumeSizeMiB;
   VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE = toString expect.virtiofsdThreadPoolSize;
   VIVARIUM_EXPECTED_UNITS = pkgs.lib.concatMapStrings (u: "${u} ") (
-    pkgs.lib.sort (a: b: a < b) ([ "vivarium-volume-prepare.service" ] ++ expect.units)
+    pkgs.lib.sort (a: b: a < b) (
+      [
+        "vivarium-agent.service"
+        "vivarium-volume-prepare.service"
+      ]
+      ++ expect.units
+    )
   );
   VIVARIUM_EXPECT_NO_UNITS = if expect.units == [ ] then "1" else "";
 } (builtins.readFile ./contract.sh)
