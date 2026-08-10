@@ -502,6 +502,15 @@ async fn cleanup_runtime(spec: &LaunchSpec) -> Result<(), LaunchError> {
         spec.runtime_paths.launch_spec.clone(),
         spec.runtime_paths.ready_socket.clone(),
         spec.runtime_paths.api_socket.clone(),
+        // cloud-hypervisor takes an exclusive lock file beside its API socket and
+        // leaves it behind, so a backend artefact appears in a directory vivarium
+        // owns. Derived here rather than declared in `RuntimePaths` for the same
+        // reason the rotated console logs are: the launcher never names this path,
+        // the backend does. Confirmed at v53.0 by running the VMM with nothing but
+        // `--api-socket`. Missing it was not a leaked file but a total cleanup
+        // failure, because an unallowed entry aborts the sweep below before
+        // anything is removed.
+        PathBuf::from(format!("{}.lock", spec.runtime_paths.api_socket.display())),
         spec.runtime_paths.console_socket.clone(),
         spec.runtime_paths.control_socket.clone(),
         spec.runtime_paths.console_log.clone(),

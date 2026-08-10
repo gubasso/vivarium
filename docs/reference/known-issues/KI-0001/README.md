@@ -8,6 +8,8 @@
 
 An automatic collection inside the guest announces a byte target, deletes nothing, and reports the target met. Guest free space does not recover and the dead-path count does not fall.
 
+Reproduced at the pinned version on 2026-08-10: the attempted path was absent from the upper layer, nothing was freed, and the dead-path count rose. The discard chain was intact in the same run, so the wasted space is the collector's. [`investigation.md`](./investigation.md) carries the figures.
+
 - [`issue.yaml`](./issue.yaml) — supplies the machine-readable case metadata.
 - [`investigation.md`](./investigation.md) — owns the symptom, root cause, vivarium path, and recheck condition.
 - [`microvm-verification-harness.md`](../../microvm-verification-harness.md) — owns the durable guest evidence and per-iteration classification table.

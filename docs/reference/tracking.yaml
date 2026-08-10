@@ -22,6 +22,7 @@ tracked:
       - docs/explanation/shared-filesystems.md
       - docs/explanation/resources-and-capacity.md
       - docs/plan/slices/003-guest-agent-and-credential-relay/README.md
+      - docs/plan/slices/010-repair-the-host-runbooks/README.md
   - path: docs/reference/testing-lanes.md
     last_checked: 2026-07-31
     cadence: 90d

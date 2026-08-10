@@ -25,7 +25,16 @@ impl TransientUnitSpec {
             "--slice=vivarium.slice".into(),
             "--property=CollectMode=inactive-or-failed".into(),
             "--property=KillMode=control-group".into(),
-            "--property=CPUAccounting=yes".into(),
+            // No `CPUAccounting=`. systemd deprecated it — v261 answers the
+            // assignment with "D-Bus property CPUAccounting is deprecated,
+            // ignoring assignment" and stops reporting the property at all — and
+            // under unified cgroups the accounting it once switched on is
+            // unconditional: a transient unit started without it still reports a
+            // non-zero `CPUUsageNSec`. Setting it bought nothing and cost a
+            // warning on every launch, so it is removed rather than left inert.
+            // `MemoryAccounting` and `IOAccounting` are not deprecated and are
+            // still load-bearing: a unit started without them reports
+            // `IOAccounting=no`.
             "--property=MemoryAccounting=yes".into(),
             "--property=IOAccounting=yes".into(),
             format!("--property=CPUWeight={}", spec.resources.cpu_weight),
@@ -84,37 +93,35 @@ mod tests {
 
     #[test]
     fn required_and_forbidden_properties_are_explicit() {
+        // Rendered from the real spec, not from a second hand-written list. The
+        // earlier form joined its own literals and asserted they contained those
+        // literals, so it would have passed with `new` returning nothing at all —
+        // and it did pass while the property set drifted from what systemd
+        // accepts.
+        let rendered = TransientUnitSpec::new(&crate::launch::spec::tests::fixture())
+            .command()
+            .args()
+            .join(" ");
         let required = [
             "--service-type=exec",
             "--collect",
             "--slice=vivarium.slice",
             "CollectMode=inactive-or-failed",
             "KillMode=control-group",
-            "CPUAccounting=yes",
             "MemoryAccounting=yes",
             "IOAccounting=yes",
             "CPUWeight=",
             "LimitNOFILE=",
         ];
-        let forbidden = ["MemoryMax=", "MemoryHigh=", "IOWeight="];
-        let rendered = [
-            "--service-type=exec",
-            "--collect",
-            "--slice=vivarium.slice",
-            "--property=CollectMode=inactive-or-failed",
-            "--property=KillMode=control-group",
-            "--property=CPUAccounting=yes",
-            "--property=MemoryAccounting=yes",
-            "--property=IOAccounting=yes",
-            "--property=CPUWeight=100",
-            "--property=LimitNOFILE=524288",
-        ]
-        .join(" ");
+        // `CPUAccounting` is forbidden rather than merely absent: systemd
+        // deprecated it, so setting it is a warning on every launch and buys
+        // accounting that unified cgroups already provide unconditionally.
+        let forbidden = ["CPUAccounting=", "MemoryMax=", "MemoryHigh=", "IOWeight="];
         for value in required {
-            assert!(rendered.contains(value));
+            assert!(rendered.contains(value), "missing {value} in {rendered}");
         }
         for value in forbidden {
-            assert!(!rendered.contains(value));
+            assert!(!rendered.contains(value), "present {value} in {rendered}");
         }
     }
 }

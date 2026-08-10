@@ -40,10 +40,16 @@ Reproduced directly on the host on 2026-08-06 against Nix 2.34.8, outside vivari
 
 Recheck on the next backend or Nix pin ([`../../../decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md`](../../../decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md) owns that cadence): re-run `tests/host/store-pressure-check --arm e` and read `store-pressure-collector-per-path`. The issue is resolved when a collection attempts more than one path and the dead-path count falls.
 
-### 2026-08-10 — attempted at Nix 2.34.8, not performed
+### 2026-08-10 — attempted at Nix 2.34.8, then performed
 
-The pin moved from Nix 2.34.7 to 2.34.8, so the recheck was due and was run. It did not produce a verdict either way, and the entry stays `open` on that basis rather than on a fresh negative.
+The recheck was due at the 2.34.7 to 2.34.8 pin move. The first attempt produced no verdict: `store-pressure-guest-completion` failed with the guest read as exiting `0` having never printed `COMPLETE`, and both affected checks skipped, each reporting that no collection was announced with the dead-path and free-byte fields empty. A skip is unproven, not passed, and the empty fields were the tell — nothing had measured the quantity the resolution condition asks about.
 
-`tests/host/store-pressure-check --arm e` reached the guest but the guest never reported: `store-pressure-guest-completion` failed with the guest exiting `0` having never printed `COMPLETE`, and both affected checks skipped — `store-pressure-collector-freed` and `store-pressure-collector-per-path` each reporting that no collection was announced, with the dead-path and free-byte fields empty. A skip here is unproven, not passed, and the empty fields are the tell: nothing measured the quantity the resolution condition asks about.
+That was the harness, not this defect and not the pin. `tests/host/store-pressure-check` had never learned that launch hands off to a manager-owned transient service, so it waited on the handoff process and tore the run down seconds in; the harness Findings entry for the repair owns the cause. With the lane repaired the recheck ran the same day and reached a verdict.
 
-The cause is not this defect and not the pin. Every host lane that waits on a guest diagnostic marker is failing the same way on this host, including at the previous pin and at the commit before slice 003 — see the harness Findings entry for the 2026-08-10 sweep. Until that is repaired the recheck cannot run, so this entry has no current evidence at 2.34.8 in either direction.
+### 2026-08-10 — reproduced at Nix 2.34.8
+
+`tests/host/store-pressure-check --arm e`, on a real host, `PASS=25 FAIL=0 SKIP=0`. The resolution condition is not met and the entry stays `open` on fresh evidence rather than on age.
+
+The collector announced its target and freed nothing measurable. Dead paths ROSE across the run, 22785 to 22811, and guest free space fell from 856,788,992 to 588,193,792 bytes rather than recovering. `store-pressure-collector-per-path` classified the attempted path as `absent_from_upper` — `00lcigchi7dpghaiczkq482gjz9ry7gg-nix-main-2.34.8`, a path present in the lower layer and absent from the upper one, which is exactly the branch the root cause above describes. One path attempted, nothing freed.
+
+Two adjacent results from the same run, recorded because they are what the arm exists to separate this defect from. The discard chain is intact: the guest driver negotiated `VIRTIO_BLK_F_DISCARD`, `fstrim` trimmed 1 GiB of the writable layer, and the host image shrank from 4,132,900,864 to 3,330,715,648 allocated bytes. So the wasted space is the collector's, not the block layer's.

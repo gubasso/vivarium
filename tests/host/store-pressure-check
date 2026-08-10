@@ -356,7 +356,6 @@ missing=()
 [[ -r /proc/1/comm && $(</proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
 systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
 [[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
-command -v python3 >/dev/null 2>&1 || missing+=("python3 console reader")
 [[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]] || missing+=("realised launcher")
 
 if ((${#missing[@]})); then
@@ -391,7 +390,7 @@ else
   # Arm E writes ~3 GiB of ballast plus two sparse images into the state root.
   # An hour lost to a host ENOSPC is the expensive failure, so check both blocks
   # and inodes before spending the boot. (Everything else a lane needs —
-  # /dev/kvm, systemd as PID 1, the user manager, XDG_RUNTIME_DIR, python3, the
+  # /dev/kvm, systemd as PID 1, the user manager, XDG_RUNTIME_DIR, the
   # realised launcher — is already preflighted above; re-checking it here would
   # be the overchecking this round is explicitly avoiding.)
   need_mib=$((BALLAST_TOTAL_MIB + 2048))
@@ -421,21 +420,35 @@ else
   # one identity (host uid -> guest uid 1000) and forbids all others.
   chmod 0644 "$HANDSHAKE/instruction"
 
+  # DUP-with-the-siblings: the launcher no longer runs the VM, it hands off. It
+  # creates a transient user service, waits for readiness, and exits — so the
+  # launcher process is the *handoff*, and its lifetime is a few seconds whatever
+  # the guest goes on to do. This script used to background it under its own
+  # `systemd-run --scope` and treat that pid as the VM: `wait` returned at handoff,
+  # the run concluded the guest was gone, and every check downstream read a guest
+  # that had exited 0 seconds into a leg budgeted for forty minutes. The unit is
+  # the lifetime; `--project-id`/`--target` are what make its name predictable.
   launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume "$volume"
-    --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 4096 --vcpu 2)
+    --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 4096 --vcpu 2
+    --project-id store-pressure --target "$$")
+  unit_name="vivarium-store-pressure-$$.service"
 
-  # DUP: `--wait` may not be combined with `--scope`, so the scope is backgrounded
-  # and waited on instead.
   launch_attempt=0
   launch_vm() {
     launch_attempt=$((launch_attempt + 1))
-    systemd-run --user --scope --quiet --collect --unit="$run_id-$launch_attempt" "$launcher" "${launch_args[@]}" "$@" >"$launch_log" 2>&1 &
-    vm_pid=$!
+    "$launcher" "${launch_args[@]}" "$@" >"$launch_log" 2>&1 &
+    launch_pid=$!
   }
+  # `console.log` as well as `console.sock`: the supervisor is the single reader of
+  # the serial socket and the log is what it writes, so the file appearing is the
+  # signal that the console is being captured rather than merely offered.
   wait_for_console() {
     for _ in {1..300}; do
-      [[ -S $runtime_dir/console.sock ]] && return 0
-      kill -0 "$vm_pid" 2>/dev/null || return 1
+      [[ -S $runtime_dir/console.sock && -f $runtime_dir/console.log ]] && return 0
+      if ! kill -0 "$launch_pid" 2>/dev/null; then
+        wait "$launch_pid" || return 1
+        systemctl --user is-active --quiet "$unit_name" || return 1
+      fi
       sleep 0.1
     done
     return 1
@@ -445,9 +458,9 @@ else
   launched=no
   if wait_for_console; then
     launched=yes
-    pass "store-pressure-launch: reached the console-socket stage"
+    pass "store-pressure-launch: reached the supervisor-owned console stage"
   else
-    wait "$vm_pid"
+    wait "$launch_pid"
     launch_status=$?
     launch_output=$(<"$launch_log")
     if grep -Eqi 'systemd-run|unknown option|may not be combined|Failed to (start|create) transient' <<<"$launch_output"; then
@@ -458,7 +471,7 @@ else
       launch_vm --no-landlock
       if wait_for_console; then
         launched=yes
-        pass "store-pressure-launch: reached the console-socket stage with Landlock off"
+        pass "store-pressure-launch: reached the supervisor-owned console stage with Landlock off"
       else
         fail "store-pressure-launch: failed with Landlock off as well" "$(<"$launch_log")"
       fi
@@ -466,45 +479,17 @@ else
   fi
 
   if [[ $launched != yes ]]; then
-    skip_remaining "the guest never reached the console-socket stage" store-pressure-console-reader
+    skip_remaining "the guest never reached the supervisor-owned console stage" store-pressure-console-reader
   else
-    # DUP: cloud-hypervisor's `--serial socket=` neither buffers nor replays, so
-    # the reader attaches the instant the socket exists and stays attached.
-    reader_py=$TEMP_ROOT/console-reader.py
-    cat >"$reader_py" <<'PY'
-import socket, sys, time
-
-path, out_path, idle_timeout = sys.argv[1], sys.argv[2], float(sys.argv[3])
-deadline = time.monotonic() + 30.0
-while True:
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        sock.connect(path)
-        break
-    except OSError:
-        sock.close()
-        if time.monotonic() >= deadline:
-            raise
-        time.sleep(0.2)
-sock.settimeout(idle_timeout)
-with open(out_path, "wb") as out:
-    while True:
-        try:
-            data = sock.recv(65536)
-        except socket.timeout:
-            break
-        if not data:
-            break
-        out.write(data)
-        out.flush()
-PY
     : >"$console_log"
-    # 900s idle. A collection pass can be silent for minutes, so the guest emits a
-    # heartbeat every 15s; this ceiling is far above that, which means a reader
-    # timeout is real evidence of a wedged guest rather than of a slow one.
-    python3 "$reader_py" "$runtime_dir/console.sock" "$console_log" 900 >"$TEMP_ROOT/reader.log" 2>&1 &
+    # DUP-with-the-siblings: follow the supervisor-owned file, never the serial
+    # socket. cloud-hypervisor's `--serial socket=` neither buffers nor replays and
+    # the supervisor is already its one reader, so a second connector races it for
+    # a stream that is not duplicated. Holding this descriptor keeps the final
+    # bytes readable across the allowlisted unlink at cleanup.
+    tail -c +1 -f "$runtime_dir/console.log" >"$console_log" 2>"$TEMP_ROOT/reader.log" &
     reader_pid=$!
-    pass "store-pressure-console-reader: attached to $runtime_dir/console.sock"
+    pass "store-pressure-console-reader: following $runtime_dir/console.log"
 
     # Sample the host image while the guest runs. Two findings come out of this
     # series and neither is reachable after the fact: how far ext4's lazy inode
@@ -516,21 +501,32 @@ PY
     done) &
     sampler_pid=$!
 
-    # DUP: bounded wait for poweroff. Far above the sibling's 1200s: arm D's guest
-    # unit alone may spend an hour under its own budget.
+    # DUP-with-the-siblings: bounded wait for poweroff, on the transient unit and
+    # not on any pid this script holds. Far above the sibling's 1200s: arm D's
+    # guest unit alone may spend an hour under its own budget.
     vm_status=0
     for _ in {1..8000}; do
-      kill -0 "$vm_pid" 2>/dev/null || break
+      systemctl --user is-active --quiet "$unit_name" || break
       sleep 0.5
     done
-    if kill -0 "$vm_pid" 2>/dev/null; then
+    if systemctl --user is-active --quiet "$unit_name"; then
       fail "store-pressure-guest-completion: the guest did not shut down within 4000s; terminating" "$(tail -n 40 "$launch_log")"
-      kill -TERM "$vm_pid" 2>/dev/null || true
+      systemctl --user stop "$unit_name" 2>/dev/null || true
       vm_status=124
     fi
-    wait "$vm_pid" 2>/dev/null || vm_status=$?
+    # The supervisor's own result, which is the only place a failure after handoff
+    # can surface: cleanup is its last act and it reports there, not to this shell.
+    unit_result=$(systemctl --user show "$unit_name" -p Result -p ExecMainStatus 2>&1 | paste -sd' ' -)
+    if ((vm_status == 0)) && [[ $unit_result != *"Result=success"* ]]; then
+      vm_status=1
+      record "store-pressure-supervisor: the transient unit did not end cleanly ($unit_result)"
+    fi
     kill "$sampler_pid" 2>/dev/null
     sampler_pid=
+    # Give the follower a moment to drain what the supervisor wrote last, then end
+    # it: `tail -f` never stops on its own.
+    sleep 0.2
+    kill "$reader_pid" 2>/dev/null || true
     wait "$reader_pid" 2>/dev/null
 
     # The in-run sampler reads every ten seconds, which can miss the accounting

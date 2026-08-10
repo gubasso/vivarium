@@ -2,6 +2,7 @@
 #![allow(clippy::unwrap_used)]
 
 use serde_json::json;
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixListener;
@@ -173,9 +174,35 @@ async fn cleanup_is_allowlisted_and_idempotent() {
     tokio::fs::create_dir_all(&spec.runtime_paths.root)
         .await
         .unwrap();
-    tokio::fs::write(&spec.runtime_paths.launch_spec, b"owned")
-        .await
-        .unwrap();
+    // Every artefact a real boot leaves behind, not just the one vivarium writes
+    // first. This test wrote only `launch_spec` while the allowlist was missing
+    // cloud-hypervisor's `api.sock.lock`, so it passed on a set that never
+    // included the entry that aborted every real cleanup. The list below is what
+    // `tests/host/first-microvm-check` observed retained on a capable host; the
+    // daemon-created names are the ones worth the duplication, because nothing
+    // else in this crate names them.
+    let paths = &spec.runtime_paths;
+    let mut owned = vec![
+        paths.launch_spec.clone(),
+        paths.ready_socket.clone(),
+        paths.api_socket.clone(),
+        PathBuf::from(format!("{}.lock", paths.api_socket.display())),
+        paths.console_socket.clone(),
+        paths.console_log.clone(),
+        PathBuf::from(format!("{}.1", paths.console_log.display())),
+        PathBuf::from(format!("{}.2", paths.console_log.display())),
+        paths.control_socket.clone(),
+        paths.vm_pid.clone(),
+        paths.boot_json.clone(),
+        paths.vm_create_json.clone(),
+    ];
+    for share in &spec.shares {
+        owned.push(share.socket.clone());
+        owned.push(PathBuf::from(format!("{}.pid", share.socket.display())));
+    }
+    for path in &owned {
+        tokio::fs::write(path, b"owned").await.unwrap();
+    }
     Supervisor::new(spec.clone()).cleanup().await.unwrap();
     assert!(!spec.runtime_paths.root.exists());
     Supervisor::new(spec).cleanup().await.unwrap();

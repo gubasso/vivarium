@@ -371,11 +371,16 @@ fn reject_session_source(source: &Path, runtime_root: &Path) -> Result<(), Launc
 
 #[cfg(test)]
 #[allow(clippy::type_complexity, clippy::unwrap_used)]
-mod tests {
+pub mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn fixture() -> LaunchSpec {
+    /// A complete, valid spec.
+    ///
+    /// Reachable from sibling modules on purpose: without it a renderer's test
+    /// can only compare a hand-written argument list against another
+    /// hand-written argument list, which passes however the renderer changes.
+    pub fn fixture() -> LaunchSpec {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

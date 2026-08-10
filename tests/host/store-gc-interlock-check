@@ -423,7 +423,6 @@ missing=()
 [[ -r /proc/1/comm && $(</proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
 systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
 [[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
-command -v python3 >/dev/null 2>&1 || missing+=("python3 console reader")
 [[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]] || missing+=("realised launcher")
 [[ $unrooted == yes ]] || missing+=("an unrooted canary pair")
 [[ $deletable == yes ]] || missing+=("a host store this user can delete from")
@@ -457,21 +456,32 @@ else
     "$run_id" "$target" "$control" >"$HANDSHAKE/instruction"
   chmod 0644 "$HANDSHAKE/instruction"
 
+  # DUP-with-the-siblings: the launcher hands off to a transient user service and
+  # exits, so its pid is the handoff and not the VM. Wrapping it in this script's
+  # own `systemd-run --scope` and waiting on that pid ended the run seconds into
+  # the experiment while the guest was still working. `--project-id`/`--target`
+  # make the unit's name predictable so the unit can be the lifetime instead.
   launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume "$volume"
-    --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2)
+    --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2
+    --project-id gc-interlock --target "$$")
+  unit_name="vivarium-gc-interlock-$$.service"
 
-  # DUP: `--wait` may not be combined with `--scope`, so the scope is backgrounded
-  # and waited on instead.
   launch_attempt=0
   launch_vm() {
     launch_attempt=$((launch_attempt + 1))
-    systemd-run --user --scope --quiet --collect --unit="$run_id-$launch_attempt" "$launcher" "${launch_args[@]}" "$@" >"$launch_log" 2>&1 &
-    vm_pid=$!
+    "$launcher" "${launch_args[@]}" "$@" >"$launch_log" 2>&1 &
+    launch_pid=$!
   }
+  # `console.log` as well as `console.sock`: the supervisor is the serial socket's
+  # single reader and the log is what it writes, so the file is what says the
+  # console is being captured rather than merely offered.
   wait_for_console() {
     for _ in {1..300}; do
-      [[ -S $runtime_dir/console.sock ]] && return 0
-      kill -0 "$vm_pid" 2>/dev/null || return 1
+      [[ -S $runtime_dir/console.sock && -f $runtime_dir/console.log ]] && return 0
+      if ! kill -0 "$launch_pid" 2>/dev/null; then
+        wait "$launch_pid" || return 1
+        systemctl --user is-active --quiet "$unit_name" || return 1
+      fi
       sleep 0.1
     done
     return 1
@@ -479,9 +489,9 @@ else
 
   launch_vm
   if wait_for_console; then
-    pass "gc-interlock-launch: reached the console-socket stage"
+    pass "gc-interlock-launch: reached the supervisor-owned console stage"
   else
-    wait "$vm_pid"
+    wait "$launch_pid"
     launch_status=$?
     launch_output=$(<"$launch_log")
     if grep -Eqi 'systemd-run|unknown option|may not be combined|Failed to (start|create) transient' <<<"$launch_output"; then
@@ -491,47 +501,22 @@ else
       : >"$launch_log"
       launch_vm --no-landlock
       if wait_for_console; then
-        pass "gc-interlock-launch: reached the console-socket stage with Landlock off"
+        pass "gc-interlock-launch: reached the supervisor-owned console stage with Landlock off"
       else
         fail "gc-interlock-launch: failed with Landlock off as well" "$(<"$launch_log")"
       fi
     fi
   fi
 
-  # DUP: cloud-hypervisor's `--serial socket=` neither buffers nor replays, so
-  # the reader attaches the instant the socket exists and stays attached.
-  reader_py=$TEMP_ROOT/console-reader.py
-  cat >"$reader_py" <<'PY'
-import socket, sys, time
-
-path, out_path, idle_timeout = sys.argv[1], sys.argv[2], float(sys.argv[3])
-deadline = time.monotonic() + 30.0
-while True:
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        sock.connect(path)
-        break
-    except OSError:
-        sock.close()
-        if time.monotonic() >= deadline:
-            raise
-        time.sleep(0.2)
-sock.settimeout(idle_timeout)
-with open(out_path, "wb") as out:
-    while True:
-        try:
-            data = sock.recv(65536)
-        except socket.timeout:
-            break
-        if not data:
-            break
-        out.write(data)
-        out.flush()
-PY
   : >"$console_log"
-  # Idle timeout must clear the guest unit's own 300s `go` wait plus its 60s
-  # settle, or the reader would detach mid-experiment and lose the after-phase.
-  python3 "$reader_py" "$runtime_dir/console.sock" "$console_log" 480 >"$TEMP_ROOT/reader.log" 2>&1 &
+  # DUP-with-the-siblings: follow the supervisor-owned file, never the serial
+  # socket. cloud-hypervisor's `--serial socket=` neither buffers nor replays and
+  # the supervisor is already its one reader, so a second connector races it for a
+  # stream that is not duplicated. Following a file also removes the idle timeout
+  # this reader used to need: the guest unit's own 300s `go` wait plus its 60s
+  # settle can no longer detach a reader mid-experiment, because nothing here
+  # times out on silence.
+  tail -c +1 -f "$runtime_dir/console.log" >"$console_log" 2>"$TEMP_ROOT/reader.log" &
   reader_pid=$!
 
   # ---- the handshake -------------------------------------------------------
@@ -545,7 +530,7 @@ PY
       ready=yes
       break
     fi
-    kill -0 "$vm_pid" 2>/dev/null || break
+    systemctl --user is-active --quiet "$unit_name" || break
     sleep 0.25
     ready_waited=$((ready_waited + 1))
   done
@@ -590,15 +575,25 @@ PY
   # waiting on the host plus a 60s settle.
   vm_status=0
   for _ in {1..2400}; do
-    kill -0 "$vm_pid" 2>/dev/null || break
+    systemctl --user is-active --quiet "$unit_name" || break
     sleep 0.5
   done
-  if kill -0 "$vm_pid" 2>/dev/null; then
+  if systemctl --user is-active --quiet "$unit_name"; then
     fail "gc-interlock-guest-completion: the guest did not shut down within 1200s; terminating" "$(tail -n 40 "$launch_log")"
-    kill -TERM "$vm_pid" 2>/dev/null || true
+    systemctl --user stop "$unit_name" 2>/dev/null || true
     vm_status=124
   fi
-  wait "$vm_pid" 2>/dev/null || vm_status=$?
+  # The supervisor's own result, which is the only place a failure after handoff
+  # can surface: cleanup is its last act and it reports there, not to this shell.
+  unit_result=$(systemctl --user show "$unit_name" -p Result -p ExecMainStatus 2>&1 | paste -sd' ' -)
+  if ((vm_status == 0)) && [[ $unit_result != *"Result=success"* ]]; then
+    vm_status=1
+    record "gc-interlock-supervisor: the transient unit did not end cleanly ($unit_result)"
+  fi
+  # Let the follower drain what the supervisor wrote last, then end it: `tail -f`
+  # never stops on its own.
+  sleep 0.2
+  kill "$reader_pid" 2>/dev/null || true
   wait "$reader_pid" 2>/dev/null || true
 
   bytes=0

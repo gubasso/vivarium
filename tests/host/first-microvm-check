@@ -419,7 +419,7 @@ missing=()
 [[ -r /proc/1/comm && $(</proc/1/comm) == systemd ]] || missing+=("systemd as PID 1")
 systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
 [[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
-command -v python3 >/dev/null 2>&1 || missing+=("python3 measurement sampler")
+command -v python3 >/dev/null 2>&1 || missing+=("python3 memfd sampler")
 [[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]] || missing+=("realised launcher")
 
 if ((${#missing[@]})); then
@@ -509,14 +509,34 @@ else
   if wait_for_console; then
     wait "$launch_pid" || fail "manager-owned launch handoff" "$(<"$launch_log")"
     pass "manager-owned launch reached the supervisor-owned console stage"
-    unit_properties=$(systemctl --user show "$unit_name" -p Slice -p KillMode -p CPUAccounting -p MemoryAccounting -p IOAccounting -p CPUWeight -p LimitNOFILE -p MemoryMax -p MemoryHigh -p IOWeight 2>&1 || true)
-    required_unit='Slice=vivarium.slice KillMode=control-group CPUAccounting=yes MemoryAccounting=yes IOAccounting=yes CPUWeight=100 LimitNOFILE=524288'
+    # Deliberately no `CPUAccounting`. systemd deprecated the property: v261
+    # answers an assignment with "D-Bus property CPUAccounting is deprecated,
+    # ignoring assignment" and omits it from `show` output entirely, so requiring
+    # it here failed on a property that no longer exists rather than on anything
+    # the launcher does. Under unified cgroups the accounting is unconditional —
+    # a unit started without the property still reports a non-zero CPUUsageNSec —
+    # so nothing is lost by dropping it from both sides. `MemoryAccounting` and
+    # `IOAccounting` are NOT deprecated and stay required: a unit started without
+    # them reports `IOAccounting=no`, so these two still discriminate.
+    unit_properties=$(systemctl --user show "$unit_name" -p Slice -p KillMode -p MemoryAccounting -p IOAccounting -p CPUWeight -p LimitNOFILE -p MemoryMax -p MemoryHigh -p IOWeight 2>&1 || true)
+    required_unit='Slice=vivarium.slice KillMode=control-group MemoryAccounting=yes IOAccounting=yes CPUWeight=100 LimitNOFILE=524288'
     missing_unit=
-    for property in $required_unit; do grep -qxF "$property" <<<"$unit_properties" || missing_unit+="$property"$'\n'; done
-    if [[ -z $missing_unit ]] && ! grep -Eq '^Memory(Max|High)=[0-9]+$|^IOWeight=[0-9]+$' <<<"$unit_properties"; then
+    for property in $required_unit; do grep -qxF "$property" <<<"$unit_properties" || missing_unit+="  $property"$'\n'; done
+    # `forbidden_unit` is captured rather than tested inline so the evidence can
+    # say which half failed. The unlabelled form concatenated the missing list
+    # straight onto the observed block, and a reader could not tell a missing
+    # property from an observed one without counting lines against the `-p` flags
+    # above -- which is how a deprecated property read as a launcher defect.
+    forbidden_unit=$(grep -E '^Memory(Max|High)=[0-9]+$|^IOWeight=[0-9]+$' <<<"$unit_properties" || true)
+    if [[ -z $missing_unit && -z $forbidden_unit ]]; then
       pass "transient service carries accounting, CPU weight, group kill, and the declared descriptor limit without memory/I/O limits"
     else
-      fail "transient service property contract" "$missing_unit$unit_properties"
+      fail "transient service property contract" "required but not reported:
+${missing_unit:-  (none)
+}forbidden limit present:
+${forbidden_unit:-  (none)}
+observed:
+$unit_properties"
     fi
     if [[ -r /sys/kernel/security/lsm ]] && grep -qw landlock /sys/kernel/security/lsm; then
       if grep -q -- '--landlock' "$launch_log"; then
@@ -651,6 +671,28 @@ PY
     declare -A role_seccomp=() role_count=()
     bad_conf=
     declared_nofile=$(jq -r .descriptorBudget.limit "$host_launcher_json")
+    # The scan's own user namespace, to compare each daemon's against. A daemon
+    # inside a different one holds capabilities over that namespace and nothing
+    # else, which is a different fact from holding them here.
+    host_userns=$(readlink /proc/self/ns/user 2>/dev/null || true)
+    proc_userns() { readlink "/proc/$1/ns/user" 2>/dev/null || true; }
+    # Whether an empty bounding set is even reachable here. ADR-0099 makes the drop
+    # best-effort because `PR_CAPBSET_DROP` needs CAP_SETPCAP and `setpriv` treats
+    # a refusal as fatal, so an unprivileged launcher that asked for it
+    # unconditionally could never start a guest. Read from the kernel's own report
+    # for the same reason the launcher reads it — CAP_SETPCAP is bit 8 — so this
+    # check tests the decision rather than a stricter one nobody made. Requiring
+    # `bounding=0` outright is what made cloud-hypervisor read as a breach: it
+    # does not empty its own bounding set the way virtiofsd does inside its
+    # namespace, and under ADR-0099 it is not asked to.
+    launcher_capeff=$(awk '/^CapEff:/ {print $2}' /proc/self/status 2>/dev/null || true)
+    bounding_droppable=no
+    [[ $launcher_capeff =~ ^[0-9a-f]+$ ]] && (((16#$launcher_capeff >> 8) & 1)) && bounding_droppable=yes
+    # Normalised to `inside outside count` triples, one per line. A map of
+    # `1000 1000 1` is the whole confinement claim: the namespace can name one
+    # host identity, the invoking user's, so a full capability set inside it
+    # reaches nothing the invoking user could not already reach.
+    proc_uidmap() { awk '{print $1, $2, $3}' "/proc/$1/uid_map" 2>/dev/null | paste -sd';' - || true; }
     for status_file in /proc/[0-9]*/status; do
       pid=${status_file#/proc/}
       pid=${pid%/status}
@@ -661,6 +703,11 @@ PY
       leader_seccomp=$(proc_field "$pid" Seccomp)
       group_seccomp=$(max_seccomp "$pid")
       caps=$(proc_field "$pid" CapEff)
+      # Permitted as well as effective, because ADR-0099's argument for tolerating
+      # a full bounding set is precisely that permitted and effective are empty.
+      # Reading only effective would leave that premise untested while relying on
+      # it.
+      cap_permitted=$(proc_field "$pid" CapPrm)
       cap_ambient=$(proc_field "$pid" CapAmb)
       cap_bounding=$(proc_field "$pid" CapBnd)
       role=wrapper
@@ -669,20 +716,59 @@ PY
         *virtiofsd*workspace.sock*) role=virtiofsd:workspace ;;
         *cloud-hypervisor*) role=cloud-hypervisor ;;
       esac
-      proc_evidence+="role=$role pid=$pid uid=$uid nnp=$nnp seccomp=$leader_seccomp seccomp-threadgroup-max=$group_seccomp cap-effective=$caps cap-ambient=$cap_ambient cap-bounding=$cap_bounding cmd=$cmd"$'\n'
+      userns=$(proc_userns "$pid")
+      uidmap=$(proc_uidmap "$pid")
+      proc_evidence+="role=$role pid=$pid uid=$uid nnp=$nnp seccomp=$leader_seccomp seccomp-threadgroup-max=$group_seccomp cap-effective=$caps cap-permitted=$cap_permitted cap-ambient=$cap_ambient cap-bounding=$cap_bounding userns=$userns uid-map=$uidmap cmd=$cmd"$'\n'
       [[ $role == wrapper ]] && continue
       role_count[$role]=$((${role_count[$role]:-0} + 1))
       ((group_seccomp > ${role_seccomp[$role]:-0})) && role_seccomp[$role]=$group_seccomp
       [[ $uid == "$(id -u)" ]] || bad_conf+="$role pid=$pid is not owned by the invoking user (uid=$uid)"$'\n'
       [[ $nnp == 1 ]] || bad_conf+="$role pid=$pid has NoNewPrivs=$nnp"$'\n'
-      [[ $caps == 0000000000000000 && $cap_ambient == 0000000000000000 && $cap_bounding == 0000000000000000 ]] || bad_conf+="$role pid=$pid retained capabilities effective=$caps ambient=$cap_ambient bounding=$cap_bounding"$'\n'
+      # Two ways to hold no privilege, and reading only the first is what made
+      # virtiofsd's sandbox look like a breach. `--sandbox namespace` runs its
+      # worker inside a user namespace, where the capability mask reads full
+      # because a namespace's creator is root *of that namespace*; the mask is
+      # meaningless without the map beside it. So: an empty mask in this
+      # namespace, OR a namespace that is not this one and maps exactly the
+      # invoking uid, one identity wide. Ambient must be empty either way --
+      # ambient capabilities survive execve, so they are the one part of the set
+      # that would carry privilege out of the sandbox rather than stay in it.
+      [[ $cap_ambient == 0000000000000000 ]] || bad_conf+="$role pid=$pid holds ambient capabilities $cap_ambient"$'\n'
+      if [[ $caps == 0000000000000000 && $cap_permitted == 0000000000000000 ]]; then
+        # ADR-0099's premise holds for this process, so its bounding set bounds a
+        # capability no descendant can acquire. Assert emptiness only where the
+        # launcher could have caused it.
+        [[ $bounding_droppable == no || $cap_bounding == 0000000000000000 ]] \
+          || bad_conf+="$role pid=$pid kept bounding set $cap_bounding on a launcher that holds CAP_SETPCAP"$'\n'
+      elif [[ -n $userns && $userns != "$host_userns" && $uidmap == "$(id -u) $(id -u) 1" ]]; then
+        :
+      else
+        bad_conf+="$role pid=$pid holds capabilities effective=$caps permitted=$cap_permitted outside a single-identity user namespace (userns=${userns:-unreadable} host=${host_userns:-unreadable} uid-map=${uidmap:-unreadable})"$'\n'
+      fi
       if [[ $role == virtiofsd:* ]]; then
         process_nofile=$(awk '$1 == "Max" && $2 == "open" && $3 == "files" { print $4 }' "/proc/$pid/limits" 2>/dev/null || true)
         [[ $process_nofile == "$declared_nofile" ]] || bad_conf+="$role pid=$pid has LimitNOFILE=$process_nofile, declared=$declared_nofile"$'\n'
         [[ $cmd == *"--rlimit-nofile=$declared_nofile"* ]] || bad_conf+="$role pid=$pid argv lacks --rlimit-nofile=$declared_nofile"$'\n'
       fi
+      # Landlock is NOT in argv and its absence there is not a finding. The
+      # supervisor submits a `VmConfig` over the API socket, so the argv is
+      # `--api-socket` and `--seccomp` and nothing else; `landlock_enable` lives
+      # in the create body. Verified at v53.0 that the API path honours it rather
+      # than merely accepting it: booting a config with `landlock_enable` and a
+      # rule naming a missing path is refused with `Path "..." provided in
+      # landlock-rules does not exist`, the same validation the `--landlock` flag
+      # runs. Read at boot, not at create, which is why `create` accepted it
+      # silently.
+      #
+      # Acceptance alone would prove nothing. The same probe showed the API
+      # ignores unknown `VmConfig` fields outright -- a config misspelling the
+      # flag as `landlock_enabl` is accepted and the VM created -- so a field
+      # that is merely tolerated is indistinguishable from one that is read. That
+      # is also why `tests/nix/contract.nix` asserting the spellings is
+      # load-bearing rather than belt-and-braces.
       if [[ $role == cloud-hypervisor && -r /sys/kernel/security/lsm ]] && grep -qw landlock /sys/kernel/security/lsm; then
-        [[ $cmd == *--landlock* ]] || bad_conf+="cloud-hypervisor argv lacks --landlock on a host that reports Landlock"$'\n'
+        [[ $(jq -r '.landlock_enable' "$runtime_dir/vm-create.json" 2>/dev/null) == true ]] \
+          || bad_conf+="the submitted VmConfig does not enable Landlock on a host that reports it ($runtime_dir/vm-create.json)"$'\n'
       fi
     done
     sleep 15
@@ -932,23 +1018,35 @@ rejoined count is below expected, so bytes are genuinely missing rather than spl
     fi
 
     # A RECORD that always fires would let the verdict read PASS while nothing was
-    # observed. Confinement has an expected shape — one VMM plus one virtiofsd per
-    # share, every one owned by the invoking user with NoNewPrivs=1, and each of the
-    # three roles carrying a seccomp filter *somewhere* in its thread group — so
-    # absent or malformed evidence is a FAIL, not a measurement.
+    # observed. Confinement has an expected shape — one VMM plus a supervisor and a
+    # sandboxed worker per virtiofsd share, every one owned by the invoking user
+    # with NoNewPrivs=1, no ambient capabilities anywhere, any remaining capability
+    # set confined to a single-identity user namespace, and each of the three roles
+    # carrying a seccomp filter *somewhere* in its thread group — so absent or
+    # malformed evidence is a FAIL, not a measurement.
     if [[ -z $proc_evidence ]]; then
       fail "confinement: no VMM or virtiofsd process was observable at sample time" "$(tail -n 40 "$launch_log")"
     else
+      # One VMM process, but *two* per virtiofsd share, and the two is the
+      # design rather than a leak. `--sandbox namespace` forks: the parent drops
+      # its bounding set to empty and supervises, the child enters a new user and
+      # mount namespace and installs the seccomp filter. Demanding one per role
+      # failed on both shares for as long as that sandbox has been used. The
+      # count stays exact rather than becoming a minimum, because a third process
+      # in a role is worth stopping on -- but a future 1 here means the sandbox
+      # stopped being a namespace one, not that this number needs raising.
       for role in cloud-hypervisor virtiofsd:store virtiofsd:workspace; do
-        ((${role_count[$role]:-0} == 1)) || {
-          bad_conf+="expected exactly one $role process, observed ${role_count[$role]:-0}"$'\n'
+        expected=1
+        [[ $role == virtiofsd:* ]] && expected=2
+        ((${role_count[$role]:-0} == expected)) || {
+          bad_conf+="expected exactly $expected $role process(es) under the declared sandbox, observed ${role_count[$role]:-0}"$'\n'
           continue
         }
         ((${role_seccomp[$role]:-0} == 2)) || bad_conf+="$role has no task in seccomp filter mode (thread-group max=${role_seccomp[$role]:-0})"$'\n'
       done
       grep -q 'sandbox none' <<<"$proc_evidence" && bad_conf+="a daemon ran with --sandbox none"$'\n'
       if [[ -z $bad_conf ]]; then
-        pass "confinement: all daemons unprivileged with NoNewPrivs=1 and a seccomp filter per role (not the N20 allowlist test)"
+        pass "confinement: all daemons owned by the invoking user with NoNewPrivs=1, empty effective/permitted/ambient sets or a single-identity user namespace, a seccomp filter per role, ADR-0099's bounding set (droppable=$bounding_droppable), and Landlock enabled in the submitted VmConfig (not the N20 allowlist test)"
       else fail "confinement contract" "$bad_conf"; fi
     fi
     record "confinement/process evidence (not the N20 allowlist test): ${proc_evidence:-none}"
@@ -984,8 +1082,15 @@ the reader's capture window does not span the guest's final phase."
       skip "console reader lifetime: the guest did not reach a clean power-off, so there is no VM exit to have survived"
     fi
 
+    # The supervisor's own exit is the other half of this check and nothing else
+    # reads it: `vm_status` above is the *handoff* exit, which is zero whatever the
+    # supervisor does afterwards. Cleanup is the supervisor's last act, and it
+    # refuses to delete anything at all when it meets an entry outside its
+    # allowlist — so a retained directory is one failed sweep, not eleven leaked
+    # files, and the unit result is what says so.
     if find "$runtime_dir" -mindepth 1 -print -quit | grep -q .; then
-      fail "runtime directory not empty after shutdown" "$(find "$runtime_dir" -mindepth 1 -maxdepth 1 -print)"
+      fail "runtime directory not empty after shutdown" "$(find "$runtime_dir" -mindepth 1 -maxdepth 1 -print)
+supervisor unit: $(systemctl --user show "$unit_name" -p Result -p ExecMainStatus 2>&1 | paste -sd' ' -)"
     else pass "runtime directory empty after shutdown; persistent volume retained at $volume"; fi
     # Checking the directory is empty is not the same as removing it, and for a
     # long time this script did only the former: every run since 2026-07-31 left
