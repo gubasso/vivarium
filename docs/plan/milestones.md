@@ -1,15 +1,22 @@
 # Milestones
 
-This is the single status surface. Each line follows `<id> <slug> — <status> — <appetite>[ — <note>]`. Status is one of `shaped`, `active`, `done`, `cut`, or `reshaped`; a `cut` note names what was cut, and a `reshaped` note names the successor id.
+This is the single status surface. Each line follows `<id> <slug> — <status> — <appetite>[ — <note>]`. Status is one of `shaped`, `active`, `later`, `done`, `cut`, or `reshaped`; `later` means shaped and funded but sequenced behind the chain in flight, a `cut` note names what was cut, and a `reshaped` note names the successor id.
 
 ## in flight
 
-- 004 enforce-egress-allowlist — shaped — 4 sessions
-- 005 cli-runtime-plumbing — shaped — 2 sessions
-- 006 generate-config-contract — shaped — 2 sessions
-- 007 build-test-lanes — shaped — 4 sessions
-- 008 enforce-implementation-status — shaped — 2 sessions
-- 009 automate-backend-advisories — shaped — 2 sessions
+- 011 resolve-and-evaluate — shaped — 3 sessions
+- 012 first-boot — shaped — 3 sessions
+- 013 exec-and-shell — shaped — 2 sessions
+- 014 workspace-and-persistence — shaped — 2 sessions
+
+## later
+
+- 004 enforce-egress-allowlist — later — 4 sessions
+- 005 cli-runtime-plumbing — later — 2 sessions
+- 006 generate-config-contract — later — 2 sessions
+- 007 build-test-lanes — later — 4 sessions
+- 008 enforce-implementation-status — later — 2 sessions
+- 009 automate-backend-advisories — later — 2 sessions
 
 ## closed
 

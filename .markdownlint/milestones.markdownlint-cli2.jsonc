@@ -2,7 +2,7 @@
   // The md-milestones hook selects the file governed by this shape.
   "config": {
     "MD043": {
-      "headings": ["# Milestones", "## in flight", "## closed"]
+      "headings": ["# Milestones", "## in flight", "## later", "## closed"]
     }
   }
 }

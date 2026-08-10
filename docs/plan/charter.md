@@ -11,6 +11,7 @@ vivarium makes a project's declarative environment runnable inside a reproducibl
 - User-owned project files and secrets remain outside builds.
 - Elastic multi-sandbox economics without hidden arbitration.
 - Evidence-backed changes with exact current-state reporting.
+- Demonstrable before durable: a subsystem earns specification depth after its command executes.
 
 ## No-gos
 
@@ -21,6 +22,7 @@ vivarium makes a project's declarative environment runnable inside a reproducibl
 - No guest durability treated as a system of record.
 - No background resource arbitration.
 - No claims about target hosts derived from agent environments.
+- No new product ADR or specification page for a command that has never run.
 
 The [normative specification](../reference/spec/README.md) owns the product contract behind these boundaries.
 
