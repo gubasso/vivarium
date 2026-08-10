@@ -125,6 +125,10 @@ pub struct ShareSpec {
 pub struct VolumeSpec {
     pub label: String,
     pub path: PathBuf,
+    // `MiB` is the unit's own capitalization, which is what the Nix producer writes and
+    // what every size field in the launch handoff uses. serde's `camelCase` would derive
+    // `sizeMib`, so the wire name is pinned here rather than left to the rename rule.
+    #[serde(rename = "sizeMiB")]
     pub size_mib: u64,
     pub image_type: String,
     pub inode_ratio: Option<u64>,
@@ -134,6 +138,8 @@ pub struct VolumeSpec {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ResourceSpec {
     pub vcpus: u16,
+    // See `VolumeSpec::size_mib`: the producer writes the unit's own capitalization.
+    #[serde(rename = "memoryMiB")]
     pub memory_mib: u64,
     pub cpu_weight: u16,
 }

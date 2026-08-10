@@ -11,7 +11,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-
 SHAPE_GLOB = "*.markdownlint-cli2.jsonc"
 SKIP_PARTS = {".draft", ".git", "node_modules"}
 INLINE_CONFIG_RE = re.compile(

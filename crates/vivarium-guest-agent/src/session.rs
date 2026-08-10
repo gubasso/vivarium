@@ -150,6 +150,13 @@ async fn run_pty<S: AsyncRead + AsyncWrite + Unpin>(
                         process::resize(writer, size).map_err(process_error)?;
                     }
                 }
+                // `spec/12` lists `Signal` as a client tag without qualifying it by session
+                // kind, and a terminal session is still a process group. The line discipline
+                // is what `-t` uses for interrupts, but it is not the only way in.
+                Ok(ClientFrame::Signal(request)) => {
+                    process::signal_group(process.process_group, request.signal)
+                        .map_err(process_error)?;
+                }
                 Ok(_) => return Err(FrameError::MalformedControl),
                 Err(FrameError::Eof | FrameError::Truncated) => {
                     process.writer.take();
@@ -260,11 +267,236 @@ async fn drain_terminal<S: AsyncWrite + Unpin, R: AsyncRead + Unpin>(
 }
 
 #[cfg(test)]
-#[allow(clippy::panic, clippy::unwrap_used)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use tokio::io::duplex;
-    use vivarium::protocol::{SessionMode, UnixBytes, read_agent_frame};
+    use tokio::io::{DuplexStream, duplex};
+    use vivarium::protocol::{
+        EnvironmentVariable, SessionMode, SignalRequest, TerminalSize, UnixBytes, read_agent_frame,
+        write_client_frame,
+    };
+
+    /// Build the request the interactive tests share.
+    ///
+    /// The session clears the environment, so a descendant binary is only reachable when
+    /// the request names the search path itself.
+    fn script_request(script: &[u8], pty: bool) -> StartRequest {
+        StartRequest {
+            mode: SessionMode::Exec,
+            argv: vec![
+                UnixBytes::new(b"/bin/sh".to_vec()),
+                UnixBytes::new(b"-c".to_vec()),
+                UnixBytes::new(script.to_vec()),
+            ],
+            environment: vec![EnvironmentVariable {
+                name: UnixBytes::new(b"PATH".to_vec()),
+                value: UnixBytes::new(std::env::var("PATH").unwrap().into_bytes()),
+            }],
+            cwd: UnixBytes::new(b"/".to_vec()),
+            pty,
+        }
+    }
+
+    /// Start one session and hand back the live client end.
+    ///
+    /// The tests below send frames while the guest process runs, so unlike
+    /// `run_non_pty_session` this deliberately does not read to completion.
+    fn start_session(
+        script: &[u8],
+        pty: bool,
+    ) -> (
+        DuplexStream,
+        tokio::task::JoinHandle<Result<(), FrameError>>,
+    ) {
+        let (client, server) = duplex(4 * 1024 * 1024);
+        let request = script_request(script, pty);
+        let task = tokio::spawn(async move {
+            let mut server = server;
+            run(&mut server, request, None, &[]).await
+        });
+        (client, task)
+    }
+
+    /// Read stream frames until the accumulated output contains `needle`.
+    ///
+    /// The timeout is what turns a session that never produces the marker into a failure
+    /// rather than a hung test.
+    async fn read_until(client: &mut DuplexStream, needle: &str) -> Vec<u8> {
+        let mut output = Vec::new();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), read_agent_frame(client)).await {
+                Ok(Ok(AgentFrame::Stdout(bytes) | AgentFrame::Stderr(bytes))) => {
+                    output.extend(bytes);
+                    if String::from_utf8_lossy(&output).contains(needle) {
+                        return output;
+                    }
+                }
+                other => panic!(
+                    "waiting for {needle:?}, got {other:?} after {:?}",
+                    String::from_utf8_lossy(&output)
+                ),
+            }
+        }
+    }
+
+    /// Read to the single `Exit`, collecting every stream frame that precedes it.
+    async fn read_to_exit(client: &mut DuplexStream) -> (Vec<u8>, u8) {
+        let mut output = Vec::new();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), read_agent_frame(client))
+                .await
+                .expect("session produced no exit")
+            {
+                Ok(AgentFrame::Stdout(bytes) | AgentFrame::Stderr(bytes)) => output.extend(bytes),
+                Ok(AgentFrame::Exit(exit)) => return (output, exit.status),
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        }
+    }
+
+    /// A resize after `Start` reaches the terminal, not only one that precedes it.
+    ///
+    /// The pre-`Start` path sets the initial size through `spawn_pty`; this is the other
+    /// half of `spec/12`'s resize contract and runs through the session loop instead.
+    #[tokio::test]
+    async fn pty_resize_after_start_reaches_the_terminal() {
+        let (mut client, task) =
+            start_session(b"echo ready; while read -r _; do stty size; done", true);
+        read_until(&mut client, "ready").await;
+        write_client_frame(
+            &mut client,
+            &ClientFrame::Resize(TerminalSize {
+                rows: 11,
+                columns: 53,
+            }),
+        )
+        .await
+        .unwrap();
+        write_client_frame(&mut client, &ClientFrame::Stdin(b"\n".to_vec()))
+            .await
+            .unwrap();
+        read_until(&mut client, "11 53").await;
+        // The terminal's own end-of-file character is what ends `read`; see
+        // `pty_end_of_input_is_the_terminal_eof_character`.
+        write_client_frame(&mut client, &ClientFrame::Stdin(vec![0x04]))
+            .await
+            .unwrap();
+        let (_, status) = read_to_exit(&mut client).await;
+        assert_eq!(status, 0);
+        assert!(task.await.unwrap().is_ok());
+    }
+
+    /// The interrupt byte raises the signal through the guest terminal's line discipline.
+    ///
+    /// `spec/12` makes this the mechanism `-t` relies on rather than a synthesized signal,
+    /// so the byte path is asserted directly.
+    #[tokio::test]
+    async fn pty_interrupt_byte_raises_the_signal() {
+        let (mut client, task) = start_session(
+            b"trap 'echo caught; exit 130' INT; echo ready; while :; do sleep 0.1; done",
+            true,
+        );
+        read_until(&mut client, "ready").await;
+        write_client_frame(&mut client, &ClientFrame::Stdin(vec![0x03]))
+            .await
+            .unwrap();
+        let (output, status) = read_to_exit(&mut client).await;
+        assert!(
+            String::from_utf8_lossy(&output).contains("caught"),
+            "trap did not run: {:?}",
+            String::from_utf8_lossy(&output)
+        );
+        assert_eq!(status, 130);
+        assert!(task.await.unwrap().is_ok());
+    }
+
+    /// A signal frame is valid in a terminal session, which `spec/12`'s tag table does not
+    /// qualify by session kind.
+    #[tokio::test]
+    async fn pty_signal_frame_reaches_the_process_group() {
+        let (mut client, task) = start_session(b"echo ready; while :; do sleep 0.1; done", true);
+        read_until(&mut client, "ready").await;
+        write_client_frame(
+            &mut client,
+            &ClientFrame::Signal(SignalRequest { signal: 15 }),
+        )
+        .await
+        .unwrap();
+        let (_, status) = read_to_exit(&mut client).await;
+        assert_eq!(status, 143);
+        assert!(task.await.unwrap().is_ok());
+    }
+
+    /// Without a PTY, `StdinEnd` closes standard input and the guest reads end-of-file.
+    #[tokio::test]
+    async fn non_pty_stdin_end_delivers_end_of_file() {
+        let (mut client, task) = start_session(b"cat", false);
+        write_client_frame(&mut client, &ClientFrame::Stdin(b"abc".to_vec()))
+            .await
+            .unwrap();
+        write_client_frame(&mut client, &ClientFrame::StdinEnd)
+            .await
+            .unwrap();
+        let (output, status) = read_to_exit(&mut client).await;
+        assert_eq!(output, b"abc".to_vec());
+        assert_eq!(status, 0);
+        assert!(task.await.unwrap().is_ok());
+    }
+
+    /// Under a PTY the terminal's own end-of-file character is what ends the guest's read.
+    #[tokio::test]
+    async fn pty_end_of_input_is_the_terminal_eof_character() {
+        let (mut client, task) = start_session(b"cat", true);
+        write_client_frame(&mut client, &ClientFrame::Stdin(b"abc\n".to_vec()))
+            .await
+            .unwrap();
+        read_until(&mut client, "abc").await;
+        write_client_frame(&mut client, &ClientFrame::Stdin(vec![0x04]))
+            .await
+            .unwrap();
+        let (_, status) = read_to_exit(&mut client).await;
+        assert_eq!(status, 0);
+        assert!(task.await.unwrap().is_ok());
+    }
+
+    /// `StdinEnd` under a PTY stops the host writing and nothing more: the master stays
+    /// open, so the guest observes no end-of-file. The agent does not synthesize one,
+    /// which is why the preceding test has to send the byte itself.
+    #[tokio::test]
+    async fn pty_stdin_end_is_not_an_end_of_file_for_the_guest() {
+        let (mut client, task) = start_session(b"cat", true);
+        write_client_frame(&mut client, &ClientFrame::Stdin(b"abc\n".to_vec()))
+            .await
+            .unwrap();
+        read_until(&mut client, "abc").await;
+        write_client_frame(&mut client, &ClientFrame::StdinEnd)
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), task)
+                .await
+                .is_err(),
+            "the guest process ended, so `StdinEnd` delivered an end-of-file"
+        );
+    }
+
+    /// Standard input after an explicit end-of-input is a protocol fault, not a second
+    /// stream. The guest process outlives the frame so the session loop, not the child's
+    /// exit, is what ends the session.
+    #[tokio::test]
+    async fn stdin_after_end_of_input_ends_the_session() {
+        let (mut client, task) = start_session(b"sleep 5", false);
+        write_client_frame(&mut client, &ClientFrame::StdinEnd)
+            .await
+            .unwrap();
+        write_client_frame(&mut client, &ClientFrame::Stdin(b"late".to_vec()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(FrameError::MalformedControl)
+        ));
+    }
 
     /// The post-exit drain is what makes the streams-before-`Exit` order independent of
     /// which `select!` branch wins, so it is exercised directly: the racing selection it
@@ -305,35 +537,8 @@ mod tests {
 
     /// Run one non-PTY session to completion and collect its streams and exit status.
     async fn run_non_pty_session(script: &[u8]) -> (Vec<u8>, u8) {
-        let (mut client, server) = duplex(4 * 1024 * 1024);
-        let request = StartRequest {
-            mode: SessionMode::Exec,
-            argv: vec![
-                UnixBytes::new(b"/bin/sh".to_vec()),
-                UnixBytes::new(b"-c".to_vec()),
-                UnixBytes::new(script.to_vec()),
-            ],
-            // The session clears the environment, so a descendant binary is only
-            // reachable when the request names the search path itself.
-            environment: vec![vivarium::protocol::EnvironmentVariable {
-                name: UnixBytes::new(b"PATH".to_vec()),
-                value: UnixBytes::new(std::env::var("PATH").unwrap().into_bytes()),
-            }],
-            cwd: UnixBytes::new(b"/".to_vec()),
-            pty: false,
-        };
-        let task = tokio::spawn(async move {
-            let mut server = server;
-            run(&mut server, request, None, &[]).await
-        });
-        let mut output = Vec::new();
-        let status = loop {
-            match read_agent_frame(&mut client).await.unwrap() {
-                AgentFrame::Stdout(bytes) | AgentFrame::Stderr(bytes) => output.extend(bytes),
-                AgentFrame::Exit(exit) => break exit.status,
-                frame => panic!("unexpected frame: {frame:?}"),
-            }
-        };
+        let (mut client, task) = start_session(script, false);
+        let (output, status) = read_to_exit(&mut client).await;
         assert!(task.await.unwrap().is_ok());
         (output, status)
     }
@@ -371,25 +576,7 @@ mod tests {
     /// first signal, so the wait after `SIGTERM` escalates instead of running forever.
     #[tokio::test]
     async fn disconnect_ends_a_term_resistant_session() {
-        let (client, server) = duplex(4096);
-        let request = StartRequest {
-            mode: SessionMode::Exec,
-            argv: vec![
-                UnixBytes::new(b"/bin/sh".to_vec()),
-                UnixBytes::new(b"-c".to_vec()),
-                UnixBytes::new(b"trap '' TERM; while :; do sleep 1; done".to_vec()),
-            ],
-            environment: vec![vivarium::protocol::EnvironmentVariable {
-                name: UnixBytes::new(b"PATH".to_vec()),
-                value: UnixBytes::new(std::env::var("PATH").unwrap().into_bytes()),
-            }],
-            cwd: UnixBytes::new(b"/".to_vec()),
-            pty: false,
-        };
-        let task = tokio::spawn(async move {
-            let mut server = server;
-            run(&mut server, request, None, &[]).await
-        });
+        let (client, task) = start_session(b"trap '' TERM; while :; do sleep 1; done", false);
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let started = std::time::Instant::now();
         drop(client);
@@ -410,33 +597,11 @@ mod tests {
     #[tokio::test]
     async fn pty_output_precedes_exit_repeatedly() {
         for _ in 0..20 {
-            let (mut client, server) = duplex(1024 * 1024);
-            let request = StartRequest {
-                mode: SessionMode::Exec,
-                argv: vec![
-                    UnixBytes::new(b"/bin/sh".to_vec()),
-                    UnixBytes::new(b"-c".to_vec()),
-                    UnixBytes::new(
-                        b"i=1; while [ $i -le 2000 ]; do echo $i; i=$((i+1)); done; exit 7"
-                            .to_vec(),
-                    ),
-                ],
-                environment: Vec::new(),
-                cwd: UnixBytes::new(b"/".to_vec()),
-                pty: true,
-            };
-            let task = tokio::spawn(async move {
-                let mut server = server;
-                run(&mut server, request, None, &[]).await
-            });
-            let mut output = Vec::new();
-            let status = loop {
-                match read_agent_frame(&mut client).await.unwrap() {
-                    AgentFrame::Stdout(bytes) => output.extend(bytes),
-                    AgentFrame::Exit(exit) => break exit.status,
-                    frame => panic!("unexpected frame: {frame:?}"),
-                }
-            };
+            let (mut client, task) = start_session(
+                b"i=1; while [ $i -le 2000 ]; do echo $i; i=$((i+1)); done; exit 7",
+                true,
+            );
+            let (output, status) = read_to_exit(&mut client).await;
             assert_eq!(status, 7);
             let text = String::from_utf8_lossy(&output);
             assert!(

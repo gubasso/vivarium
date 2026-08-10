@@ -175,17 +175,15 @@ pub fn resize(writer: &OwnedWritePty, size: TerminalSize) -> Result<(), ProcessE
         .map_err(ProcessError::Pty)
 }
 
+/// Deliver an explicit signal frame to the session's process group.
+///
+/// `spec/12` carries the signal as a bare number and names the accepted set as whatever
+/// the guest kernel defines, so that definition is the contract rather than a hand-picked
+/// subset: `from_named_raw` admits `1..=31` on Linux and rejects both `0` and the
+/// libc-reserved real-time range, which a session may not send. A group stopped by
+/// `SIGSTOP` still tears down, because the disconnect escalation ends in `SIGKILL`.
 pub fn signal_group(group: Pid, raw: u8) -> Result<(), ProcessError> {
-    let signal = match raw {
-        1 => Signal::HUP,
-        2 => Signal::INT,
-        3 => Signal::QUIT,
-        9 => Signal::KILL,
-        10 => Signal::USR1,
-        12 => Signal::USR2,
-        15 => Signal::TERM,
-        _ => return Err(ProcessError::Signal),
-    };
+    let signal = Signal::from_named_raw(i32::from(raw)).ok_or(ProcessError::Signal)?;
     kill_process_group(group, signal).map_err(|error| ProcessError::Io(error.into()))
 }
 
@@ -252,5 +250,67 @@ mod tests {
         let mut process =
             spawn_non_pty(&request(&[b"/bin/sh", b"-c", b"kill -TERM $$"]), &[]).unwrap();
         assert_eq!(normalized_status(process.child.wait().await.unwrap()), 143);
+    }
+
+    /// Argument and environment bytes survive the spawn, not merely the codec.
+    ///
+    /// `frame.rs` proves the wire round-trips arbitrary bytes; this is the other half,
+    /// because `execve` is where a `String`-shaped conversion would silently corrupt them.
+    #[tokio::test]
+    async fn byte_values_survive_the_spawn() {
+        use tokio::io::AsyncReadExt as _;
+        use vivarium::protocol::EnvironmentVariable;
+
+        let mut spawn_request = request(&[
+            b"/bin/sh",
+            b"-c",
+            b"printf %s \"$V\"; printf %s \"$1\"",
+            b"sh",
+            b"\xff\xfe",
+        ]);
+        spawn_request.environment = vec![EnvironmentVariable {
+            name: UnixBytes::new(b"V".to_vec()),
+            value: UnixBytes::new(vec![0xfe, 0xff]),
+        }];
+        let mut process = spawn_non_pty(&spawn_request, &[]).unwrap();
+        let mut output = Vec::new();
+        process.stdout.read_to_end(&mut output).await.unwrap();
+        assert_eq!(output, vec![0xfe, 0xff, 0xff, 0xfe]);
+        assert_eq!(normalized_status(process.child.wait().await.unwrap()), 0);
+    }
+
+    /// The accepted signal set is exactly what the guest kernel names.
+    ///
+    /// A fresh group per signal keeps the sweep honest: several of these end or stop the
+    /// group, so reusing one victim would make every later iteration test nothing.
+    #[tokio::test]
+    async fn every_named_signal_is_accepted_and_the_rest_are_rejected() {
+        fn victim() -> NonPtyProcess {
+            spawn_non_pty(&request(&[b"/bin/sh", b"-c", b"sleep 5"]), &[]).unwrap()
+        }
+
+        for signal in 1..=31_u8 {
+            let mut process = victim();
+            assert!(
+                signal_group(process.process_group, signal).is_ok(),
+                "named signal {signal} was rejected"
+            );
+            kill_group(process.process_group);
+            let _ = process.child.wait().await;
+        }
+        // `0` is not a signal, and the range above the named set is reserved by the guest's
+        // own C library for real-time signals a session may not send.
+        for raw in [0_u8, 32, 33, 64, 255] {
+            let mut process = victim();
+            assert!(
+                matches!(
+                    signal_group(process.process_group, raw),
+                    Err(ProcessError::Signal)
+                ),
+                "signal number {raw} was accepted"
+            );
+            kill_group(process.process_group);
+            let _ = process.child.wait().await;
+        }
     }
 }

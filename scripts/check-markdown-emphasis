@@ -11,7 +11,6 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-
 ALLOW_PREFIX = "<!-- allow-emphasis:"
 ALLOW_RE = re.compile(r"^<!-- allow-emphasis:\s*(.*?)\s*-->$")
 # A fence may sit inside a container, so allow a blockquote prefix and the
@@ -110,9 +109,12 @@ def mask_globs(text: str) -> str:
         left_free = before is None or before.isspace() or before in GLOB_LEFT
         right_free = after is None or after.isspace() or after in GLOB_RIGHT
         glob = False
-        if before in ("/", "\\") and (right_free or after in "/\\."):
-            glob = True
-        elif after in ("/", "\\") and left_free:
+        if (
+            before in ("/", "\\")
+            and (right_free or after in "/\\.")
+            or after in ("/", "\\")
+            and left_free
+        ):
             glob = True
         elif left_free and after == ".":
             # `*.md` is a glob only when the extension ends the token; `*.md*`
@@ -246,7 +248,9 @@ def mask_code_spans(lines: list[tuple[int, str]]) -> dict[int, str]:
         if not block:
             return
         joined = mask_inline_code("\n".join(line for _, line in block)).split("\n")
-        for (number, _), text in zip(block, joined):
+        # Masking rewrites characters, never line count, so the two sides are the same
+        # length by construction; `strict` asserts that rather than silently truncating.
+        for (number, _), text in zip(block, joined, strict=True):
             masked[number] = text
         block.clear()
 

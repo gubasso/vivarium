@@ -212,25 +212,120 @@ mod tests {
         bytes
     }
 
+    async fn encoded_agent(frame: AgentFrame) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        write_agent_frame(&mut bytes, &frame).await.unwrap();
+        bytes
+    }
+
+    /// Assemble the wire form by hand: a four-byte big-endian length covering the tag plus
+    /// the payload, then the tag, then the payload.
+    fn framed(tag: u8, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = u32::try_from(payload.len() + 1)
+            .unwrap()
+            .to_be_bytes()
+            .to_vec();
+        bytes.push(tag);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    /// Pin the exact encoding of every tag in `spec/12`'s table.
+    ///
+    /// This is the line the specification's tag table encodes, so all thirteen appear here
+    /// with their literal payloads: a tag that only round-trips through this crate's own
+    /// codec would still be free to drift, and the argv and environment wire shape (a JSON
+    /// array of byte values, from `UnixBytes` being `serde(transparent)`) is a contract a
+    /// second implementation has to match.
     #[tokio::test]
     async fn golden_tags_and_shapes() {
+        const IDENTITY: &str = "01234567-89ab-cdef-0123-456789abcdef";
+        let hello = Hello {
+            schema_version: 1,
+            boot_identity: IDENTITY.to_owned(),
+        };
+        let hello_json =
+            br#"{"schema_version":1,"boot_identity":"01234567-89ab-cdef-0123-456789abcdef"}"#;
+
+        // Client direction, tags 0x01 and 0x03 through 0x09.
         assert_eq!(
-            encoded_client(ClientFrame::Ping).await,
-            vec![0, 0, 0, 1, 0x03]
+            encoded_client(ClientFrame::Hello(hello.clone())).await,
+            framed(0x01, hello_json)
         );
+        assert_eq!(encoded_client(ClientFrame::Ping).await, framed(0x03, b""));
         assert_eq!(
-            encoded_client(ClientFrame::StdinEnd).await,
-            vec![0, 0, 0, 1, 0x07]
+            encoded_client(ClientFrame::Start(StartRequest {
+                mode: SessionMode::Exec,
+                argv: vec![
+                    UnixBytes::new(b"/bin/sh".to_vec()),
+                    UnixBytes::new(vec![0xff])
+                ],
+                environment: vec![EnvironmentVariable {
+                    name: UnixBytes::new(b"K".to_vec()),
+                    value: UnixBytes::new(vec![0xfe]),
+                }],
+                cwd: UnixBytes::new(b"/".to_vec()),
+                pty: true,
+            }))
+            .await,
+            framed(
+                0x05,
+                // Split only to stay inside the line budget; the two halves are adjacent
+                // bytes of one payload and the seam carries no whitespace.
+                &[
+                    br#"{"mode":"exec","argv":[[47,98,105,110,47,115,104],[255]],"#.as_slice(),
+                    br#""environment":[{"name":[75],"value":[254]}],"cwd":[47],"pty":true}"#
+                        .as_slice(),
+                ]
+                .concat()
+            )
         );
         assert_eq!(
             encoded_client(ClientFrame::Stdin(vec![0xff])).await,
-            vec![0, 0, 0, 2, 0x06, 0xff]
+            framed(0x06, &[0xff])
         );
-        let mut agent = Vec::new();
-        write_agent_frame(&mut agent, &AgentFrame::Pong)
-            .await
-            .unwrap();
-        assert_eq!(agent, vec![0, 0, 0, 1, 0x04]);
+        assert_eq!(
+            encoded_client(ClientFrame::StdinEnd).await,
+            framed(0x07, b"")
+        );
+        assert_eq!(
+            encoded_client(ClientFrame::Resize(TerminalSize {
+                rows: 24,
+                columns: 80
+            }))
+            .await,
+            framed(0x08, br#"{"rows":24,"columns":80}"#)
+        );
+        assert_eq!(
+            encoded_client(ClientFrame::Signal(SignalRequest { signal: 15 })).await,
+            framed(0x09, br#"{"signal":15}"#)
+        );
+
+        // Agent direction, tags 0x02, 0x04, and 0x0a through 0x0d.
+        assert_eq!(
+            encoded_agent(AgentFrame::Hello(hello)).await,
+            framed(0x02, hello_json)
+        );
+        assert_eq!(encoded_agent(AgentFrame::Pong).await, framed(0x04, b""));
+        assert_eq!(
+            encoded_agent(AgentFrame::Stdout(vec![0xfe])).await,
+            framed(0x0a, &[0xfe])
+        );
+        assert_eq!(
+            encoded_agent(AgentFrame::Stderr(vec![0xfd])).await,
+            framed(0x0b, &[0xfd])
+        );
+        assert_eq!(
+            encoded_agent(AgentFrame::Exit(ExitStatus { status: 42 })).await,
+            framed(0x0c, br#"{"status":42}"#)
+        );
+        assert_eq!(
+            encoded_agent(AgentFrame::Error(ProtocolErrorMessage {
+                code: "framing".to_owned()
+            }))
+            .await,
+            framed(0x0d, br#"{"code":"framing"}"#)
+        );
     }
 
     #[tokio::test]

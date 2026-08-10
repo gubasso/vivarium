@@ -121,7 +121,7 @@ impl Supervisor {
         let profile = ConfinementProfile::new(&self.spec)?;
         let vmm = profile.vmm();
         let shares = profile.shares();
-        ConfinementProfile::validate_rendered(&vmm, &shares)?;
+        ConfinementProfile::validate_rendered(&vmm, &shares, profile.drops_bounding_set())?;
         for (share, command) in self.spec.shares.clone().into_iter().zip(shares) {
             self.spawn_child(ChildKind::Virtiofsd(share.tag), &command)?;
         }

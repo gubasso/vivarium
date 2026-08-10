@@ -100,7 +100,7 @@ async fn establish(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -175,6 +175,101 @@ mod tests {
         }
         vmm.await.unwrap();
         echo.await.unwrap();
+        let _ = std::fs::remove_file(control_path);
+        let _ = std::fs::remove_file(agent_path);
+    }
+
+    /// A relay that ends is replaced, so the pool holds its depth for the life of the VM.
+    ///
+    /// Four slots used once would be a pool that works exactly four times; the refill is
+    /// what makes repeated use possible, and the repeat count is what separates a refill
+    /// that works from one that happened to win a race the first time. Every round takes a
+    /// parked connection the workers had to re-establish, because the pool is smaller than
+    /// the round count.
+    #[tokio::test]
+    async fn a_finished_relay_is_refilled_repeatedly() {
+        const ROUNDS: usize = 20;
+
+        let control_path = socket_path("credential-refill-control");
+        let agent_path = socket_path("credential-refill-agent");
+        let control = UnixListener::bind(&control_path).unwrap();
+        let agent = UnixListener::bind(&agent_path).unwrap();
+        let (guest_tx, mut guest_rx) = mpsc::channel(CREDENTIAL_POOL_SIZE);
+        let established = std::sync::Arc::new(AtomicU64::new(0));
+        let counted = std::sync::Arc::clone(&established);
+        let vmm = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = control.accept().await {
+                let mut line = [0; 14];
+                if stream.read_exact(&mut line).await.is_err() {
+                    return;
+                }
+                assert_eq!(&line, b"CONNECT 52001\n");
+                let port = counted.fetch_add(1, Ordering::Relaxed);
+                stream
+                    .write_all(format!("OK {}\n", 40_000 + port).as_bytes())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    stream.read_u8().await.unwrap(),
+                    CredentialId::Ssh.setup_byte()
+                );
+                stream.write_u8(CREDENTIAL_PARKED_ACK).await.unwrap();
+                if guest_tx.send(stream).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let echo = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = agent.accept().await {
+                tokio::spawn(async move {
+                    let mut bytes = [0; 64];
+                    loop {
+                        let Ok(count) = stream.read(&mut bytes).await else {
+                            return;
+                        };
+                        if count == 0 || stream.write_all(&bytes[..count]).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        let cancellation = CancellationToken::new();
+        let handles = start(
+            control_path.clone(),
+            &[CredentialSpec {
+                id: CredentialId::Ssh,
+                host_socket: agent_path.clone(),
+            }],
+            cancellation.clone(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        for round in 0..ROUNDS {
+            let mut guest = tokio::time::timeout(Duration::from_secs(5), guest_rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("the pool was not refilled after {round} uses"))
+                .unwrap();
+            let sentinel = format!("opaque-{round}");
+            guest.write_all(sentinel.as_bytes()).await.unwrap();
+            let mut echoed = vec![0; sentinel.len()];
+            guest.read_exact(&mut echoed).await.unwrap();
+            assert_eq!(echoed, sentinel.as_bytes());
+            drop(guest);
+        }
+        let count = established.load(Ordering::Relaxed);
+        assert!(
+            count >= ROUNDS as u64,
+            "only {count} connections were established for \
+            {ROUNDS} uses of a {CREDENTIAL_POOL_SIZE}-slot pool"
+        );
+        cancellation.cancel();
+        for handle in handles {
+            handle.await.unwrap().unwrap();
+        }
+        vmm.abort();
+        echo.abort();
         let _ = std::fs::remove_file(control_path);
         let _ = std::fs::remove_file(agent_path);
     }

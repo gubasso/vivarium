@@ -134,12 +134,18 @@ async fn run(spec_path: &Path, ready_path: &Path) -> Result<(), SupervisorError>
             send_ready(ready_path, ReadinessReport::process_ready()).await?;
         }
         None => {
-            send_ready(ready_path, ReadinessReport::failed()).await?;
+            // Not `?`: a supervision failure early enough to run cleanup takes the runtime
+            // directory with it, and the readiness socket lives there, so reporting is very
+            // often impossible on exactly the path where the cause matters most. Failing
+            // here first would replace that cause with the fact that the socket was gone,
+            // leaving the launcher's readiness timeout as the only account of the run.
+            let reported = send_ready(ready_path, ReadinessReport::failed()).await;
             // The task's own error is the real account of what went wrong; wait for it rather
             // than reporting the empty channel, which is only the symptom.
             return Err(join(task)
                 .await
                 .err()
+                .or_else(|| reported.err())
                 .unwrap_or(SupervisorError::ReadinessNotReported));
         }
     }

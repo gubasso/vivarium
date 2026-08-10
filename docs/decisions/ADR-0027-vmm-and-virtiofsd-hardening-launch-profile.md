@@ -39,4 +39,6 @@ Amended by ADR-0049 — "capability drop toward zero" is scoped to the initial u
 
 Amended by ADR-0093 — the descriptor limit is passed to each daemon explicitly rather than inherited from the session's hard limit, so the budget does not vary by host. The forgoing of inode file handles above is unchanged; it is what makes the budget matter.
 
+Amended by ADR-0099 — emptying the bounding set needs `CAP_SETPCAP`, which an unprivileged launcher does not hold, and `setpriv` refuses to exec the child rather than degrading. The drop is therefore rendered only where the capability is present. The rest of the wrapper, including the `no-new-privileges` bit this profile's unprivileged-execution clause depends on, is unchanged and unconditional.
+
 Extends N20 ([`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md)) to host-side filesystem daemons and enacts ADR-0024 / ADR-0025's confinement standard. The concrete recipe and prerequisite probes live in [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md); QEMU stays admissible under N2.

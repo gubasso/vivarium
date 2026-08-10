@@ -132,6 +132,12 @@ let
       storeFreeSpaceHook = false;
     };
 
+    # The peer-origin checks on both vsock ports reject a guest-local peer, and nothing
+    # proves it without a guest that can originate one. `vsock_loopback` is what makes the
+    # rejection observable rather than argued, so it is declared here and nowhere in the
+    # product: the shipped image must not gain a transport whose only purpose is to attack
+    # its own agent. The agent runs unprivileged with an empty capability set and cannot
+    # load a module itself, so this has to be loaded at boot rather than on demand.
     agent =
       let
         image = product.mkImage {
@@ -139,6 +145,7 @@ let
             ({ pkgs, ... }: {
               vivarium.credentials.agents = [ "ssh" ];
               environment.systemPackages = [ pkgs.socat ];
+              boot.kernelModules = [ "vsock_loopback" ];
             })
           ];
         };

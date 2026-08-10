@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tokio_vsock::{VMADDR_CID_HOST, VsockListener, VsockStream};
+use tokio_vsock::{VMADDR_CID_HOST, VsockListener};
 use vivarium::protocol::{CREDENTIAL_PARKED_ACK, CREDENTIAL_POOL_SIZE, CredentialId};
 
 pub async fn run(
@@ -82,9 +82,14 @@ fn verify_owner(path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-async fn serve_local(
+/// Hand one parked host connection to one guest-local client, and no more.
+///
+/// The parked stream is a `VsockStream` in the running agent; the bound is written as one
+/// because nothing here depends on the transport, and a deterministic test cannot open an
+/// `AF_VSOCK` connection without the loopback module the guest does not load.
+async fn serve_local<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
     listener: UnixListener,
-    mut parked: mpsc::Receiver<VsockStream>,
+    mut parked: mpsc::Receiver<S>,
     cancellation: CancellationToken,
 ) {
     loop {
@@ -99,5 +104,131 @@ async fn serve_local(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio::net::UnixStream;
+
+    fn scratch(name: &str) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "vivarium-credentials-{name}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    /// The credential directory is created private and owned by the agent's own user.
+    ///
+    /// `ADR-0071` rests on the guest user being the only one that can reach the socket, so
+    /// the mode is asserted rather than assumed from `create_dir_all`'s umask behaviour.
+    #[test]
+    fn the_directory_is_private_and_owned_by_the_agent() {
+        let path = scratch("directory");
+        prepare_directory(&path).unwrap();
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        assert_eq!(metadata.uid(), rustix::process::getuid().as_raw());
+        // Re-preparing an existing directory is how a restarted agent finds its own
+        // runtime directory, so it must not fail.
+        prepare_directory(&path).unwrap();
+        std::fs::remove_dir_all(&path).unwrap();
+    }
+
+    /// The credential socket is created private and owned, and replaces a stale one.
+    #[tokio::test]
+    async fn the_socket_is_private_owned_and_replaces_a_stale_one() {
+        let path = scratch("socket");
+        let listener = create_socket(&path).unwrap();
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        assert!(metadata.file_type().is_socket());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(metadata.uid(), rustix::process::getuid().as_raw());
+        // A restart finds the previous boot's socket still on disk; binding over it is
+        // only safe because the path was verified to be a socket first.
+        drop(listener);
+        let replacement = create_socket(&path).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+        drop(replacement);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A path that is not a stale socket is refused rather than unlinked.
+    ///
+    /// Unlinking whatever happens to sit at the path would let a wrong configuration
+    /// destroy a real file; failing closed is the only safe reading.
+    #[tokio::test]
+    async fn a_non_socket_path_is_refused() {
+        let path = scratch("regular-file");
+        std::fs::write(&path, b"not a socket").unwrap();
+        assert!(create_socket(&path).is_err());
+        // The refusal must leave the file intact.
+        assert_eq!(std::fs::read(&path).unwrap(), b"not a socket");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// One guest-local client consumes exactly one parked connection.
+    ///
+    /// The pool is bounded, so a local client that could drain more than its own slot
+    /// would starve the rest; the second client here is served only once a second host
+    /// connection has been parked.
+    #[tokio::test]
+    async fn a_local_client_consumes_exactly_one_parked_connection() {
+        let path = scratch("relay");
+        let listener = create_socket(&path).unwrap();
+        let (sender, receiver) = mpsc::channel(CREDENTIAL_POOL_SIZE);
+        let cancellation = CancellationToken::new();
+        let relay = tokio::spawn(serve_local(listener, receiver, cancellation.clone()));
+
+        // Park one host connection and let a guest-local client use it.
+        let (host, parked) = UnixStream::pair().unwrap();
+        sender.send(parked).await.unwrap();
+        let mut local = UnixStream::connect(&path).await.unwrap();
+        let mut host = host;
+        local.write_all(b"opaque-request").await.unwrap();
+        let mut seen = vec![0; b"opaque-request".len()];
+        host.read_exact(&mut seen).await.unwrap();
+        assert_eq!(seen, b"opaque-request");
+        host.write_all(b"opaque-reply").await.unwrap();
+        let mut back = vec![0; b"opaque-reply".len()];
+        local.read_exact(&mut back).await.unwrap();
+        assert_eq!(back, b"opaque-reply");
+
+        // A second client waits: the first consumed the only parked connection.
+        let mut second = UnixStream::connect(&path).await.unwrap();
+        second.write_all(b"second").await.unwrap();
+        let mut idle = [0; 6];
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                second.read_exact(&mut idle)
+            )
+            .await
+            .is_err(),
+            "a second local client was served without a second parked connection"
+        );
+
+        // Park another and the waiting client is served from it.
+        let (second_host, second_parked) = UnixStream::pair().unwrap();
+        sender.send(second_parked).await.unwrap();
+        let mut second_host = second_host;
+        let mut seen = vec![0; b"second".len()];
+        second_host.read_exact(&mut seen).await.unwrap();
+        assert_eq!(seen, b"second");
+
+        cancellation.cancel();
+        drop(sender);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), relay).await;
+        std::fs::remove_file(&path).unwrap();
     }
 }

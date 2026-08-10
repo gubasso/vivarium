@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+
+# Boot a guest and check the control transport and credential relay against it.
+#
+# Two tiers, and the split is the *gate*, not the topic:
+#
+#   Evaluation tier — runs anywhere Nix is present. Builds the verification image
+#   and checks that its runner was realised. Says nothing about target-host
+#   behaviour.
+#
+#   Host tier — gated on /dev/kvm, a systemd user manager and $XDG_RUNTIME_DIR.
+#   Exports VIVARIUM_AGENT_RUNNER and runs tests/guest_agent_host.rs, which boots
+#   the guest and drives real AF_VSOCK sessions through it.
+#
+# Output is one `[PASS]`/`[FAIL]`/`[SKIP]`/`[RECORD]` line per check plus a
+# verdict, so the whole run pastes back into a review. A `[SKIP]` means
+# *unproven*, never *absent*. A `[RECORD]` is a measurement, not a judgement.
+#
+# The lane runs TWICE. One clean run is evidence of possibility, not reliability,
+# and the assertions this lane cares most about — concurrent sessions, credential
+# pool depletion and refill, the two time bounds — are exactly the kind that pass
+# once and then fail on a Tuesday. The trial carries its own 20-round loops for
+# the same reason; the two runs are the outer guard, not a substitute.
+#
+# VIVARIUM_TEST_REQUIRE=1 is deliberately NOT set here: this script has already
+# proved the gate before it runs the trial, so setting it could only convert a
+# genuine environment change into a confusing failure. It is the knob for CI,
+# where the gate must not be allowed to silently disable the lane.
+#
+# See docs/reference/microvm-verification-harness.md for what each check proves
+# and for the findings register, and docs/reference/testing-lanes.md for the
+# lanes.
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
+# `?dir=nix` rather than `/nix`: a flake's source tree is fixed by the reference
+# used to enter it, not by where its file sits. This form leaves the flake and
+# its lock at `nix/` while making the repository the tree, so `nix/default.nix`
+# can read the Rust crate at `../` in its default layout.
+FLAKE_REF="path:$REPO_ROOT?dir=nix"
+DEV_FLAKE_REF="path:$REPO_ROOT"
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+RECORD_COUNT=0
+
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+  GREEN=$'\033[32m'
+  RED=$'\033[31m'
+  YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'
+  RESET=$'\033[0m'
+else
+  GREEN=
+  RED=
+  YELLOW=
+  BLUE=
+  RESET=
+fi
+
+pass() {
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"
+}
+fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"
+  # sed prefixes every line of multiline evidence.
+  # shellcheck disable=SC2001
+  [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"
+}
+skip() {
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+  printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"
+}
+record() {
+  RECORD_COUNT=$((RECORD_COUNT + 1))
+  printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"
+}
+
+# `--clean` removes the diagnostics roots this lane's trial retains on failure.
+# Deliberately opt-in: the trial keeps its runtime directory, boot metadata and
+# volumes precisely so a failure can be read afterwards, and removing them on the
+# normal exit path would throw away the evidence the run exists to produce.
+if [[ ${1:-} == --clean ]]; then
+  removed=0
+  for dir in "${TMPDIR:-/tmp}"/vivarium-agent-host-*; do
+    [[ -d $dir ]] || continue
+    rm -rf -- "$dir" && removed=$((removed + 1))
+  done
+  printf 'removed %d retained diagnostics root(s)\n' "$removed"
+  exit 0
+fi
+
+printf 'Evaluation tier\n'
+
+if ! command -v nix >/dev/null 2>&1; then
+  skip "agent image build: nix is unavailable"
+  skip "agent runner realised: nix is unavailable"
+  runner=
+else
+  build_log=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm-agent-check" 2>&1)
+  build_status=$?
+  if ((build_status == 0)); then
+    # `--print-out-paths` writes the store path to stdout and progress to stderr,
+    # which are merged above; the path is the last line.
+    out=$(tail -n1 <<<"$build_log")
+    pass "agent image build: $out"
+  else
+    fail "agent image build (exit $build_status)" "$build_log"
+    out=
+  fi
+
+  # The runner's name comes from `writeShellApplication` in nix/runner.nix, not
+  # from the flake attribute, so it is spelled out rather than derived.
+  runner="${out:+$out/bin/vivarium-first-microvm}"
+  if [[ -n $runner && -x $runner ]]; then
+    pass "agent runner realised: $runner"
+  else
+    fail "agent runner realised" "expected an executable at ${runner:-<no build output>}"
+    runner=
+  fi
+fi
+
+printf '\nHost tier\n'
+missing=()
+[[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
+[[ -r /dev/kvm && -w /dev/kvm ]] || missing+=("/dev/kvm openable read/write")
+systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
+[[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
+[[ -n $runner ]] || missing+=("realised agent runner")
+
+if ((${#missing[@]})); then
+  reason=$(
+    IFS=', '
+    echo "${missing[*]}"
+  )
+  skip "guest agent lane (run 1): missing prerequisites: $reason"
+  skip "guest agent lane (run 2): missing prerequisites: $reason"
+else
+  export VIVARIUM_AGENT_RUNNER=$runner
+  record "runner: $runner"
+  for attempt in 1 2; do
+    # The trial emits its own `[RECORD]` lines on stderr; they are the measured
+    # figures the harness findings register carries, so the output is shown
+    # whether the run passes or fails rather than only on failure.
+    lane_log=$(
+      cd -- "$REPO_ROOT" \
+        && nix develop "$DEV_FLAKE_REF" --command \
+          cargo nextest run --test guest_agent_host --run-ignored=all 2>&1
+    )
+    lane_status=$?
+    if ((lane_status == 0)); then
+      pass "guest agent lane (run $attempt)"
+    else
+      fail "guest agent lane (run $attempt) (exit $lane_status)" "$lane_log"
+    fi
+    while IFS= read -r line; do
+      record "run $attempt ${line#*\[RECORD\] }"
+    done < <(grep -F '[RECORD]' <<<"$lane_log" || true)
+  done
+fi
+
+printf '\nSummary\n'
+printf 'PASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+if ((FAIL_COUNT == 0)); then
+  printf 'VERDICT: PASS (RECORD findings are measurements; SKIPs require a capable host)\n'
+  exit 0
+else
+  printf 'VERDICT: FAIL (%d hard check(s) failed)\n' "$FAIL_COUNT"
+  exit 1
+fi

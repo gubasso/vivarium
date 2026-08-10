@@ -138,9 +138,15 @@ A client first sends `Hello` with schema version 1 and the boot identity. After 
 
 A resize carries the new dimensions and the agent applies them to the session's PTY; the host re-sends whenever its own terminal changes size. Sent before the process starts, it sets the initial dimensions instead — so a session never briefly renders at the wrong size.
 
-With `-t` the host puts the local terminal in raw mode and forwards the interrupt as a byte, letting the guest PTY's line discipline raise the signal against the guest's own foreground process group. This is the only correct behaviour when the guest runs a job-control shell: a synthesized signal would go to the wrong process. Explicit signal frames therefore exist for the non-TTY path, where there is no line discipline to do the work.
+With `-t` the host puts the local terminal in raw mode and forwards the interrupt as a byte, letting the guest PTY's line discipline raise the signal against the guest's own foreground process group. This is the only correct behaviour when the guest runs a job-control shell: a synthesized signal would go to the wrong process. Explicit signal frames exist for the non-TTY path, where there is no line discipline to do the work; the tag table does not qualify them by session kind, and a terminal session is still a process group, so they remain valid there too.
+
+A signal frame carries the raw number, and the agent delivers any signal the guest kernel names — `1` through `31` on Linux — to the session's process group. The range a guest C library reserves for real-time signals is not a session's to send, so a number outside the named set closes the connection like the framing faults above.
+
+A session whose client disconnects is not left running. The agent signals the session's process group to terminate and waits a bounded grace period; a group that has not exited by then is killed with the signal that cannot be caught, ignored, or held off by a stopped process. The wait is bounded rather than open-ended because the sandbox is disposable ([`../../decisions/ADR-0080-the-sandbox-is-disposable.md`](../../decisions/ADR-0080-the-sandbox-is-disposable.md)); an abandoned session must not outlive the client that owned it, and stopping a group therefore cannot strand one.
 
 For a PTY, standard input, output, and error share the terminal as required by the operating system, and all PTY output is sent as `Stdout`. Without a PTY, stdout and stderr remain distinct.
+
+End-of-input follows that same split. Without a PTY, `StdinEnd` closes the process's standard input and the guest reads EOF. Under a PTY there is no separate input channel to close: `StdinEnd` stops the host from writing, and what ends the guest's read is the terminal's own end-of-file character, carried in the client's ordinary byte stream. The agent does not synthesize that byte, for the same reason it does not synthesize an interrupt — inventing input is how a session ends up acting on the wrong process.
 
 ### Authorization
 
