@@ -317,7 +317,13 @@ else
     static_b=$("$launcher" --workspace /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume /srv/vivarium/canary-b.img --store-volume /srv/vivarium/canary-b-store.img --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1)
     static_b_status=$?
     if ((static_status == 0 && static_b_status == 0)); then
-      normalize_launch_spec='del(.runtimePaths) | .socketLegs.api="@API@" | .socketLegs.console="@CONSOLE@" | .resources.vcpus=0 | .resources.memoryMiB=0 | .identityTranslation.hostUid=0 | .identityTranslation.hostGid=0 | (.shares[].source)="@SOURCE@" | (.shares[].socket)="@SOCKET@" | (.volumes[].path)="@VOLUME@" | .vmCreate.cpus.boot_vcpus=0 | .vmCreate.cpus.max_vcpus=0 | .vmCreate.memory.size=0 | (.vmCreate.disks[].path)="@VOLUME@" | (.vmCreate.fs[].socket)="@SOCKET@" | .vmCreate.serial.socket="@CONSOLE@"'
+      # Every runtime path in `vmCreate` is scrubbed here, and the list has to grow
+      # whenever the launch spec gains a device that carries one. `vsock.socket` is
+      # the control transport slice 003 added; until it was scrubbed this check
+      # compared two different `--runtime-dir` values and reported the difference it
+      # was built to ignore. That is the failure mode to expect from this line: a new
+      # device makes it fail for a reason that is not a contract violation.
+      normalize_launch_spec='del(.runtimePaths) | .socketLegs.api="@API@" | .socketLegs.console="@CONSOLE@" | .resources.vcpus=0 | .resources.memoryMiB=0 | .identityTranslation.hostUid=0 | .identityTranslation.hostGid=0 | (.shares[].source)="@SOURCE@" | (.shares[].socket)="@SOCKET@" | (.volumes[].path)="@VOLUME@" | .vmCreate.cpus.boot_vcpus=0 | .vmCreate.cpus.max_vcpus=0 | .vmCreate.memory.size=0 | (.vmCreate.disks[].path)="@VOLUME@" | (.vmCreate.fs[].socket)="@SOCKET@" | .vmCreate.serial.socket="@CONSOLE@" | .vmCreate.vsock.socket="@CONTROL@"'
       normalized_a=$(jq -cS "$normalize_launch_spec" <<<"$static_a")
       normalized_b=$(jq -cS "$normalize_launch_spec" <<<"$static_b")
       if [[ $normalized_a == "$normalized_b" ]]; then

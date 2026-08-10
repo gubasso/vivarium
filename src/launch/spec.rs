@@ -21,9 +21,20 @@ pub struct DescriptorBudget {
 impl DescriptorBudget {
     pub const PINNED_FIXED_RESERVE: u64 = 609;
 
+    /// The worker count the daemon actually charges against the reserve.
+    ///
+    /// virtiofsd computes `INTERNAL_FD_RESERVE + max(thread_pool_size, 1)`, because a
+    /// thread opens descriptors before it is accounted for. A declared pool of `0` — which
+    /// is what ADR-0096 fixes — therefore still costs one descriptor, so the raw field is
+    /// not the effective count and using it claims one more descriptor for the guest than
+    /// the daemon leaves. Verified against v1.13.3 and v1.14.0, which agree.
     #[must_use]
     pub const fn effective_worker_count(self) -> u64 {
-        self.worker_pool_size
+        if self.worker_pool_size == 0 {
+            1
+        } else {
+            self.worker_pool_size
+        }
     }
 
     /// Derive the descriptors available to guest activity after daemon reserve.

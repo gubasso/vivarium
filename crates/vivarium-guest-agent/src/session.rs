@@ -11,12 +11,26 @@ use vivarium::protocol::{
 /// `spec/12` requires a successful spawn to produce its streams before the single
 /// `Exit`, but a process the session never reaps can hold the terminal open, so the
 /// drain is bounded rather than run to EOF.
+///
+/// Held at 250ms against a real vsock write path rather than the in-memory pair it was
+/// first chosen against. `tests/host/guest-agent-check` times the whole session over 20
+/// rounds of 96 KiB, which brackets the drain from above; the worst of 40 such rounds
+/// across two runs was 5.5ms, about 2% of this bound. The rule was fixed before the run:
+/// raise only if the worst case passes 40% of the limit. Figures and host in
+/// `docs/reference/microvm-verification-harness.md`.
 const EXIT_DRAIN_LIMIT: Duration = Duration::from_millis(250);
 
 /// Grace period between the disconnect `SIGTERM` and the `SIGKILL` that follows it.
 ///
 /// The sandbox is disposable (ADR-0080), so an abandoned session ends promptly rather
 /// than waiting on a process that declines to handle the first signal.
+///
+/// Held at 2s, and on narrower evidence than the drain bound above: the host lane runs
+/// this path with `trap '' TERM`, so the grace always elapses in full and the run reports
+/// the bound firing rather than a distribution of drains underneath it. What it settles is
+/// that escalation reaches a real guest process table and stays bounded — measured at
+/// 2.06s, the 2s here plus the probing session's own boot. It is not evidence about how
+/// long ordinary sessions take to go, because nothing here measures that.
 const DISCONNECT_GRACE: Duration = Duration::from_secs(2);
 
 pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(

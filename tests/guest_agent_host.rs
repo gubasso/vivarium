@@ -223,6 +223,32 @@ async fn execute(
     stdin: &[u8],
     pty: bool,
 ) -> (Vec<u8>, Vec<u8>, u8) {
+    let mut stream = begin_session(runtime, metadata, argv, stdin, pty).await;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    loop {
+        match read_agent_frame(&mut stream).await.unwrap() {
+            AgentFrame::Stdout(bytes) => stdout.extend(bytes),
+            AgentFrame::Stderr(bytes) => stderr.extend(bytes),
+            AgentFrame::Exit(exit) => return (stdout, stderr, exit.status),
+            AgentFrame::Error(error) => panic!("guest agent error: {}", error.code),
+            _ => panic!("unexpected frame"),
+        }
+    }
+}
+
+/// Open a session and send its request, returning before any reply is read.
+///
+/// Split out of `execute` for the one caller whose session is expected to die without ever
+/// replying. `execute`'s read loop unwraps, so it cannot be reused where end-of-file is the
+/// correct outcome rather than a failure.
+async fn begin_session(
+    runtime: &Path,
+    metadata: &BootMetadata,
+    argv: Vec<UnixBytes>,
+    stdin: &[u8],
+    pty: bool,
+) -> UnixStream {
     let mut stream = connect_control(runtime, metadata).await;
     if pty {
         write_client_frame(
@@ -269,17 +295,7 @@ async fn execute(
     write_client_frame(&mut stream, &ClientFrame::StdinEnd)
         .await
         .unwrap();
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    loop {
-        match read_agent_frame(&mut stream).await.unwrap() {
-            AgentFrame::Stdout(bytes) => stdout.extend(bytes),
-            AgentFrame::Stderr(bytes) => stderr.extend(bytes),
-            AgentFrame::Exit(exit) => return (stdout, stderr, exit.status),
-            AgentFrame::Error(error) => panic!("guest agent error: {}", error.code),
-            _ => panic!("unexpected frame"),
-        }
-    }
+    stream
 }
 
 /// Run one shell script in the guest and return its trimmed standard output and status.
@@ -664,13 +680,20 @@ async fn credential_relay_survives_pool_depletion(runtime: &Path, metadata: &Boo
             vec![
                 bytes(b"/bin/sh"),
                 bytes(b"-c"),
-                // `-t 30`, not the 0.5s default: end-of-input on the client's side is not
+                // `-t 5`, not the 0.5s default: end-of-input on the client's side is not
                 // end of the exchange. A client that arrives once the pool is empty holds
                 // an accepted connection the guest proxy has not yet paired with a parked
                 // one, and it is served when a relay ends and the host refills. Waiting is
                 // the designed behaviour, so a client that gives up in half a second would
                 // report the bound as a failure.
-                bytes(b"socat -t 30 - UNIX-CONNECT:$SSH_AUTH_SOCK"),
+                //
+                // It was 30s while the refill did not work at all, where the linger was
+                // the difference between a slow lane and a hung one. With the backend at
+                // v53.0 delivering the half-close, a finished relay unwinds and its slot
+                // refills promptly, so the wait now covers queueing behind five other
+                // clients rather than an unbounded stall. 5s is an order of magnitude over
+                // the observed round time and still fails in a tenth of the old budget.
+                bytes(b"socat -t 5 - UNIX-CONNECT:$SSH_AUTH_SOCK"),
             ],
             sentinel.as_bytes(),
             false,
@@ -728,7 +751,15 @@ async fn a_guest_local_peer_is_rejected_on_both_ports(runtime: &Path, metadata: 
         runtime,
         metadata,
         &format!(
-            "socat VSOCK-LISTEN:{LOOPBACK_PROBE_PORT},reuseaddr,fork - >/dev/null 2>&1 & \
+            // `PIPE`, not `-`, and that is the whole assertion rather than a detail.
+            // `socat VSOCK-LISTEN:...,fork -` joins the accepted socket to the listener's
+            // own stdio, so the probe bytes land on the listener's stdout — redirected to
+            // /dev/null to keep it off the captured output — and nothing is ever sent back.
+            // The client then reads end-of-file, prints nothing, and the comparison below
+            // fails no matter how well loopback works. `PIPE` gives socat an unnamed pipe
+            // it both reads and writes, which is the echo this control has to have to
+            // observe a round trip rather than a one-way write.
+            "socat VSOCK-LISTEN:{LOOPBACK_PROBE_PORT},reuseaddr,fork PIPE >/dev/null 2>&1 & \
             sleep 1; \
             printf loopback-works \
             | socat -T5 - VSOCK-CONNECT:{VMADDR_CID_LOCAL}:{LOOPBACK_PROBE_PORT}"
@@ -887,8 +918,11 @@ async fn the_agent_restarts_after_a_crash(runtime: &Path, metadata: &BootMetadat
     .await;
     assert_eq!(status, 0);
 
-    // The session is the agent's own descendant, so it dies with it and never reports.
-    let _ = execute(
+    // The session is the agent's own descendant, so it dies with it and never reports: the
+    // stream ends with no `Exit` frame. That end-of-file is this step working, not failing,
+    // so the frames are drained tolerantly instead of through `execute`, whose read loop
+    // unwraps and would panic on exactly the outcome being provoked here.
+    let mut killer = begin_session(
         runtime,
         metadata,
         vec![
@@ -900,6 +934,8 @@ async fn the_agent_restarts_after_a_crash(runtime: &Path, metadata: &BootMetadat
         false,
     )
     .await;
+    while read_agent_frame(&mut killer).await.is_ok() {}
+    drop(killer);
 
     let mut after = String::new();
     for _ in 0..50 {

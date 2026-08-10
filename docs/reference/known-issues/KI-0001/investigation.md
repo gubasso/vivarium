@@ -39,3 +39,11 @@ Reproduced directly on the host on 2026-08-06 against Nix 2.34.8, outside vivari
 ## Recheck condition
 
 Recheck on the next backend or Nix pin ([`../../../decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md`](../../../decisions/ADR-0078-backend-advisory-response-is-a-released-pin-move.md) owns that cadence): re-run `tests/host/store-pressure-check --arm e` and read `store-pressure-collector-per-path`. The issue is resolved when a collection attempts more than one path and the dead-path count falls.
+
+### 2026-08-10 — attempted at Nix 2.34.8, not performed
+
+The pin moved from Nix 2.34.7 to 2.34.8, so the recheck was due and was run. It did not produce a verdict either way, and the entry stays `open` on that basis rather than on a fresh negative.
+
+`tests/host/store-pressure-check --arm e` reached the guest but the guest never reported: `store-pressure-guest-completion` failed with the guest exiting `0` having never printed `COMPLETE`, and both affected checks skipped — `store-pressure-collector-freed` and `store-pressure-collector-per-path` each reporting that no collection was announced, with the dead-path and free-byte fields empty. A skip here is unproven, not passed, and the empty fields are the tell: nothing measured the quantity the resolution condition asks about.
+
+The cause is not this defect and not the pin. Every host lane that waits on a guest diagnostic marker is failing the same way on this host, including at the previous pin and at the commit before slice 003 — see the harness Findings entry for the 2026-08-10 sweep. Until that is repaired the recheck cannot run, so this entry has no current evidence at 2.34.8 in either direction.

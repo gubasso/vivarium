@@ -138,6 +138,15 @@ let
     # product: the shipped image must not gain a transport whose only purpose is to attack
     # its own agent. The agent runs unprivileged with an empty capability set and cannot
     # load a module itself, so this has to be loaded at boot rather than on demand.
+    #
+    # It is an *initrd* module, and that is the load-bearing part rather than a style
+    # choice. This guest carries no stage-2 module tree at all — `system.build.modulesTree`
+    # realises empty and the only modules that exist anywhere are the shrunk set the initrd
+    # closure pulls in. `boot.kernelModules` therefore writes `vsock_loopback` into
+    # `modules-load.d` and nothing else: the name is requested at boot and the `.ko` is not
+    # on the guest to satisfy it, so the load silently no-ops and the positive control fails
+    # with an empty echo. `boot.initrd.kernelModules` is what puts the module in the shrunk
+    # tree and loads it, which is both halves of what this check needs.
     agent =
       let
         image = product.mkImage {
@@ -145,7 +154,7 @@ let
             ({ pkgs, ... }: {
               vivarium.credentials.agents = [ "ssh" ];
               environment.systemPackages = [ pkgs.socat ];
-              boot.kernelModules = [ "vsock_loopback" ];
+              boot.initrd.kernelModules = [ "vsock_loopback" ];
             })
           ];
         };

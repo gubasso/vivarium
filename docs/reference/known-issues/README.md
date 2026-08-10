@@ -21,9 +21,10 @@ Expand the dossier while the issue is hot. When resolved, collapse it into one s
 
 | id                             | status | severity | affected tests                                                        | external system | upstream reference                                     | mask |
 | ------------------------------ | ------ | -------- | --------------------------------------------------------------------- | --------------- | ------------------------------------------------------ | ---- |
-| [KI-0001](./KI-0001/README.md) | open   | high     | `store-pressure-collector-freed`, `store-pressure-collector-per-path` | Nix 2.34.7      | [nix#16269](https://github.com/NixOS/nix/issues/16269) | none |
+| [KI-0001](./KI-0001/README.md) | open   | high     | `store-pressure-collector-freed`, `store-pressure-collector-per-path` | Nix 2.34.8      | [nix#16269](https://github.com/NixOS/nix/issues/16269) | none |
 
 ## Resolved
 
-| id | summary | external system | upstream reference |
-| -- | ------- | --------------- | ------------------ |
+| id                               | summary                                                                                                                                                | external system                                        | upstream reference                                                                      |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| [KI-0002](./resolved/KI-0002.md) | A guest `VSOCK_OP_SHUTDOWN` never reached the host peer as end of file, so a finished credential relay never unwound and its pool slot never refilled. | Cloud Hypervisor, broken through v52.0, fixed in v53.0 | [cloud-hypervisor#8372](https://github.com/cloud-hypervisor/cloud-hypervisor/pull/8372) |

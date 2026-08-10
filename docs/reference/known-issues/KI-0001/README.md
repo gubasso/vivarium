@@ -2,7 +2,7 @@
 
 - Status: `open`
 - Severity: high — space-triggered collection does not bound the guest store volume.
-- External system: Nix 2.34.7 (`nix-main`), pinned by [`nix/flake.lock`](../../../../nix/flake.lock).
+- External system: Nix 2.34.8 (`nix-main`), pinned by [`nix/flake.lock`](../../../../nix/flake.lock).
 - Affected checks: `store-pressure-collector-freed` and `store-pressure-collector-per-path` in [`../../../../tests/host/store-pressure-check`](../../../../tests/host/store-pressure-check).
 - Mask: none. Nothing in vivarium suppresses or works around this, and no check expects the failure.
 

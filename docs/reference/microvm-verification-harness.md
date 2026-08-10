@@ -80,9 +80,66 @@ Two properties are worth knowing before reading a result from it.
 
 The guest half is the `vivarium-gc-interlock` unit, which is inert in the ordinary lane: with no instruction file in the workspace it reports `no-instruction` and exits, writing nothing. A plain `first-microvm-check` run is unchanged by its presence.
 
+## The sibling script: `tests/host/guest-agent-check`
+
+The control transport and credential relay get their own script for a different reason: its host tier is not a shell probe over a console log but a Rust trial, `tests/guest_agent_host.rs`, which boots a guest and drives real `AF_VSOCK` sessions through it.
+
+```console
+$ tests/host/guest-agent-check
+```
+
+Three properties are worth knowing before reading a result from it.
+
+- It runs the trial twice, in one invocation. The assertions it most cares about — concurrent sessions, pool depletion and refill, the two time bounds — are the kind that pass once and fail on a Tuesday, so one clean run is not the unit of evidence. The trial carries its own twenty-round loops for the same reason; the two runs are the outer guard, not a substitute.
+- The trial gates itself at run time and reports why it skipped, so an incapable host does not panic on a missing variable. `VIVARIUM_TEST_REQUIRE=1` is deliberately not set by this script, which has already proved the gate before running the trial; it is the knob for CI, where a silently disabled lane is the failure mode.
+- The measured figures are `[RECORD]` lines the trial writes to stderr, and nextest replays captured output only for failures. The script therefore passes `--success-output=immediate`. Without it the figures survive exactly the runs that produce untrustworthy numbers and vanish from every green one.
+
+Retained diagnostics live under `${TMPDIR:-/tmp}/vivarium-agent-host-*` and are removed only by `--clean`, because a failure is meant to be readable afterwards.
+
 ## Findings register
 
 Verified on a real host. Each entry names the version it applies to; nothing here is inferred from an agent's execution environment.
+
+### The guest control plane and credential relay work, and the relay needed a backend version rather than vivarium code
+
+Measured 2026-08-10 on a real host with `/dev/kvm`, a systemd user manager, guest kernel 6.18.43, Nix 2.34.8, cloud-hypervisor 53.0 and virtiofsd 1.14.0, by `tests/host/guest-agent-check` — two clean runs, both tiers green.
+
+The pool depletion assertion is the one that moved. At cloud-hypervisor 52.0 the credential pool served `CREDENTIAL_POOL_SIZE` clients and then served none for the life of the VM: a guest half-close never reached the host peer as end of file, so a finished relay never unwound and its slot never refilled. At 53.0, with the product tree otherwise untouched, six concurrent clients run through four slots for twenty rounds, twice. The correct amount of vivarium code for that fix was zero; the whole case is [`./known-issues/resolved/KI-0002.md`](./known-issues/resolved/KI-0002.md).
+
+Figures across the two runs:
+
+| Measurement                       | Run 1                           | Run 2    |
+| --------------------------------- | ------------------------------- | -------- |
+| Runner start to readiness         | 6.379 s                         | 6.423 s  |
+| Control connect to first `Pong`   | 300 µs                          | 534 µs   |
+| Eight concurrent sessions         | 2.019 s                         | 2.014 s  |
+| Credential relay                  | 6 clients / 4 slots / 20 rounds | same     |
+| Exit drain, worst of 20           | 5.513 ms                        | 4.447 ms |
+| Disconnect to guest process death | 2.062 s                         | 2.061 s  |
+
+Two of those settle constants in `crates/vivarium-guest-agent/src/session.rs`, each by a rule fixed before the run. `EXIT_DRAIN_LIMIT` stays 250 ms: the worst case is about 2% of it, far under the 40% that would have forced a raise, and the measurement brackets the drain from above because it times the whole session. `DISCONNECT_GRACE` stays 2 s on narrower evidence, and the difference matters — the probe uses `trap '' TERM`, so the grace always elapses in full and the figure is the bound firing plus the probing session's own boot. It says escalation reaches a real guest process table and stays bounded; it is not a distribution of ordinary drains, because nothing here measures one.
+
+### Four assertions written for this lane had never executed, and three were wrong
+
+Slice 003's first host run stopped at the credential relay, so four later assertions had never run at all. Reaching them on 2026-08-10 found three defective. The lesson is the ordinary one about unexecuted tests, but the failure modes are worth naming because each would have read as a product defect.
+
+- The guest-local rejection check's positive control ran `socat VSOCK-LISTEN:...,fork -` with stdout on `/dev/null`. That is not an echo server: the probe bytes reached the listener's discarded stdout and nothing came back, so the control could never pass however well loopback worked. Diagnostics from inside the guest showed the connection being opened, accepted and forked before the comparison failed. Fixed by giving the listener `PIPE`.
+- The same check needed `vsock_loopback`, which the verification image declared through `boot.kernelModules`. A microvm guest carries no stage-2 module tree — it realises empty — so that wrote the name into `modules-load.d` with no `.ko` anywhere to satisfy it, and the load silently no-opped. `boot.initrd.kernelModules` is what puts the module in the shrunk initrd tree and loads it.
+- The crash-restart assertion kills the agent through a session that is the agent's own descendant, so the stream ends with no `Exit` frame. It called the shared `execute` helper, whose read loop unwraps, so the expected end of file panicked. The request-sending half is now split out as `begin_session` for that one caller.
+
+The `socat -t 30` linger in the depletion assertion also went to `-t 5`. It was 30 s while the refill did not work at all, where the linger was the difference between a slow lane and a hung one; with the half-close delivered it only inflates the run.
+
+### The 2026-08-10 sweep: the pin move was inert, and four host lanes were already failing on this host
+
+The backend pin moved, so every host runbook was re-run under `tracking.yaml`'s own cadence rather than as extra caution. `store-density-check` passed. `first-microvm-check`, `store-gc-interlock-check`, `share-benchmark-check` and `store-pressure-check` all failed, and the important result is what caused it.
+
+Not the pin. Reverting `nix/flake.lock` alone to the previous nixpkgs and re-running produced identical failures — same checks, same counts, at cloud-hypervisor 52.0 and Nix 2.34.7. Not slice 003 either: a clean worktree at `a81140d`, the commit before the guest-agent work, fails `store-pressure-check` harder still, launching not at all where the current tree at least boots. These lanes were failing on this host before either change, and the sweep is how that was discovered rather than something it caused.
+
+The failures fall in two clusters, detailed in [Q-011](../plan/open-questions.md). `store-gc-interlock-check`, `store-pressure-check` and `share-benchmark-check` boot a guest that exits `0` having never printed its diagnostic marker, with a zero-byte `console.log`. `first-microvm-check`'s guest does complete, and its three remaining failures are about posture instead: an unset `IOWeight`, two processes per virtiofsd role where one is expected, and no `--landlock` in the cloud-hypervisor argv. All four retain their runtime directory contents after shutdown. Consequences reach past the lanes themselves — [KI-0001](./known-issues/KI-0001/investigation.md)'s recheck was due at Nix 2.34.8 and could not be performed, because its two checks skip when no collection is announced.
+
+One `first-microvm-check` failure was resolved rather than filed. Its launch-spec invariance check normalises every runtime path in `vmCreate` before comparing two launches, and slice 003 added a `vsock` device carrying one without extending the list, so the check compared two different `--runtime-dir` values and reported the difference it exists to ignore. It had been failing since that device landed, unnoticed because nothing re-ran the lane. That is the failure mode to expect from a normaliser: a new device makes it fail for a reason that is not a contract violation.
+
+Nothing here is attributed to a version delta, and no figure in the entries below was refreshed from these runs; a lane that cannot report is not evidence that its earlier figures still hold. Those entries keep the versions they were measured at, which is why they still read 52.0 and 6.18.38.
 
 ### Console transport is lossless once the guest log daemon is out of the path
 
@@ -171,7 +228,7 @@ Two upstream scenarios adapt cleanly and are worth carrying: `check-post-init`, 
 
 Not measured on a host — established from the pinned closure, and recorded because the version this project would naturally quote is the wrong one.
 
-Upstream Nix stopped reproducing the stale-handle failure at Linux 6.19 and converted its test into a skip. overlayfs runs inside the guest, so the governing version is the guest kernel from the pinned closure — 6.18.38 — not the host's. vivarium therefore sits on the side of that line where the hazard is expected to reproduce, and the remount hook [`../decisions/ADR-0088-the-guest-store-is-a-local-overlay-store.md`](../decisions/ADR-0088-the-guest-store-is-a-local-overlay-store.md) requires is load-bearing rather than vestigial. Any run of this harness must record both kernel versions and say which one governs.
+Upstream Nix stopped reproducing the stale-handle failure at Linux 6.19 and converted its test into a skip. overlayfs runs inside the guest, so the governing version is the guest kernel from the pinned closure — 6.18.43 as of 2026-08-10, and 6.18.38 when the entries below were measured — not the host's. Both sit below the threshold, so the pin move did not cross it. vivarium therefore sits on the side of that line where the hazard is expected to reproduce, and the remount hook [`../decisions/ADR-0088-the-guest-store-is-a-local-overlay-store.md`](../decisions/ADR-0088-the-guest-store-is-a-local-overlay-store.md) requires is load-bearing rather than vestigial. Any run of this harness must record both kernel versions and say which one governs.
 
 The 6.19 claim itself is an observation without an explanation: the issue upstream cites reports the symptom and identifies no kernel change. It must be carried as "upstream observes non-reproduction and does not account for it", never as "fixed in 6.19".
 
@@ -222,7 +279,7 @@ Two cheap add-ons on the same boots: a process already executing from the store 
 
 Measured on the first host boot, then confirmed in Nix's own source. `LocalStore`'s optimisation directory is `realStoreDir/.links`, which for a `local-overlay` store is the merged `/nix/store` — so it resolved through the lower layer to the host's link farm. `removeUnusedLinks` `lstat`s every entry there and `unlink`s any whose link count is one, so a guest collection cost the host's link count and wrote into the guest's layer. The run exhausted the filesystem daemon's per-guest descriptor budget (0 of 523,675 remaining) before one collection finished, and every later probe on that boot failed for that reason rather than on its own merits.
 
-That budget is derivable, and this number confirms the derivation. The daemon subtracts a fixed internal reserve — 609, plus one per effective worker in the pool — from whichever descriptor limit it gets and hands the rest to the guest. ADR-0096 now fixes the pool at `0`, so slice 002 declares `524288` and derives `524288 - (609 + 0) = 523679`. The daemon argument and transient service both receive that declaration; capable-host verification of the new service profile remains unverified until this lane runs without skipping. The consequences are [`ADR-0093`](../decisions/ADR-0093-the-share-descriptor-budget-is-declared.md)'s.
+That budget is derivable, and this number confirms the derivation. The daemon subtracts a fixed internal reserve — 609, plus one per effective worker in the pool — from whichever descriptor limit it gets and hands the rest to the guest. The effective count is the daemon's `max(thread_pool_size, 1)`, so ADR-0096's pool of `0` is still charged as one: slice 002 declares `524288` and derives `524288 - (609 + 1) = 523678`. The figure read `523679` until 2026-08-10, when re-reading virtiofsd showed the declared pool being used where the effective one belonged. The daemon argument and transient service both receive that declaration; capable-host verification of the new service profile remains unverified until this lane runs without skipping. The consequences are [`ADR-0093`](../decisions/ADR-0093-the-share-descriptor-budget-is-declared.md)'s.
 
 Decided in [`../decisions/ADR-0092-the-guest-masks-the-host-link-farm.md`](../decisions/ADR-0092-the-guest-masks-the-host-link-farm.md). With the path masked, collections complete in seconds on both boots. Note this is not a `local-overlay` defect: the public prior art's lower layer is a generated store image holding store paths and nothing else, so the directory is simply not there. It appears here because [`../decisions/ADR-0038-guest-store-sharing.md`](../decisions/ADR-0038-guest-store-sharing.md) shares the host's literal store.
 

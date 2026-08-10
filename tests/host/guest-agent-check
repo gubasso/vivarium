@@ -144,10 +144,17 @@ else
     # The trial emits its own `[RECORD]` lines on stderr; they are the measured
     # figures the harness findings register carries, so the output is shown
     # whether the run passes or fails rather than only on failure.
+    #
+    # `--success-output=immediate` is what makes that true. nextest captures a
+    # trial's output and, by default, replays it only for failures, so without
+    # this the figures survive exactly the runs that produce no trustworthy
+    # numbers and vanish from every green one — the register would then be fed
+    # only by broken runs.
     lane_log=$(
       cd -- "$REPO_ROOT" \
         && nix develop "$DEV_FLAKE_REF" --command \
-          cargo nextest run --test guest_agent_host --run-ignored=all 2>&1
+          cargo nextest run --test guest_agent_host --run-ignored=all \
+          --success-output=immediate 2>&1
     )
     lane_status=$?
     if ((lane_status == 0)); then

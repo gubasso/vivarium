@@ -185,7 +185,7 @@ in
     }) shareLaunch;
   };
   credentialIds = config.vivarium.credentials.agents;
-  # Cloud Hypervisor v52.0's `VmConfig` JSON, submitted to `ch-remote create`
+  # Cloud Hypervisor v53.0's `VmConfig` JSON, submitted to `ch-remote create`
   # before the separate `boot` call. Field spellings are asserted in
   # contract.nix so a backend pin move cannot silently collapse this ordering.
   vmCreate = {

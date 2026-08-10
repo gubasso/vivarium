@@ -47,20 +47,24 @@
       microvm,
       ...
     }:
-    flake-utils.lib.eachDefaultSystem (
+    # Linux-only, as the system list rather than a filter over the outputs: every
+    # one of these outputs boots a guest kernel behind KVM (N1), and
+    # `launch-arguments.nix` resolves no other system. Asking
+    # `legacyPackages.<system>.stdenv.isLinux` would first have to evaluate a
+    # non-Linux `stdenv`, which nixpkgs 26.11 refuses for `x86_64-darwin`; naming
+    # the supported systems answers the same question without evaluating an
+    # unsupported one.
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (
       system:
-      # Linux-only: every one of these outputs boots a guest kernel behind KVM.
-      nixpkgs.lib.optionalAttrs nixpkgs.legacyPackages.${system}.stdenv.isLinux (
-        let
-          product = import ./. { inherit nixpkgs microvm system; };
-          # `?dir=nix` keeps the repository root as the source tree. This flake
-          # is the publication surface for checks, so this is the sole permitted
-          # product-to-verification edge; `check-verification-boundary` guards it.
-          verification = import ../tests/nix { inherit product; };
-        in
-        {
-          inherit (verification) packages checks;
-        }
-      )
+      let
+        product = import ./. { inherit nixpkgs microvm system; };
+        # `?dir=nix` keeps the repository root as the source tree. This flake
+        # is the publication surface for checks, so this is the sole permitted
+        # product-to-verification edge; `check-verification-boundary` guards it.
+        verification = import ../tests/nix { inherit product; };
+      in
+      {
+        inherit (verification) packages checks;
+      }
     );
 }

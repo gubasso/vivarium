@@ -4,7 +4,10 @@
 #
 # **Metric names are vivarium's own, deliberately.** The backlog asked for
 # upstream Cloud Hypervisor's names so the figures would be comparable; reading
-# upstream's harness at the pinned v52.0 settled that they are not. Its
+# upstream's harness, read at v52.0, settled that they are not. The version is
+# named because that is where the reading was done, not as a current pin; the
+# conclusion is about what the metrics measure, which no release since has
+# changed. Its
 # `boot_time_ms` is the interval between guest debug-I/O-port codes 0x40 and
 # 0x41 — a kernel-internal window that excludes everything before kernel entry —
 # and its `block_*_MiBps` is `fio --direct=1 --bs=4k --ioengine=io_uring` against

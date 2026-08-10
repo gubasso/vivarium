@@ -6,7 +6,7 @@ status: open
 severity: high
 external_system:
   name: Nix
-  pinned_version: 2.34.7
+  pinned_version: 2.34.8
 affected_checks:
   - store-pressure-collector-freed
   - store-pressure-collector-per-path

@@ -36,7 +36,10 @@ mod tests {
     #[test]
     fn current_allowance_and_boundaries_are_derived() {
         let current = host_fd_limit_sufficient(DescriptorBudget::default()).unwrap();
-        assert_eq!(current.guest_allowance, VIRTIOFSD_RLIMIT_NOFILE - 609);
+        // 610, not 609: the default pool is `0` and the daemon floors the per-worker term
+        // at one. See `DescriptorBudget::effective_worker_count`.
+        assert_eq!(current.guest_allowance, VIRTIOFSD_RLIMIT_NOFILE - 610);
+        assert_eq!(current.effective_worker_count, 1);
         assert!(
             host_fd_limit_sufficient(DescriptorBudget {
                 limit: 610,

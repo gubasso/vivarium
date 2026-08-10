@@ -1,7 +1,7 @@
 schema: vivarium-tracking-v1
 tracked:
   - path: docs/reference/backend-capabilities.md
-    last_checked: 2026-08-06
+    last_checked: 2026-08-10
     cadence: 30d and on nix/flake.lock changes
     why: Backend revisions and their accepted interfaces change independently of this repository's prose.
     revalidate: Re-read the exact locked revisions in nix/flake.lock and the linked official upstream sources.
@@ -12,7 +12,7 @@ tracked:
       - docs/plan/slices/007-build-test-lanes/README.md
       - docs/plan/slices/009-automate-backend-advisories/README.md
   - path: docs/reference/microvm-verification-harness.md
-    last_checked: 2026-08-05
+    last_checked: 2026-08-10
     cadence: 90d and on harness or backend-pin changes
     why: Measurements depend on the harness, backend closure, guest closure, and target host.
     revalidate: Rerun the appropriate evaluation and real-host lanes; never infer a target-host fact from an agent environment.
@@ -21,6 +21,7 @@ tracked:
       - docs/explanation/guest-store-and-volumes.md
       - docs/explanation/shared-filesystems.md
       - docs/explanation/resources-and-capacity.md
+      - docs/plan/slices/003-guest-agent-and-credential-relay/README.md
   - path: docs/reference/testing-lanes.md
     last_checked: 2026-07-31
     cadence: 90d
