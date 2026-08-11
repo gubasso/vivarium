@@ -1,13 +1,13 @@
 //! Atomic filesystem publication for generated flakes and first pins.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Write as _};
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use rustix::fs::{CWD, RenameFlags, renameat_with};
+use rustix::fs::RenameFlags;
 
+use super::atomic::{self, Fault, StageFault};
 use super::error::GeneratedFlakeErrorKind;
 use super::flake::GeneratedEntry;
 use super::{
@@ -16,8 +16,9 @@ use super::{
 };
 use crate::diagnostic::{Locus, Namespace};
 
-static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
-const MAX_TEMP_ATTEMPTS: u64 = 64;
+/// The mode a staged generated file takes. Unlike the state root's `0600`, a generated tree is
+/// ordinary cache a build reads, so it keeps the umask's default rather than being made private.
+const STAGED_FILE_MODE: u32 = 0o666;
 
 /// Resolves, plans, and atomically publishes one generated flake.
 ///
@@ -476,67 +477,64 @@ fn exchange_and_cleanup(temporary: &Path, destination: &Path) -> Result<(), Gene
 }
 
 fn rename_with(source: &Path, destination: &Path, flags: RenameFlags) -> io::Result<()> {
-    renameat_with(CWD, source, CWD, destination, flags).map_err(io::Error::from)
+    atomic::rename_with(source, destination, flags)
 }
 
 fn create_temp_directory(parent: &Path) -> Result<PathBuf, GeneratedFlakeError> {
-    for _ in 0..MAX_TEMP_ATTEMPTS {
-        let path = unique_path(parent, "flake", "tmp");
-        match fs::create_dir(&path) {
-            Ok(()) => return Ok(path),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                return Err(store_io(
-                    "create-temporary",
-                    &path,
-                    "could not create temporary generated-flake sibling",
-                    error,
-                ));
-            }
-        }
-    }
-    Err(GeneratedFlakeError::plain(
-        GeneratedFlakeErrorKind::Io,
-        Namespace::Store,
-        "temporary-collision",
-        Locus::File(parent.to_path_buf()),
-        "could not allocate a unique generated-flake sibling",
-        "the bounded temporary-name retry set was exhausted",
-    ))
+    atomic::create_temp_directory(parent).map_err(|fault| {
+        staged(
+            fault,
+            Namespace::Store,
+            "create-temporary",
+            "temporary-collision",
+            "could not create temporary generated-flake sibling",
+            "could not allocate a unique generated-flake sibling",
+        )
+    })
 }
 
 fn create_temp_file(parent: &Path, stem: &str) -> Result<(PathBuf, File), GeneratedFlakeError> {
-    for _ in 0..MAX_TEMP_ATTEMPTS {
-        let path = unique_path(parent, stem, "new");
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => return Ok((path, file)),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                return Err(lock_io(
-                    "persist-temporary",
-                    &path,
-                    "could not create staged lock",
-                    error,
-                ));
-            }
-        }
-    }
-    Err(GeneratedFlakeError::plain(
-        GeneratedFlakeErrorKind::Io,
-        Namespace::Lock,
-        "temporary-collision",
-        Locus::File(parent.to_path_buf()),
-        "could not allocate a unique staged-lock sibling",
-        "the bounded temporary-name retry set was exhausted",
-    ))
+    atomic::create_temp_file(parent, stem, STAGED_FILE_MODE).map_err(|fault| {
+        staged(
+            fault,
+            Namespace::Lock,
+            "persist-temporary",
+            "temporary-collision",
+            "could not create staged lock",
+            "could not allocate a unique staged-lock sibling",
+        )
+    })
 }
 
-fn unique_path(parent: &Path, stem: &str, suffix: &str) -> PathBuf {
-    let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-    parent.join(format!(
-        ".{stem}.vivarium-{}-{id}.{suffix}",
-        std::process::id()
-    ))
+/// Names a shared staging failure in this module's own vocabulary.
+///
+/// The mechanics live in `atomic` and the two frozen id strings live here, which is the split that
+/// lets the registry reuse the same steps without inheriting `store.` and `lock.` ids.
+fn staged(
+    fault: StageFault,
+    namespace: Namespace,
+    io_condition: &'static str,
+    exhausted_condition: &'static str,
+    io_message: &'static str,
+    exhausted_message: &'static str,
+) -> GeneratedFlakeError {
+    match fault {
+        StageFault::Io(Fault { path, source }) => GeneratedFlakeError::io(
+            namespace,
+            io_condition,
+            path.clone(),
+            format!("{io_message}: `{}`", path.display()),
+            source,
+        ),
+        StageFault::Exhausted(parent) => GeneratedFlakeError::plain(
+            GeneratedFlakeErrorKind::Io,
+            namespace,
+            exhausted_condition,
+            Locus::File(parent),
+            exhausted_message,
+            "the bounded temporary-name retry set was exhausted",
+        ),
+    }
 }
 
 fn sync_directory(
@@ -544,17 +542,15 @@ fn sync_directory(
     namespace: Namespace,
     condition: &'static str,
 ) -> Result<(), GeneratedFlakeError> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|source| {
-            GeneratedFlakeError::io(
-                namespace,
-                condition,
-                path.to_path_buf(),
-                format!("could not flush directory `{}`", path.display()),
-                source,
-            )
-        })
+    atomic::sync_directory(path).map_err(|Fault { path, source }| {
+        GeneratedFlakeError::io(
+            namespace,
+            condition,
+            path.clone(),
+            format!("could not flush directory `{}`", path.display()),
+            source,
+        )
+    })
 }
 
 fn unsupported_type(path: &Path) -> GeneratedFlakeError {
@@ -599,7 +595,7 @@ fn lock_io(
 }
 
 fn remove_file_if_exists(path: &Path) {
-    let _ = fs::remove_file(path);
+    atomic::remove_file_if_exists(path);
 }
 
 #[cfg(test)]

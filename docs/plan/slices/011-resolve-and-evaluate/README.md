@@ -29,7 +29,7 @@ Ordered, because each item is the input to the next and a later item cannot be j
 - The JSON Schema contract, which is [slice 006](../006-generate-config-contract/README.md)'s.
 - Generations, `viv update`, and store reclamation.
 - Composition extensions beyond what one example manifest exercises.
-- Ordered remainder, cut first when the appetite binds: `viv manifest list`, the `viv config sources` provenance rendering, and `--json` on every verb except the ones the trials read.
+- Ordered remainder, cut first when the appetite binds: the `viv config sources` provenance rendering, and `--json` on every verb except the ones the trials read.
 
 ## Governed by
 
@@ -85,4 +85,4 @@ Every acceptance assertion above holds and is demonstrated by the trial it names
 
 ## Revisions
 
-None.
+`viv manifest list` was removed from the ordered remainder while item 4 was in flight. It cannot be cut: the `Cli` gate in [`../../../../tests/support/mod.rs`](../../../../tests/support/mod.rs) probes by running `viv manifest list --json`, so the whole level — including the four usage trials this slice's `Acceptance` names — stays skipped until that verb works. Goal, Core, Appetite, and Acceptance are unchanged.

@@ -87,6 +87,31 @@ A malformed registry is a configuration defect rather than an I/O failure, becau
 
 A registry entry whose project directory has vanished is warned about, never removed automatically; see `viv status -g` and `viv unbind` in [`01-command-surface.md`](./01-command-surface.md) and [`../../decisions/ADR-0054-stale-bindings-surfaced-not-reaped.md`](../../decisions/ADR-0054-stale-bindings-surfaced-not-reaped.md).
 
+### State diagnostic ids
+
+The `state.` namespace is documented here, which is where [`14-exit-codes.md`](./14-exit-codes.md) places it. Read failures follow the table above; write failures return `77` when a permission denies them and `74` otherwise, and a lock that cannot be taken promptly returns `75`.
+
+| Id                          | Condition                                                           |
+| --------------------------- | ------------------------------------------------------------------- |
+| `state.unreadable`          | a state file exists but its contents cannot be read                 |
+| `state.syntax`              | a state file is not valid TOML                                      |
+| `state.unknown-key`         | a state file carries a key outside the grammar                      |
+| `state.missing-key`         | a record omits a key the grammar requires                           |
+| `state.wrong-type`          | a known key holds the wrong TOML type                               |
+| `state.invalid-value`       | a known key holds a value outside its domain                        |
+| `state.lock-open`           | the sidecar lock file cannot be opened or locked                    |
+| `state.lock-unavailable`    | another process holds the lock and it cannot be taken promptly      |
+| `state.unconfirmed-write`   | a `--write` was requested without the confirmation spec/01 requires |
+| `state.no-manifest`         | no manifest resolves for a command that requires one                |
+| `state.write-parent`        | the state root cannot be created or inspected                       |
+| `state.write-permissions`   | the state root cannot be made private                               |
+| `state.write-temporary`     | a same-directory staged replacement cannot be created               |
+| `state.temporary-collision` | bounded unique-file allocation is exhausted                         |
+| `state.write`               | staged bytes cannot be written                                      |
+| `state.write-sync`          | staged bytes cannot be flushed                                      |
+| `state.publish`             | the staged replacement cannot be renamed over the target            |
+| `state.directory-sync`      | the state root cannot be flushed after publication                  |
+
 ## Per-project VM state
 
 Each project's runtime VM state lives under the state root at `projects/<project-id>/<target>/`, where `<project-id>` is the project-identity key that scopes all of a project's state and `<target>` names the VM instance within that project — both defined in [`15-project-identity.md`](./15-project-identity.md), which also explains why `<target>` is always `default` today. This holds the project's build generations — a per-project Nix profile whose numbered symlinks pin retained build outputs as garbage-collector roots — and its persistent volumes (`volumes/<name>.img`, always including `default`). Volumes live under state, not cache, because their contents are user data and not regenerable. Generation layout and lifecycle are specified in [`11-generations-and-build-history.md`](./11-generations-and-build-history.md); the volume model in [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md) and [`../../decisions/ADR-0019-volume-model.md`](../../decisions/ADR-0019-volume-model.md).

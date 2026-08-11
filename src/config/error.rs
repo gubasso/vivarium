@@ -242,6 +242,126 @@ impl GeneratedFlakeError {
     }
 }
 
+/// A failure while reading, locking, or writing the state registry.
+///
+/// Separate from [`ManifestError`] despite the near-identical shape, because the two files have
+/// different accepted key sets, different loci, and different I/O classifications: spec/02 makes a
+/// registry a user's own defect at `78` when it parses wrong but the channel's failure at `74` when
+/// it cannot be read at all, and spec/14's command matrix adds `77` for a write a permission
+/// denies.
+/// One type spanning both would have to carry the distinction anyway, in a field.
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct RegistryError(Box<RegistryFault>);
+
+#[derive(Debug, Error)]
+#[error("{message}")]
+struct RegistryFault {
+    message: String,
+    condition: &'static str,
+    locus: Locus,
+    why: String,
+    kind: RegistryErrorKind,
+    accepted: Vec<String>,
+    #[source]
+    source: Option<std::io::Error>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum RegistryErrorKind {
+    /// The file parsed but says something outside the grammar — a user's own defect.
+    Config,
+    /// The channel itself failed.
+    Io,
+    /// A host permission denied a write.
+    Permission,
+    /// The exclusive lock could not be taken promptly.
+    Contended,
+}
+
+impl RegistryError {
+    pub(super) fn plain(
+        kind: RegistryErrorKind,
+        condition: &'static str,
+        locus: Locus,
+        message: impl Into<String>,
+        why: impl Into<String>,
+    ) -> Self {
+        Self(Box::new(RegistryFault {
+            message: message.into(),
+            condition,
+            locus,
+            why: why.into(),
+            kind,
+            accepted: Vec::new(),
+            source: None,
+        }))
+    }
+
+    /// Fills the conditional `accepted here:` slot, which an unknown key must carry.
+    pub(super) fn with_accepted(
+        mut self,
+        accepted: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.0.accepted = accepted.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Records an I/O failure, classifying a denied permission apart from a failing channel.
+    ///
+    /// `deny_is_permission` is the caller's, because the two directions differ: spec/02's read
+    /// table
+    /// answers `74` for an unreadable file however it became unreadable, while spec/14's command
+    /// matrix gives `viv init --write` a separate `77`. Deciding it here would need this
+    /// function to
+    /// know which it was serving.
+    pub(super) fn io(
+        condition: &'static str,
+        path: PathBuf,
+        message: impl Into<String>,
+        source: std::io::Error,
+        deny_is_permission: bool,
+    ) -> Self {
+        let kind = if deny_is_permission && source.kind() == std::io::ErrorKind::PermissionDenied {
+            RegistryErrorKind::Permission
+        } else {
+            RegistryErrorKind::Io
+        };
+        Self(Box::new(RegistryFault {
+            message: message.into(),
+            condition,
+            locus: Locus::File(path),
+            why: source.to_string(),
+            kind,
+            accepted: Vec::new(),
+            source: Some(source),
+        }))
+    }
+
+    /// Classifies authored defects, owned I/O, denied writes, and lock contention.
+    #[must_use]
+    pub const fn exit_code(&self) -> ExitKind {
+        match self.0.kind {
+            RegistryErrorKind::Config => ExitKind::Config,
+            RegistryErrorKind::Io => ExitKind::IoErr,
+            RegistryErrorKind::Permission => ExitKind::NoPerm,
+            RegistryErrorKind::Contended => ExitKind::TempFail,
+        }
+    }
+
+    /// Renders the failure through the shared diagnostic skeleton.
+    #[must_use]
+    pub fn diagnostic(&self) -> Diagnostic {
+        Diagnostic::new(
+            DiagnosticId::new(Namespace::State, self.0.condition),
+            self.0.message.clone(),
+            self.0.locus.clone(),
+            self.0.why.clone(),
+        )
+        .with_accepted(self.0.accepted.iter().cloned())
+    }
+}
+
 impl ResolutionError {
     /// Classifies this failure at the one boundary fixed by ADR-0033 and spec/14.
     #[must_use]

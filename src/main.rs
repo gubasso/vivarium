@@ -1,12 +1,23 @@
-//! Minimal slice-002 handoff. Public manifest orchestration remains unimplemented.
+//! The process boundary: `argv` in, bytes on a stream and a number out.
+//!
+//! Everything below this file is a function of its inputs. This is where the three things only a
+//! process can supply arrive — the arguments, the environment, and whether stdin is a terminal —
+//! and where a typed failure becomes an exit status. Keeping it that thin is what lets the whole
+//! command surface be asserted without spawning anything.
 
+use std::ffi::OsString;
+use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
+
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
 use tokio::process::Command;
+use vivarium::cli::grammar::{self, Invocation, Output, Streams, UsageError};
+use vivarium::cli::{Context, Failure};
+use vivarium::config::{self, Environment};
 use vivarium::exit::ExitKind;
 use vivarium::launch::secure_fs::{self, SocketState};
 use vivarium::launch::{
@@ -16,7 +27,103 @@ use vivarium::launch::{
 /// How long the launcher waits for the supervisor to report on the handoff socket.
 const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Everything this process can fail at, named once.
+/// The process's own environment, as the resolver's injected source.
+struct ProcessEnvironment;
+
+impl Environment for ProcessEnvironment {
+    fn variable(&self, name: &'static str) -> Option<OsString> {
+        std::env::var_os(name)
+    }
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    let streams = Streams {
+        stdin_is_tty: std::io::stdin().is_terminal(),
+    };
+    let invocation = match grammar::parse(std::env::args_os(), streams) {
+        Ok(invocation) => invocation,
+        Err(error) => return fail(&Failure::Usage(error), Output::Human),
+    };
+
+    // The handoff is the one invocation that needs the async runtime, and it predates the published
+    // surface: `nix/runner.sh` executes it to hand a resolved specification back to vivarium. It is
+    // dispatched here rather than through `cli::run` because nothing else in that module is async,
+    // and threading a runtime through the synchronous surface to serve one private form would make
+    // every other verb pay for it.
+    if let Invocation::StartSpec { spec } = &invocation {
+        return match handoff(spec).await {
+            Ok(()) => ExitCode::from(ExitKind::Success),
+            Err(error) => {
+                report_handoff(&error);
+                ExitCode::from(error.exit_code())
+            }
+        };
+    }
+
+    let output = requested_output(&invocation);
+    match context() {
+        Ok(context) => match vivarium::cli::run(&invocation, &context) {
+            Ok(success) => {
+                print!("{}", success.stdout);
+                let _ = std::io::stdout().flush();
+                ExitCode::from(ExitKind::Success)
+            }
+            Err(failure) => fail(&failure, output),
+        },
+        Err(failure) => fail(&failure, output),
+    }
+}
+
+/// Writes a failure to stderr and converts it into a status.
+///
+/// stderr rather than stdout because stdout carries the result and a failure has none — the rule
+/// that keeps `… --json 2>/dev/null | jq` clean on success and empty on failure.
+fn fail(failure: &Failure, output: Output) -> ExitCode {
+    eprint!("{}", failure.render(output));
+    let _ = std::io::stderr().flush();
+    ExitCode::from(failure.code())
+}
+
+/// Which output shape a failure should be rendered in.
+///
+/// Read from the invocation rather than from a global, because `--json` is per-command: a consumer
+/// that asked one verb for JSON has not asked the next one.
+const fn requested_output(invocation: &Invocation) -> Output {
+    match invocation {
+        Invocation::Init { output, .. }
+        | Invocation::Config { output, .. }
+        | Invocation::ManifestList { output }
+        | Invocation::ManifestShow { output, .. }
+        | Invocation::Deferred { output, .. } => *output,
+        Invocation::StartSpec { .. } => Output::Human,
+    }
+}
+
+/// Gathers what the host can say about itself, before any command runs.
+fn context() -> Result<Context<'static, ProcessEnvironment>, Failure> {
+    let roots = config::resolve_xdg_roots(&ProcessEnvironment).map_err(|error| {
+        Failure::Usage(UsageError {
+            message: error.to_string(),
+            usage: None,
+        })
+    })?;
+    // A working directory that cannot be read is not a project, so there is nothing to resolve
+    // against; falling back to `.` would silently bind whatever the parent happened to be.
+    let project = std::env::current_dir().map_err(|error| {
+        Failure::Usage(UsageError {
+            message: format!("cannot read the current directory: {error}"),
+            usage: None,
+        })
+    })?;
+    Ok(Context {
+        roots,
+        project: config::canonical_project(&project),
+        environment: &ProcessEnvironment,
+    })
+}
+
+/// Everything the supervisor handoff can fail at, named once.
 ///
 /// The alternative this replaced — threading a `(u8, &'static str)` pair out of every fallible
 /// call — forced a category to be chosen at each of nineteen call sites and had nowhere to keep
@@ -25,11 +132,6 @@ const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 /// category. Per [`LaunchError`]'s own rule, every variant stays classified and non-secret.
 #[derive(Debug, thiserror::Error)]
 enum StartError {
-    #[error(
-        "slice 002 accepts only `start --spec <resolved-launch.json>`, one absolute path; \
-        manifest orchestration is not implemented"
-    )]
-    Usage,
     #[error("cannot read the launch specification")]
     ReadInputSpec(#[source] std::io::Error),
     #[error("the launch specification is not valid")]
@@ -67,7 +169,7 @@ impl StartError {
     /// makes them visible in one place so the question can be settled from evidence.
     const fn exit_code(&self) -> ExitKind {
         match self {
-            Self::Usage | Self::InvalidSpec(_) | Self::ReadinessPathOccupied => ExitKind::Usage,
+            Self::InvalidSpec(_) | Self::ReadinessPathOccupied => ExitKind::Usage,
             Self::ReadInputSpec(_)
             | Self::PrepareRuntime(_)
             | Self::ReplaceReadinessSocket(_)
@@ -85,34 +187,12 @@ impl StartError {
     }
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    // The process boundary owns the two things only it can: the connection to `argv`, and the
-    // conversion of a failure into a rendered message plus an exit status. Everything between them
-    // receives its inputs as parameters and reads no process global.
-    //
-    // `?` cannot appear in a function returning `ExitCode`, and `-> Result<_, _>` would collapse
-    // every failure to exit 1 with a `Debug` dump, so the fallible program is `run` and this is
-    // its adapter.
-    let outcome = match arguments(std::env::args_os()) {
-        Ok(spec_path) => run(&spec_path).await,
-        Err(error) => Err(error),
-    };
-    match outcome {
-        Ok(()) => ExitCode::from(ExitKind::Success),
-        Err(error) => {
-            report(&error);
-            ExitCode::from(error.exit_code())
-        }
-    }
-}
-
-/// Writes the failure and its causes to stderr.
+/// Writes the handoff failure and its causes to stderr.
 ///
 /// The chain walk is what makes the report usable: `LaunchError::Io { operation, source }` keeps
 /// both which step failed and the underlying `io::Error`, and without this the operator sees a
 /// single sentence and a number.
-fn report(error: &StartError) {
+fn report_handoff(error: &StartError) {
     eprintln!("viv: {error}");
     let mut source = std::error::Error::source(error);
     while let Some(cause) = source {
@@ -121,12 +201,8 @@ fn report(error: &StartError) {
     }
 }
 
-/// Launches one guest, given a path that has already been parsed and shown to be absolute.
-///
-/// Taking it as a parameter rather than reading `argv` is what makes that precondition a fact of
-/// the signature instead of a convention: this function is not callable until `arguments` has
-/// succeeded.
-async fn run(spec_path: &Path) -> Result<(), StartError> {
+/// Launches one guest, given a path the grammar has already shown to be absolute.
+async fn handoff(spec_path: &Path) -> Result<(), StartError> {
     let bytes = fs::read(spec_path)
         .await
         .map_err(StartError::ReadInputSpec)?;
@@ -176,7 +252,7 @@ async fn await_readiness(listener: &UnixListener) -> Result<ReadinessReport, Sta
 }
 
 /// Clears a socket left by an earlier run, refusing to unlink anything that is not one.
-async fn clear_readiness_path(path: &Path) -> Result<(), StartError> {
+async fn clear_readiness_path(path: &PathBuf) -> Result<(), StartError> {
     match secure_fs::socket_state(path)
         .await
         .map_err(StartError::PrepareRuntime)?
@@ -189,68 +265,12 @@ async fn clear_readiness_path(path: &Path) -> Result<(), StartError> {
     }
 }
 
-/// Parses the only invocation this handoff accepts, and nothing looser.
-///
-/// `argv` includes the program name, as `std::env::args_os` yields it. Passing it in rather than
-/// reading it keeps this a pure function of its input, so the whole grammar can be asserted
-/// without a process.
-fn arguments<I>(argv: I) -> Result<PathBuf, StartError>
-where
-    I: IntoIterator<Item = std::ffi::OsString>,
-{
-    let mut tokens = argv.into_iter().skip(1);
-    if tokens.next().as_deref() != Some(std::ffi::OsStr::new("start"))
-        || tokens.next().as_deref() != Some(std::ffi::OsStr::new("--spec"))
-    {
-        return Err(StartError::Usage);
-    }
-    let input = PathBuf::from(tokens.next().ok_or(StartError::Usage)?);
-    if tokens.next().is_some() || !input.is_absolute() {
-        return Err(StartError::Usage);
-    }
-    Ok(input)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{ExitKind, LaunchError, ReadinessError, StartError, arguments};
-    use std::ffi::OsString;
-    use std::path::PathBuf;
+    use super::{ExitKind, LaunchError, ReadinessError, StartError};
 
     fn io() -> std::io::Error {
         std::io::Error::from(std::io::ErrorKind::PermissionDenied)
-    }
-
-    fn argv(rest: &[&str]) -> Vec<OsString> {
-        std::iter::once("viv")
-            .chain(rest.iter().copied())
-            .map(OsString::from)
-            .collect()
-    }
-
-    /// Slice 002 constructs exactly one invocation, so anything else is a usage error rather than
-    /// something to interpret. Testable at all only because `arguments` takes its input.
-    #[test]
-    fn only_the_exact_invocation_parses() {
-        assert_eq!(
-            arguments(argv(&["start", "--spec", "/run/a/launch.json"])).ok(),
-            Some(PathBuf::from("/run/a/launch.json"))
-        );
-
-        for rejected in [
-            vec![],                                             // no arguments
-            vec!["start"],                                      // no flag
-            vec!["start", "--spec"],                            // no path
-            vec!["--spec", "/run/a/launch.json"],               // no verb
-            vec!["stop", "--spec", "/run/a/launch.json"],       // another verb
-            vec!["start", "--spec", "launch.json"],             // relative path
-            vec!["start", "--spec", "/run/a/launch.json", "x"], // trailing argument
-        ] {
-            assert!(
-                arguments(argv(&rejected)).is_err(),
-                "accepted a malformed invocation: {rejected:?}"
-            );
-        }
     }
 
     /// One row per variant. The classification is a contract with whoever reads `$?`, so it is
@@ -258,7 +278,6 @@ mod tests {
     #[test]
     fn every_variant_is_classified() {
         let rows: Vec<(StartError, ExitKind)> = vec![
-            (StartError::Usage, ExitKind::Usage),
             (
                 StartError::InvalidSpec(LaunchError::InvalidSpec("schema")),
                 ExitKind::Usage,

@@ -216,66 +216,89 @@ impl ResolvedComposition {
             .as_deref()
             .map(|value| resolve_extends(selected_manifest, value, manifest_source))
             .transpose()?;
-        let directory = roots.cache.join("flakes").join(project_id).join(target);
-        let owned_lock = roots
-            .data
-            .join("projects")
-            .join(project_id)
-            .join(target)
-            .join(LOCK_FILE);
-        let override_lock = if selected_manifest.form == ArtifactForm::Directory {
-            Some(
-                selected_manifest
-                    .path
-                    .parent()
-                    .ok_or_else(|| {
-                        GeneratedFlakeError::plain(
-                            GeneratedFlakeErrorKind::Internal,
-                            Namespace::Internal,
-                            "manifest-parent",
-                            Locus::File(selected_manifest.path.clone()),
-                            "resolved directory manifest has no parent",
-                            "the resolver returned an impossible directory form",
-                        )
-                    })?
-                    .join(LOCK_FILE),
-            )
-        } else {
-            None
-        };
-        let effective_lock = if let Some(path) = &override_lock {
-            if probe_lock(path)? {
-                EffectiveLock::Override { path: path.clone() }
-            } else if probe_lock(&owned_lock)? {
-                EffectiveLock::OwnedExisting {
-                    path: owned_lock.clone(),
-                }
-            } else {
-                EffectiveLock::OwnedMissing {
-                    path: owned_lock.clone(),
-                }
-            }
-        } else if probe_lock(&owned_lock)? {
-            EffectiveLock::OwnedExisting {
-                path: owned_lock.clone(),
-            }
-        } else {
-            EffectiveLock::OwnedMissing {
-                path: owned_lock.clone(),
-            }
-        };
+        let paths = target_paths(roots, project_id, target, selected_manifest)?;
+        let effective_lock = paths.select_lock()?;
 
         Ok(Self {
             image,
             pieces,
             extends,
             inputs,
-            paths: GeneratedFlakePaths {
-                directory,
-                owned_lock,
-                override_lock,
-            },
+            paths,
             effective_lock,
+        })
+    }
+}
+
+/// The three durable paths one target owns, computed without touching the filesystem.
+///
+/// Separate from [`ResolvedComposition::resolve`] because `viv config` needs exactly these and
+/// nothing else: it reports where the generated flake and the lock in force live whether or not
+/// they exist, and it must answer that for a manifest whose image is not installed. Folding the
+/// path arithmetic into composition resolution would make "where would this be written" depend on
+/// every artifact the manifest names resolving first.
+///
+/// # Errors
+///
+/// Returns [`GeneratedFlakeError`] only for the impossible tree shape of a directory-form manifest
+/// with no parent directory.
+pub fn target_paths(
+    roots: &XdgRoots,
+    project_id: &str,
+    target: &str,
+    selected_manifest: &ResolvedArtifact,
+) -> Result<GeneratedFlakePaths, GeneratedFlakeError> {
+    let override_lock = if selected_manifest.form == ArtifactForm::Directory {
+        Some(
+            selected_manifest
+                .path
+                .parent()
+                .ok_or_else(|| {
+                    GeneratedFlakeError::plain(
+                        GeneratedFlakeErrorKind::Internal,
+                        Namespace::Internal,
+                        "manifest-parent",
+                        Locus::File(selected_manifest.path.clone()),
+                        "resolved directory manifest has no parent",
+                        "the resolver returned an impossible directory form",
+                    )
+                })?
+                .join(LOCK_FILE),
+        )
+    } else {
+        None
+    };
+    Ok(GeneratedFlakePaths {
+        directory: roots.cache.join("flakes").join(project_id).join(target),
+        owned_lock: roots
+            .data
+            .join("projects")
+            .join(project_id)
+            .join(target)
+            .join(LOCK_FILE),
+        override_lock,
+    })
+}
+
+impl GeneratedFlakePaths {
+    /// Chooses the lock in force: a present team override, else the tool-owned pin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GeneratedFlakeError`] when a candidate cannot be inspected.
+    pub fn select_lock(&self) -> Result<EffectiveLock, GeneratedFlakeError> {
+        if let Some(path) = &self.override_lock
+            && probe_lock(path)?
+        {
+            return Ok(EffectiveLock::Override { path: path.clone() });
+        }
+        if probe_lock(&self.owned_lock)? {
+            return Ok(EffectiveLock::OwnedExisting {
+                path: self.owned_lock.clone(),
+            });
+        }
+        Ok(EffectiveLock::OwnedMissing {
+            path: self.owned_lock.clone(),
         })
     }
 }

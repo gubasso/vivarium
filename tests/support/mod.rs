@@ -79,7 +79,8 @@ fn probe_gate() -> GateDecision {
     let config_eval = cli
         .as_ref()
         .map_err(Clone::clone)
-        .and_then(|()| probe_nix());
+        .and_then(|()| probe_nix())
+        .and_then(|()| probe_config_eval(&viv));
     let virtualization = config_eval
         .as_ref()
         .map_err(Clone::clone)
@@ -139,6 +140,31 @@ fn probe_nix() -> Result<(), String> {
         Ok(output) => Err(format!("nix --version exited {:?}", output.status.code())),
         Err(error) => Err(format!("nix --version is unavailable: {error}")),
     }
+}
+
+/// Whether this binary can evaluate configuration at all, separately from whether nix is installed.
+///
+/// `probe_nix` answers a question about the host. This answers the matching one about the product,
+/// and the level needs both: a host with nix and a `viv` whose `config eval` does not exist yet
+/// would otherwise open a gate named for an ability nothing has. That is the vacuous-check failure
+/// the harness method note warns about — the probe passed, and every trial behind it failed for a
+/// reason the gate was supposed to describe.
+///
+/// Probed from an unbound project, so the two answers separate cleanly: `78` is the fail-closed
+/// path of an implemented verb, and anything else means the verb is not there to fail closed.
+fn probe_config_eval(viv: &Path) -> Result<(), String> {
+    let tp =
+        TempProject::new().map_err(|error| format!("cannot isolate config-eval probe: {error}"))?;
+    let out = run_viv(viv, &tp, tp.project(), &["config", "eval", "--json"])
+        .map_err(|error| format!("cannot execute {}: {error}", viv.display()))?;
+    if out.status.code() == Some(EX_CONFIG) {
+        return Ok(());
+    }
+    Err(format!(
+        "{} config eval is not implemented (unbound probe exited {:?}, expected {EX_CONFIG})",
+        viv.display(),
+        out.status.code()
+    ))
 }
 
 fn probe_kvm() -> Result<(), String> {

@@ -2,6 +2,8 @@
 //! Nix-built VM.
 
 #[cfg(feature = "host")]
+pub mod cli;
+#[cfg(feature = "host")]
 pub mod config;
 
 #[cfg(feature = "host")]

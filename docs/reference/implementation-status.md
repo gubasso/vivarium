@@ -2,11 +2,13 @@
 
 The single source of truth for what vivarium does today versus what is designed only. The specification under [`spec/`](spec/README.md) describes the intended design; this page records how much of it exists in code.
 
-## Current state: guest control proved on a real host, public commands still gated
+## Current state: a project can be bound and inspected; nothing boots from a manifest yet
 
 The Nix-built diagnostic runner now hands a strict launch contract to the Rust [policy constructor](../../src/launch/policy.rs), [transient-service renderer](../../src/launch/systemd.rs), and [supervisor](../../src/launch/supervisor.rs). The supervisor implements API create-before-boot ordering, one daemon per share, console ownership, group cancellation, allowlisted runtime cleanup, a current-boot agent ping, and initial credential-pool readiness. The shared [protocol](../../src/protocol/mod.rs) and private [guest agent](../../crates/vivarium-guest-agent/src/main.rs) implement bounded framing, process and PTY sessions, guest AF_VSOCK listeners, and declared SSH/GPG relays.
 
-This is capability implementation, not completion of a public command. Manifest resolution and the existing end-to-end `viv start`, `viv exec`, and `viv shell` trials remain gated, so no row below is `Implemented`.
+The first public commands now run. [`../../src/config/registry.rs`](../../src/config/registry.rs) persists the project→manifest binding in the state root under an exclusive sidecar lock, [`../../src/config/resolve.rs`](../../src/config/resolve.rs) resolves the effective manifest through the fixed precedence, and [`../../src/cli/`](../../src/cli/) turns both into `viv init`, `viv config`, and the `manifest` readers. The `Cli` gate that skipped every trial is open, and its six trials pass.
+
+What is still gated is everything behind evaluation. No manifest is evaluated to a guest system derivation, so `viv config eval`, `viv config sources`, and every booting verb remain written-but-skipped. Their grammar and fail-closed paths do run — a malformed invocation answers `64` and an unbound project answers `78`, asserted by the usage trials named below — but the verbs themselves do nothing, and their rows stay at the middle level for that reason.
 
 What is no longer merely written is the guest half. `tests/guest_agent_host.rs` passes on a capable host, twice, driven by [`../../tests/host/guest-agent-check`](../../tests/host/guest-agent-check): real guest boot, AF_VSOCK transport on both ports, guest PTY job control and pre-`Start` sizing, boot-identity refusal that executes nothing, socket ownership and modes under `/run/vivarium`, opaque credential bytes, and pool refill under more concurrent clients than the pool has slots. The refill needed a backend at or above cloud-hypervisor v53.0 and no vivarium code ([KI-0002](./known-issues/resolved/KI-0002.md)). Figures and host in the [verification harness](./microvm-verification-harness.md).
 
@@ -15,32 +17,32 @@ What is no longer merely written is the guest half. `tests/guest_agent_host.rs` 
 Each command sits at one of three levels:
 
 - Designed — specified, with nothing written against it yet.
-- Acceptance test written (gated) — a trial in [`../../tests/user_workflows.rs`](../../tests/user_workflows.rs) encodes the intended behavior and is linked below. It does not pass; it is skipped, because its runtime gate requires a working `viv` (and, for some, Nix and `/dev/kvm`). A written trial is a specification made executable, not evidence that anything works.
+- Acceptance test written (gated) — a trial in [`../../tests/user_workflows.rs`](../../tests/user_workflows.rs) encodes the intended behavior and is linked below, and the behavior the row names does not run. Some of these commands do have a passing usage trial: their grammar and their fail-closed answer are real, and only the work behind them is missing. That is not enough for the top level, which is about the command doing its job, so the row stays here and its Trial column says which half is covered. A written trial is a specification made executable, not evidence that anything works.
 - Implemented — the command runs and its trial passes.
 
-Nothing in the public command surface is at `Implemented` today.
+Three rows are at `Implemented`. Every other public command is written-but-skipped or designed only.
 
-| Command                               | Status                          | Trial                                                                                         |
-| ------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------- |
-| `viv init`                            | Acceptance test written (gated) | `workflow_01_first_time_bind_usage`, `workflow_02_clean_repo_global_registry_only`            |
-| `viv unbind`                          | Designed                        | —                                                                                             |
-| `viv images list`                     | Designed                        | —                                                                                             |
-| `viv manifest list` / `manifest show` | Acceptance test written (gated) | `workflow_03_team_shared_and_personal_override`, `workflow_04_inspect_before_run_usage`       |
-| `viv start`                           | Acceptance test written (gated) | `workflow_01_first_time_bind_boot`, `workflow_08_destroy_cold_rebuild`                        |
-| `viv exec`                            | Acceptance test written (gated) | `workflow_06_exec_usage_surface`, `workflow_06_exec_exit_code_propagation`                    |
-| `viv shell`                           | Acceptance test written (gated) | `workflow_01_first_time_bind_usage` (usage errors only; no interactive PTY coverage)          |
-| `viv stop`                            | Acceptance test written (gated) | `workflow_07_volume_list_requires_binding`, `workflow_07_stop_restart_preserving_volumes`     |
-| `viv destroy`                         | Acceptance test written (gated) | `workflow_08_destroy_usage_surface`, `workflow_08_destroy_cold_rebuild`                       |
-| `viv update`                          | Designed                        | —                                                                                             |
-| `viv generations`                     | Designed                        | —                                                                                             |
-| `viv gc`                              | Acceptance test written (gated) | `workflow_08_destroy_usage_surface` (reachability only; no store-sweep coverage)              |
-| `viv volume`                          | Acceptance test written (gated) | `workflow_07_volume_list_requires_binding`, `workflow_07_stop_restart_preserving_volumes`     |
-| `viv status`                          | Acceptance test written (gated) | `workflow_01_first_time_bind_boot`, `workflow_07_stop_restart_preserving_volumes`             |
-| `viv trim`                            | Designed                        | —                                                                                             |
-| `viv config`                          | Acceptance test written (gated) | `workflow_01_first_time_bind_usage`, `workflow_02_clean_repo_global_registry_only`            |
-| `viv config sources`                  | Acceptance test written (gated) | `workflow_03_team_shared_and_personal_override`, `workflow_05_restrict_egress_config_surface` |
-| `viv config eval`                     | Acceptance test written (gated) | `workflow_03_team_shared_and_personal_override`, `workflow_04_inspect_before_run`             |
-| `viv doctor`                          | Designed                        | —                                                                                             |
+| Command                               | Status                          | Trial                                                                                           |
+| ------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `viv init`                            | Implemented                     | `workflow_01_first_time_bind_usage`, `workflow_02_clean_repo_global_registry_only`              |
+| `viv unbind`                          | Designed                        | —                                                                                               |
+| `viv images list`                     | Designed                        | —                                                                                               |
+| `viv manifest list` / `manifest show` | Implemented                     | `workflow_04_inspect_before_run_usage` (library reading only; the merged view is `config eval`) |
+| `viv start`                           | Acceptance test written (gated) | `workflow_01_first_time_bind_boot`, `workflow_08_destroy_cold_rebuild`                          |
+| `viv exec`                            | Acceptance test written (gated) | `workflow_06_exec_usage_surface`, `workflow_06_exec_exit_code_propagation`                      |
+| `viv shell`                           | Acceptance test written (gated) | `workflow_01_first_time_bind_usage` (usage errors only; no interactive PTY coverage)            |
+| `viv stop`                            | Acceptance test written (gated) | `workflow_07_volume_list_requires_binding`, `workflow_07_stop_restart_preserving_volumes`       |
+| `viv destroy`                         | Acceptance test written (gated) | `workflow_08_destroy_usage_surface`, `workflow_08_destroy_cold_rebuild`                         |
+| `viv update`                          | Designed                        | —                                                                                               |
+| `viv generations`                     | Designed                        | —                                                                                               |
+| `viv gc`                              | Acceptance test written (gated) | `workflow_08_destroy_usage_surface` (reachability only; no store-sweep coverage)                |
+| `viv volume`                          | Acceptance test written (gated) | `workflow_07_volume_list_requires_binding`, `workflow_07_stop_restart_preserving_volumes`       |
+| `viv status`                          | Acceptance test written (gated) | `workflow_01_first_time_bind_boot`, `workflow_07_stop_restart_preserving_volumes`               |
+| `viv trim`                            | Designed                        | —                                                                                               |
+| `viv config`                          | Implemented                     | `workflow_01_first_time_bind_usage`, `workflow_02_clean_repo_global_registry_only`              |
+| `viv config sources`                  | Acceptance test written (gated) | `workflow_03_team_shared_and_personal_override`, `workflow_05_restrict_egress_config_surface`   |
+| `viv config eval`                     | Acceptance test written (gated) | `workflow_03_team_shared_and_personal_override`, `workflow_04_inspect_before_run`               |
+| `viv doctor`                          | Designed                        | —                                                                                               |
 
 ## Stability
 

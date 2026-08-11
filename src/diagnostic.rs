@@ -9,7 +9,7 @@
 //! The wording rules are the renderer's job for the same reason — lowercase start, no terminal
 //! punctuation, and the fixed slot order hold for every caller without any of them restating them.
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 /// The namespace half of a diagnostic id.
@@ -227,6 +227,76 @@ impl Diagnostic {
     pub const fn id(&self) -> DiagnosticId {
         self.id
     }
+
+    /// The one object a `--json` failure emits on stderr.
+    ///
+    /// Semantic fields, never a captured rendering of the human skeleton. spec/14 is explicit about
+    /// that: a consumer parsing the pretty form back out would be depending on wrapping and slot
+    /// labels, so the two views share this struct's data and nothing of each other's layout.
+    ///
+    /// It goes to stderr rather than stdout because stdout carries the result and a failure has
+    /// none — which is what makes `… --json 2>/dev/null | jq` clean on success and empty on
+    /// failure, instead of feeding `jq` an error object it would have to be taught to recognize.
+    #[must_use]
+    pub fn to_json(&self, code: u8) -> String {
+        let mut fields = vec![
+            format!("\"id\":{}", json_string(&self.id.to_string())),
+            format!("\"code\":{code}"),
+            format!("\"what\":{}", json_string(&self.what)),
+            format!("\"where\":{}", self.locus_json()),
+            format!("\"why\":{}", json_string(&self.why)),
+        ];
+        // Both conditional slots are omitted rather than emitted null: spec/14 makes `accepted`
+        // present "when the conditional slot applies", and a null would make a consumer distinguish
+        // "no accepted set" from "an empty one".
+        if !self.accepted.is_empty() {
+            let items: Vec<String> = self.accepted.iter().map(|item| json_string(item)).collect();
+            fields.push(format!("\"accepted\":[{}]", items.join(",")));
+        }
+        if let Some(hint) = &self.hint {
+            fields.push(format!("\"hint\":{}", json_string(hint)));
+        }
+        format!("{{{}}}", fields.join(","))
+    }
+
+    /// The `where` slot in its two machine shapes: `{file,line,col}` or `{locus}`.
+    fn locus_json(&self) -> String {
+        match &self.locus {
+            Locus::Position { path, line, column } => format!(
+                "{{\"file\":{},\"line\":{line},\"col\":{column}}}",
+                json_string(&path.to_string_lossy())
+            ),
+            Locus::File(path) => {
+                format!("{{\"file\":{}}}", json_string(&path.to_string_lossy()))
+            }
+            Locus::Named(name) => format!("{{\"locus\":{}}}", json_string(name)),
+        }
+    }
+}
+
+/// Escapes a string as a JSON scalar.
+///
+/// Hand-rolled rather than reached for through a serializer because this is the failure path: a
+/// failure that cannot report itself because its reporter failed is the one bug with no diagnostic,
+/// and every branch here is total.
+fn json_string(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\n' => quoted.push_str("\\n"),
+            '\r' => quoted.push_str("\\r"),
+            '\t' => quoted.push_str("\\t"),
+            control if control < '\u{20}' => {
+                let _ = write!(quoted, "\\u{:04x}", control as u32);
+            }
+            other => quoted.push(other),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 impl fmt::Display for Diagnostic {
@@ -348,6 +418,86 @@ mod tests {
             Locus::in_source("m.toml", source, 9_999),
             Locus::Position { line: 3, .. }
         ));
+    }
+
+    /// Pins spec/14's machine object: the same semantic fields, never a captured rendering.
+    #[test]
+    fn the_json_failure_carries_semantic_fields_not_a_rendering() {
+        let diagnostic = Diagnostic::new(
+            DiagnosticId::new(Namespace::Manifest, "unknown-key"),
+            "unknown key `schema_version` in manifest `rust-web`",
+            Locus::Position {
+                path: "manifests/rust-web.toml".into(),
+                line: 7,
+                column: 1,
+            },
+            "not part of the manifest grammar viv 0.4.1 understands",
+        )
+        .with_accepted(["image", "pieces"])
+        .with_hint("remove the key");
+
+        assert_eq!(
+            diagnostic.to_json(78),
+            concat!(
+                r#"{"id":"manifest.unknown-key","code":78,"#,
+                r#""what":"unknown key `schema_version` in manifest `rust-web`","#,
+                r#""where":{"file":"manifests/rust-web.toml","line":7,"col":1},"#,
+                r#""why":"not part of the manifest grammar viv 0.4.1 understands","#,
+                r#""accepted":["image","pieces"],"hint":"remove the key"}"#,
+            )
+        );
+
+        // No ANSI, and no pre-rendered duplicate of the human text — spec/14 forbids both.
+        assert!(!diagnostic.to_json(78).contains("error["));
+        assert!(!diagnostic.to_json(78).contains("  --> "));
+    }
+
+    /// Pins the conditional slots as absent keys rather than nulls, and both other `where` shapes.
+    #[test]
+    fn the_json_failure_omits_unused_slots_and_degrades_its_locus() {
+        let named = Diagnostic::new(
+            DiagnosticId::new(Namespace::State, "unreadable"),
+            "cannot read the state registry",
+            Locus::Named("state registry"),
+            "permission denied",
+        );
+        assert_eq!(
+            named.to_json(74),
+            concat!(
+                r#"{"id":"state.unreadable","code":74,"#,
+                r#""what":"cannot read the state registry","#,
+                r#""where":{"locus":"state registry"},"why":"permission denied"}"#,
+            )
+        );
+        assert!(!named.to_json(74).contains("accepted"));
+        assert!(!named.to_json(74).contains("hint"));
+
+        let file = Diagnostic::new(
+            DiagnosticId::new(Namespace::Lock, "generated-read"),
+            "could not read the lock",
+            Locus::File("/data/flake.lock".into()),
+            "no such file",
+        );
+        assert!(
+            file.to_json(74)
+                .contains(r#""where":{"file":"/data/flake.lock"}"#)
+        );
+    }
+
+    /// Pins the escaping, because this runs on the failure path where a panic has no diagnostic.
+    #[test]
+    fn the_json_failure_escapes_what_json_requires() {
+        let diagnostic = Diagnostic::new(
+            DiagnosticId::new(Namespace::Manifest, "syntax"),
+            "unknown key `a\"b` in \\dir",
+            Locus::Named("state registry"),
+            "line one\nline two\ttabbed\u{1}",
+        );
+        let rendered = diagnostic.to_json(78);
+        assert!(rendered.contains(r#"unknown key `a\"b` in \\dir"#));
+        assert!(rendered.contains(r"line one\nline two\ttabbed"));
+        // Every quote in the object is either a delimiter or escaped, so the braces balance.
+        assert_eq!(rendered.matches('{').count(), rendered.matches('}').count());
     }
 
     /// Pins the id grammar. The condition half is minted in source, so this is what keeps a
