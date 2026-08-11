@@ -11,7 +11,7 @@ pub enum ArtifactKind {
 }
 
 impl ArtifactKind {
-    const fn library(self) -> &'static str {
+    pub(super) const fn library(self) -> &'static str {
         match self {
             Self::Image => "images",
             Self::Piece => "pieces",

@@ -69,6 +69,179 @@ pub enum ResolutionError {
     },
 }
 
+/// A defect in an artifact-owned `inputs.toml` declaration.
+#[derive(Debug, Error)]
+#[error("{}", self.0.message)]
+pub struct InputError(Box<InputFault>);
+
+#[derive(Debug)]
+struct InputFault {
+    message: String,
+    condition: &'static str,
+    locus: Locus,
+    why: String,
+    accepted: Vec<String>,
+}
+
+impl InputError {
+    pub(super) fn new(
+        message: impl Into<String>,
+        condition: &'static str,
+        locus: Locus,
+        why: impl Into<String>,
+        accepted: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        Self(Box::new(InputFault {
+            message: message.into(),
+            condition,
+            locus,
+            why: why.into(),
+            accepted: accepted.into_iter().map(Into::into).collect(),
+        }))
+    }
+
+    /// Classifies every authored declaration defect as configuration input.
+    #[must_use]
+    pub const fn exit_code(&self) -> ExitKind {
+        ExitKind::Config
+    }
+
+    /// Renders the defect through the shared diagnostic skeleton.
+    #[must_use]
+    pub fn diagnostic(&self) -> Diagnostic {
+        Diagnostic::new(
+            DiagnosticId::new(Namespace::Manifest, self.0.condition),
+            self.0.message.clone(),
+            self.0.locus.clone(),
+            self.0.why.clone(),
+        )
+        .with_accepted(self.0.accepted.iter().cloned())
+    }
+
+    pub(super) const fn condition(&self) -> &'static str {
+        self.0.condition
+    }
+
+    pub(super) fn locus(&self) -> Locus {
+        self.0.locus.clone()
+    }
+
+    pub(super) fn why(&self) -> &str {
+        &self.0.why
+    }
+
+    pub(super) fn accepted(&self) -> &[String] {
+        &self.0.accepted
+    }
+}
+
+/// A failure while resolving, planning, publishing, or pinning a generated flake.
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct GeneratedFlakeError(Box<GeneratedFlakeFault>);
+
+#[derive(Debug, Error)]
+#[error("{message}")]
+struct GeneratedFlakeFault {
+    message: String,
+    condition: &'static str,
+    namespace: Namespace,
+    locus: Locus,
+    why: String,
+    kind: GeneratedFlakeErrorKind,
+    accepted: Vec<String>,
+    #[source]
+    source: Option<std::io::Error>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum GeneratedFlakeErrorKind {
+    Config,
+    Permission,
+    Io,
+    Race,
+    Internal,
+}
+
+impl GeneratedFlakeError {
+    pub(super) fn plain(
+        kind: GeneratedFlakeErrorKind,
+        namespace: Namespace,
+        condition: &'static str,
+        locus: Locus,
+        message: impl Into<String>,
+        why: impl Into<String>,
+    ) -> Self {
+        Self(Box::new(GeneratedFlakeFault {
+            message: message.into(),
+            condition,
+            namespace,
+            locus,
+            why: why.into(),
+            kind,
+            accepted: Vec::new(),
+            source: None,
+        }))
+    }
+
+    /// Fills the conditional `accepted here:` slot spec/14 fixes for an unknown key or value.
+    pub(super) fn with_accepted(
+        mut self,
+        accepted: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.0.accepted = accepted.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub(super) fn io(
+        namespace: Namespace,
+        condition: &'static str,
+        path: PathBuf,
+        message: impl Into<String>,
+        source: std::io::Error,
+    ) -> Self {
+        let kind = if source.kind() == std::io::ErrorKind::PermissionDenied {
+            GeneratedFlakeErrorKind::Permission
+        } else {
+            GeneratedFlakeErrorKind::Io
+        };
+        Self(Box::new(GeneratedFlakeFault {
+            message: message.into(),
+            condition,
+            namespace,
+            locus: Locus::File(path),
+            why: source.to_string(),
+            kind,
+            accepted: Vec::new(),
+            source: Some(source),
+        }))
+    }
+
+    /// Classifies authored defects, permission failures, owned I/O, and first-pin races.
+    #[must_use]
+    pub const fn exit_code(&self) -> ExitKind {
+        match self.0.kind {
+            GeneratedFlakeErrorKind::Config => ExitKind::Config,
+            GeneratedFlakeErrorKind::Permission => ExitKind::NoPerm,
+            GeneratedFlakeErrorKind::Io => ExitKind::IoErr,
+            GeneratedFlakeErrorKind::Race => ExitKind::TempFail,
+            GeneratedFlakeErrorKind::Internal => ExitKind::Software,
+        }
+    }
+
+    /// Renders the failure through the shared diagnostic skeleton.
+    #[must_use]
+    pub fn diagnostic(&self) -> Diagnostic {
+        Diagnostic::new(
+            DiagnosticId::new(self.0.namespace, self.0.condition),
+            self.0.message.clone(),
+            self.0.locus.clone(),
+            self.0.why.clone(),
+        )
+        .with_accepted(self.0.accepted.iter().cloned())
+    }
+}
+
 impl ResolutionError {
     /// Classifies this failure at the one boundary fixed by ADR-0033 and spec/14.
     #[must_use]
@@ -307,8 +480,9 @@ mod tests {
     use std::io;
     use std::path::PathBuf;
 
-    use super::ResolutionError;
+    use super::{GeneratedFlakeError, GeneratedFlakeErrorKind, InputError, ResolutionError};
     use crate::config::ArtifactKind;
+    use crate::diagnostic::{Locus, Namespace};
     use crate::exit::ExitKind;
 
     /// Pins spec/14's `78` name/config faults, `77` runtime faults, and `74` probe fault.
@@ -369,5 +543,57 @@ mod tests {
         };
         assert!(probe_error.source().is_some());
         assert_eq!(probe_error.exit_code(), ExitKind::IoErr);
+    }
+
+    /// Pins the complete item-3 authored, permission, I/O, race, and contract boundary.
+    #[test]
+    fn every_generated_flake_error_class_has_its_specified_exit_kind() {
+        let rows = [
+            (GeneratedFlakeErrorKind::Config, ExitKind::Config),
+            (GeneratedFlakeErrorKind::Permission, ExitKind::NoPerm),
+            (GeneratedFlakeErrorKind::Io, ExitKind::IoErr),
+            (GeneratedFlakeErrorKind::Race, ExitKind::TempFail),
+            (GeneratedFlakeErrorKind::Internal, ExitKind::Software),
+        ];
+        for (kind, expected) in rows {
+            let error = GeneratedFlakeError::plain(
+                kind,
+                Namespace::Store,
+                "test-condition",
+                Locus::Named("test"),
+                "test failure",
+                "test reason",
+            );
+            assert_eq!(error.exit_code(), expected);
+        }
+
+        let permission = GeneratedFlakeError::io(
+            Namespace::Lock,
+            "test-permission",
+            PathBuf::from("/test"),
+            "permission failure",
+            io::Error::from(io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(permission.exit_code(), ExitKind::NoPerm);
+        assert!(permission.source().is_some());
+
+        let channel = GeneratedFlakeError::io(
+            Namespace::Store,
+            "test-io",
+            PathBuf::from("/test"),
+            "channel failure",
+            io::Error::other("failed"),
+        );
+        assert_eq!(channel.exit_code(), ExitKind::IoErr);
+        assert!(channel.source().is_some());
+
+        let input = InputError::new(
+            "authored defect",
+            "invalid-value",
+            Locus::Named("inputs"),
+            "outside the grammar",
+            std::iter::empty::<String>(),
+        );
+        assert_eq!(input.exit_code(), ExitKind::Config);
     }
 }

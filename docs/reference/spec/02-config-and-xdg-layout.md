@@ -103,6 +103,48 @@ $XDG_CONFIG_HOME/vivarium/manifests/<name>/flake.lock      # optional team overr
 
 The generated flake is what `nix build` actually reads: the compiled manifest plus copies of the resolved image, pieces, and `extends` module ([`04-composition-and-determinism.md`](./04-composition-and-determinism.md), [`../../decisions/ADR-0058-generated-flake-is-a-materialized-cache-artifact.md`](../../decisions/ADR-0058-generated-flake-is-a-materialized-cache-artifact.md)). It is regenerated wholesale, written to a temporary sibling and renamed into place so a concurrent run never reads a partial tree, and never hand-edited. `viv config` prints its path, which is how a user inspects it ([`01-command-surface.md`](./01-command-surface.md)).
 
+### Diagnostic ids
+
+Generated-tree and pin failures carry stable ids owned here. Permission-denied forms return `77`; other owned-channel I/O forms return `74`; a differing concurrent first pin returns `75`.
+
+| Id                             | Condition                                                            |
+| ------------------------------ | -------------------------------------------------------------------- |
+| `store.create-parent`          | the owned cache parent cannot be created                             |
+| `store.create-temporary`       | a temporary generated-tree sibling cannot be created                 |
+| `store.temporary-collision`    | bounded unique-directory allocation is exhausted                     |
+| `store.copy-inspect`           | a copied source entry cannot be inspected                            |
+| `store.copy-create-directory`  | a copied destination directory cannot be created                     |
+| `store.copy-read-directory`    | a copied source directory cannot be enumerated                       |
+| `store.copy-read`              | an ordinary source file cannot be read                               |
+| `store.copy-read-link`         | a source symbolic link cannot be read                                |
+| `store.copy-create-link`       | a source symbolic link cannot be recreated                           |
+| `store.copy-permissions`       | ordinary file or directory permissions cannot be preserved           |
+| `store.unsupported-file-type`  | a copied source is not a directory, ordinary file, or symbolic link  |
+| `store.write-parent`           | a generated destination parent cannot be created                     |
+| `store.write-file`             | a rendered or staged generated file cannot be created or written     |
+| `store.write-sync`             | a generated file cannot be flushed                                   |
+| `store.sync-read-directory`    | a generated directory cannot be traversed before flushing            |
+| `store.sync-inspect`           | a generated entry cannot be inspected before flushing                |
+| `store.sync-directory`         | a generated directory cannot be flushed                              |
+| `store.publish-inspect`        | the live generated-tree destination cannot be inspected              |
+| `store.publish`                | an initial complete tree cannot be renamed into place                |
+| `store.publish-exchange`       | an existing tree cannot be atomically exchanged with its replacement |
+| `store.publish-directory-sync` | the cache parent cannot be flushed after publication                 |
+| `store.cleanup-stale`          | the new tree is live but its exchanged old sibling cannot be removed |
+| `lock.inspect`                 | an override or owned lock candidate cannot be inspected              |
+| `lock.generated-read`          | a successful first build's generated lock cannot be read             |
+| `lock.persist-parent`          | the owned data directory cannot be created                           |
+| `lock.persist-temporary`       | a same-directory staged lock cannot be created                       |
+| `lock.persist-write`           | staged first-pin bytes cannot be written                             |
+| `lock.persist-sync`            | staged first-pin bytes cannot be flushed                             |
+| `lock.persist-publish`         | a first pin cannot be installed with no-replace semantics            |
+| `lock.persist-directory-sync`  | the data directory cannot be flushed after pin installation          |
+| `lock.winner-read`             | a concurrently installed first pin cannot be read for comparison     |
+| `lock.temporary-collision`     | bounded unique-file allocation is exhausted                          |
+| `lock.first-pin-race`          | another process installed different first-pin bytes                  |
+
+The private `internal.generated-path`, `internal.artifact-parent`, `internal.manifest-parent`, `internal.generated-parent`, `internal.lock-parent`, and `internal.lock-persist-contract` ids report violated call or tree-shape invariants rather than authored or host failures.
+
 The lockfile is data, not cache, because deleting it does not rebuild anything — it re-resolves, which is exactly what N3 forbids happening by accident. It is created by the first build or the first `viv update`, whichever comes first — each reports what it pinned — and thereafter moves only under `viv update` ([`../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md)). Creating a lock is not re-resolving one: a build may write the file that does not yet exist, but no build ever moves a pin that does. One lock per target rather than one per user: a global lock would make updating one project an unannounced update to every other.
 
 ### The team override lock

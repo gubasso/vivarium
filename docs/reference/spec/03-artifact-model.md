@@ -171,16 +171,21 @@ Two mount-source faults sit below this table because neither is decidable from d
 
 ### Diagnostic ids
 
-Each parse-stage defect above carries a stable `manifest.*` id, documented here because that is where the condition lives ([`14-exit-codes.md`](./14-exit-codes.md)). The id is greppable and never reassigned; a consumer that must branch still branches on the exit code, which is `78` for every row.
+Each parse-stage defect above, including the closed `inputs.toml` grammar, carries a stable `manifest.*` id, documented here because that is where the condition lives ([`14-exit-codes.md`](./14-exit-codes.md)). The id is greppable and never reassigned; a consumer that must branch still branches on the exit code. Authored defects return `78`; an artifact-inspection channel may instead return `74` or `77`.
 
-| Id                       | Condition                                                             |
-| ------------------------ | --------------------------------------------------------------------- |
-| `manifest.syntax`        | the bytes are not TOML                                                |
-| `manifest.unknown-key`   | a key outside the table above — one of the two compatibility messages |
-| `manifest.missing-key`   | a required key is absent                                              |
-| `manifest.wrong-type`    | a known key holds the wrong TOML type                                 |
-| `manifest.invalid-value` | a known key holds a value outside its domain                          |
-| `manifest.extends-form`  | `extends` in a flat manifest, which has nowhere to put the module     |
+| Id                             | Condition                                                               |
+| ------------------------------ | ----------------------------------------------------------------------- |
+| `manifest.syntax`              | manifest or `inputs.toml` bytes are not TOML                            |
+| `manifest.unknown-key`         | a key outside the manifest or `inputs.toml` grammar                     |
+| `manifest.missing-key`         | a required key is absent                                                |
+| `manifest.wrong-type`          | a known manifest or `inputs.toml` key holds the wrong TOML type         |
+| `manifest.invalid-value`       | a known manifest or `inputs.toml` value is outside its domain           |
+| `manifest.extends-form`        | `extends` in a flat manifest, which has nowhere to put the module       |
+| `manifest.reserved-input`      | an artifact declares the generated flake's `nixpkgs` or `microvm` input |
+| `manifest.input-conflict`      | two resolved artifacts declare different values for one input name      |
+| `manifest.inputs-read`         | a directory artifact's `inputs.toml` cannot be read                     |
+| `manifest.artifact-resolution` | a named image or piece cannot be resolved                               |
+| `manifest.extends-inspect`     | permission prevents inspection of the selected `extends` target         |
 
 Only `manifest.unknown-key` carries the `accepted here:` slot for a key; `manifest.invalid-value` carries it when the domain is a closed set, such as `egress.mode`.
 
