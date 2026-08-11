@@ -1,4 +1,8 @@
-//! Secure launch construction and supervision for vivarium's Nix-built VM.
+//! Configuration resolution, secure launch construction, and supervision for vivarium's
+//! Nix-built VM.
+
+#[cfg(feature = "host")]
+pub mod config;
 
 #[cfg(feature = "host")]
 pub mod doctor;

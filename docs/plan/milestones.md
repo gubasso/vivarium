@@ -4,7 +4,7 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 011 resolve-and-evaluate — shaped — 3 sessions
+- 011 resolve-and-evaluate — active — 3 sessions
 - 012 first-boot — shaped — 3 sessions
 - 013 exec-and-shell — shaped — 2 sessions
 - 014 workspace-and-persistence — shaped — 2 sessions
