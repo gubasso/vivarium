@@ -16,6 +16,8 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
+use crate::config::evaluate::KeyClass;
+use crate::config::merged::{Analysis, ConflictKind};
 use crate::config::{
     Egress, EgressMode, Manifest, ResolvedArtifact, ResolvedBinding, Resources, XdgRoots,
 };
@@ -64,6 +66,262 @@ pub fn binding_human(
         let _ = writeln!(rendered, "{label:<9} {}", path.display());
     }
     rendered
+}
+
+/// `viv config eval --json` — the merged configuration, nested under the identity that produced it.
+pub fn config_eval_json(
+    binding: &ResolvedBinding,
+    manifest: &Manifest,
+    analysis: &Analysis,
+) -> String {
+    line(&json!({
+        "manifest": binding.manifest,
+        "image": manifest.image,
+        "pieces": manifest.pieces,
+        "config": analysis.configuration(),
+    }))
+}
+
+/// `viv config eval` — TOML-shaped, so the merged result reads in the language it was authored in.
+///
+/// An undeclared key is omitted rather than printed as a null, because TOML has no null and a `0`
+/// would be a different and wrong answer: spec/03 resolves an undeclared ceiling from the host at
+/// launch. The JSON form is where a consumer reads the distinction, and it keeps the key.
+pub fn config_eval_human(analysis: &Analysis) -> String {
+    let mut rendered = String::new();
+    table(
+        &mut rendered,
+        "resources",
+        &[
+            ("mem_mib", analysis.effective("resources.mem_mib")),
+            ("vcpu", analysis.effective("resources.vcpu")),
+        ],
+    );
+    table(
+        &mut rendered,
+        "sandbox.egress",
+        &[
+            ("mode", analysis.effective("sandbox.egress.mode")),
+            ("allow", analysis.effective("sandbox.egress.allow")),
+        ],
+    );
+    let environment: Vec<(&str, Option<&Value>)> = analysis
+        .values
+        .iter()
+        .filter_map(|view| {
+            view.key
+                .strip_prefix("env.")
+                .map(|name| (name, view.effective.as_ref()))
+        })
+        .collect();
+    table(&mut rendered, "env", &environment);
+    array_of_tables(
+        &mut rendered,
+        "mounts",
+        analysis.effective("mounts"),
+        &["source", "target", "readonly"],
+    );
+    array_of_tables(
+        &mut rendered,
+        "volumes",
+        analysis.effective("volumes"),
+        &["name", "mount", "size_gib"],
+    );
+    table(
+        &mut rendered,
+        "volume",
+        &[
+            ("size_gib", analysis.effective("volume.size_gib")),
+            ("persist", analysis.effective("volume.persist")),
+        ],
+    );
+    rendered
+}
+
+/// `viv config sources --json` — provenance and defects, at exit `0`.
+pub fn config_sources_json(
+    binding: &ResolvedBinding,
+    manifest: &Manifest,
+    analysis: &Analysis,
+) -> String {
+    let mut values = Map::new();
+    for view in &analysis.values {
+        let contributors: Vec<Value> = view
+            .contributors
+            .iter()
+            .map(|contributor| {
+                json!({
+                    "layer": contributor.layer,
+                    "kind": contributor.kind.as_str(),
+                    "priority": contributor.priority,
+                    "value": contributor.value,
+                    "winner": contributor.winner,
+                })
+            })
+            .collect();
+        values.insert(
+            view.key.clone(),
+            json!({
+                // Both null for a key carrying a defect: the merge threw and produced no value, and
+                // naming a winner anyway would resurrect the declaration-order tiebreak ADR-0042
+                // removed. The contributors stay, which is the whole point of this view.
+                "effective": view.effective.clone().unwrap_or(Value::Null),
+                "winner": view.winner.clone().map_or(Value::Null, Value::from),
+                "contributors": contributors,
+            }),
+        );
+    }
+    let conflicts: Vec<Value> = analysis
+        .conflicts
+        .iter()
+        .map(|conflict| {
+            json!({
+                "kind": conflict.kind.as_str(),
+                "key": conflict.key,
+                "layers": conflict.layers,
+            })
+        })
+        .collect();
+    line(&json!({
+        "manifest": binding.manifest,
+        "image": manifest.image,
+        "pieces": manifest.pieces,
+        "values": values,
+        "conflicts": conflicts,
+    }))
+}
+
+/// `viv config sources` — one block per key: the effective value, then every layer under it.
+pub fn config_sources_human(analysis: &Analysis) -> String {
+    let mut rendered = String::new();
+    for view in &analysis.values {
+        if view.contributors.is_empty() {
+            continue;
+        }
+        let _ = writeln!(
+            rendered,
+            "{} = {}",
+            view.key,
+            view.effective
+                .as_ref()
+                .map_or_else(|| "(no value)".to_owned(), scalar)
+        );
+        for contributor in &view.contributors {
+            let _ = writeln!(
+                rendered,
+                "  {:<16} {:<9} {:<10} {:<12} {}",
+                contributor.layer,
+                contributor.kind.as_str(),
+                contributor.priority,
+                scalar(&contributor.value),
+                // A list has no loser: every contributor's elements are in the result, so calling
+                // one shadowed would report a collision where the layers cooperated.
+                if view.class == KeyClass::List {
+                    "(merged)"
+                } else if contributor.winner {
+                    "(winner)"
+                } else {
+                    "(shadowed)"
+                }
+            );
+        }
+        rendered.push('\n');
+    }
+    rendered
+}
+
+/// The `[tie]` marker, which goes to stderr in both output modes.
+///
+/// stderr rather than stdout so `… --json 2>/dev/null | jq` stays clean, which is spec/01's reason;
+/// the same placement in human mode keeps one behavior rather than two. A script detects a defect
+/// through `conflicts`, never by scanning for this.
+pub fn tie_notes(analysis: &Analysis) -> String {
+    let mut rendered = String::new();
+    for conflict in &analysis.conflicts {
+        if conflict.kind != ConflictKind::Tie {
+            continue;
+        }
+        let _ = writeln!(
+            rendered,
+            "[tie] {}   (equal priority — evaluation will fail)",
+            conflict.key
+        );
+        if let Some(view) = analysis.value_of(&conflict.key) {
+            for contributor in &view.contributors {
+                let _ = writeln!(
+                    rendered,
+                    "  {:<16} {:<9} {:<10} {}",
+                    contributor.layer,
+                    contributor.kind.as_str(),
+                    contributor.priority,
+                    scalar(&contributor.value)
+                );
+            }
+        }
+        let _ = writeln!(
+            rendered,
+            concat!(
+                "  hint: a shared piece should propose with mkDefault so your manifest can\n",
+                "        decide; failing that, drop one piece or override through extends"
+            )
+        );
+    }
+    rendered
+}
+
+/// One `[name]` table, omitted entirely when it would carry no key.
+fn table(rendered: &mut String, name: &str, entries: &[(&str, Option<&Value>)]) {
+    let present: Vec<(&str, &Value)> = entries
+        .iter()
+        .filter_map(|(key, value)| {
+            value.and_then(|value| present(value).map(|value| (*key, value)))
+        })
+        .collect();
+    if present.is_empty() {
+        return;
+    }
+    if !rendered.is_empty() {
+        rendered.push('\n');
+    }
+    let _ = writeln!(rendered, "[{name}]");
+    let width = present.iter().map(|(key, _)| key.len()).max().unwrap_or(0);
+    for (key, value) in present {
+        let _ = writeln!(rendered, "{key:<width$} = {}", scalar(value));
+    }
+}
+
+/// One `[[name]]` array of tables, one block per element.
+fn array_of_tables(rendered: &mut String, name: &str, value: Option<&Value>, fields: &[&str]) {
+    let Some(elements) = value.and_then(Value::as_array) else {
+        return;
+    };
+    let width = fields.iter().map(|field| field.len()).max().unwrap_or(0);
+    for element in elements {
+        if !rendered.is_empty() {
+            rendered.push('\n');
+        }
+        let _ = writeln!(rendered, "[[{name}]]");
+        for field in fields {
+            let Some(field_value) = element.get(*field).and_then(present) else {
+                continue;
+            };
+            let _ = writeln!(rendered, "{field:<width$} = {}", scalar(field_value));
+        }
+    }
+}
+
+/// A value worth printing, which an absent declaration is not.
+const fn present(value: &Value) -> Option<&Value> {
+    match value {
+        Value::Null => None,
+        Value::Array(elements) if elements.is_empty() => None,
+        value => Some(value),
+    }
+}
+
+/// One value in TOML spelling, which is JSON's for everything the manifest surface admits.
+fn scalar(value: &Value) -> String {
+    value.to_string()
 }
 
 /// `viv init --json`, read-only: what would be recorded, having recorded nothing.

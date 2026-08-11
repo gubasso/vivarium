@@ -4,7 +4,6 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 011 resolve-and-evaluate — active — 3 sessions
 - 012 first-boot — shaped — 3 sessions
 - 013 exec-and-shell — shaped — 2 sessions
 - 014 workspace-and-persistence — shaped — 2 sessions
@@ -24,3 +23,4 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 002 secure-launch-and-supervision — done — 4 sessions
 - 003 guest-agent-and-credential-relay — done — 3 sessions
 - 010 repair-the-host-runbooks — done — 3 sessions
+- 011 resolve-and-evaluate — done — 3 sessions — appetite exceeded; see the slice `Revisions`

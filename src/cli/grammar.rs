@@ -67,6 +67,10 @@ pub enum Invocation {
         manifest: Option<String>,
         output: Output,
     },
+    /// The merged, evaluated configuration.
+    ConfigEval { output: Output },
+    /// The provenance view behind that merge.
+    ConfigSources { output: Output },
     /// Enumerate the manifest library.
     ManifestList { output: Output },
     /// Show one manifest.
@@ -173,6 +177,8 @@ const TOP_USAGE: &str =
     "viv <init|config|manifest|start|shell|exec|stop|volume|destroy|gc> [options]";
 const INIT_USAGE: &str = "viv init [--manifest <name>] [--write] [--yes] [--json] [--no-input]";
 const CONFIG_USAGE: &str = "viv config [--manifest <name>] [--json]";
+const CONFIG_EVAL_USAGE: &str = "viv config eval [--json]";
+const CONFIG_SOURCES_USAGE: &str = "viv config sources [--json]";
 const MANIFEST_USAGE: &str = "viv manifest <list|show <name>> [--json]";
 const START_USAGE: &str = "viv start [--rebuild|--no-rebuild] [--json]";
 const SHELL_USAGE: &str = "viv shell [--json]";
@@ -207,19 +213,23 @@ fn init(rest: &[OsString]) -> Result<Invocation, UsageError> {
 }
 
 fn config(rest: &[OsString]) -> Result<Invocation, UsageError> {
-    // `eval` and `sources` are spec/01's other two `config` forms. They are recognized here so an
-    // operator gets "not implemented" rather than "unknown command" — the latter would read as a
-    // typo in a verb that is in fact specified, and would send them to check their spelling.
-    if let Some(first) = rest.first()
-        && matches!(first.to_str(), Some("eval" | "sources"))
-    {
-        return Err(UsageError::new(
-            format!(
-                "`viv config {}` is not implemented yet",
-                first.to_string_lossy()
-            ),
-            Some(CONFIG_USAGE),
-        ));
+    // spec/01's other two `config` forms. Neither takes `--manifest`: they read the binding in
+    // force, and a flag that selected a different manifest would report a merge for a project that
+    // is not bound to it.
+    if let Some(first) = rest.first() {
+        match first.to_str() {
+            Some("eval") => {
+                return Ok(Invocation::ConfigEval {
+                    output: flags_only(&rest[1..], CONFIG_EVAL_USAGE)?,
+                });
+            }
+            Some("sources") => {
+                return Ok(Invocation::ConfigSources {
+                    output: flags_only(&rest[1..], CONFIG_SOURCES_USAGE)?,
+                });
+            }
+            _ => {}
+        }
     }
 
     let mut manifest = None;
@@ -538,6 +548,8 @@ mod tests {
     const fn output_of(invocation: &Invocation) -> Option<Output> {
         match invocation {
             Invocation::Config { output, .. }
+            | Invocation::ConfigEval { output }
+            | Invocation::ConfigSources { output }
             | Invocation::ManifestList { output }
             | Invocation::ManifestShow { output, .. }
             | Invocation::Init { output, .. }

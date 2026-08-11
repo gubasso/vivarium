@@ -102,8 +102,16 @@ fn resolve_viv() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    let local = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
+    // `CARGO_TARGET_DIR` before the repository-local `target/`, and not the other way around. The
+    // dev shell sets that variable, so a repository-local `target/debug/viv` is a leftover from
+    // before it did — and a gate that probed one of those would describe a binary nobody is
+    // building. Reached only when neither env var above is set, which is how a runner that lists
+    // the trials outside `cargo test` arrives here.
+    let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || Path::new(env!("CARGO_MANIFEST_DIR")).join("target"),
+        PathBuf::from,
+    );
+    let local = target
         .join("debug")
         .join(format!("viv{}", std::env::consts::EXE_SUFFIX));
     if local.is_file() {
@@ -152,18 +160,62 @@ fn probe_nix() -> Result<(), String> {
 ///
 /// Probed from an unbound project, so the two answers separate cleanly: `78` is the fail-closed
 /// path of an implemented verb, and anything else means the verb is not there to fail closed.
+///
+/// That half is necessary and not sufficient. The verb existing says nothing about whether this
+/// host can reach the flake inputs an evaluation resolves, and a gate that opened on the strength
+/// of a `78` would send every trial behind it into a failure the gate was supposed to describe.
+/// So the second half evaluates a real bound manifest end to end. It is the expensive probe on
+/// purpose: nothing cheaper distinguishes "cannot evaluate" from "evaluates wrongly", and those
+/// two must not arrive as the same red.
 fn probe_config_eval(viv: &Path) -> Result<(), String> {
     let tp =
         TempProject::new().map_err(|error| format!("cannot isolate config-eval probe: {error}"))?;
     let out = run_viv(viv, &tp, tp.project(), &["config", "eval", "--json"])
         .map_err(|error| format!("cannot execute {}: {error}", viv.display()))?;
-    if out.status.code() == Some(EX_CONFIG) {
+    if out.status.code() != Some(EX_CONFIG) {
+        return Err(format!(
+            "{} config eval is not implemented (unbound probe exited {:?}, expected {EX_CONFIG})",
+            viv.display(),
+            out.status.code()
+        ));
+    }
+    probe_evaluation(viv, &tp)
+}
+
+/// Whether this host can actually evaluate a bound manifest.
+fn probe_evaluation(viv: &Path, tp: &TempProject) -> Result<(), String> {
+    let library = tp.config().join("vivarium");
+    write_file(&library.join("images").join("probe.nix"), "{ ... }: { }\n")
+        .and_then(|()| {
+            write_file(
+                &library.join("manifests").join("probe.toml"),
+                "image = \"probe\"\n",
+            )
+        })
+        .map_err(|error| format!("cannot write the evaluation probe fixture: {error}"))?;
+    let bind = run_viv(
+        viv,
+        tp,
+        tp.project(),
+        &["init", "--manifest", "probe", "--write", "--yes"],
+    )
+    .map_err(|error| format!("cannot execute {}: {error}", viv.display()))?;
+    if bind.status.code() != Some(0) {
+        return Err(format!(
+            "the evaluation probe could not bind its manifest (exited {:?}): {}",
+            bind.status.code(),
+            String::from_utf8_lossy(&bind.stderr).trim()
+        ));
+    }
+    let evaluated = run_viv(viv, tp, tp.project(), &["config", "eval", "--json"])
+        .map_err(|error| format!("cannot execute {}: {error}", viv.display()))?;
+    if evaluated.status.code() == Some(0) {
         return Ok(());
     }
     Err(format!(
-        "{} config eval is not implemented (unbound probe exited {:?}, expected {EX_CONFIG})",
-        viv.display(),
-        out.status.code()
+        "this host cannot evaluate a bound manifest (exited {:?}): {}",
+        evaluated.status.code(),
+        String::from_utf8_lossy(&evaluated.stderr).trim()
     ))
 }
 
@@ -287,6 +339,59 @@ pub struct VivOutput {
     pub stderr: Vec<u8>,
 }
 
+/// The baseline flake inputs every lane evaluates against, pinned to local store paths.
+///
+/// vivarium ships branch references, so a released tool resolves today's upstream and pins it in
+/// the lock the first evaluation creates. That default is a trap for this suite, which evaluates
+/// from a fresh data root in trial after trial: each one queries the GitHub API, sixty of them
+/// exhaust the anonymous limit, and the `ConfigEval` gate then closes for a reason that is about
+/// GitHub rather than about vivarium. Worse, it closes silently — the trials skip and the run is
+/// green.
+///
+/// So the lanes pin. The references come from this repository's own product flake, which already
+/// locks the two, and `nix flake archive` reports where its inputs landed in the store: a `path:`
+/// reference needs no network and no API at all, and it is the same revision vivarium is developed
+/// against. Computed once per process and fails open — a host that cannot produce them evaluates
+/// live, exactly as a user would.
+fn baseline_inputs() -> &'static Vec<(OsString, OsString)> {
+    static BASELINE: OnceLock<Vec<(OsString, OsString)>> = OnceLock::new();
+    BASELINE.get_or_init(|| {
+        let flake = format!("path:{}?dir=nix", env!("CARGO_MANIFEST_DIR"));
+        let Ok(output) = Command::new("nix")
+            .args([
+                "flake",
+                "archive",
+                "--json",
+                "--extra-experimental-features",
+                "nix-command flakes",
+                &flake,
+            ])
+            .output()
+        else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        let Ok(archived) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+            return Vec::new();
+        };
+        [
+            ("nixpkgs", "VIVARIUM_BASELINE_NIXPKGS"),
+            ("microvm", "VIVARIUM_BASELINE_MICROVM"),
+        ]
+        .into_iter()
+        .filter_map(|(input, variable)| {
+            let path = archived.get("inputs")?.get(input)?.get("path")?.as_str()?;
+            Some((
+                OsString::from(variable),
+                OsString::from(format!("path:{path}")),
+            ))
+        })
+        .collect()
+    })
+}
+
 /// The only host variables re-injected after `env_clear`. Everything else is dropped,
 /// which is what makes the fail-closed assertions honest: an ambient `VIVARIUM_MANIFEST`
 /// sits second in the manifest resolution order (spec/01), so a leaked one would silently
@@ -312,6 +417,7 @@ pub fn run_viv(bin: &Path, tp: &TempProject, cwd: &Path, args: &[&str]) -> io::R
         }
     }
     command.envs(tp.env());
+    command.envs(baseline_inputs().iter().cloned());
     let output = command.output()?;
     Ok(VivOutput {
         argv: command_line,

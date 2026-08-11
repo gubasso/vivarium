@@ -16,6 +16,75 @@ const FLAKE_FILE: &str = "flake.nix";
 const MANIFEST_SOURCE_FILE: &str = "manifest.toml";
 const MANIFEST_MODULE_FILE: &str = "manifest-leaf.nix";
 const LOCK_FILE: &str = "flake.lock";
+const OPTIONS_MODULE_FILE: &str = "vivarium-options.nix";
+const REPORT_FILE: &str = "vivarium-report.nix";
+
+/// The attribute both config readers evaluate, and the one place its name is spelled.
+pub const REPORT_ATTR: &str = "vivariumReport";
+
+/// The tool-owned option surface, carried into every generated tree.
+///
+/// Embedded rather than referenced: ADR-0058 makes the generated flake self-contained and
+/// regenerable, so a path out of it into this repository would make vivarium's own checkout a
+/// build input of every sandbox. `nix/default.nix` admits both files into the crate source for
+/// this reason.
+const OPTIONS_MODULE: &str = include_str!("../../nix/vivarium-options.nix");
+
+/// The report expression both `viv config eval` and `viv config sources` read.
+const REPORT_MODULE: &str = include_str!("../../nix/vivarium-report.nix");
+
+/// The two inputs every generated flake carries whatever a manifest declares.
+///
+/// Their default resolves a branch, which is what a released vivarium should do: a user binding a
+/// project today gets today's upstream, pinned from then on by the lock the first evaluation
+/// creates. That is also a trap for this repository's own lanes, which evaluate from a fresh data
+/// root over and over: branch resolution queries the GitHub API every time and is answered `403`
+/// after sixty of them, closing the `ConfigEval` gate for a reason that is about GitHub.
+///
+/// So both are overridable by environment, and every development lane sets them to the store paths
+/// this repository's own product flake already pins — no network, no API, and the same revisions
+/// vivarium is developed against. Reached through the injected [`Environment`] rather than the
+/// process, so the renderer stays a function of its inputs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BaselineInputs {
+    /// The `nixpkgs` flake reference.
+    pub nixpkgs: String,
+    /// The `microvm` flake reference.
+    pub microvm: String,
+}
+
+/// The variable a development lane sets to pin `nixpkgs`.
+pub const BASELINE_NIXPKGS_VARIABLE: &str = "VIVARIUM_BASELINE_NIXPKGS";
+
+/// The variable a development lane sets to pin `microvm`.
+pub const BASELINE_MICROVM_VARIABLE: &str = "VIVARIUM_BASELINE_MICROVM";
+
+impl Default for BaselineInputs {
+    fn default() -> Self {
+        Self {
+            nixpkgs: "github:NixOS/nixpkgs/nixos-unstable".to_owned(),
+            microvm: "github:astro/microvm.nix".to_owned(),
+        }
+    }
+}
+
+impl BaselineInputs {
+    /// Reads the overrides a development lane sets, falling back to the shipped references.
+    #[must_use]
+    pub fn from_environment(environment: &impl super::Environment) -> Self {
+        let read = |name| {
+            environment
+                .variable(name)
+                .and_then(|value| value.into_string().ok())
+                .filter(|value| !value.trim().is_empty())
+        };
+        let shipped = Self::default();
+        Self {
+            nixpkgs: read(BASELINE_NIXPKGS_VARIABLE).unwrap_or(shipped.nixpkgs),
+            microvm: read(BASELINE_MICROVM_VARIABLE).unwrap_or(shipped.microvm),
+        }
+    }
+}
 
 pub use super::input::FlakeInput;
 
@@ -125,7 +194,7 @@ pub struct GeneratedFlakePlan {
     pub effective_lock: EffectiveLock,
 }
 
-/// A fully published generated flake ready for item 5 to evaluate.
+/// A fully published generated flake, which `evaluate.rs` runs Nix against.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedFlake {
     /// The published flake directory.
@@ -315,11 +384,20 @@ impl GeneratedFlakePlan {
         manifest_source: &str,
         manifest: &Manifest,
         composition: &ResolvedComposition,
+        baseline: &BaselineInputs,
     ) -> Result<Self, GeneratedFlakeError> {
         let mut entries = vec![
             GeneratedEntry::RenderedFile {
                 destination: PathBuf::from(FLAKE_FILE),
-                bytes: render_flake(composition).into_bytes(),
+                bytes: render_flake(selected_manifest, composition, baseline).into_bytes(),
+            },
+            GeneratedEntry::RenderedFile {
+                destination: PathBuf::from(OPTIONS_MODULE_FILE),
+                bytes: OPTIONS_MODULE.as_bytes().to_vec(),
+            },
+            GeneratedEntry::RenderedFile {
+                destination: PathBuf::from(REPORT_FILE),
+                bytes: REPORT_MODULE.as_bytes().to_vec(),
             },
             GeneratedEntry::RenderedFile {
                 destination: PathBuf::from(MANIFEST_MODULE_FILE),
@@ -356,7 +434,6 @@ impl GeneratedFlakePlan {
         for entry in &entries {
             validate_relative(entry.destination())?;
         }
-        let _ = selected_manifest;
         Ok(Self {
             directory: composition.paths.directory.clone(),
             entries,
@@ -558,15 +635,25 @@ fn validate_relative(path: &Path) -> Result<(), GeneratedFlakeError> {
 }
 
 #[allow(clippy::format_push_string)]
-fn render_flake(composition: &ResolvedComposition) -> String {
+fn render_flake(
+    selected_manifest: &ResolvedArtifact,
+    composition: &ResolvedComposition,
+    baseline: &BaselineInputs,
+) -> String {
     let mut text = String::from(concat!(
         "{\n",
         "  description = \"vivarium generated project flake\";\n",
         "  inputs = {\n",
-        "    nixpkgs.url = \"github:NixOS/nixpkgs/nixos-unstable\";\n",
-        "    microvm.url = \"github:astro/microvm.nix\";\n",
-        "    microvm.inputs.nixpkgs.follows = \"nixpkgs\";\n",
     ));
+    text.push_str(&format!(
+        "    nixpkgs.url = \"{}\";\n",
+        nix_string(&baseline.nixpkgs)
+    ));
+    text.push_str(&format!(
+        "    microvm.url = \"{}\";\n",
+        nix_string(&baseline.microvm)
+    ));
+    text.push_str("    microvm.inputs.nixpkgs.follows = \"nixpkgs\";\n");
     for (name, input) in &composition.inputs {
         text.push_str(&format!(
             "    {name} = {{ url = \"{}\";{} }};\n",
@@ -579,29 +666,87 @@ fn render_flake(composition: &ResolvedComposition) -> String {
         "      vivariumInputs = builtins.removeAttrs inputs ",
         "[ \"self\" \"nixpkgs\" \"microvm\" ];\n",
     ));
-    text.push_str("      modules = [\n");
-    text.push_str(&format!("        {}\n", nix_import(&composition.image)));
+    // The composed layers, each carrying the identity the provenance view names it by. This is the
+    // only place the tool's layer vocabulary — image, piece, extends, manifest — reaches Nix, and
+    // `vivarium-report.nix` evaluates each `module` alone against the option surface to recover
+    // what that layer contributed.
+    text.push_str("      layers = [\n");
+    text.push_str(&format!(
+        "        {}\n",
+        nix_layer(
+            "image",
+            &composition.image.name,
+            &nix_import(&composition.image)
+        )
+    ));
     for piece in &composition.pieces {
-        text.push_str(&format!("        {}\n", nix_import(piece)));
+        text.push_str(&format!(
+            "        {}\n",
+            nix_layer("piece", &piece.name, &nix_import(piece))
+        ));
     }
     if let Some(extends) = &composition.extends {
         text.push_str(&format!(
-            "        ./manifests/{}/{}\n",
-            extends.manifest_name,
-            extends.relative_target.display()
+            "        {}\n",
+            nix_layer(
+                "extends",
+                &extends.manifest_name,
+                &format!(
+                    "./manifests/{}/{}",
+                    extends.manifest_name,
+                    extends.relative_target.display()
+                ),
+            )
         ));
     }
-    text.push_str("        ./manifest-leaf.nix\n        microvm.nixosModules.microvm\n      ];\n");
+    text.push_str(&format!(
+        "        {}\n      ];\n",
+        nix_layer(
+            "manifest",
+            &selected_manifest.name,
+            &format!("./{MANIFEST_MODULE_FILE}")
+        )
+    ));
+    // The option surface comes first so no layer can be the module that declares the option it
+    // sets, and `microvm` comes last because it is upstream's, not a composed layer.
+    text.push_str(&format!(
+        "      modules = [ ./{OPTIONS_MODULE_FILE} ] ++ map (layer: layer.module) layers\n"
+    ));
+    text.push_str("        ++ [ microvm.nixosModules.microvm ];\n");
     text.push_str(concat!(
         "      build = system: nixpkgs.lib.nixosSystem { inherit system; ",
         "specialArgs = { inherit vivariumInputs; }; inherit modules; };\n",
     ));
-    text.push_str(concat!(
-        "    in { nixosConfigurations = { ",
-        "x86_64-linux = build \"x86_64-linux\"; ",
-        "aarch64-linux = build \"aarch64-linux\"; }; };\n}\n",
+    text.push_str(&format!(
+        "      report = system: import ./{REPORT_FILE} {{\n"
     ));
+    text.push_str(concat!(
+        "        inherit (nixpkgs) lib;\n",
+        "        pkgs = import nixpkgs { inherit system; };\n",
+        "        inherit vivariumInputs layers;\n",
+    ));
+    text.push_str(&format!(
+        "        optionsModule = ./{OPTIONS_MODULE_FILE};\n"
+    ));
+    text.push_str("        inherit (build system) config;\n      };\n");
+    text.push_str(concat!(
+        "    in {\n",
+        "      nixosConfigurations = { x86_64-linux = build \"x86_64-linux\"; ",
+        "aarch64-linux = build \"aarch64-linux\"; };\n",
+    ));
+    text.push_str(&format!(
+        "      {REPORT_ATTR} = {{ x86_64-linux = report \"x86_64-linux\"; "
+    ));
+    text.push_str("aarch64-linux = report \"aarch64-linux\"; };\n    };\n}\n");
     text
+}
+
+/// One entry of the generated `layers` list.
+fn nix_layer(kind: &str, name: &str, module: &str) -> String {
+    format!(
+        "{{ name = \"{}\"; kind = \"{kind}\"; module = {module}; }}",
+        nix_string(name)
+    )
 }
 
 fn nix_import(artifact: &ResolvedArtifact) -> String {
@@ -617,25 +762,85 @@ fn nix_import(artifact: &ResolvedArtifact) -> String {
     }
 }
 
+/// The manifest as the personal leaf of the merge.
+///
+/// Every table it declares becomes a definition of the matching tool-owned option at normal
+/// priority, which is the tier spec/04 gives the manifest: it outranks an image's or a piece's
+/// `mkDefault` proposal and yields to a shared piece's `mkForce` floor. What the manifest does not
+/// declare is not set here at all — an emitted default would be indistinguishable from an authored
+/// value in the provenance view, and would make an undeclared ceiling look decided when spec/03
+/// says the host resolves it at launch.
+///
+/// `image`, `pieces`, and `extends` are absent on purpose: they select the layers rather than
+/// contribute to the merge, and the generated flake already imports what they name.
 #[allow(clippy::format_push_string)]
 fn render_manifest_module(manifest: &Manifest) -> String {
-    let mut value = String::from(concat!(
-        "{ vivariumInputs, ... }: { _module.args = { inherit vivariumInputs; ",
-        "vivariumManifest = {\n",
-    ));
-    value.push_str(&format!("  image = \"{}\";\n", nix_string(&manifest.image)));
-    render_strings(&mut value, "pieces", &manifest.pieces);
-    if let Some(extends) = &manifest.extends {
-        value.push_str(&format!("  extends = \"{}\";\n", nix_string(extends)));
+    let mut vivarium = String::new();
+    if !manifest.env.is_empty() {
+        vivarium.push_str("    env = {");
+        for (name, content) in &manifest.env {
+            vivarium.push_str(&format!(
+                " \"{}\" = \"{}\";",
+                nix_string(name),
+                nix_string(content)
+            ));
+        }
+        vivarium.push_str(" };\n");
     }
-    if let Some(resources) = manifest.resources {
-        value.push_str("  resources = {");
-        render_optional_u32(&mut value, "mem_mib", resources.mem_mib);
-        render_optional_u32(&mut value, "vcpu", resources.vcpu);
-        value.push_str(" };\n");
+    if !manifest.mounts.is_empty() {
+        vivarium.push_str("    mounts = [");
+        for mount in &manifest.mounts {
+            vivarium.push_str(&format!(
+                " {{ source = \"{}\"; target = \"{}\"; readonly = {}; }}",
+                nix_string(&mount.source),
+                nix_string(&mount.target),
+                mount.readonly
+            ));
+        }
+        vivarium.push_str(" ];\n");
+    }
+    if let Some(resources) = manifest.resources
+        && (resources.mem_mib.is_some() || resources.vcpu.is_some())
+    {
+        vivarium.push_str("    resources = {");
+        render_optional_u32(&mut vivarium, "mem_mib", resources.mem_mib);
+        render_optional_u32(&mut vivarium, "vcpu", resources.vcpu);
+        vivarium.push_str(" };\n");
+    }
+    if !manifest.volumes.is_empty() {
+        vivarium.push_str("    volumes = [");
+        for volume in &manifest.volumes {
+            vivarium.push_str(&format!(
+                " {{ name = \"{}\"; mount = \"{}\";",
+                nix_string(&volume.name),
+                nix_string(&volume.mount)
+            ));
+            render_optional_u32(&mut vivarium, "size_gib", volume.size_gib);
+            vivarium.push_str(" }");
+        }
+        vivarium.push_str(" ];\n");
+    }
+    if let Some(volume) = &manifest.volume {
+        vivarium.push_str("    volume = {");
+        render_optional_u32(&mut vivarium, "size_gib", volume.size_gib);
+        if !volume.persist.is_empty() {
+            vivarium.push_str(" persist = [");
+            for path in &volume.persist {
+                vivarium.push_str(&format!(" \"{}\"", nix_string(path)));
+            }
+            vivarium.push_str(" ];");
+        }
+        vivarium.push_str(" };\n");
+    }
+
+    let mut value = String::from("{ ... }:\n{\n");
+    if !vivarium.is_empty() {
+        value.push_str("  vivarium = {\n");
+        value.push_str(&vivarium);
+        value.push_str("  };\n");
     }
     if let Some(egress) = &manifest.egress {
-        value.push_str("  egress = {");
+        value.push_str("  sandbox.egress = {");
         if let Some(mode) = egress.mode {
             value.push_str(&format!(
                 " mode = \"{}\";",
@@ -645,60 +850,17 @@ fn render_manifest_module(manifest: &Manifest) -> String {
                 }
             ));
         }
-        value.push_str(" allow = [");
-        for allowed in &egress.allow {
-            value.push_str(&format!(" \"{}\"", nix_string(allowed)));
+        if !egress.allow.is_empty() {
+            value.push_str(" allow = [");
+            for allowed in &egress.allow {
+                value.push_str(&format!(" \"{}\"", nix_string(allowed)));
+            }
+            value.push_str(" ];");
         }
-        value.push_str(" ]; };\n");
+        value.push_str(" };\n");
     }
-    value.push_str("  env = {");
-    for (name, content) in &manifest.env {
-        value.push_str(&format!(
-            " \"{}\" = \"{}\";",
-            nix_string(name),
-            nix_string(content)
-        ));
-    }
-    value.push_str(" };\n  mounts = [");
-    for mount in &manifest.mounts {
-        value.push_str(&format!(
-            " {{ source = \"{}\"; target = \"{}\"; readonly = {}; }}",
-            nix_string(&mount.source),
-            nix_string(&mount.target),
-            mount.readonly
-        ));
-    }
-    value.push_str(" ];\n  volumes = [");
-    for volume in &manifest.volumes {
-        value.push_str(&format!(
-            " {{ name = \"{}\"; mount = \"{}\";",
-            nix_string(&volume.name),
-            nix_string(&volume.mount)
-        ));
-        render_optional_u32(&mut value, "size_gib", volume.size_gib);
-        value.push_str(" }");
-    }
-    value.push_str(" ];\n");
-    if let Some(volume) = &manifest.volume {
-        value.push_str("  volume = {");
-        render_optional_u32(&mut value, "size_gib", volume.size_gib);
-        value.push_str(" persist = [");
-        for path in &volume.persist {
-            value.push_str(&format!(" \"{}\"", nix_string(path)));
-        }
-        value.push_str(" ]; };\n");
-    }
-    value.push_str("}; }; }\n");
+    value.push_str("}\n");
     value
-}
-
-#[allow(clippy::format_push_string)]
-fn render_strings(output: &mut String, name: &str, values: &[String]) {
-    output.push_str(&format!("  {name} = ["));
-    for value in values {
-        output.push_str(&format!(" \"{}\"", nix_string(value)));
-    }
-    output.push_str(" ];\n");
 }
 
 #[allow(clippy::format_push_string)]
@@ -723,9 +885,35 @@ mod tests {
     use std::os::unix::fs::symlink;
     use std::path::Path;
 
-    use super::{EffectiveLock, GeneratedEntry, GeneratedFlakePlan, ResolvedComposition};
+    use std::ffi::OsString;
+
+    use super::{
+        BaselineInputs, EffectiveLock, GeneratedEntry, GeneratedFlakePlan, ResolvedComposition,
+    };
     use crate::config::test_support::ScratchDirectory;
     use crate::config::{ArtifactForm, ArtifactKind, Manifest, ResolvedArtifact, XdgRoots};
+
+    /// The seam AGENTS.md's pin-in-development rule runs through, in both directions.
+    #[test]
+    fn the_baseline_ships_branches_and_takes_a_development_pin() {
+        let shipped = BaselineInputs::from_environment(&(|_: &'static str| None));
+        assert_eq!(shipped, BaselineInputs::default());
+        assert!(shipped.nixpkgs.starts_with("github:"));
+
+        let pinned = BaselineInputs::from_environment(
+            &(|name: &'static str| match name {
+                super::BASELINE_NIXPKGS_VARIABLE => {
+                    Some(OsString::from("path:/nix/store/x-source"))
+                }
+                // An empty override is the shape a lane that failed to compute one would set,
+                // and it must fall back rather than render an empty input URL.
+                super::BASELINE_MICROVM_VARIABLE => Some(OsString::from("   ")),
+                _ => None,
+            }),
+        );
+        assert_eq!(pinned.nixpkgs, "path:/nix/store/x-source");
+        assert_eq!(pinned.microvm, BaselineInputs::default().microvm);
+    }
 
     #[test]
     fn resolves_paths_order_inputs_and_missing_lock() -> Result<(), Box<dyn std::error::Error>> {
@@ -806,6 +994,7 @@ mod tests {
             "image = 'base'",
             &manifest,
             &composition,
+            &BaselineInputs::default(),
         )?;
         let second = GeneratedFlakePlan::build(
             &roots,
@@ -813,6 +1002,7 @@ mod tests {
             "image = 'base'",
             &manifest,
             &composition,
+            &BaselineInputs::default(),
         )?;
         assert_eq!(first, second);
         assert!(first.entries.iter().any(|entry| matches!(

@@ -98,6 +98,21 @@ Three properties are worth knowing before reading a result from it.
 
 Retained diagnostics live under `${TMPDIR:-/tmp}/vivarium-agent-host-*` and are removed only by `--clean`, because a failure is meant to be readable afterwards.
 
+## The sibling script: `tests/host/guest-system-check`
+
+The one lane that needs no guest at all. It exists because nothing in the product builds a guest system: `viv config eval` reads the merged option surface and never forces `system.build.toplevel`, and no verb builds one until slice 012 boots. Without this script the claim that a shipped example manifest reaches a derivation would rest on somebody having run it by hand once.
+
+```console
+$ tests/host/guest-system-check          # evaluation tier only
+$ tests/host/guest-system-check --build  # also realise the derivation
+```
+
+It runs [`../../tests/host/disk-preflight`](../../tests/host/disk-preflight) before anything else, declaring three gibibytes for the evaluation tier and eight for the build tier. Point `VIVARIUM_HEAVY_DRIVE` at a directory on another drive to answer in advance; on a short disk with a terminal it asks, and without one it refuses. A refusal means nothing ran, which is the whole point of asking first.
+
+It then copies [`../../examples/`](../../examples/README.md) into a temporary config root under a temporary `HOME`, binds a project, and evaluates twice. The second run is the assertion rather than a repetition of the first: the first resolves the flake inputs and installs the tool-owned pin, and the second must reuse that pin and reach upstream for nothing.
+
+The build tier is opt-in because it realises a complete NixOS closure and no faster check proves the same thing. Both tiers name what they skipped and why, so a run that only did the cheap half cannot read as having done both.
+
 ## Findings register
 
 Verified on a real host. Each entry names the version it applies to; nothing here is inferred from an agent's execution environment.
@@ -120,6 +135,15 @@ Figures across the two runs:
 | Disconnect to guest process death | 2.062 s                         | 2.061 s  |
 
 Two of those settle constants in `crates/vivarium-guest-agent/src/session.rs`, each by a rule fixed before the run. `EXIT_DRAIN_LIMIT` stays 250 ms: the worst case is about 2% of it, far under the 40% that would have forced a raise, and the measurement brackets the drain from above because it times the whole session. `DISCONNECT_GRACE` stays 2 s on narrower evidence, and the difference matters — the probe uses `trap '' TERM`, so the grace always elapses in full and the figure is the bound firing plus the probing session's own boot. It says escalation reaches a real guest process table and stays bounded; it is not a distribution of ordinary drains, because nothing here measures one.
+
+### A shipped example manifest builds to a guest system, and pinning the baseline took the lanes off the GitHub API
+
+Measured 2026-08-11 by `tests/host/guest-system-check`, twice, both tiers green: `examples/manifests/rust-web.toml` bound to a project builds to `nixos-system-vivarium`. Nothing boots it yet; that is slice 012's.
+
+Two things the run settles that were assumptions before it.
+
+- The generated flake's branch references cost a GitHub API request per fresh evaluation, and the anonymous limit is sixty an hour. A suite that evaluates from a clean data root in trial after trial reaches it: three consecutive `403`s closed the `ConfigEval` gate mid-session and the trials skipped green. With the baseline pinned to the product flake's own store paths, a full `cargo test --test user_workflows` makes zero API requests and runs in seven seconds rather than nineteen. The convention this produced is in [`../../AGENTS.md`](../../AGENTS.md): development pins, the shipped product resolves live.
+- A `path:` pin has a visible cost worth recognising before it is mistaken for a defect. The built system is labelled `26.11.19700101.dirty`, because a store-path input carries no revision or timestamp for nixpkgs to derive a version label from. The closure is the pinned one; only the label is uninformative, and only under a development pin.
 
 ### Four assertions written for this lane had never executed, and three were wrong
 

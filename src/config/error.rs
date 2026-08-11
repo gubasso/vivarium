@@ -594,13 +594,127 @@ impl ManifestErrorKind {
     }
 }
 
+/// A failure while evaluating a published generated flake.
+///
+/// Held apart from [`GeneratedFlakeError`] because the two answer for different halves of the same
+/// path: that one owns everything up to a tree on disk, this one owns what Nix then says about it.
+/// The split keeps the exit mapping honest — a tree vivarium could not write is `74` on a channel
+/// it owns, and a tree Nix could not evaluate is `70` on a fault it does not.
+#[derive(Debug, Error)]
+pub enum EvaluationError {
+    #[error("nix is not available on this host")]
+    NixMissing {
+        #[source]
+        source: std::io::Error,
+    },
+    /// `nix` resolved on `PATH` but the host refused to execute it. Held apart from
+    /// [`Self::NixUnusable`] because the exit mapping turns on the difference: a prerequisite that
+    /// is absent or too old is `69`, while one the host forbids acting on is a filesystem
+    /// permission failure, which is the `77` the `config` rows of spec/14 admit for preflight.
+    #[error("not permitted to run nix")]
+    NixNotPermitted {
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("could not run nix")]
+    NixUnusable {
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("nix {verb} failed")]
+    NixFailed { verb: &'static str, stderr: String },
+    /// A declared flake input the lock in force has no node for (spec/04). Not a Nix fault: the
+    /// build refuses on purpose rather than re-resolving inputs, which is the unannounced input
+    /// jump N3 exists to prevent.
+    #[error("the lock in force has no node for an input this composition declares")]
+    LockMissingNode { stderr: String },
+    #[error("could not read what nix produced")]
+    Undecodable { detail: String },
+}
+
+impl EvaluationError {
+    /// Classifies a host prerequisite, a Nix fault, and a refused input jump apart.
+    #[must_use]
+    pub const fn exit_code(&self) -> ExitKind {
+        match self {
+            Self::NixMissing { .. } | Self::NixUnusable { .. } => ExitKind::Unavailable,
+            Self::NixNotPermitted { .. } => ExitKind::NoPerm,
+            Self::NixFailed { .. } | Self::Undecodable { .. } => ExitKind::Software,
+            Self::LockMissingNode { .. } => ExitKind::Config,
+        }
+    }
+
+    /// Renders the failure through the shared diagnostic skeleton.
+    #[must_use]
+    pub fn diagnostic(&self) -> Diagnostic {
+        match self {
+            Self::NixMissing { source } => Diagnostic::new(
+                DiagnosticId::new(Namespace::Host, "nix-missing"),
+                self.to_string(),
+                Locus::Named("host"),
+                source.to_string(),
+            )
+            .with_hint("install Nix with flakes enabled; every vivarium build is a Nix build"),
+            Self::NixNotPermitted { source } => Diagnostic::new(
+                DiagnosticId::new(Namespace::Host, "nix-not-permitted"),
+                self.to_string(),
+                Locus::Named("host"),
+                source.to_string(),
+            )
+            .with_hint("check the execute bit on the `nix` your PATH resolves to"),
+            Self::NixUnusable { source } => Diagnostic::new(
+                DiagnosticId::new(Namespace::Host, "nix-unusable"),
+                self.to_string(),
+                Locus::Named("host"),
+                source.to_string(),
+            ),
+            Self::NixFailed { stderr, .. } => Diagnostic::new(
+                DiagnosticId::new(Namespace::Store, "evaluation-failed"),
+                self.to_string(),
+                Locus::Named("generated flake"),
+                truncate_stderr(stderr),
+            ),
+            Self::LockMissingNode { stderr } => Diagnostic::new(
+                DiagnosticId::new(Namespace::Lock, "missing-node"),
+                self.to_string(),
+                Locus::Named("effective lock"),
+                truncate_stderr(stderr),
+            )
+            .with_hint("run `viv update` to move the pin; no ordinary build re-resolves inputs"),
+            Self::Undecodable { detail } => Diagnostic::new(
+                DiagnosticId::new(Namespace::Internal, "report-undecodable"),
+                self.to_string(),
+                Locus::Named("generated flake"),
+                detail.clone(),
+            ),
+        }
+    }
+}
+
+/// Keeps a Nix trace inside the `why:` slot without turning a diagnostic into a transcript.
+///
+/// The whole trace is what a user needs and stderr is where it belongs, but the skeleton's `why:`
+/// is one reason rather than a log. The tail is kept rather than the head: Nix puts the message
+/// that names the actual defect last, under the `while evaluating` frames that lead to it.
+fn truncate_stderr(stderr: &str) -> String {
+    const KEPT_LINES: usize = 12;
+    let trimmed = stderr.trim_end();
+    let lines: Vec<&str> = trimmed.lines().collect();
+    if lines.len() <= KEPT_LINES {
+        return trimmed.to_owned();
+    }
+    lines[lines.len() - KEPT_LINES..].join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use std::error::Error as _;
     use std::io;
     use std::path::PathBuf;
 
-    use super::{GeneratedFlakeError, GeneratedFlakeErrorKind, InputError, ResolutionError};
+    use super::{
+        EvaluationError, GeneratedFlakeError, GeneratedFlakeErrorKind, InputError, ResolutionError,
+    };
     use crate::config::ArtifactKind;
     use crate::diagnostic::{Locus, Namespace};
     use crate::exit::ExitKind;
@@ -715,5 +829,27 @@ mod tests {
             std::iter::empty::<String>(),
         );
         assert_eq!(input.exit_code(), ExitKind::Config);
+    }
+
+    /// Pins the three answers a failed `nix` spawn can give. The middle one is the point: spec/14's
+    /// `config eval` and `config sources` rows admit `77` for the Nix preflight, and a `nix` the
+    /// host refuses to execute is the filesystem permission failure that code names.
+    #[test]
+    fn a_refused_nix_spawn_is_a_permission_failure_not_an_unavailable_host() {
+        let missing = EvaluationError::NixMissing {
+            source: io::Error::from(io::ErrorKind::NotFound),
+        };
+        assert_eq!(missing.exit_code(), ExitKind::Unavailable);
+
+        let refused = EvaluationError::NixNotPermitted {
+            source: io::Error::from(io::ErrorKind::PermissionDenied),
+        };
+        assert_eq!(refused.exit_code(), ExitKind::NoPerm);
+        assert!(refused.source().is_some());
+
+        let unusable = EvaluationError::NixUnusable {
+            source: io::Error::other("failed"),
+        };
+        assert_eq!(unusable.exit_code(), ExitKind::Unavailable);
     }
 }

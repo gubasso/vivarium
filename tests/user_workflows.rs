@@ -192,9 +192,12 @@ fn harness_self_check() -> Result<(), Failed> {
     }
 
     // The isolation hole that would silently invalidate every fail-closed `78`
-    // assertion: an ambient VIVARIUM_MANIFEST reaching the child.
+    // assertion: an ambient VIVARIUM_MANIFEST reaching the child. The check is that
+    // every `VIVARIUM_` variable the child sees is one the harness put there on
+    // purpose — a bare prefix scan would have to be relaxed the moment the harness
+    // needed to inject anything, and relaxing it is how the hole reopens.
     let leak = run_viv(Path::new("sh"), &tp, tp.project(), &["-c", "env"]).map_err(io_failed)?;
-    check(expect_stdout_lacks(&leak, "VIVARIUM_"))?;
+    check(expect_injected_vivarium_variables_only(&leak))?;
 
     if !gate().is_well_formed() {
         return fail("gate probe returned a malformed decision");
@@ -1118,6 +1121,33 @@ fn viv(tp: &TempProject, args: &[&str]) -> Result<VivOutput, Failed> {
 
 fn viv_at(tp: &TempProject, cwd: &Path, args: &[&str]) -> Result<VivOutput, Failed> {
     run_viv(gate().viv(), tp, cwd, args).map_err(io_failed)
+}
+
+/// The `VIVARIUM_` variables a child is allowed to see, and why each one is there.
+///
+/// `VIVARIUM_BASELINE_*` pin the generated flake's baseline inputs to local store paths, which is
+/// what keeps this suite off the GitHub API; neither participates in manifest resolution, so
+/// neither can turn an expected `78` into a success.
+const INJECTED_VARIABLES: [&str; 2] = ["VIVARIUM_BASELINE_NIXPKGS", "VIVARIUM_BASELINE_MICROVM"];
+
+fn expect_injected_vivarium_variables_only(out: &VivOutput) -> Result<(), String> {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let leaked: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with("VIVARIUM_"))
+        .filter(|line| {
+            !INJECTED_VARIABLES
+                .iter()
+                .any(|name| line.starts_with(&format!("{name}=")))
+        })
+        .collect();
+    if leaked.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "the child saw vivarium variables the harness did not inject: {}",
+        leaked.join(", ")
+    ))
 }
 
 fn require_gate(level: GateLevel) -> Result<(), Failed> {

@@ -10,11 +10,15 @@
 mod artifact;
 mod atomic;
 mod error;
+// Public as modules rather than through flat re-exports: their names say what they mean only next
+// to the noun they belong to — `evaluate::report`, `merged::analyze`.
+pub mod evaluate;
 mod flake;
 mod identity;
 mod input;
 mod manifest;
 mod materialize;
+pub mod merged;
 // Public as a module rather than through flat re-exports: its verbs are `read`, `parse`, and
 // `update`, which say what they mean only next to the noun they act on.
 pub mod registry;
@@ -25,10 +29,13 @@ mod roots;
 mod test_support;
 
 pub use artifact::{ArtifactForm, ArtifactKind, ResolvedArtifact, resolve_artifact};
-pub use error::{GeneratedFlakeError, InputError, ManifestError, RegistryError, ResolutionError};
+pub use error::{
+    EvaluationError, GeneratedFlakeError, InputError, ManifestError, RegistryError, ResolutionError,
+};
 pub use flake::{
-    EffectiveLock, FlakeInput, GeneratedFlakePaths, GeneratedFlakePlan, PreparedFlake,
-    ResolvedComposition, target_paths,
+    BASELINE_MICROVM_VARIABLE, BASELINE_NIXPKGS_VARIABLE, BaselineInputs, EffectiveLock,
+    FlakeInput, GeneratedFlakePaths, GeneratedFlakePlan, PreparedFlake, ResolvedComposition,
+    target_paths,
 };
 pub use identity::sanitize_project_name;
 pub use manifest::{

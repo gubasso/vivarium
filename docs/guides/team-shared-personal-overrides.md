@@ -1,6 +1,6 @@
 # Combine team configuration with a personal override
 
-> Design-intent walkthrough — not yet working. This guide describes the target experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
+> Every command in this guide runs today; booting what it configures does not. For what is implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status.
 
 Use this flow when a team wants one shared configuration and each person wants their own adjustments on top. The split that makes it work: images and pieces are shared; the manifest is yours ([secrets and configuration sharing](../reference/spec/07-secrets-and-config-sharing.md), settled by [the decision naming the manifest as the personal layer](../decisions/ADR-0040-manifest-is-the-personal-layer.md)). Everyone adopts the same pieces, and nobody edits them to change a value that is only theirs.
 

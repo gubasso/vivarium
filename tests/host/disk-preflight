@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+
+# Decide where a disk-heavy run puts its bytes, before it writes any of them.
+#
+# Building an image, realising a NixOS closure, or filling a store measures in
+# gigabytes, and the failure mode when the disk is short is not a clean refusal.
+# It is a write error somewhere in the middle: a half-fetched input, a lane that
+# reports a product defect it did not find, and a workspace nobody can tell apart
+# from a broken change. That happened here — a full `/nix` made `nix flake
+# archive` fail silently, the harness fell back to resolving live, and the
+# measurement that followed described the fallback rather than the product.
+#
+# So the question is asked first and answered once, while deferring is still
+# free. The caller declares what it needs; this decides where it goes.
+#
+#   scratch=$(tests/host/disk-preflight --need 6 --label "guest system build") || exit 1
+#   [[ -n $scratch ]] && export TMPDIR="$scratch"
+#
+# stdout carries the scratch directory to use and nothing else, so a caller can
+# capture it. Everything a human reads goes to stderr.
+#
+# `VIVARIUM_HEAVY_DRIVE` is the answer given in advance: point it at a directory
+# on the drive that should absorb this, and no prompt appears. Without it, a
+# terminal is asked and a non-interactive run is refused rather than guessed for
+# — an automated lane that silently filled the boot disk is the outcome this
+# exists to prevent.
+#
+# One thing it deliberately cannot promise: the Nix store's own location. A
+# closure lands in the store this daemon serves, and moving that is a machine
+# decision, not a lane's. What this moves is build scratch, and what it does
+# about the store is refuse to start a run that will not fit in it.
+
+set -u
+
+NEED_GIB=0
+LABEL="this run"
+# Enough headroom that a run finishing exactly at the line still leaves the host
+# usable. A disk at literally zero takes more than the build down with it.
+MARGIN_GIB=2
+
+while (($#)); do
+  case "$1" in
+    --need)
+      NEED_GIB="${2:-0}"
+      shift 2
+      ;;
+    --label)
+      LABEL="${2:-this run}"
+      shift 2
+      ;;
+    *)
+      printf 'disk-preflight: unknown argument %s\n' "$1" >&2
+      exit 64
+      ;;
+  esac
+done
+
+note() { printf '%s\n' "$1" >&2; }
+
+# Free gibibytes on the filesystem holding a path, or 0 when it cannot be read.
+free_gib() {
+  local path=$1
+  while [[ -n $path && ! -e $path ]]; do
+    path=$(dirname -- "$path")
+  done
+  df -PB1G -- "$path" 2>/dev/null | awk 'NR == 2 { print $4 + 0 }'
+}
+
+STORE=${NIX_STORE_DIR:-/nix/store}
+SCRATCH=${TMPDIR:-/tmp}
+REQUIRED=$((NEED_GIB + MARGIN_GIB))
+
+store_free=$(free_gib "$STORE")
+scratch_free=$(free_gib "$SCRATCH")
+
+note "disk-preflight: $LABEL needs about ${NEED_GIB}G, plus ${MARGIN_GIB}G headroom"
+note "  store   $STORE: ${store_free}G free"
+note "  scratch $SCRATCH: ${scratch_free}G free"
+
+# The answer given in advance. Validated rather than trusted: a drive that is not
+# mounted looks exactly like an empty directory, and writing the run into the
+# mountpoint of an absent disk is the same failure with extra steps.
+if [[ -n ${VIVARIUM_HEAVY_DRIVE:-} ]]; then
+  drive=$VIVARIUM_HEAVY_DRIVE
+  if ! mkdir -p -- "$drive" 2>/dev/null || [[ ! -w $drive ]]; then
+    note "disk-preflight: VIVARIUM_HEAVY_DRIVE=$drive is not a writable directory"
+    exit 69
+  fi
+  drive_free=$(free_gib "$drive")
+  note "  drive   $drive: ${drive_free}G free"
+  if ((drive_free < REQUIRED)); then
+    note "disk-preflight: $drive has ${drive_free}G, short of the ${REQUIRED}G this needs"
+    exit 69
+  fi
+  if ((store_free < REQUIRED)); then
+    # Worth saying plainly rather than proceeding into it: scratch moved, the
+    # closure did not, and the closure is the larger half.
+    note "disk-preflight: scratch moves to $drive, but the closure still lands in $STORE,"
+    note "                which has ${store_free}G. Free space there or expect this to fail."
+    exit 69
+  fi
+  printf '%s\n' "$drive"
+  exit 0
+fi
+
+if ((store_free >= REQUIRED && scratch_free >= REQUIRED)); then
+  printf '\n'
+  exit 0
+fi
+
+note "disk-preflight: not enough room for $LABEL on the current disk."
+
+if [[ ! -t 0 ]]; then
+  note "  Nothing was run. Set VIVARIUM_HEAVY_DRIVE to a directory on a drive with"
+  note "  ${REQUIRED}G free and start again, or free space where the store lives."
+  exit 69
+fi
+
+note "  Enter a directory on another drive to use for scratch, or:"
+note "    'here' to run on the current disk anyway"
+note "    'defer' to stop now and set a drive up first"
+printf '  path/here/defer> ' >&2
+read -r answer
+
+case "$answer" in
+  here)
+    note "disk-preflight: proceeding on the current disk at your say-so"
+    printf '\n'
+    exit 0
+    ;;
+  defer | '' | q | quit)
+    note "disk-preflight: deferred; nothing was run"
+    exit 75
+    ;;
+  *)
+    if ! mkdir -p -- "$answer" 2>/dev/null || [[ ! -w $answer ]]; then
+      note "disk-preflight: $answer is not a writable directory; nothing was run"
+      exit 69
+    fi
+    answer_free=$(free_gib "$answer")
+    if ((answer_free < REQUIRED)); then
+      note "disk-preflight: $answer has ${answer_free}G, short of ${REQUIRED}G; nothing was run"
+      exit 69
+    fi
+    note "disk-preflight: scratch goes to $answer"
+    printf '%s\n' "$answer"
+    exit 0
+    ;;
+esac

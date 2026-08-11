@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+
+# Build the guest system the shipped example manifest describes.
+#
+# This is the evidence behind slice 011's core: one shipped example manifest,
+# bound to a project, evaluates to a guest system derivation. Nothing in the
+# product does this yet — `viv config eval` reads the merged option surface and
+# never forces `system.build.toplevel`, and no verb builds — so without this lane
+# the claim would rest on one person having run it once by hand.
+#
+# Two tiers, and the split is cost, not topic:
+#
+#   Evaluation tier — copies the examples into an isolated config root, binds a
+#   project, and evaluates. Runs anywhere Nix is present and the inputs are
+#   reachable. Runs twice, because the first run resolves the flake inputs and
+#   installs the pin while the second must reuse that pin and touch the network
+#   for nothing — the two runs are the assertion, not a repetition of it.
+#
+#   Build tier — realises the guest system derivation. Gated behind the
+#   evaluation tier and on `--build`, because it downloads and builds a complete
+#   NixOS closure and no faster check proves the same thing.
+#
+# Output is one `[PASS]`/`[FAIL]`/`[SKIP]` line per check plus a verdict, so the
+# whole run pastes back into a review. A `[SKIP]` means unproven, never absent.
+#
+# Nothing here touches the invoking user's config, data, state, or cache roots:
+# the whole run happens under one temporary HOME, which is also what makes the
+# first-pin assertion meaningful.
+#
+# See docs/reference/testing-lanes.md for the lanes.
+
+set -u
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
+EXAMPLES="$REPO_ROOT/examples"
+MANIFEST=rust-web
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+  GREEN=$'\033[32m'
+  RED=$'\033[31m'
+  YELLOW=$'\033[33m'
+  RESET=$'\033[0m'
+else
+  GREEN=
+  RED=
+  YELLOW=
+  RESET=
+fi
+
+pass() {
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"
+}
+fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"
+  # sed prefixes every line of multiline evidence.
+  # shellcheck disable=SC2001
+  [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"
+}
+skip() {
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+  printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"
+}
+
+verdict() {
+  printf '\n%d passed, %d failed, %d skipped\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"
+  ((FAIL_COUNT == 0)) || exit 1
+  exit 0
+}
+
+BUILD=0
+[[ ${1:-} == --build ]] && BUILD=1
+
+# The same resolution order the trial harness uses, for the same reason: a
+# repository-local `target/` may be a leftover from before the dev shell moved
+# the target directory, and a lane that probed one of those would report on a
+# binary nobody is building.
+resolve_viv() {
+  if [[ -n ${VIVARIUM_TEST_VIV:-} ]]; then
+    printf '%s' "$VIVARIUM_TEST_VIV"
+    return
+  fi
+  printf '%s/debug/viv' "${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+}
+
+VIV=$(resolve_viv)
+
+# Before anything writes: a run that realises a NixOS closure measures in
+# gigabytes, and the honest moment to ask where those go is while deferring is
+# still free (AGENTS.md). The evaluation tier fetches inputs; the build tier
+# realises the closure, which is the larger half by far.
+if ((BUILD == 1)); then
+  need=8
+  what="the guest system build"
+else
+  need=3
+  what="the guest system evaluation"
+fi
+if ! scratch=$("$SCRIPT_DIR/disk-preflight" --need "$need" --label "$what"); then
+  printf '\n0 passed, 0 failed, 0 skipped (nothing ran: disk preflight refused)\n'
+  exit 1
+fi
+[[ -n $scratch ]] && export TMPDIR="$scratch"
+
+# Development pins; the shipped product resolves live (AGENTS.md). The generated
+# flake's baseline inputs default to branch references, and this lane evaluates
+# from a clean root every time — which would query the upstream forge on every
+# run and eventually be rate-limited into a red that is about GitHub. The pins
+# come from this repository's own product flake, as the local store paths its
+# lock already resolved to, so the lane reaches the network for nothing.
+pin_baseline() {
+  local archived
+  archived=$(nix flake archive --json \
+    --extra-experimental-features 'nix-command flakes' \
+    "path:$REPO_ROOT?dir=nix" 2>/dev/null) || return 1
+  BASELINE_NIXPKGS=$(python3 -c 'import json,sys; print("path:" + json.load(sys.stdin)["inputs"]["nixpkgs"]["path"])' <<<"$archived") || return 1
+  BASELINE_MICROVM=$(python3 -c 'import json,sys; print("path:" + json.load(sys.stdin)["inputs"]["microvm"]["path"])' <<<"$archived") || return 1
+}
+
+printf 'Evaluation tier\n'
+
+if ! command -v nix >/dev/null 2>&1; then
+  skip "example evaluates: nix is unavailable"
+  skip "second evaluation reuses the pin: nix is unavailable"
+  skip "guest system derivation builds: nix is unavailable"
+  verdict
+fi
+if [[ ! -x $VIV ]]; then
+  skip "example evaluates: no viv binary at $VIV (build one, or set VIVARIUM_TEST_VIV)"
+  skip "second evaluation reuses the pin: no viv binary"
+  skip "guest system derivation builds: no viv binary"
+  verdict
+fi
+
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/vivarium-guest-system-XXXXXX") || {
+  fail "isolated roots: mktemp failed"
+  verdict
+}
+trap 'rm -rf -- "$ROOT"' EXIT
+
+BASELINE_NIXPKGS=
+BASELINE_MICROVM=
+if pin_baseline; then
+  pass "baseline inputs pinned to the product flake's own revisions"
+else
+  # Named, not silent: a run that resolved live proved the same thing about
+  # vivarium and something quite different about this host's rate limit.
+  skip "baseline inputs pinned: nix flake archive failed; evaluating live instead"
+fi
+
+mkdir -p "$ROOT/home/.config/vivarium" "$ROOT/project"
+cp -r "$EXAMPLES/images" "$EXAMPLES/pieces" "$EXAMPLES/manifests" "$ROOT/home/.config/vivarium/"
+
+# `env -i` for the same reason the trial harness clears the environment: an
+# ambient VIVARIUM_MANIFEST sits in the resolution order and would decide what
+# this lane thinks it evaluated. PATH and the proxy/certificate variables are
+# re-injected because Nix needs them to fetch anything at all.
+# shellcheck disable=SC2016  # the inner quotes are the child shell's, on purpose.
+viv() {
+  env -i \
+    PATH="$PATH" \
+    HOME="$ROOT/home" \
+    XDG_CONFIG_HOME="$ROOT/home/.config" \
+    XDG_DATA_HOME="$ROOT/home/.local/share" \
+    XDG_STATE_HOME="$ROOT/home/.local/state" \
+    XDG_CACHE_HOME="$ROOT/home/.cache" \
+    ${SSL_CERT_FILE:+SSL_CERT_FILE="$SSL_CERT_FILE"} \
+    ${NIX_SSL_CERT_FILE:+NIX_SSL_CERT_FILE="$NIX_SSL_CERT_FILE"} \
+    ${BASELINE_NIXPKGS:+VIVARIUM_BASELINE_NIXPKGS="$BASELINE_NIXPKGS"} \
+    ${BASELINE_MICROVM:+VIVARIUM_BASELINE_MICROVM="$BASELINE_MICROVM"} \
+    sh -c 'cd "$1" && shift && exec "$@"' _ "$ROOT/project" "$VIV" "$@"
+}
+
+if ! bind_log=$(viv init --manifest "$MANIFEST" --write --yes 2>&1); then
+  fail "bind the shipped example" "$bind_log"
+  verdict
+fi
+
+if first_log=$(viv config eval --json 2>&1); then
+  pass "example evaluates: $MANIFEST"
+else
+  fail "example evaluates" "$first_log"
+  verdict
+fi
+
+# The pin the first evaluation created. Its absence would mean every later
+# command re-resolves upstream, which is the unannounced input jump N3 forbids.
+pin="$ROOT/home/.local/share/vivarium/projects/project/default/flake.lock"
+if [[ -s $pin ]]; then
+  pass "first evaluation installed the tool-owned pin"
+else
+  fail "first evaluation installed the tool-owned pin" "expected a non-empty $pin"
+fi
+
+if second_log=$(viv config eval --json 2>&1); then
+  pass "second evaluation reuses the pin"
+else
+  fail "second evaluation reuses the pin" "$second_log"
+fi
+
+binding=$(viv config --json 2>&1)
+flake=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["paths"]["flake"])' <<<"$binding" 2>/dev/null)
+if [[ -d $flake ]]; then
+  pass "generated flake is inspectable on disk: $flake"
+else
+  fail "generated flake is inspectable on disk" "$binding"
+  verdict
+fi
+
+printf '\nBuild tier\n'
+
+case "$(uname -m 2>/dev/null)" in
+  x86_64) system=x86_64-linux ;;
+  aarch64 | arm64) system=aarch64-linux ;;
+  *) system= ;;
+esac
+attr="$flake#nixosConfigurations.$system.config.system.build.toplevel"
+
+if [[ -z $system ]]; then
+  skip "guest system derivation builds: $(uname -m) is not a system the guest publishes"
+elif ((BUILD == 0)); then
+  # Named rather than silently omitted: a lane that skipped its expensive half
+  # without saying so would read as having proved the cheap half twice.
+  skip "guest system derivation builds: pass --build to realise it ($attr)"
+else
+  if build_log=$(nix build --no-link --print-out-paths \
+    --extra-experimental-features 'nix-command flakes' \
+    --no-update-lock-file "$attr" 2>&1); then
+    pass "guest system derivation builds: $(tail -n1 <<<"$build_log")"
+  else
+    fail "guest system derivation builds" "$build_log"
+  fi
+fi
+
+verdict

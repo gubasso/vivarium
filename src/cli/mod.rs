@@ -1,8 +1,8 @@
 //! The command surface: what each verb resolves, what it prints, and what it costs when it fails.
 //!
-//! Three verbs do real work here — `init`, `config`, and the `manifest` readers — because slice
-//! 011 is about turning a bound manifest into something evaluable, and those are the commands that
-//! bind it and show what was bound. The rest parse and fail closed, which is not a placeholder: an
+//! The verbs that do real work here are the ones slice 011 owns: `init` binds a project, the
+//! `manifest` readers show the library as authored, `config` shows what is bound, and the two
+//! `config` readers evaluate it. The rest parse and fail closed, which is not a placeholder: an
 //! unbound project answering `78` and a malformed invocation answering `64` are contracts spec/14
 //! already fixes, and they are true before the work behind the verb exists.
 //!
@@ -17,8 +17,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    self, ArtifactKind, Environment, GeneratedFlakeError, ManifestError, Registry, RegistryError,
-    ResolutionError, ResolvedArtifact, XdgRoots,
+    self, ArtifactKind, Environment, EvaluationError, GeneratedFlakeError, ManifestError, Registry,
+    RegistryError, ResolutionError, ResolvedArtifact, XdgRoots,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticId, Locus, Namespace};
 use crate::exit::ExitKind;
@@ -41,6 +41,25 @@ pub struct Context<'a, E: Environment> {
 pub struct Success {
     /// The result, for stdout. Empty when the command has nothing to say.
     pub stdout: String,
+    /// A note that accompanies a successful result, for stderr. Empty for most commands.
+    ///
+    /// Two things need it. `config sources` marks an equal-priority tie with `[tie]` and still
+    /// exits `0`, and spec/01 puts that marker on stderr so `… --json 2>/dev/null | jq` stays
+    /// clean. Both config readers announce the pin a first evaluation created, which spec/04
+    /// requires be reported and neither envelope has a field for. A note is not a failure, so it
+    /// cannot travel through [`Failure`], and it is not the result, so it must not travel through
+    /// stdout.
+    pub notes: String,
+}
+
+impl Success {
+    /// A result with nothing to add on stderr, which is every command but one.
+    const fn plain(stdout: String) -> Self {
+        Self {
+            stdout,
+            notes: String::new(),
+        }
+    }
 }
 
 /// What a command cost when it did not succeed.
@@ -107,14 +126,14 @@ pub fn run<E: Environment>(
         Invocation::Config { manifest, output } => {
             config_binding(context, manifest.as_deref(), *output)
         }
+        Invocation::ConfigEval { output } => config_eval(context, *output),
+        Invocation::ConfigSources { output } => config_sources(context, *output),
         Invocation::ManifestList { output } => manifest_list(context, *output),
         Invocation::ManifestShow { name, output } => manifest_show(context, name, *output),
         Invocation::Deferred { verb, .. } => deferred(context, *verb),
         // The caller performs the handoff, because it is the async half of this program and
         // nothing else here needs a runtime.
-        Invocation::StartSpec { .. } => Ok(Success {
-            stdout: String::new(),
-        }),
+        Invocation::StartSpec { .. } => Ok(Success::plain(String::new())),
     }
 }
 
@@ -148,9 +167,11 @@ fn init<E: Environment>(
     if !write {
         let snippet = Registry::snippet(&context.project, &name);
         if output.is_json() {
-            return Ok(Success {
-                stdout: render::init_preview_json(&name, &context.project, &selected.path),
-            });
+            return Ok(Success::plain(render::init_preview_json(
+                &name,
+                &context.project,
+                &selected.path,
+            )));
         }
         let registry_file = config::registry_path(&context.roots.state);
         let mut rendered = format!("manifest: {name}\npath: {}\n\n", selected.path.display());
@@ -161,7 +182,7 @@ fn init<E: Environment>(
         );
         rendered.push_str(&snippet);
         let _ = write!(rendered, "\nor run `viv init --manifest {name} --write`\n");
-        return Ok(Success { stdout: rendered });
+        return Ok(Success::plain(rendered));
     }
 
     // The confirmation spec/01 requires is `--yes`'s job to skip. Off a terminal there is nobody to
@@ -194,17 +215,17 @@ fn init<E: Environment>(
     .map_err(|error| registry_failure(&error))?;
 
     if output.is_json() {
-        return Ok(Success {
-            stdout: render::init_written_json(&name, &context.project, &selected.path),
-        });
+        return Ok(Success::plain(render::init_written_json(
+            &name,
+            &context.project,
+            &selected.path,
+        )));
     }
-    Ok(Success {
-        stdout: format!(
-            "bound `{}` to manifest `{name}`\nrecorded in `{}`\n",
-            context.project.display(),
-            config::registry_path(&context.roots.state).display(),
-        ),
-    })
+    Ok(Success::plain(format!(
+        "bound `{}` to manifest `{name}`\nrecorded in `{}`\n",
+        context.project.display(),
+        config::registry_path(&context.roots.state).display(),
+    )))
 }
 
 /// The binding record: what is in force, which source said so, and where everything lives.
@@ -233,12 +254,177 @@ fn config_binding<E: Environment>(
     let lock = paths.select_lock().map_err(|error| flake_failure(&error))?;
 
     if output.is_json() {
-        return Ok(Success {
-            stdout: render::binding_json(&binding, &context.roots, &paths.directory, lock.path()),
-        });
+        return Ok(Success::plain(render::binding_json(
+            &binding,
+            &context.roots,
+            &paths.directory,
+            lock.path(),
+        )));
+    }
+    Ok(Success::plain(render::binding_human(
+        &binding,
+        &context.roots,
+        &paths.directory,
+        lock.path(),
+    )))
+}
+
+/// The merged, evaluated configuration — what the layers produced.
+fn config_eval<E: Environment>(
+    context: &Context<'_, E>,
+    output: Output,
+) -> Result<Success, Failure> {
+    let evaluated = evaluate_binding(context)?;
+    // Never a partial render. A defect means the merge produced no answer, and printing the keys
+    // that happened to survive would let a reader act on a configuration that does not exist.
+    if let Some(failure) = defect_failure(&evaluated.analysis) {
+        return Err(failure);
     }
     Ok(Success {
-        stdout: render::binding_human(&binding, &context.roots, &paths.directory, lock.path()),
+        stdout: if output.is_json() {
+            render::config_eval_json(&evaluated.binding, &evaluated.manifest, &evaluated.analysis)
+        } else {
+            render::config_eval_human(&evaluated.analysis)
+        },
+        notes: evaluated.notes,
+    })
+}
+
+/// Provenance and defects — which layer each value came from, and what collided.
+///
+/// Exits `0` whatever it finds. A content defect is data here rather than this command's own
+/// failure, which is what keeps it usable at the one moment it is most needed: right after
+/// `config eval` refused (ADR-0042).
+fn config_sources<E: Environment>(
+    context: &Context<'_, E>,
+    output: Output,
+) -> Result<Success, Failure> {
+    let evaluated = evaluate_binding(context)?;
+    Ok(Success {
+        stdout: if output.is_json() {
+            render::config_sources_json(
+                &evaluated.binding,
+                &evaluated.manifest,
+                &evaluated.analysis,
+            )
+        } else {
+            render::config_sources_human(&evaluated.analysis)
+        },
+        notes: evaluated.notes + &render::tie_notes(&evaluated.analysis),
+    })
+}
+
+/// One bound manifest, prepared, evaluated, and read.
+struct Evaluated {
+    binding: config::ResolvedBinding,
+    manifest: config::Manifest,
+    /// What the evaluation has to say on stderr before the result reaches stdout.
+    notes: String,
+    analysis: config::merged::Analysis,
+}
+
+/// The path both config readers travel, up to the point where they disagree.
+///
+/// Identical for the two by construction: they must not be able to reach different answers about
+/// the same tree, and the only way to guarantee that is for one function to produce both.
+fn evaluate_binding<E: Environment>(context: &Context<'_, E>) -> Result<Evaluated, Failure> {
+    let registry = read_registry(context)?;
+    let Some(binding) =
+        config::resolve_binding(None, context.environment, &registry, &context.project)
+    else {
+        return Err(unbound(context));
+    };
+    let selected = resolve_manifest(context, &binding.manifest)?;
+    let (source, manifest) = read_manifest(context, &selected)?;
+    let project_id = config::sanitize_project_name(project_name(&context.project));
+    let prepared = config::prepare_generated_flake(
+        &context.roots,
+        &project_id,
+        DEFAULT_TARGET,
+        &selected,
+        &source,
+        &manifest,
+        &config::BaselineInputs::from_environment(context.environment),
+    )
+    .map_err(|error| flake_failure(&error))?;
+    let report = config::evaluate::report(&prepared).map_err(|error| evaluation_failure(&error))?;
+    // Only now, and only when this target had no pin: the lock is created by the first successful
+    // evaluation and thereafter moves only under `viv update` (spec/04, ADR-0059).
+    let created = prepared.effective_lock.may_persist_created();
+    let lock =
+        config::evaluate::persist_first_pin(&prepared).map_err(|error| flake_failure(&error))?;
+    // Announced, because spec/04 requires the created pin to be reported and a read-only command
+    // that quietly wrote one would be the surprise ADR-0011 exists to prevent. On stderr, since
+    // the pin is not the result the command was asked for. A first evaluation that then refuses a
+    // defect loses the note rather than the fact: `viv config` reports the lock in force at any
+    // time, so nothing here is the only chance to learn it.
+    let notes = if created {
+        format!(
+            "created the pin for this target: {}\n",
+            lock.path().display()
+        )
+    } else {
+        String::new()
+    };
+    Ok(Evaluated {
+        binding,
+        manifest,
+        notes,
+        analysis: config::merged::analyze(&report),
+    })
+}
+
+/// The first content defect, rendered as the `65` spec/14 fixes for it.
+///
+/// First rather than all, matching how `doctor` reports the first failing hard check: the four-slot
+/// skeleton names one condition, and a list of them would be a report rather than a diagnostic.
+/// `config sources` is where the complete set is read, and the hint says so.
+fn defect_failure(analysis: &config::merged::Analysis) -> Option<Failure> {
+    use config::merged::ConflictKind;
+
+    let diagnostic = if let Some(conflict) = analysis.conflicts.first() {
+        let layers = conflict.layers.join(", ");
+        match conflict.kind {
+            ConflictKind::Tie => Diagnostic::new(
+                DiagnosticId::new(Namespace::Merge, "equal-priority-tie"),
+                format!(
+                    "`{}` has two definitions at the same priority",
+                    conflict.key
+                ),
+                Locus::Named("merged configuration"),
+                format!("{layers} each set it, and priority never breaks a tie"),
+            )
+            .with_hint(concat!(
+                "a shared piece should propose with mkDefault so your manifest can decide; ",
+                "failing that, drop one piece or override through extends",
+            )),
+            ConflictKind::LiteralPath => Diagnostic::new(
+                DiagnosticId::new(Namespace::Merge, "literal-path"),
+                format!(
+                    "a shared layer carries a literal personal path in `{}`",
+                    conflict.key
+                ),
+                Locus::Named("merged configuration"),
+                format!("{layers} declared {}", conflict.evidence.join(", ")),
+            )
+            .with_hint(concat!(
+                "shared config is personal-data-free (N11): use `${HOME}` or an XDG name, ",
+                "which stay unexpanded until launch, or move the mount to your own manifest",
+            )),
+        }
+    } else {
+        let irreconcilable = analysis.irreconcilable.first()?;
+        Diagnostic::new(
+            DiagnosticId::new(Namespace::Merge, "irreconcilable"),
+            irreconcilable.what.clone(),
+            Locus::Named("merged configuration"),
+            irreconcilable.why.clone(),
+        )
+        .with_hint("run `viv config sources` to see every layer that contributed")
+    };
+    Some(Failure::Diagnosed {
+        diagnostic: Box::new(diagnostic),
+        code: ExitKind::DataErr,
     })
 }
 
@@ -270,13 +456,11 @@ fn manifest_list<E: Environment>(
         rows.push((name, selected, manifest));
     }
 
-    Ok(Success {
-        stdout: if output.is_json() {
-            render::manifest_list_json(&rows)
-        } else {
-            render::manifest_list_human(&rows)
-        },
-    })
+    Ok(Success::plain(if output.is_json() {
+        render::manifest_list_json(&rows)
+    } else {
+        render::manifest_list_human(&rows)
+    }))
 }
 
 /// Shows one manifest as authored — its own declarations, not a merged result.
@@ -287,13 +471,11 @@ fn manifest_show<E: Environment>(
 ) -> Result<Success, Failure> {
     let selected = resolve_manifest(context, name)?;
     let (_, manifest) = read_manifest(context, &selected)?;
-    Ok(Success {
-        stdout: if output.is_json() {
-            render::manifest_show_json(name, &selected, &manifest)
-        } else {
-            render::manifest_show_human(name, &selected, &manifest)
-        },
-    })
+    Ok(Success::plain(if output.is_json() {
+        render::manifest_show_json(name, &selected, &manifest)
+    } else {
+        render::manifest_show_human(name, &selected, &manifest)
+    }))
 }
 
 /// The verbs this slice parses but does not perform.
@@ -411,6 +593,13 @@ fn registry_failure(error: &RegistryError) -> Failure {
 }
 
 fn manifest_failure(error: &ManifestError) -> Failure {
+    Failure::Diagnosed {
+        diagnostic: Box::new(error.diagnostic()),
+        code: error.exit_code(),
+    }
+}
+
+fn evaluation_failure(error: &EvaluationError) -> Failure {
     Failure::Diagnosed {
         diagnostic: Box::new(error.diagnostic()),
         code: error.exit_code(),

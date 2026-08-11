@@ -11,8 +11,8 @@ use super::atomic::{self, Fault, StageFault};
 use super::error::GeneratedFlakeErrorKind;
 use super::flake::GeneratedEntry;
 use super::{
-    EffectiveLock, GeneratedFlakeError, GeneratedFlakePlan, Manifest, PreparedFlake,
-    ResolvedArtifact, ResolvedComposition, XdgRoots,
+    BaselineInputs, EffectiveLock, GeneratedFlakeError, GeneratedFlakePlan, Manifest,
+    PreparedFlake, ResolvedArtifact, ResolvedComposition, XdgRoots,
 };
 use crate::diagnostic::{Locus, Namespace};
 
@@ -33,6 +33,7 @@ pub fn prepare_generated_flake(
     selected_manifest: &ResolvedArtifact,
     manifest_source: &str,
     manifest: &Manifest,
+    baseline: &BaselineInputs,
 ) -> Result<PreparedFlake, GeneratedFlakeError> {
     let composition = ResolvedComposition::resolve(
         roots,
@@ -48,6 +49,7 @@ pub fn prepare_generated_flake(
         manifest_source,
         manifest,
         &composition,
+        baseline,
     )?;
     publish(&plan)
 }
@@ -227,14 +229,30 @@ fn apply_entry(root: &Path, entry: &GeneratedEntry) -> Result<(), GeneratedFlake
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<(), GeneratedFlakeError> {
-    let metadata = fs::symlink_metadata(source).map_err(|error| {
-        store_io(
-            "copy-inspect",
-            source,
-            "could not inspect copied tree",
-            error,
-        )
-    })?;
+    let metadata = match fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        // A library a user has not created yet is a normal state, not a broken one — the same
+        // reading `manifest list` gives an absent `manifests/`. The generated tree still gets the
+        // directory, because the flake's module paths are written against it either way.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return fs::create_dir(destination).map_err(|error| {
+                store_io(
+                    "copy-create-directory",
+                    destination,
+                    "could not create copied directory",
+                    error,
+                )
+            });
+        }
+        Err(error) => {
+            return Err(store_io(
+                "copy-inspect",
+                source,
+                "could not inspect copied tree",
+                error,
+            ));
+        }
+    };
     if !metadata.is_dir() {
         return Err(unsupported_type(source));
     }
@@ -607,7 +625,8 @@ mod tests {
     use super::{persist_created_lock, prepare_generated_flake};
     use crate::config::test_support::ScratchDirectory;
     use crate::config::{
-        ArtifactForm, ArtifactKind, EffectiveLock, Manifest, ResolvedArtifact, XdgRoots,
+        ArtifactForm, ArtifactKind, BaselineInputs, EffectiveLock, Manifest, ResolvedArtifact,
+        XdgRoots,
     };
     use crate::exit::ExitKind;
 
@@ -631,6 +650,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &BaselineInputs::default(),
         )?;
         fs::write(first.directory.join("old-only"), "old")?;
         let second = prepare_generated_flake(
@@ -640,6 +660,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &BaselineInputs::default(),
         )?;
         assert!(!second.directory.join("old-only").exists());
         assert_eq!(
@@ -666,9 +687,13 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &BaselineInputs::default(),
         )?;
         fs::write(prepared.directory.join("sentinel"), "old")?;
+        // A file where a library directory belongs. An absent one would not do: that is the
+        // ordinary state of a user who has written no pieces, and it copies as an empty directory.
         fs::remove_dir_all(roots.config.join("pieces"))?;
+        fs::write(roots.config.join("pieces"), "not a directory")?;
         let error = prepare_generated_flake(
             &roots,
             "project",
@@ -676,6 +701,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &BaselineInputs::default(),
         )
         .err()
         .ok_or("missing wholesale tree unexpectedly published")?;
@@ -705,6 +731,7 @@ mod tests {
                 image: "base".to_owned(),
                 ..Manifest::default()
             },
+            &BaselineInputs::default(),
         )?;
         assert_eq!(
             fs::read(prepared.directory.join("flake.lock"))?,
@@ -732,6 +759,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &BaselineInputs::default(),
         )?;
         fs::write(first.directory.join("flake.lock"), b"new pin")?;
         assert!(matches!(
@@ -746,6 +774,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &BaselineInputs::default(),
         )?;
         fs::write(second.directory.join("flake.lock"), b"new pin")?;
         let winner = second.effective_lock.path().to_path_buf();
@@ -760,6 +789,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &BaselineInputs::default(),
         )?;
         fs::write(third.directory.join("flake.lock"), b"losing pin")?;
         let winner = third.effective_lock.path().to_path_buf();
@@ -798,6 +828,7 @@ mod tests {
                 image: "base".to_owned(),
                 ..Manifest::default()
             },
+            &BaselineInputs::default(),
         )?;
         assert!(prepared.directory.join("flake.nix").is_file());
         Ok(())

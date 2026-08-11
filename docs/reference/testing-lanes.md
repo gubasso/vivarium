@@ -76,6 +76,8 @@ The duplication is the point: the first is fast and always runs, the second is a
 
 ## Two rules that keep the suite honest
 
+A disk-heavy lane asks where its bytes go before it writes any: [`../../tests/host/disk-preflight`](../../tests/host/disk-preflight), the rule in [`../../AGENTS.md`](../../AGENTS.md), and `guest-system-check` as the worked example. This is a rule about honesty rather than about capacity — a lane that fills the disk halfway through reports a failure that belongs to the disk, in the vocabulary of whatever change was under test.
+
 Every golden file names the spec line it encodes, in a header comment. Without that, accepting a diff is a keystroke rather than a decision, and a snapshot nobody traced back to the spec quietly becomes the contract — which inverts the resolution rule in [`../../AGENTS.md`](../../AGENTS.md).
 
 Every lane needs at least one ungated trial. The test runner treats a run in which every matching trial was ignored as a failure, so a lane whose trials are all gated reports a failure that means nothing. The existing `harness_self_check` is the pattern.

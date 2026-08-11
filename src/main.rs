@@ -67,6 +67,12 @@ async fn main() -> ExitCode {
             Ok(success) => {
                 print!("{}", success.stdout);
                 let _ = std::io::stdout().flush();
+                // A note is not the result, so it never joins stdout: `config sources` marks a tie
+                // and still succeeds, and a consumer piping stdout to `jq` must not receive it.
+                if !success.notes.is_empty() {
+                    eprint!("{}", success.notes);
+                    let _ = std::io::stderr().flush();
+                }
                 ExitCode::from(ExitKind::Success)
             }
             Err(failure) => fail(&failure, output),
@@ -93,6 +99,8 @@ const fn requested_output(invocation: &Invocation) -> Output {
     match invocation {
         Invocation::Init { output, .. }
         | Invocation::Config { output, .. }
+        | Invocation::ConfigEval { output }
+        | Invocation::ConfigSources { output }
         | Invocation::ManifestList { output }
         | Invocation::ManifestShow { output, .. }
         | Invocation::Deferred { output, .. } => *output,

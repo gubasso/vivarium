@@ -36,7 +36,15 @@ let
         || rel == "src"
         || lib.hasPrefix "src/" rel
         || rel == "crates"
-        || lib.hasPrefix "crates/vivarium-guest-agent" rel;
+        || lib.hasPrefix "crates/vivarium-guest-agent" rel
+        # The two product Nix files the crate itself carries: the tool embeds the
+        # option surface and the report expression and renders both into every
+        # generated flake, so they are crate source under `include_str!` rather
+        # than build inputs here. `nix` names the directory only so the filter
+        # can descend into it.
+        || rel == "nix"
+        || rel == "nix/vivarium-options.nix"
+        || rel == "nix/vivarium-report.nix";
     };
     cargoLock.lockFile = crateRoot + "/Cargo.lock";
     cargoBuildFlags = [

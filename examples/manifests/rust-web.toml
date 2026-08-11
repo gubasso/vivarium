@@ -1,0 +1,26 @@
+# A manifest: one image, the pieces layered onto it, and your own settings.
+#
+# This is the personal layer. Its values are set at normal priority, so they
+# outrank every image and piece default and yield only to a piece's `mkForce`
+# floor. That is also why nothing secret belongs here: the manifest's own text
+# is compiled into the generated flake and lands in the Nix store (N10).
+#
+# Copy it into `$XDG_CONFIG_HOME/vivarium/manifests/` and bind a project to it
+# with `viv init --manifest rust-web --write`.
+
+image = "base"
+pieces = ["rust-toolchain"]
+
+# Ceilings, not reservations. Leave either out and vivarium sizes it from the
+# host at launch, which is a different answer from writing a number here.
+[resources]
+mem_mib = 4096
+vcpu = 4
+
+[env]
+CARGO_TERM_COLOR = "always"
+
+# Uncomment to adopt the allowlist piece, which forces the mode; the hosts here
+# are added to the ones it declares rather than replacing them.
+# [egress]
+# allow = [ "api.example.com" ]

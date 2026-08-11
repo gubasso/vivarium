@@ -81,8 +81,10 @@ If the manifest carries an unknown key, then the failure SHALL carry all five pa
 
 ## Done when
 
-Every acceptance assertion above holds and is demonstrated by the trial it names, the shipped example manifest evaluates to a guest system derivation on a capable host, [`../../../reference/implementation-status.md`](../../../reference/implementation-status.md) carries the rows this slice moved to Implemented, and the [`milestones.md`](../../milestones.md) row flips to `done`.
+Every acceptance assertion above holds and is demonstrated by the trial it names, the shipped example manifest evaluates to a guest system derivation on a capable host under [`../../../../tests/host/guest-system-check`](../../../../tests/host/guest-system-check), [`../../../reference/implementation-status.md`](../../../reference/implementation-status.md) carries the rows this slice moved to Implemented, and the [`milestones.md`](../../milestones.md) row flips to `done`.
 
 ## Revisions
+
+`viv config sources` was removed from the ordered remainder while item 5 was in flight, and the appetite was exceeded rather than the scope cut. It cannot be cut for the same reason `viv manifest list` could not: opening the `ConfigEval` gate un-skips three trials, not the two this `Acceptance` names, and `workflow_03_team_shared_and_personal_override`, `workflow_04_inspect_before_run`, and `workflow_05_restrict_egress_config_surface` all read `viv config sources --json` and assert its `values` and `conflicts` records. Cutting it would leave the gate open over failing trials, which is worse than either shipping it or leaving the gate shut. Item 5 also proved to require the tool-owned options module, which nothing declared: every trial fixture sets `vivarium.*` and `sandbox.*`, so without it no composition evaluated at all. Goal, Core, and Acceptance are unchanged; the 3-session appetite is not, and the overrun is recorded here rather than absorbed silently.
 
 `viv manifest list` was removed from the ordered remainder while item 4 was in flight. It cannot be cut: the `Cli` gate in [`../../../../tests/support/mod.rs`](../../../../tests/support/mod.rs) probes by running `viv manifest list --json`, so the whole level — including the four usage trials this slice's `Acceptance` names — stays skipped until that verb works. Goal, Core, Appetite, and Acceptance are unchanged.

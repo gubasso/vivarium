@@ -2,13 +2,15 @@
 
 The single source of truth for what vivarium does today versus what is designed only. The specification under [`spec/`](spec/README.md) describes the intended design; this page records how much of it exists in code.
 
-## Current state: a project can be bound and inspected; nothing boots from a manifest yet
+## Current state: a manifest evaluates to a guest system derivation; nothing boots from one yet
 
 The Nix-built diagnostic runner now hands a strict launch contract to the Rust [policy constructor](../../src/launch/policy.rs), [transient-service renderer](../../src/launch/systemd.rs), and [supervisor](../../src/launch/supervisor.rs). The supervisor implements API create-before-boot ordering, one daemon per share, console ownership, group cancellation, allowlisted runtime cleanup, a current-boot agent ping, and initial credential-pool readiness. The shared [protocol](../../src/protocol/mod.rs) and private [guest agent](../../crates/vivarium-guest-agent/src/main.rs) implement bounded framing, process and PTY sessions, guest AF_VSOCK listeners, and declared SSH/GPG relays.
 
 The first public commands now run. [`../../src/config/registry.rs`](../../src/config/registry.rs) persists the project→manifest binding in the state root under an exclusive sidecar lock, [`../../src/config/resolve.rs`](../../src/config/resolve.rs) resolves the effective manifest through the fixed precedence, and [`../../src/cli/`](../../src/cli/) turns both into `viv init`, `viv config`, and the `manifest` readers. The `Cli` gate that skipped every trial is open, and its six trials pass.
 
-What is still gated is everything behind evaluation. No manifest is evaluated to a guest system derivation, so `viv config eval`, `viv config sources`, and every booting verb remain written-but-skipped. Their grammar and fail-closed paths do run — a malformed invocation answers `64` and an unbound project answers `78`, asserted by the usage trials named below — but the verbs themselves do nothing, and their rows stay at the middle level for that reason.
+Evaluation now runs. A bound manifest compiles to a generated flake carrying vivarium's own [option surface](../../nix/vivarium-options.nix) and [report expression](../../nix/vivarium-report.nix), [`../../src/config/evaluate.rs`](../../src/config/evaluate.rs) evaluates it through Nix and installs the pin the first evaluation creates, and [`../../src/config/merged.rs`](../../src/config/merged.rs) reads the result into effective values, provenance, and content defects. `viv config eval` renders the merge and refuses a defect with `65`; `viv config sources` renders the same defect and exits `0`. The shipped [example manifest](../../examples/manifests/rust-web.toml), bound to a project, evaluates to a guest system derivation, which [`../../tests/host/guest-system-check`](../../tests/host/guest-system-check) builds on a capable host. The `ConfigEval` gate is open on a host with Nix that can reach the flake inputs, and its three trials pass.
+
+What is still gated is booting. Nothing hands that derivation to the launch path yet, so every booting verb remains written-but-skipped. Their grammar and fail-closed paths do run — a malformed invocation answers `64` and an unbound project answers `78`, asserted by the usage trials named below — but the verbs themselves do nothing, and their rows stay at the middle level for that reason.
 
 What is no longer merely written is the guest half. `tests/guest_agent_host.rs` passes on a capable host, twice, driven by [`../../tests/host/guest-agent-check`](../../tests/host/guest-agent-check): real guest boot, AF_VSOCK transport on both ports, guest PTY job control and pre-`Start` sizing, boot-identity refusal that executes nothing, socket ownership and modes under `/run/vivarium`, opaque credential bytes, and pool refill under more concurrent clients than the pool has slots. The refill needed a backend at or above cloud-hypervisor v53.0 and no vivarium code ([KI-0002](./known-issues/resolved/KI-0002.md)). Figures and host in the [verification harness](./microvm-verification-harness.md).
 
@@ -20,7 +22,7 @@ Each command sits at one of three levels:
 - Acceptance test written (gated) — a trial in [`../../tests/user_workflows.rs`](../../tests/user_workflows.rs) encodes the intended behavior and is linked below, and the behavior the row names does not run. Some of these commands do have a passing usage trial: their grammar and their fail-closed answer are real, and only the work behind them is missing. That is not enough for the top level, which is about the command doing its job, so the row stays here and its Trial column says which half is covered. A written trial is a specification made executable, not evidence that anything works.
 - Implemented — the command runs and its trial passes.
 
-Three rows are at `Implemented`. Every other public command is written-but-skipped or designed only.
+Five rows are at `Implemented`. Every other public command is written-but-skipped or designed only.
 
 | Command                               | Status                          | Trial                                                                                           |
 | ------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -40,8 +42,8 @@ Three rows are at `Implemented`. Every other public command is written-but-skipp
 | `viv status`                          | Acceptance test written (gated) | `workflow_01_first_time_bind_boot`, `workflow_07_stop_restart_preserving_volumes`               |
 | `viv trim`                            | Designed                        | —                                                                                               |
 | `viv config`                          | Implemented                     | `workflow_01_first_time_bind_usage`, `workflow_02_clean_repo_global_registry_only`              |
-| `viv config sources`                  | Acceptance test written (gated) | `workflow_03_team_shared_and_personal_override`, `workflow_05_restrict_egress_config_surface`   |
-| `viv config eval`                     | Acceptance test written (gated) | `workflow_03_team_shared_and_personal_override`, `workflow_04_inspect_before_run`               |
+| `viv config sources`                  | Implemented                     | `workflow_03_team_shared_and_personal_override`, `workflow_05_restrict_egress_config_surface`   |
+| `viv config eval`                     | Implemented                     | `workflow_03_team_shared_and_personal_override`, `workflow_04_inspect_before_run`               |
 | `viv doctor`                          | Designed                        | —                                                                                               |
 
 ## Stability
