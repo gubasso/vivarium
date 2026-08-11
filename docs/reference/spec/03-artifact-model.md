@@ -169,6 +169,21 @@ The dividing line is what the authored text alone can decide — the manifest, p
 
 Two mount-source faults sit below this table because neither is decidable from declarations at all: a source that expands to a session directory only after host-side expansion, and a source whose resolved type is a socket, FIFO, or device node (N24, [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)). Both are host facts, so both are launch-time refusals returning `78` — before any side effect, in the same pass that already fails an unset variable or a missing path.
 
+### Diagnostic ids
+
+Each parse-stage defect above carries a stable `manifest.*` id, documented here because that is where the condition lives ([`14-exit-codes.md`](./14-exit-codes.md)). The id is greppable and never reassigned; a consumer that must branch still branches on the exit code, which is `78` for every row.
+
+| Id                       | Condition                                                             |
+| ------------------------ | --------------------------------------------------------------------- |
+| `manifest.syntax`        | the bytes are not TOML                                                |
+| `manifest.unknown-key`   | a key outside the table above — one of the two compatibility messages |
+| `manifest.missing-key`   | a required key is absent                                              |
+| `manifest.wrong-type`    | a known key holds the wrong TOML type                                 |
+| `manifest.invalid-value` | a known key holds a value outside its domain                          |
+| `manifest.extends-form`  | `extends` in a flat manifest, which has nowhere to put the module     |
+
+Only `manifest.unknown-key` carries the `accepted here:` slot for a key; `manifest.invalid-value` carries it when the domain is a closed set, such as `egress.mode`.
+
 ### `extends`
 
 `extends` names one raw `.nix` module — the escape hatch for composition the TOML cannot express. Its semantics are fixed in [`../../decisions/ADR-0060-extends-is-one-local-module.md`](../../decisions/ADR-0060-extends-is-one-local-module.md):

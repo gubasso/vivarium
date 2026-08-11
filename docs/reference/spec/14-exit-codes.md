@@ -52,7 +52,7 @@ Every vivarium-origin failure renders the same skeleton on stderr. Four slots ar
 error[manifest.unknown-key]: unknown key `schema_version` in manifest `rust-web`
   --> manifests/rust-web.toml:7:1
   why: not part of the manifest grammar viv 0.4.1 understands
-  accepted here: image, pieces, extends, env, mounts, resources, volumes
+  accepted here: image, pieces, extends, resources, egress, env, mounts, volumes, volume
   hint: remove the key, or upgrade vivarium — a manifest written for a newer
         vivarium reports its new keys exactly this way
 ```

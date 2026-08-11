@@ -94,7 +94,11 @@ pub fn resolve_artifact(
     }
 }
 
-fn valid_artifact_name(name: &str) -> bool {
+/// The kebab-case grammar shared by every name the config libraries resolve.
+///
+/// The manifest grammar means the same thing by "a name" (spec/03), so it reads this rather than
+/// carrying a second copy that could drift from the one resolution actually uses.
+pub(super) fn valid_artifact_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     let valid_edge = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
     !bytes.is_empty()

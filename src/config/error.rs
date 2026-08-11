@@ -1,8 +1,9 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
 use super::ArtifactKind;
+use crate::diagnostic::{Diagnostic, DiagnosticId, Locus, Namespace};
 use crate::exit::ExitKind;
 
 /// A failure while resolving an item-1 configuration path or name.
@@ -84,6 +85,218 @@ impl ResolutionError {
             | Self::RuntimeDirectoryWrongOwner { .. }
             | Self::RuntimeDirectoryAccessibleByOthers { .. } => ExitKind::NoPerm,
             Self::InspectArtifact { .. } => ExitKind::IoErr,
+        }
+    }
+}
+
+/// A defect in a manifest that its own text is enough to decide.
+///
+/// One type for the whole parse stage because ADR-0057 gives the whole stage one code: everything
+/// here is `78`, and everything that needs the merged layers is `65` somewhere else. Keeping the
+/// two apart in the type system is what stops one defect acquiring two codes, which spec/14's
+/// permanent-API rule forbids.
+/// Boxed because a parse threads this through every accessor in the grammar walk, and an error
+/// payload wider than the values it guards would enlarge each of those `Result`s in the success
+/// case too — the cost clippy's `result_large_err` names.
+#[derive(Debug, Error)]
+#[error("{}", self.0.kind.what(&self.0.manifest))]
+pub struct ManifestError(Box<ManifestFault>);
+
+/// The parts of a manifest defect, held behind one allocation.
+#[derive(Debug)]
+struct ManifestFault {
+    kind: ManifestErrorKind,
+    manifest: String,
+    locus: Locus,
+}
+
+impl ManifestError {
+    /// Records one defect, resolving the byte offset into the position slot while the source text
+    /// is still in hand.
+    pub(super) fn new(
+        kind: ManifestErrorKind,
+        manifest: &str,
+        path: &Path,
+        source: &str,
+        offset: Option<usize>,
+    ) -> Self {
+        let locus = offset.map_or_else(
+            || Locus::File(path.to_path_buf()),
+            |offset| Locus::in_source(path, source, offset),
+        );
+        Self(Box::new(ManifestFault {
+            kind,
+            manifest: manifest.to_owned(),
+            locus,
+        }))
+    }
+
+    /// Classifies this failure. Every parse defect is `78`, which is the point of the boundary.
+    #[must_use]
+    pub const fn exit_code(&self) -> ExitKind {
+        match self.0.kind {
+            ManifestErrorKind::Syntax { .. }
+            | ManifestErrorKind::UnknownKey { .. }
+            | ManifestErrorKind::MissingKey { .. }
+            | ManifestErrorKind::WrongType { .. }
+            | ManifestErrorKind::InvalidValue { .. }
+            | ManifestErrorKind::ExtendsRequiresDirectoryForm => ExitKind::Config,
+        }
+    }
+
+    /// The condition half of this failure's diagnostic id.
+    #[must_use]
+    pub const fn kind_name(&self) -> &'static str {
+        self.0.kind.condition()
+    }
+
+    /// Renders this failure in the skeleton spec/14 fixes.
+    #[must_use]
+    pub fn diagnostic(&self) -> Diagnostic {
+        let fault = &self.0;
+        let diagnostic = Diagnostic::new(
+            DiagnosticId::new(Namespace::Manifest, fault.kind.condition()),
+            fault.kind.what(&fault.manifest),
+            fault.locus.clone(),
+            fault.kind.why(),
+        )
+        .with_accepted(fault.kind.accepted().iter().copied());
+        match fault.kind.hint() {
+            Some(hint) => diagnostic.with_hint(hint),
+            None => diagnostic,
+        }
+    }
+}
+
+/// What went wrong, separately from which manifest it went wrong in.
+#[derive(Debug)]
+pub(super) enum ManifestErrorKind {
+    /// The bytes are not TOML at all.
+    Syntax {
+        /// The parser's own account of the syntax fault.
+        detail: String,
+    },
+    /// A key outside the closed grammar. This is the compatibility surface.
+    UnknownKey {
+        /// The offending key, verbatim from the source.
+        key: String,
+        /// What is accepted at that position.
+        accepted: &'static [&'static str],
+    },
+    /// A key the grammar requires is absent.
+    MissingKey {
+        /// The required key.
+        key: &'static str,
+    },
+    /// A known key holding the wrong TOML type.
+    WrongType {
+        /// The dotted key path.
+        key: String,
+        /// What the grammar wanted.
+        expected: &'static str,
+        /// What the document held.
+        found: &'static str,
+    },
+    /// A known key holding a value outside its domain.
+    InvalidValue {
+        /// The dotted key path.
+        key: String,
+        /// What the grammar wanted.
+        expected: &'static str,
+        /// The closed value set, when the domain is one.
+        accepted: &'static [&'static str],
+    },
+    /// `extends` named by a manifest in the flat form, which has nowhere to put the module.
+    ExtendsRequiresDirectoryForm,
+}
+
+impl ManifestErrorKind {
+    /// The condition half of the id. Stable and never reassigned, per spec/14.
+    const fn condition(&self) -> &'static str {
+        match self {
+            Self::Syntax { .. } => "syntax",
+            Self::UnknownKey { .. } => "unknown-key",
+            Self::MissingKey { .. } => "missing-key",
+            Self::WrongType { .. } => "wrong-type",
+            Self::InvalidValue { .. } => "invalid-value",
+            Self::ExtendsRequiresDirectoryForm => "extends-form",
+        }
+    }
+
+    fn what(&self, manifest: &str) -> String {
+        match self {
+            Self::Syntax { .. } => format!("manifest `{manifest}` is not valid TOML"),
+            Self::UnknownKey { key, .. } => {
+                format!("unknown key `{key}` in manifest `{manifest}`")
+            }
+            Self::MissingKey { key } => {
+                format!("missing required key `{key}` in manifest `{manifest}`")
+            }
+            Self::WrongType { key, .. } => {
+                format!("wrong type for key `{key}` in manifest `{manifest}`")
+            }
+            Self::InvalidValue { key, .. } => {
+                format!("invalid value for key `{key}` in manifest `{manifest}`")
+            }
+            Self::ExtendsRequiresDirectoryForm => {
+                format!("`extends` is not available in the flat manifest `{manifest}`")
+            }
+        }
+    }
+
+    fn why(&self) -> String {
+        match self {
+            Self::Syntax { detail } => detail.clone(),
+            // The version is the whole point: with no schema version in the file, this is what
+            // turns "unknown key" into "your file is newer than your tool".
+            Self::UnknownKey { .. } => format!(
+                "not part of the manifest grammar viv {} understands",
+                env!("CARGO_PKG_VERSION")
+            ),
+            Self::MissingKey { .. } => "the manifest grammar requires it".to_owned(),
+            Self::WrongType {
+                expected, found, ..
+            } => format!("expected {expected}, found {found}"),
+            Self::InvalidValue { expected, .. } => format!("expected {expected}"),
+            Self::ExtendsRequiresDirectoryForm => {
+                "a relative module has nowhere to sit beside a single-file manifest".to_owned()
+            }
+        }
+    }
+
+    /// The conditional `accepted here:` slot, carried only by an unknown key or an unknown value.
+    const fn accepted(&self) -> &'static [&'static str] {
+        match self {
+            Self::UnknownKey { accepted, .. } | Self::InvalidValue { accepted, .. } => accepted,
+            Self::Syntax { .. }
+            | Self::MissingKey { .. }
+            | Self::WrongType { .. }
+            | Self::ExtendsRequiresDirectoryForm => &[],
+        }
+    }
+
+    /// Omitted where no honest local repair exists, rather than filled with advice that does not
+    /// act — spec/14's own rule for this slot.
+    fn hint(&self) -> Option<String> {
+        match self {
+            Self::UnknownKey { .. } => Some(
+                concat!(
+                    "remove the key, or upgrade vivarium — a manifest written for a newer\n",
+                    "vivarium reports its new keys exactly this way",
+                )
+                .to_owned(),
+            ),
+            Self::ExtendsRequiresDirectoryForm => Some(
+                concat!(
+                    "move the manifest into its own directory as `default.toml` and put the\n",
+                    "module beside it",
+                )
+                .to_owned(),
+            ),
+            Self::Syntax { .. }
+            | Self::MissingKey { .. }
+            | Self::WrongType { .. }
+            | Self::InvalidValue { .. } => None,
         }
     }
 }

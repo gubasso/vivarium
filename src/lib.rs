@@ -5,6 +5,8 @@
 pub mod config;
 
 #[cfg(feature = "host")]
+pub mod diagnostic;
+#[cfg(feature = "host")]
 pub mod doctor;
 #[cfg(feature = "host")]
 pub mod exit;

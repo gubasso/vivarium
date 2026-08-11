@@ -8,12 +8,17 @@
 mod artifact;
 mod error;
 mod identity;
+mod manifest;
 mod roots;
 
 #[cfg(test)]
 mod test_support;
 
 pub use artifact::{ArtifactForm, ArtifactKind, ResolvedArtifact, resolve_artifact};
-pub use error::ResolutionError;
+pub use error::{ManifestError, ResolutionError};
 pub use identity::sanitize_project_name;
+pub use manifest::{
+    DefaultVolume, Egress, EgressMode, Manifest, ManifestOrigin, Mount, Resources, Volume,
+    parse_manifest,
+};
 pub use roots::{Environment, XdgRoots, resolve_runtime_root, resolve_xdg_roots};
