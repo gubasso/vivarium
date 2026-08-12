@@ -237,6 +237,8 @@ fn probe_kvm() -> Result<(), String> {
 pub struct TempProject {
     root: PathBuf,
     project: PathBuf,
+    basename: String,
+    token: String,
     home: PathBuf,
     config: PathBuf,
     state: PathBuf,
@@ -256,7 +258,28 @@ impl TempProject {
             "vivarium-user-workflows-{}-{sequence}",
             std::process::id()
         ));
-        let project = root.join(name);
+        // The project's own basename carries the fixture token, because the project id derived from
+        // it reaches a namespace no temporary root can isolate. Every other root here is a path
+        // this fixture chooses, but `vivarium-<project-id>-<target>.service` is a name in the
+        // session's systemd user manager, shared by every trial in the run. Two fixtures built from
+        // the same name mint the same id in their own state roots, believe it unique, and then
+        // collide on that one unit name — so a parallel run fails with "already loaded" for a
+        // reason that has nothing to do with the product. Isolating the durable roots and leaving
+        // the basename fixed is isolation that is total everywhere except the one place it is
+        // observable from outside.
+        let token = format!("t{}x{sequence}", std::process::id());
+        let basename = format!("{name}-{token}");
+        // The token is only load-bearing if it survives into the id, and spec/15 truncates a
+        // sanitized name to 48 characters. Checked through the product's own sanitizer rather than
+        // by respelling the cap, so a fixture whose name grew too long fails here by name instead
+        // of silently sharing a truncated prefix with its neighbour.
+        if !vivarium::config::sanitize_project_name(&basename).ends_with(&token) {
+            return Err(io::Error::other(format!(
+                "the fixture name `{basename}` is too long to carry its uniqueness token into the \
+                project id"
+            )));
+        }
+        let project = root.join(&basename);
         let home = root.join("home");
         let config = root.join("xdg-config");
         let state = root.join("xdg-state");
@@ -289,6 +312,8 @@ impl TempProject {
         Ok(Self {
             root,
             project,
+            basename,
+            token,
             home,
             config,
             state,
@@ -304,6 +329,33 @@ impl TempProject {
 
     pub fn project(&self) -> &Path {
         &self.project
+    }
+
+    /// The project directory's own name, which is what identity sanitizes into the project id.
+    ///
+    /// A trial that builds a second project meant to collide with this one takes its name from
+    /// here: sharing the token is what makes the two resolve the same base and exercise the
+    /// smallest-free-suffix rule.
+    pub fn basename(&self) -> &str {
+        &self.basename
+    }
+
+    /// The project id vivarium derives from this fixture's directory name.
+    ///
+    /// For locating an artifact whose path contains the id, never for asserting the id itself: it
+    /// is computed with the product's own sanitizer, so an assertion written against it would hold
+    /// for any sanitizer at all. A trial checking what the id came out to spells the stem it
+    /// expects and appends [`TempProject::token`].
+    pub fn project_id(&self) -> String {
+        vivarium::config::sanitize_project_name(&self.basename)
+    }
+
+    /// The per-fixture token appended to the project name.
+    ///
+    /// A trial asserting a derived id spells the stem it expects and appends this, so the
+    /// sanitizer's own mapping stays asserted rather than recomputed from the product.
+    pub fn token(&self) -> &str {
+        &self.token
     }
 
     pub fn home(&self) -> &Path {
@@ -934,18 +986,23 @@ pub fn expect_no_volume_images(tp: &TempProject) -> Result<(), String> {
     Ok(())
 }
 
-pub fn volume_image(tp: &TempProject, project_id: &str, name: &str) -> PathBuf {
+/// Where a volume image of this fixture's own project lands under its state root.
+///
+/// The id comes from the fixture rather than from a caller-supplied literal, because the fixture
+/// decorates its project name with a uniqueness token and a restated name would silently point at
+/// a directory nothing ever writes — reported as an absent image rather than as a stale path.
+pub fn volume_image(tp: &TempProject, name: &str) -> PathBuf {
     tp.state()
         .join("vivarium")
         .join("projects")
-        .join(project_id)
+        .join(tp.project_id())
         .join("default")
         .join("volumes")
         .join(format!("{name}.img"))
 }
 
-pub fn expect_volume_image(tp: &TempProject, project_id: &str, name: &str) -> Result<(), String> {
-    let path = volume_image(tp, project_id, name);
+pub fn expect_volume_image(tp: &TempProject, name: &str) -> Result<(), String> {
+    let path = volume_image(tp, name);
     if path.is_file() {
         Ok(())
     } else {

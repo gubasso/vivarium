@@ -226,6 +226,24 @@ fn harness_self_check() -> Result<(), Failed> {
     let leak = run_viv(Path::new("sh"), &tp, tp.project(), &["-c", "env"]).map_err(io_failed)?;
     check(expect_injected_vivarium_variables_only(&leak))?;
 
+    // The one isolation the temporary roots cannot provide, asserted here because it is the only
+    // vantage point that does not need `/dev/kvm`. A project id reaches the
+    // `vivarium-<project-id>-<target>.service` unit name, which lives in the session's systemd user
+    // manager and is shared by every trial in the run — so two fixtures asking for the same project
+    // name must still resolve different ids, or a parallel run fails with "already loaded" for a
+    // reason that has nothing to do with the product. Checked through `project_id` rather than by
+    // booting, so the property is verified on a host that cannot boot anything.
+    let sibling = TempProject::with_project_name("project").map_err(io_failed)?;
+    if tp.project_id() == sibling.project_id() {
+        return fail(format!(
+            "two fixtures resolved the same project id `{}`, so their units would collide",
+            tp.project_id()
+        ));
+    }
+    if !tp.project_id().ends_with(tp.token()) || tp.token() == sibling.token() {
+        return fail("the fixture token did not reach the project id uniquely");
+    }
+
     if !gate().is_well_formed() {
         return fail("gate probe returned a malformed decision");
     }
@@ -372,7 +390,10 @@ fn workflow_01_boot() -> Result<(), Failed> {
     // the cheapest verb that mints one, because every read-only command resolves the
     // identity in memory and persists nothing (spec/15, ADR-0043). There is no
     // CLI-only vantage point from which to check this.
-    check(expect_marker_id(tp.project(), "project"))?;
+    check(expect_marker_id(
+        tp.project(),
+        &format!("project-{}", tp.token()),
+    ))?;
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
 
     let status = viv(&tp, &["status", "--json"])?;
@@ -418,9 +439,15 @@ fn workflow_02_identity() -> Result<(), Failed> {
     arrange_manifest(&first, "clean-registry", "", "")?;
     bind(&first, "clean-registry")?;
     check(expect_code(&viv(&first, &["start"])?, 0))?;
-    check(expect_marker_id(first.project(), "api"))?;
+    check(expect_marker_id(
+        first.project(),
+        &format!("api-{}", first.token()),
+    ))?;
 
-    let second_project = first.root().join("collision").join("API");
+    // The colliding project takes the fixture's own basename, not the bare name: the token the
+    // fixture appends is what keeps this pair's unit names clear of every other trial's, and two
+    // projects only collide if they sanitize to the same base.
+    let second_project = first.root().join("collision").join(first.basename());
     fs::create_dir_all(&second_project).map_err(io_failed)?;
     let second_project = second_project.canonicalize().map_err(io_failed)?;
     check(expect_code(
@@ -437,7 +464,10 @@ fn workflow_02_identity() -> Result<(), Failed> {
     ))?;
     // The smallest-free-integer rule: the first holder keeps the bare name, the
     // second gets `-2`. There is deliberately no `api-1`.
-    check(expect_marker_id(&second_project, "api-2"))
+    check(expect_marker_id(
+        &second_project,
+        &format!("api-{}-2", first.token()),
+    ))
 }
 
 /// Guide: docs/guides/team-shared-personal-overrides.md
@@ -946,8 +976,8 @@ fn workflow_07_warmth() -> Result<(), Failed> {
     ))?;
     check(expect_stdout_mentions(&volumes, "default"))?;
     check(expect_stdout_mentions(&volumes, "cache"))?;
-    check(expect_volume_image(&tp, "volume-project", "default"))?;
-    check(expect_volume_image(&tp, "volume-project", "cache"))?;
+    check(expect_volume_image(&tp, "default"))?;
+    check(expect_volume_image(&tp, "cache"))?;
 
     check(expect_code(&viv(&tp, &["stop"])?, 0))?;
     check(expect_code(&viv(&tp, &["stop"])?, 0))?;
@@ -1058,7 +1088,10 @@ fn workflow_08_rebuild() -> Result<(), Failed> {
 
     // Variant A — cold: the next start is a clean first run.
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
-    check(expect_marker_id(tp.project(), "destroy-project"))?;
+    check(expect_marker_id(
+        tp.project(),
+        &format!("destroy-project-{}", tp.token()),
+    ))?;
     check(expect_code(
         &viv(&tp, &["exec", "--", "sh", "-lc", "test ! -e \"$HOME/old\""])?,
         0,
@@ -1072,7 +1105,7 @@ fn workflow_08_rebuild() -> Result<(), Failed> {
         )?,
         0,
     ))?;
-    let default_image = volume_image(&tp, "destroy-project", "default");
+    let default_image = volume_image(&tp, "default");
     check(expect_code(
         &viv(&tp, &["destroy", "--keep-volumes", "--yes"])?,
         0,
