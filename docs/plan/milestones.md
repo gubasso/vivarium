@@ -4,7 +4,7 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 013 exec-and-shell — shaped — 2 sessions
+- 013 exec-and-shell — shaped — 3 sessions — reshaped before start; see the slice `Revisions`
 - 014 workspace-and-persistence — shaped — 2 sessions
 
 ## later

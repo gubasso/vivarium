@@ -20,7 +20,7 @@ The chain in flight. These clusters are consumed by slices 011 through 014, and 
 - Config roots, binding, and precedence — `ADR-0005`, `ADR-0006`, `ADR-0011`, `ADR-0026`, `ADR-0029`, `ADR-0045`. Consumed by slice 011.
 - State layout and durability — `ADR-0052`, `ADR-0053`, `ADR-0058`, `ADR-0059`. Consumed by slice 011.
 - CLI output and failure contract — `ADR-0015`, `ADR-0028`, `ADR-0033`. Consumed by slice 011, with the `start` boundary settled in [slice 012](slices/012-first-boot/README.md) through Q-008.
-- Lifecycle and runtime ownership — `ADR-0013`, `ADR-0018`, `ADR-0030`, `ADR-0055`, `ADR-0056`, `ADR-0097`. Consumed by slice 012.
+- Lifecycle and runtime ownership — `ADR-0013`, `ADR-0018`, `ADR-0030`, `ADR-0055`, `ADR-0056`, `ADR-0097`. Consumed by slice 012 for the boot itself, and again by [slice 013](slices/013-exec-and-shell/README.md) for the reuse-or-boot routine a command needing a VM runs.
 - Guest store provisioning — `ADR-0038`, `ADR-0084`, `ADR-0087`, `ADR-0088`. Consumed by slice 012.
 - Open egress by default — `ADR-0007`. Consumed by slice 012 as the reason a first boot needs no network work.
 - Guest control transport — `ADR-0016`, `ADR-0065`, `ADR-0071`. Guest half realized in slice 003; host half consumed by [slice 013](slices/013-exec-and-shell/README.md).
