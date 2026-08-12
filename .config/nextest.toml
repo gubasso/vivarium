@@ -14,6 +14,26 @@
 # with `--profile pre-commit`, pre-push with `--profile pre-push`,
 # and CI with `--profile ci`.
 
+# A booting trial costs a guest kernel, a VMM, one virtiofsd per share, and
+# often a guest-closure realisation before any of that. The product lets a
+# user run as many project VMs as they like — capacity is checked at launch
+# and, above the minimum reserve, reported rather than enforced (N23,
+# spec/17). An unattended run has nobody to read that warning and decide, so
+# the harness needs the bound the product deliberately does not impose.
+#
+# `2` rather than `1` because serialising these would discard the very
+# concurrency they are meant to exercise, and rather than `3` because the
+# host this was sized on showed roughly 8 GiB available with three guests
+# live — no room left for a closure landing in the store beside them. It is
+# provisional: one clean run at a given width is evidence of possibility, not
+# of reliability, and the number moves when a repeated sweep says so.
+#
+# `num-cpus` would be the wrong shape even where nextest accepts it. The
+# scarce resource here is host memory and store space; logical CPU count
+# tracks neither.
+[test-groups]
+boot = { max-threads = 2 }
+
 [profile.default]
 # Sane defaults for ad-hoc `cargo nextest run`.
 # `success-output = "never"` is the nextest default but is set explicitly
@@ -24,6 +44,23 @@ success-output = "never"
 failure-output = "immediate-final"
 fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 2 }
+
+# The membership list is exact names, not a name pattern, because a pattern
+# fails open: a trial the pattern misses does not error, it just runs outside
+# the group. `harness_self_check` regenerates this string from the harness's
+# own gate table and fails when the two disagree, so adding, renaming, or
+# regrading a trial cannot silently widen the bound. That check needs no
+# `/dev/kvm`, which is the vantage point where such a mistake would otherwise
+# go unseen.
+#
+# Declared on `default` alone: nextest falls back to `profile.default`'s
+# overrides for a setting the active profile's own overrides do not
+# configure, so `pre-push` and `ci` inherit this. Verified with
+# `cargo nextest show-config test-groups --profile <name>` rather than
+# assumed.
+[[profile.default.overrides]]
+filter = 'test(=workflow_01_first_time_bind_boot) + test(=workflow_02_identity_collision_suffix) + test(=workflow_05_restrict_egress_allowlist) + test(=workflow_06_exec_exit_code_propagation) + test(=workflow_07_stop_restart_preserving_volumes) + test(=workflow_07_stop_completes_within_budget) + test(=workflow_08_destroy_cold_rebuild)'
+test-group = "boot"
 
 # Unit-test lane. Unit tests run at BOTH `pre-commit` (gate every commit)
 # and `pre-push` (gate every push — guards against rebases/amends bypassing

@@ -248,7 +248,97 @@ fn harness_self_check() -> Result<(), Failed> {
         return fail("gate probe returned a malformed decision");
     }
 
+    check(boot_group_membership_self_check())?;
     check(harness_json_self_check())
+}
+
+/// The name of the nextest group that bounds how many trials may boot a guest at once.
+const BOOT_GROUP: &str = "boot";
+
+/// The filterset the boot group must carry, derived from the gate table rather than restated.
+///
+/// Exact names joined by union, because a name pattern fails open: a virtualization trial the
+/// pattern happens not to match runs outside the group, unbounded, and nothing reports it.
+fn expected_boot_filter() -> String {
+    WORKFLOWS
+        .iter()
+        .filter(|(_, level, _)| matches!(level, GateLevel::Virtualization))
+        .map(|(name, _, _)| format!("test(={name})"))
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+/// Assert that `.config/nextest.toml` bounds exactly the trials that boot a guest.
+///
+/// The bound exists because a booting trial costs a guest kernel, a VMM, one virtiofsd per share,
+/// and often a closure realisation, while the product deliberately imposes no fleet count of its
+/// own — above the minimum reserve `viv start` warns and lets the user decide (N23, spec/17), and
+/// an unattended run has no user. That makes the group nextest's only bound, and a stale
+/// membership list would remove it silently, so the list is compared against this harness's own
+/// gate table on every run. Checked here rather than in a boot trial because a wrong membership
+/// list is precisely what a host with `/dev/kvm` would discover the expensive way.
+fn boot_group_membership_self_check() -> Result<(), String> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".config")
+        .join("nextest.toml");
+    let text = fs::read_to_string(&path).map_err(|err| {
+        format!(
+            "nextest configuration is unreadable at {}: {err}",
+            path.display()
+        )
+    })?;
+    let config: toml::Table = toml::from_str(&text)
+        .map_err(|err| format!("nextest configuration does not parse: {err}"))?;
+
+    if config
+        .get("test-groups")
+        .and_then(|groups| groups.get(BOOT_GROUP))
+        .and_then(|group| group.get("max-threads"))
+        .and_then(toml::Value::as_integer)
+        .is_none_or(|max| max < 1)
+    {
+        return Err(format!(
+            "`[test-groups.{BOOT_GROUP}]` does not declare a positive `max-threads`"
+        ));
+    }
+
+    // Every profile that assigns the group is checked, not just the first: an override added to
+    // one profile with a different list would bound that lane differently for no stated reason.
+    let mut assignments = 0usize;
+    let expected = expected_boot_filter();
+    let profiles = config
+        .get("profile")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| "nextest configuration declares no profiles".to_owned())?;
+    for (profile, settings) in profiles {
+        let overrides = settings
+            .get("overrides")
+            .and_then(toml::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for entry in overrides {
+            if entry.get("test-group").and_then(toml::Value::as_str) != Some(BOOT_GROUP) {
+                continue;
+            }
+            assignments += 1;
+            let filter = entry
+                .get("filter")
+                .and_then(toml::Value::as_str)
+                .unwrap_or_default();
+            if filter != expected {
+                return Err(format!(
+                    "profile `{profile}` bounds the wrong trials. \
+                    Expected:\n  {expected}\ngot:\n  {filter}"
+                ));
+            }
+        }
+    }
+    if assignments == 0 {
+        return Err(format!(
+            "no profile assigns the `{BOOT_GROUP}` group, so nothing bounds concurrent boots"
+        ));
+    }
+    Ok(())
 }
 
 /// The JSON assertions are the harness's only *structural* checks, and every trial that
