@@ -1,6 +1,7 @@
 mod support;
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -169,13 +170,39 @@ fn harness_self_check() -> Result<(), Failed> {
             ));
         }
     }
-    if tp.env().len() != 6
-        || tp
-            .env()
-            .iter()
-            .any(|(_, value)| !Path::new(value).starts_with(tp.root()))
-    {
-        return fail("isolated environment does not contain six roots inside the temp root");
+    // Five of the six roots are durable and live inside the temp root; the runtime root is the
+    // exception, and deliberately so. `TempProject` places it under the session's own
+    // `/run/user/<uid>` because a control-socket path assembled beneath `TMPDIR` overruns the
+    // 108-byte Unix-socket limit on a host whose `TMPDIR` is long — the case a disk-heavy lane
+    // creates. So the isolation this asserts is "no durable root escapes the temp root", not "every
+    // variable points inside it".
+    let environment = tp.env();
+    if environment.len() != 6 {
+        return fail("isolated environment does not name all six roots");
+    }
+    for (name, value) in &environment {
+        let inside = Path::new(value).starts_with(tp.root());
+        let is_runtime = name == "XDG_RUNTIME_DIR";
+        if inside == is_runtime {
+            return fail(format!(
+                "isolated root `{}` is in the wrong place: {}",
+                name.to_string_lossy(),
+                Path::new(value).display()
+            ));
+        }
+    }
+    // ADR-0055 makes the runtime base's privacy a precondition of launching at all, so a harness
+    // that left it group- or world-accessible would fail every launch trial before the product
+    // path was reached. Asserted here rather than learned again from a `77`.
+    let mode = fs::metadata(tp.runtime())
+        .map_err(io_failed)?
+        .permissions()
+        .mode();
+    if mode & 0o077 != 0 {
+        return fail(format!(
+            "the isolated runtime root is not private: mode {:o}",
+            mode & 0o777
+        ));
     }
 
     let out = run_viv(
@@ -1125,10 +1152,15 @@ fn viv_at(tp: &TempProject, cwd: &Path, args: &[&str]) -> Result<VivOutput, Fail
 
 /// The `VIVARIUM_` variables a child is allowed to see, and why each one is there.
 ///
-/// `VIVARIUM_BASELINE_*` pin the generated flake's baseline inputs to local store paths, which is
-/// what keeps this suite off the GitHub API; neither participates in manifest resolution, so
-/// neither can turn an expected `78` into a success.
-const INJECTED_VARIABLES: [&str; 2] = ["VIVARIUM_BASELINE_NIXPKGS", "VIVARIUM_BASELINE_MICROVM"];
+/// `VIVARIUM_BASELINE_*` pin the generated flake's three baseline inputs — `nixpkgs` and `microvm`
+/// to local store paths, and the product flake to this working tree — which is what keeps this
+/// suite off the GitHub API. None of the three participates in manifest resolution, so none can
+/// turn an expected `78` into a success.
+const INJECTED_VARIABLES: [&str; 3] = [
+    "VIVARIUM_BASELINE_NIXPKGS",
+    "VIVARIUM_BASELINE_MICROVM",
+    "VIVARIUM_BASELINE_VIVARIUM",
+];
 
 fn expect_injected_vivarium_variables_only(out: &VivOutput) -> Result<(), String> {
     let stdout = String::from_utf8_lossy(&out.stdout);

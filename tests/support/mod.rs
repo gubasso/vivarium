@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::OnceLock;
@@ -261,10 +262,29 @@ impl TempProject {
         let state = root.join("xdg-state");
         let data = root.join("xdg-data");
         let cache = root.join("xdg-cache");
-        let runtime = root.join("xdg-runtime");
+        // The runtime root sits under the session's real runtime directory rather than beside the
+        // durable roots, and the reason is a hard limit rather than tidiness. A Unix socket path
+        // cannot exceed 108 bytes, and the runtime layout spec/02 fixes already spends
+        // `vivarium/<project-id>/<target>/workspace.sock` of it. Under `std::env::temp_dir()` the
+        // remaining budget is whatever `TMPDIR` happens to be — and a `TMPDIR` on an external
+        // drive, which is exactly what a disk-heavy lane sets, overruns it and fails the bind.
+        // Measured: the failure reads as `vm.start-failed … path must be shorter than SUN_LEN`,
+        // which looks like a product defect and is not one.
+        //
+        // `/run/user/<uid>` is short, is a per-user tmpfs, and is where runtime files genuinely
+        // belong, so this is the layout being honest rather than a workaround.
+        let runtime = PathBuf::from(format!("/run/user/{}", vivarium::config::effective_uid()))
+            .join(format!("viv-t{}-{sequence}", std::process::id()));
         for path in [&project, &home, &config, &state, &data, &cache, &runtime] {
             fs::create_dir_all(path)?;
         }
+        // The runtime base is the one root with a mode requirement. ADR-0055 makes it a
+        // precondition of launching at all, and `config::resolve_runtime_root` refuses any base
+        // with `mode & 0o077 != 0`. `create_dir_all` yields `0755` under the usual umask, so a
+        // harness that skipped this would fail every launch trial with `77` before the product
+        // path was reached — a precondition the product has always had, learned here.
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
+        bridge_user_manager(&runtime)?;
         let project = project.canonicalize()?;
         Ok(Self {
             root,
@@ -325,9 +345,94 @@ impl TempProject {
     }
 }
 
+/// Points an isolated runtime root at the session's own systemd user manager.
+///
+/// ADR-0097 gives VM lifetime to a transient user unit, and `systemd-run --user` reaches the
+/// manager through `$XDG_RUNTIME_DIR/systemd/private` — measured on a real host, and it ignores
+/// `DBUS_SESSION_BUS_ADDRESS` for this, so passing that variable through does not help. A trial
+/// that redirects `XDG_RUNTIME_DIR` for isolation therefore cuts the handoff unless it bridges
+/// this one socket.
+///
+/// Only the socket is shared. Every file vivarium writes still lands in the temporary root, which
+/// is what the isolation was for; what crosses is a connection to the manager that would own the
+/// unit on a real user's machine anyway.
+///
+/// Absent on a host with no user manager, and that is not this function's failure to report: the
+/// `Virtualization` gate is what decides whether such a host runs these trials at all.
+fn bridge_user_manager(runtime: &Path) -> io::Result<()> {
+    let session = PathBuf::from(format!("/run/user/{}", vivarium::config::effective_uid()))
+        .join("systemd")
+        .join("private");
+    if !session.exists() {
+        return Ok(());
+    }
+    let directory = runtime.join("systemd");
+    fs::create_dir_all(&directory)?;
+    let link = directory.join("private");
+    let _ = fs::remove_file(&link);
+    std::os::unix::fs::symlink(&session, &link)
+}
+
 impl Drop for TempProject {
     fn drop(&mut self) {
+        stop_leaked_vms(&self.runtime);
         let _result = fs::remove_dir_all(&self.root);
+        // The runtime root is outside `root` on purpose (see above), so it is removed by name.
+        let _result = fs::remove_dir_all(&self.runtime);
+    }
+}
+
+/// Stops any VM this fixture started, before its runtime directory is removed underneath it.
+///
+/// A trial that calls `viv start` and never `viv stop` leaves a live microVM: ADR-0097 hands
+/// lifetime to a transient user unit, and that unit outlives the process that submitted it — which
+/// is the whole point of a detached start. `systemd-run --collect` reaps only an *inactive* unit,
+/// so nothing here reaps a running one.
+///
+/// Two things go wrong when it is left. The VM survives the trial, holding memory and a store
+/// volume for as long as the session lives; and the next run of the same trial resolves the same
+/// `<project-id>`, so `systemd-run` refuses the name with "already loaded" and the trial fails for
+/// a reason that has nothing to do with the product. Measured: the first run passed and every run
+/// after it failed until the units were stopped by hand.
+///
+/// Units are selected by the runtime directory in their own command line, which is unique to this
+/// fixture. Matching on the `vivarium-` name prefix alone would also match a VM the person running
+/// the suite started for themselves.
+fn stop_leaked_vms(runtime: &Path) {
+    let Ok(listed) = Command::new("systemctl")
+        .args([
+            "--user",
+            "list-units",
+            "--all",
+            "--no-legend",
+            "--plain",
+            "--output=json",
+            "vivarium-*",
+        ])
+        .output()
+    else {
+        return;
+    };
+    let Ok(units) = serde_json::from_slice::<Vec<serde_json::Value>>(&listed.stdout) else {
+        return;
+    };
+    let needle = runtime.to_string_lossy().into_owned();
+    for unit in units {
+        let Some(name) = unit.get("unit").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let owned = Command::new("systemctl")
+            .args(["--user", "show", "-p", "ExecStart", "--value", name])
+            .output()
+            .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains(&needle));
+        if owned {
+            let _ = Command::new("systemctl")
+                .args(["--user", "stop", name])
+                .output();
+            let _ = Command::new("systemctl")
+                .args(["--user", "reset-failed", name])
+                .output();
+        }
     }
 }
 
@@ -376,7 +481,7 @@ fn baseline_inputs() -> &'static Vec<(OsString, OsString)> {
         let Ok(archived) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
             return Vec::new();
         };
-        [
+        let mut pins: Vec<(OsString, OsString)> = [
             ("nixpkgs", "VIVARIUM_BASELINE_NIXPKGS"),
             ("microvm", "VIVARIUM_BASELINE_MICROVM"),
         ]
@@ -388,7 +493,19 @@ fn baseline_inputs() -> &'static Vec<(OsString, OsString)> {
                 OsString::from(format!("path:{path}")),
             ))
         })
-        .collect()
+        .collect();
+        // The third baseline input is this repository's own product flake, which carries the guest
+        // module and the launch seam a generated flake composes. Pinned to the working tree rather
+        // than to the archived store path, because a trial must exercise the tree under test — a
+        // store snapshot would silently measure an older product. Its shipped default names a
+        // branch, so
+        // leaving it unset here would resolve upstream on every evaluation, which is the network
+        // dependence the other two pins exist to avoid.
+        pins.push((
+            OsString::from("VIVARIUM_BASELINE_VIVARIUM"),
+            OsString::from(flake),
+        ));
+        pins
     })
 }
 

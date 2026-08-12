@@ -37,7 +37,11 @@ pub use flake::{
     FlakeInput, GeneratedFlakePaths, GeneratedFlakePlan, PreparedFlake, ResolvedComposition,
     target_paths,
 };
-pub use identity::sanitize_project_name;
+pub use identity::{
+    IDENTITY_FILE, Identity, IdentityIndex, MARKER_DIR, identity_path, mint as mint_identity,
+    project_basename, read_index as read_identity_index, resolve as resolve_identity,
+    sanitize_project_name,
+};
 pub use manifest::{
     DefaultVolume, Egress, EgressMode, Manifest, ManifestOrigin, Mount, Resources, Volume,
     parse_manifest,
@@ -48,4 +52,6 @@ pub use resolve::{
     BindingSource, MANIFEST_VARIABLE, ResolvedBinding, canonical_project, resolve_binding,
     unbound_hint,
 };
-pub use roots::{Environment, XdgRoots, resolve_runtime_root, resolve_xdg_roots};
+pub use roots::{
+    Environment, XdgRoots, effective_gid, effective_uid, resolve_runtime_root, resolve_xdg_roots,
+};

@@ -84,10 +84,20 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;
 
+    /// A bindable socket path. See the note on the matching helper in `credentials.rs`: a
+    /// `TMPDIR` on another drive overruns the 108-byte socket limit, so the per-user runtime
+    /// tmpfs is preferred and `TMPDIR` is the fallback.
     fn socket_path() -> std::path::PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        std::env::temp_dir().join(format!(
-            "vivarium-control-{}-{}",
+        let base =
+            std::path::PathBuf::from(format!("/run/user/{}", crate::config::effective_uid()));
+        let base = if base.is_dir() {
+            base
+        } else {
+            std::env::temp_dir()
+        };
+        base.join(format!(
+            "viv-control-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))

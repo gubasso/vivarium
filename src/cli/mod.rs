@@ -11,10 +11,11 @@
 //! process — the seam `resolve_xdg_roots` established and every module since has kept.
 
 pub mod grammar;
+pub mod lifecycle;
 mod render;
 
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::config::{
     self, ArtifactKind, Environment, EvaluationError, GeneratedFlakeError, ManifestError, Registry,
@@ -130,6 +131,26 @@ pub fn run<E: Environment>(
         Invocation::ConfigSources { output } => config_sources(context, *output),
         Invocation::ManifestList { output } => manifest_list(context, *output),
         Invocation::ManifestShow { name, output } => manifest_show(context, name, *output),
+        Invocation::Start {
+            rebuild,
+            no_rebuild,
+            attach,
+            ..
+        } => lifecycle::start(context, *rebuild, *no_rebuild, *attach),
+        Invocation::Status { global, output } => {
+            let report = lifecycle::status(context, *global)?;
+            Ok(Success::plain(if output.is_json() {
+                render::status_json(&report)
+            } else {
+                render::status_human(&report)
+            }))
+        }
+        Invocation::Stop {
+            all,
+            force,
+            timeout,
+            ..
+        } => lifecycle::stop(context, *all, *force, *timeout),
         Invocation::Deferred { verb, .. } => deferred(context, *verb),
         // The caller performs the handoff, because it is the async half of this program and
         // nothing else here needs a runtime.
@@ -248,7 +269,11 @@ fn config_binding<E: Environment>(
     };
 
     let selected = resolve_manifest(context, &binding.manifest)?;
-    let project_id = config::sanitize_project_name(project_name(&context.project));
+    // The same resolved id the evaluating readers use: `viv config` prints the generated tree and
+    // the lock in force, and both are keyed by `<project-id>` (spec/02). Sanitizing the basename
+    // here would report the first `api`'s paths to a second project that holds `api-2`.
+    let project_id = config::resolve_identity(&context.roots.state, &context.project)
+        .map_err(|error| registry_failure(&error))?;
     let paths = config::target_paths(&context.roots, &project_id, DEFAULT_TARGET, &selected)
         .map_err(|error| flake_failure(&error))?;
     let lock = paths.select_lock().map_err(|error| flake_failure(&error))?;
@@ -321,6 +346,8 @@ struct Evaluated {
     /// What the evaluation has to say on stderr before the result reaches stdout.
     notes: String,
     analysis: config::merged::Analysis,
+    /// The generated tree this evaluation prepared, which is also what a launch builds from.
+    flake_directory: PathBuf,
 }
 
 /// The path both config readers travel, up to the point where they disagree.
@@ -328,18 +355,32 @@ struct Evaluated {
 /// Identical for the two by construction: they must not be able to reach different answers about
 /// the same tree, and the only way to guarantee that is for one function to produce both.
 fn evaluate_binding<E: Environment>(context: &Context<'_, E>) -> Result<Evaluated, Failure> {
-    let registry = read_registry(context)?;
-    let Some(binding) =
-        config::resolve_binding(None, context.environment, &registry, &context.project)
-    else {
-        return Err(unbound(context));
-    };
-    let selected = resolve_manifest(context, &binding.manifest)?;
-    let (source, manifest) = read_manifest(context, &selected)?;
-    let project_id = config::sanitize_project_name(project_name(&context.project));
+    let resolved = resolve_manifest_for_launch(context)?;
+    // Resolved, never minted: these are the read-only readers, and spec/14's read-only guarantee
+    // is what stops them writing a marker. Resolved rather than re-sanitized because the generated
+    // tree and its lock are keyed by `<project-id>` (spec/02), and a second project named `api`
+    // holds `api-2` — sanitizing its basename would point it at the first project's tree.
+    let project_id = config::resolve_identity(&context.roots.state, &context.project)
+        .map_err(|error| registry_failure(&error))?;
+    evaluate_resolved(context, &project_id, resolved)
+}
+
+/// The evaluating half, against a binding, manifest, and identity already resolved.
+fn evaluate_resolved<E: Environment>(
+    context: &Context<'_, E>,
+    project_id: &str,
+    resolved: ResolvedForLaunch,
+) -> Result<Evaluated, Failure> {
+    let ResolvedForLaunch {
+        binding,
+        selected,
+        source,
+        manifest,
+        resources: _,
+    } = resolved;
     let prepared = config::prepare_generated_flake(
         &context.roots,
-        &project_id,
+        project_id,
         DEFAULT_TARGET,
         &selected,
         &source,
@@ -371,6 +412,7 @@ fn evaluate_binding<E: Environment>(context: &Context<'_, E>) -> Result<Evaluate
         manifest,
         notes,
         analysis: config::merged::analyze(&report),
+        flake_directory: prepared.directory,
     })
 }
 
@@ -507,7 +549,7 @@ fn read_registry<E: Environment>(context: &Context<'_, E>) -> Result<Registry, F
 }
 
 /// The fail-closed answer, carrying the snippet that fixes it.
-fn unbound<E: Environment>(context: &Context<'_, E>) -> Failure {
+pub(super) fn unbound<E: Environment>(context: &Context<'_, E>) -> Failure {
     let registry_file = config::registry_path(&context.roots.state);
     Failure::Diagnosed {
         diagnostic: Box::new(
@@ -577,15 +619,129 @@ fn library_member(entry: &std::fs::DirEntry) -> Option<String> {
     Some(stem.to_owned())
 }
 
-/// The last component of the project path, which spec/15 sanitizes into the project id.
-fn project_name(project: &Path) -> &str {
-    project
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("project")
+/// One diagnosed failure in the four-slot skeleton spec/14 fixes.
+///
+/// The lifecycle verbs mint several of these, and every id has to come from a namespace spec/14
+/// reserves — minting one outside the reserved set would publish a stable surface the spec does
+/// not admit. Taking the namespace as an argument is what keeps that visible at each call site.
+pub(super) fn diagnosed(
+    namespace: Namespace,
+    id: &'static str,
+    what: impl Into<String>,
+    where_: Locus,
+    why: impl Into<String>,
+    code: ExitKind,
+) -> Failure {
+    Failure::Diagnosed {
+        diagnostic: Box::new(Diagnostic::new(
+            DiagnosticId::new(namespace, id),
+            what,
+            where_,
+            why,
+        )),
+        code,
+    }
 }
 
-fn registry_failure(error: &RegistryError) -> Failure {
+impl Failure {
+    /// Adds the remedy line to an already-diagnosed failure.
+    pub(super) fn with_hint(self, hint: impl Into<String>) -> Self {
+        match self {
+            Self::Diagnosed { diagnostic, code } => Self::Diagnosed {
+                diagnostic: Box::new(diagnostic.with_hint(hint)),
+                code,
+            },
+            usage @ Self::Usage(_) => usage,
+        }
+    }
+}
+
+/// The bound manifest, resolved and read — spec/10 step 1, and nothing beyond it.
+///
+/// Separate from the evaluation below because `start` needs it strictly earlier than the build:
+/// the step order makes an unbound project answer `78` before the host is preflighted, and the
+/// `[resources]` table is a launch-channel input `--no-rebuild` still needs on a path that
+/// evaluates nothing (spec/17, N19).
+pub(super) struct ResolvedForLaunch {
+    binding: config::ResolvedBinding,
+    selected: ResolvedArtifact,
+    source: String,
+    manifest: config::Manifest,
+    pub(super) resources: Option<config::Resources>,
+}
+
+/// What a launch needs from the resolution front half: a prepared, evaluated generated tree, and
+/// the launch-channel values the merge produced.
+pub(super) struct LaunchInputs {
+    pub(super) flake_directory: PathBuf,
+    /// The merged `resources`, which spec/04 makes authoritative over the manifest's own table: a
+    /// piece proposing `vivarium.resources` compiles into the same option, so reading the leaf
+    /// would bypass the module system's answer.
+    pub(super) resources: Option<config::Resources>,
+}
+
+/// spec/10 step 1: resolve the binding and read the manifest it names.
+pub(super) fn resolve_manifest_for_launch<E: Environment>(
+    context: &Context<'_, E>,
+) -> Result<ResolvedForLaunch, Failure> {
+    let registry = read_registry(context)?;
+    let Some(binding) =
+        config::resolve_binding(None, context.environment, &registry, &context.project)
+    else {
+        return Err(unbound(context));
+    };
+    let selected = resolve_manifest(context, &binding.manifest)?;
+    let (source, manifest) = read_manifest(context, &selected)?;
+    Ok(ResolvedForLaunch {
+        binding,
+        selected,
+        source,
+        resources: manifest.resources,
+        manifest,
+    })
+}
+
+/// The evaluate-refuse-defects half `start` shares with the config readers.
+///
+/// It reaches the same generated tree by the same route, deliberately: a `start` that built from a
+/// tree the readers never saw would make `viv config eval` a report about something else.
+pub(super) fn evaluate_resolved_for_launch<E: Environment>(
+    context: &Context<'_, E>,
+    project_id: &str,
+    resolved: ResolvedForLaunch,
+) -> Result<LaunchInputs, Failure> {
+    let evaluated = evaluate_resolved(context, project_id, resolved)?;
+    // A content defect means the merge produced no answer, so there is nothing to build.
+    if let Some(failure) = defect_failure(&evaluated.analysis) {
+        return Err(failure);
+    }
+    Ok(LaunchInputs {
+        flake_directory: evaluated.flake_directory,
+        resources: merged_resources(&evaluated.analysis),
+    })
+}
+
+/// The launch-channel `resources` the merge produced, in the shape the manifest declares them.
+///
+/// Read from the analysis rather than from the manifest because that is what spec/04 specifies and
+/// what `viv config eval` reports: a launch that used the leaf would boot a VM the tool's own
+/// reader says it did not build. Absent keys stay absent, so per-knob host auto-sizing still
+/// applies to whichever one no layer declared.
+fn merged_resources(analysis: &config::merged::Analysis) -> Option<config::Resources> {
+    let read = |key: &str| {
+        analysis
+            .effective(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+    };
+    let resources = config::Resources {
+        mem_mib: read("resources.mem_mib"),
+        vcpu: read("resources.vcpu"),
+    };
+    (resources.mem_mib.is_some() || resources.vcpu.is_some()).then_some(resources)
+}
+
+pub(super) fn registry_failure(error: &RegistryError) -> Failure {
     Failure::Diagnosed {
         diagnostic: Box::new(error.diagnostic()),
         code: error.exit_code(),
@@ -599,14 +755,14 @@ fn manifest_failure(error: &ManifestError) -> Failure {
     }
 }
 
-fn evaluation_failure(error: &EvaluationError) -> Failure {
+pub(super) fn evaluation_failure(error: &EvaluationError) -> Failure {
     Failure::Diagnosed {
         diagnostic: Box::new(error.diagnostic()),
         code: error.exit_code(),
     }
 }
 
-fn flake_failure(error: &GeneratedFlakeError) -> Failure {
+pub(super) fn flake_failure(error: &GeneratedFlakeError) -> Failure {
     Failure::Diagnosed {
         diagnostic: Box::new(error.diagnostic()),
         code: error.exit_code(),
@@ -619,7 +775,7 @@ fn flake_failure(error: &GeneratedFlakeError) -> Failure {
 /// here rather than teaching it `diagnostic()` keeps that decision in one place until the resolver
 /// needs the other slots; what it must not do is reach a user without an id, which is why the
 /// condition is chosen from the variant rather than defaulted.
-fn resolution_failure(error: &ResolutionError) -> Failure {
+pub(super) fn resolution_failure(error: &ResolutionError) -> Failure {
     let (condition, locus) = match error {
         ResolutionError::InvalidArtifactName { .. } => {
             ("invalid-name", Locus::Named("config root"))

@@ -43,6 +43,23 @@ pub fn resolve_xdg_roots(environment: &impl Environment) -> Result<XdgRoots, Res
     })
 }
 
+/// The invoking user's effective uid and gid.
+///
+/// Here rather than at each call site because both halves of the product read them for the same
+/// reason: [`resolve_runtime_root`] checks the runtime base is owned by this user, and the launch
+/// path hands the pair to the share identity translation spec/06 fixes. One spelling keeps those
+/// two from drifting into different notions of "this user".
+#[must_use]
+pub fn effective_uid() -> u32 {
+    rustix::process::geteuid().as_raw()
+}
+
+/// The invoking user's effective gid. See [`effective_uid`].
+#[must_use]
+pub fn effective_gid() -> u32 {
+    rustix::process::getegid().as_raw()
+}
+
 /// Validates the session runtime base and returns vivarium's uncreated subtree beneath it.
 ///
 /// # Errors

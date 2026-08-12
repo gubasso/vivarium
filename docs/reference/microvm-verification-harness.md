@@ -117,6 +117,38 @@ The build tier is opt-in because it realises a complete NixOS closure and no fas
 
 Verified on a real host. Each entry names the version it applies to; nothing here is inferred from an agent's execution environment.
 
+### A manifest-built guest reached the launcher only after the guest module was composed into the generated flake
+
+Measured 2026-08-11 on a real host with `/dev/kvm`, a systemd user manager, guest kernel 6.18.43, Nix 2.34.8, cloud-hypervisor 53.0 and virtiofsd 1.14.0, against a project bound to the shipped `rust-web` example with baseline inputs pinned to [`../../nix/flake.lock`](../../nix/flake.lock).
+
+Slice 012's item 1 asked whether handing slice 011's build output to the existing launch construction is wiring or repair. It was neither: the input was incomplete. The generated flake composed the option surface, the user's layers and `microvm.nixosModules.microvm`, and nothing else, so every attribute [`../../nix/launch-arguments.nix`](../../nix/launch-arguments.nix) reads beyond the hypervisor was absent — `microvm.shares` empty, `microvm.volumes` empty, `writableStoreOverlay` null, and the whole `vivarium.credentials` option tree undeclared, because [`../../nix/guest.nix`](../../nix/guest.nix) was reachable only from `nix/default.nix`. `shareByTag "store"` would have thrown before any launch code ran.
+
+Composing that module into the generated flake surfaced three collisions with a user's own layers, and they are the reason the module's priorities changed rather than the example's values:
+
+| Option                       | Before                                      | Now                                      |
+| ---------------------------- | ------------------------------------------- | ---------------------------------------- |
+| `users.users.vivarium.group` | hard conflict against the example's `users` | product-owned; the example declares none |
+| `networking.hostName`        | `vivarium-first` silently beat the example  | the example's value wins                 |
+| `system.stateVersion`        | `25.11` silently beat the example's `25.05` | the example's value wins                 |
+
+The guest module now holds `lib.mkOptionDefault` for everything a user may legitimately choose and normal priority for the launch contract — the shares, the volumes, the store overlay, and the guest identity spec/06 fixes at image build. An unsupported `microvm.hypervisor` became an assertion rather than a silent mismatch, because the launcher renders Cloud Hypervisor's argv and would otherwise describe a backend nobody starts.
+
+With that done the manifest-built guest boots. Six runs: four at the shipped `virtiofsdThreadPoolSize` of `0` and two at `4`, every one reaching a login prompt with the guest agent unit started.
+
+### Slice 010's three findings do not reappear for a manifest-built guest
+
+Measured in the same session and on the same host as the entry above, across those six runs.
+
+| Slice 010 finding             | Result for a manifest-built guest                                                    |
+| ----------------------------- | ------------------------------------------------------------------------------------ |
+| Retained runtime directory    | Refuted. The directory is gone after every run and the unit's `Result` is `success`. |
+| Truncated console capture     | Refuted. The capture spans the kernel's first serial write to `reboot: Power down`.  |
+| Pool sizes that fail to start | Refuted. Both `0` and `4` start and reach a login prompt.                            |
+
+The console assertion is a span, and a hard `systemctl --user stop` makes "nothing more was written" and "the capture stopped early" look identical — both end at the idle login prompt. So the runs that answer it end with an ACPI power button instead, which makes the guest write a whole shutdown sequence after the last line already captured. A capture that truncated early could not pass that. The captures grew from 21357 bytes for a killed VM to 29745–29774 bytes for a graceful one, ending on the last line the VM writes before exit.
+
+One consequence worth stating for whoever writes the trial: the supervisor's allowlisted sweep removes `console.log` with the runtime directory, so a check that reads the file after the unit stops finds nothing. These runs mirrored it out while the VM ran.
+
 ### The guest control plane and credential relay work, and the relay needed a backend version rather than vivarium code
 
 Measured 2026-08-10 on a real host with `/dev/kvm`, a systemd user manager, guest kernel 6.18.43, Nix 2.34.8, cloud-hypervisor 53.0 and virtiofsd 1.14.0, by `tests/host/guest-agent-check` — two clean runs, both tiers green.

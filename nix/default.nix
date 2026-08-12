@@ -152,6 +152,63 @@ let
   # step. A guest that still sees *this* proves the deletion did not propagate at
   # all, which makes the run inconclusive rather than a pass.
   gcInterlockControlExpression = gcInterlockExpression "gc-interlock-control" "vivarium-gc-interlock-control";
+  # The guest module and its build inputs, published so a generated flake can
+  # compose the same guest a diagnostic image composes. Slice 012's item 1
+  # measured the alternative: a manifest-built guest carries no vivarium shares,
+  # no volumes, no store overlay and no `vivarium.credentials` option, so
+  # `launch-arguments.nix` throws on the first `shareByTag`. The difference is the
+  # input, not the launcher, so the input is what moves.
+  guestModule = ./guest.nix;
+
+  # `specialArgs` rather than module arguments because `guest.nix` takes them as
+  # function arguments; the shipped values are `imageDefaults`, which is what
+  # makes the manifest-built guest and the shipped image the same guest.
+  guestSpecialArgs = {
+    inherit
+      storeLayout
+      volumeLabel
+      storeVolumeLabel
+      workspaceSourceSentinel
+      volumeImageSentinel
+      storeVolumeImageSentinel
+      guestAgentPackage
+      ;
+    inherit (imageDefaults)
+      homeVolumeSizeMiB
+      storeVolumeSizeMiB
+      storeMinFree
+      storeMaxFree
+      ;
+  };
+
+  # The launch half, against an already-resolved guest `config`. Both callers go
+  # through here — `mkImage` below and the generated flake through
+  # `nix/flake.nix`'s `lib` output — so the diagnostic path and the product path
+  # cannot drift into two spellings of the same substitution table.
+  mkLaunch =
+    {
+      config,
+      virtiofsdThreadPoolSize ? imageDefaults.virtiofsdThreadPoolSize,
+    }:
+    rec {
+      launchArguments = import ./launch-arguments.nix {
+        inherit
+          pkgs
+          config
+          storeCanaryExpression
+          gcInterlockCanaryExpression
+          gcInterlockControlExpression
+          supervisorPackage
+          # Launch-channel, so it must not reach the guest: this is what keeps the
+          # four pool-size variants on one guest closure and makes the sweep four
+          # short boots rather than four full rebuilds.
+          virtiofsdThreadPoolSize
+          ;
+        inherit (nixpkgs) lib;
+      };
+      runner = import ./runner.nix { inherit pkgs launchArguments supervisorPackage; };
+    };
+
   mkImage =
     variant:
     let
@@ -167,16 +224,7 @@ let
     rec {
       guest = nixpkgs.lib.nixosSystem {
         inherit system;
-        specialArgs = {
-          inherit
-            storeLayout
-            volumeLabel
-            storeVolumeLabel
-            workspaceSourceSentinel
-            volumeImageSentinel
-            storeVolumeImageSentinel
-            guestAgentPackage
-            ;
+        specialArgs = guestSpecialArgs // {
           inherit (v)
             homeVolumeSizeMiB
             storeVolumeSizeMiB
@@ -189,26 +237,18 @@ let
         # whole module tree and auditable only by grepping it.
         modules = [
           microvm.nixosModules.microvm
-          ./guest.nix
+          guestModule
         ]
         ++ v.extraModules;
       };
-      launchArguments = import ./launch-arguments.nix {
-        inherit
-          pkgs
-          storeCanaryExpression
-          gcInterlockCanaryExpression
-          gcInterlockControlExpression
-          supervisorPackage
-          ;
-        # Launch-channel, so it must not reach the guest: this is what keeps the four
-        # pool-size variants on one guest closure and makes the sweep four short
-        # boots rather than four full rebuilds.
-        inherit (v) virtiofsdThreadPoolSize;
-        inherit (guest) config;
-        inherit (nixpkgs) lib;
-      };
-      runner = import ./runner.nix { inherit pkgs launchArguments supervisorPackage; };
+      inherit
+        (mkLaunch {
+          inherit (guest) config;
+          inherit (v) virtiofsdThreadPoolSize;
+        })
+        launchArguments
+        runner
+        ;
       settings = v;
     };
 
@@ -226,5 +266,8 @@ in
     mkImage
     shipped
     guestAgentPackage
+    guestModule
+    guestSpecialArgs
+    mkLaunch
     ;
 }

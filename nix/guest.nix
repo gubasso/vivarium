@@ -21,6 +21,18 @@
 }:
 
 let
+  # The priority this module holds for everything a user may legitimately choose.
+  #
+  # Not `mkDefault` (1000): an image holds that role in the merge (spec/04), and a product value at
+  # the same priority is a conflict rather than a floor — measured against the shipped `base.nix`.
+  # Not `mkOptionDefault` (1500) either: upstream's own option defaults sit there, so
+  # `microvm.hypervisor` tied with microvm.nix's `default = "qemu"` and the guest failed to
+  # evaluate at all for an image that expressed no preference — measured, by the trials.
+  #
+  # 1250 is the one level between the two. A layer that says nothing gets vivarium's value instead
+  # of upstream's; a layer that says anything at all outranks it.
+  productDefault = lib.mkOverride 1250;
+
   inherit (storeLayout)
     lowerStoreDir
     lowerStoreViewDir
@@ -43,7 +55,11 @@ in
   };
 
   config = {
-    networking.hostName = "vivarium-first";
+    # Everything below that a user may legitimately choose sits at `productDefault`.
+    # Everything at normal priority is the launch contract — the shares, the volumes,
+    # the store overlay, the guest identity — and a layer that contradicts one of
+    # those is meant to fail loudly rather than quietly win.
+    networking.hostName = productDefault "vivarium-first";
     boot.initrd.systemd.enable = true;
     # Naming these as required initrd modules makes evaluation/build fail if the
     # selected guest kernel ceases to provide AF_VSOCK or its virtio transport.
@@ -54,10 +70,21 @@ in
     ];
 
     microvm = {
-      hypervisor = "cloud-hypervisor";
-      mem = 2048;
-      vcpu = 2;
-      balloon = true;
+      # The backend is a user choice in shape only: `launch-arguments.nix`
+      # renders Cloud Hypervisor's argv and its `VmConfig`, so another value
+      # would produce a launch specification for a backend nobody starts. The
+      # assertion below turns that into an evaluation failure with a sentence,
+      # which is why this may sit at the lowest priority rather than being forced.
+      hypervisor = productDefault "cloud-hypervisor";
+      # Inert for launch and kept anyway: the launcher takes memory and vcpu
+      # count as launch-channel tokens (N19), so these two decide nothing the
+      # host boots. They stay because a guest module that declared no size at all
+      # would leave upstream's own defaults to answer for vivarium.
+      mem = productDefault 2048;
+      vcpu = productDefault 2;
+      balloon = productDefault true;
+      # Not a user choice: the launcher declares `--balloon size=0M` and the two
+      # halves must agree about the starting size.
       initialBalloonMem = 0;
       writableStoreOverlay = upperRoot;
 
@@ -326,6 +353,15 @@ in
 
     assertions = [
       {
+        # The counterpart to the lowered `hypervisor` priority above. A layer may
+        # set it; setting it to anything else must fail here rather than at the
+        # moment a Cloud Hypervisor argv is handed to a different program.
+        assertion = config.microvm.hypervisor == "cloud-hypervisor";
+        message =
+          "vivarium launches Cloud Hypervisor; microvm.hypervisor is "
+          + "`${config.microvm.hypervisor}`, which no vivarium launch specification describes";
+      }
+      {
         assertion = !config.microvm.storeOnDisk;
         message = "the literal /nix/store share must disable storeOnDisk";
       }
@@ -357,6 +393,10 @@ in
       message = "virtiofs socket defaults must remain non-null and relative";
     }) config.microvm.shares;
 
-    system.stateVersion = "25.11";
+    # The user's to choose, and the one value where losing that choice silently
+    # would be worst: it decides how existing state is interpreted, so a product
+    # module overriding a declared value would reinterpret a volume the user
+    # already has. Lowest priority, like the other user-facing values above.
+    system.stateVersion = productDefault "25.11";
   };
 }

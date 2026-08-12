@@ -107,10 +107,23 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;
 
+    /// A bindable socket path, short enough to bind wherever the suite is run from.
+    ///
+    /// Not `std::env::temp_dir()`: a Unix socket path cannot exceed 108 bytes, and `TMPDIR` on a
+    /// disk-heavy lane points at whatever drive absorbs the run — measured, and these tests then
+    /// fail with `path must be shorter than SUN_LEN`, which reads as a product defect and is not
+    /// one. `/run/user/<uid>` is short, is a per-user tmpfs, and is where a socket belongs anyway;
+    /// `TMPDIR` remains the fallback for a host without one.
     fn socket_path(name: &str) -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        std::env::temp_dir().join(format!(
-            "vivarium-{name}-{}-{}",
+        let base = PathBuf::from(format!("/run/user/{}", crate::config::effective_uid()));
+        let base = if base.is_dir() {
+            base
+        } else {
+            std::env::temp_dir()
+        };
+        base.join(format!(
+            "viv-{name}-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))

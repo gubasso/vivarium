@@ -61,7 +61,10 @@ path = "tests/guest_agent_host.rs"
 harness = false
 
 [dependencies]
-rustix = { version = "1.1.4", features = ["fs"] }
+# `process` for the two host facts the lifecycle verbs need and cannot be given: the invoking
+# user's uid/gid, which the share identity translation maps, and whether the recorded VM pid is
+# still alive, which is half of ADR-0030's state discriminator.
+rustix = { version = "1.1.4", features = ["fs", "process"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.17"

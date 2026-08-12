@@ -65,6 +65,16 @@
       in
       {
         inherit (verification) packages checks;
+        # The seam a generated project flake enters this one through (slice 012).
+        # It composes the same guest module with the same build inputs and hands
+        # the resolved config back to `mkLaunch`, so a manifest-built guest and
+        # the shipped image are the same guest reached by two routes rather than
+        # two guests that happen to agree. `lib` and not `packages` because none
+        # of the three is a derivation: two are a module and an attrset of build
+        # inputs, and the third is a function.
+        lib = {
+          inherit (product) guestModule guestSpecialArgs mkLaunch;
+        };
       }
     );
 }

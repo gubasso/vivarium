@@ -20,11 +20,11 @@
 
   networking.hostName = lib.mkDefault "vivarium";
 
-  users.users.vivarium = {
-    isNormalUser = true;
-    group = "users";
-    home = "/home/vivarium";
-  };
+  # The `vivarium` guest account is deliberately absent here. Its uid and gid are
+  # the share identity contract — fixed when the image is built and identical on
+  # every host (spec/06) — so the guest module vivarium composes beneath your
+  # layers owns the account, and an image that redeclared it would be proposing a
+  # different value for the one field the uid/gid translation reads.
 
   # Open by default, which is a deliberate policy rather than an oversight: a
   # sandbox that cannot fetch a dependency is a sandbox nobody uses, and the

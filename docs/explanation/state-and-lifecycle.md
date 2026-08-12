@@ -1,6 +1,6 @@
 # State and lifecycle
 
-This page describes the accepted design rather than implemented behavior; see [implementation status](../reference/implementation-status.md) for what runs today.
+The lifecycle half of this page now describes implemented behavior — `viv start`, `viv status`, and `viv stop` run, and identity is minted rather than only derived. Generations, volumes, and the cross-project forms remain design; see [implementation status](../reference/implementation-status.md) for the line between them.
 
 vivarium separates authored configuration, pinned data, durable operational state, regenerable cache, and session runtime across the XDG roots. The tool never treats authored configuration as mutable state. Project identity is derived from the directory name and anchored by a self-ignored marker, while the per-user registry maps that identity to a live path and a selected manifest.
 
@@ -29,4 +29,5 @@ Exact paths, states, command effects, and identity cases live in [config and XDG
 
 ## Unresolved
 
-- Real supervision and lifetime enactment belongs to [slice 002](../plan/slices/002-secure-launch-and-supervision/README.md).
+- Generation records, their retention, and their GC roots are unwritten: `viv start` records one build output per target so a stopped project reads as `built` rather than `absent`, which is not the generation history [`11-generations-and-build-history.md`](../reference/spec/11-generations-and-build-history.md) specifies.
+- Admission control before launch belongs to [slice 005](../plan/slices/005-cli-runtime-plumbing/README.md); `viv start` does not run it.

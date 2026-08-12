@@ -51,6 +51,8 @@ pub struct BaselineInputs {
     pub nixpkgs: String,
     /// The `microvm` flake reference.
     pub microvm: String,
+    /// The vivarium product flake reference, which carries the guest module and the launch seam.
+    pub vivarium: String,
 }
 
 /// The variable a development lane sets to pin `nixpkgs`.
@@ -59,11 +61,17 @@ pub const BASELINE_NIXPKGS_VARIABLE: &str = "VIVARIUM_BASELINE_NIXPKGS";
 /// The variable a development lane sets to pin `microvm`.
 pub const BASELINE_MICROVM_VARIABLE: &str = "VIVARIUM_BASELINE_MICROVM";
 
+/// The variable a development lane sets to pin the product flake.
+pub const BASELINE_VIVARIUM_VARIABLE: &str = "VIVARIUM_BASELINE_VIVARIUM";
+
 impl Default for BaselineInputs {
     fn default() -> Self {
         Self {
             nixpkgs: "github:NixOS/nixpkgs/nixos-unstable".to_owned(),
             microvm: "github:astro/microvm.nix".to_owned(),
+            // How a released vivarium should name its own product flake is open as Q-014; this
+            // branch reference is the same shape the other two carry and settles nothing.
+            vivarium: "github:gubasso/vivarium?dir=nix".to_owned(),
         }
     }
 }
@@ -82,6 +90,7 @@ impl BaselineInputs {
         Self {
             nixpkgs: read(BASELINE_NIXPKGS_VARIABLE).unwrap_or(shipped.nixpkgs),
             microvm: read(BASELINE_MICROVM_VARIABLE).unwrap_or(shipped.microvm),
+            vivarium: read(BASELINE_VIVARIUM_VARIABLE).unwrap_or(shipped.vivarium),
         }
     }
 }
@@ -634,17 +643,11 @@ fn validate_relative(path: &Path) -> Result<(), GeneratedFlakeError> {
     Ok(())
 }
 
+/// The `inputs` block: the three baseline inputs every generated flake carries, then whatever the
+/// composed artifacts declared.
 #[allow(clippy::format_push_string)]
-fn render_flake(
-    selected_manifest: &ResolvedArtifact,
-    composition: &ResolvedComposition,
-    baseline: &BaselineInputs,
-) -> String {
-    let mut text = String::from(concat!(
-        "{\n",
-        "  description = \"vivarium generated project flake\";\n",
-        "  inputs = {\n",
-    ));
+fn render_inputs(composition: &ResolvedComposition, baseline: &BaselineInputs) -> String {
+    let mut text = String::from("  inputs = {\n");
     text.push_str(&format!(
         "    nixpkgs.url = \"{}\";\n",
         nix_string(&baseline.nixpkgs)
@@ -654,6 +657,16 @@ fn render_flake(
         nix_string(&baseline.microvm)
     ));
     text.push_str("    microvm.inputs.nixpkgs.follows = \"nixpkgs\";\n");
+    // The product flake, entered for its guest module and its launch seam. Both `follows` lines
+    // matter: without them the composed guest would be built against one nixpkgs and its shares
+    // and volumes described against another, which is a mismatch that surfaces as a boot failure
+    // rather than as an evaluation error.
+    text.push_str(&format!(
+        "    vivarium.url = \"{}\";\n",
+        nix_string(&baseline.vivarium)
+    ));
+    text.push_str("    vivarium.inputs.nixpkgs.follows = \"nixpkgs\";\n");
+    text.push_str("    vivarium.inputs.microvm.follows = \"microvm\";\n");
     for (name, input) in &composition.inputs {
         text.push_str(&format!(
             "    {name} = {{ url = \"{}\";{} }};\n",
@@ -661,11 +674,31 @@ fn render_flake(
             if input.flake { "" } else { " flake = false;" }
         ));
     }
-    text.push_str("  };\n  outputs = inputs@{ nixpkgs, microvm, ... }:\n    let\n");
+    text.push_str("  };\n");
+    text
+}
+
+#[allow(clippy::format_push_string)]
+fn render_flake(
+    selected_manifest: &ResolvedArtifact,
+    composition: &ResolvedComposition,
+    baseline: &BaselineInputs,
+) -> String {
+    let mut text = String::from(concat!(
+        "{\n",
+        "  description = \"vivarium generated project flake\";\n",
+    ));
+    text.push_str(&render_inputs(composition, baseline));
+    text.push_str("  outputs = inputs@{ nixpkgs, microvm, vivarium, ... }:\n    let\n");
     text.push_str(concat!(
         "      vivariumInputs = builtins.removeAttrs inputs ",
-        "[ \"self\" \"nixpkgs\" \"microvm\" ];\n",
+        "[ \"self\" \"nixpkgs\" \"microvm\" \"vivarium\" ];\n",
     ));
+    // The product seam, resolved once per system. `guestModule` carries the shares, volumes,
+    // store overlay and guest identity the launch specification reads; `mkLaunch` renders that
+    // specification from the resolved config. Both come from the same flake the diagnostic image
+    // uses, so a manifest-built guest and the shipped image are one guest reached two ways.
+    text.push_str("      product = system: vivarium.lib.${system};\n");
     // The composed layers, each carrying the identity the provenance view names it by. This is the
     // only place the tool's layer vocabulary — image, piece, extends, manifest — reaches Nix, and
     // `vivarium-report.nix` evaluates each `module` alone against the option surface to recover
@@ -708,15 +741,23 @@ fn render_flake(
         )
     ));
     // The option surface comes first so no layer can be the module that declares the option it
-    // sets, and `microvm` comes last because it is upstream's, not a composed layer.
+    // sets, then the product guest module so every composed layer outranks it, and `microvm` last
+    // because it is upstream's, not a composed layer. The guest module holds the lowest priority
+    // it can for everything a user may legitimately choose, so this ordering is a statement about
+    // who declares what rather than about who wins.
     text.push_str(&format!(
-        "      modules = [ ./{OPTIONS_MODULE_FILE} ] ++ map (layer: layer.module) layers\n"
+        "      modules = system: [ ./{OPTIONS_MODULE_FILE} (product system).guestModule ]\n"
     ));
+    text.push_str("        ++ map (layer: layer.module) layers\n");
     text.push_str("        ++ [ microvm.nixosModules.microvm ];\n");
     text.push_str(concat!(
-        "      build = system: nixpkgs.lib.nixosSystem { inherit system; ",
-        "specialArgs = { inherit vivariumInputs; }; inherit modules; };\n",
+        "      build = system: nixpkgs.lib.nixosSystem { inherit system;\n",
+        "        specialArgs = { inherit vivariumInputs; } // (product system).guestSpecialArgs;\n",
+        "        modules = modules system; };\n",
     ));
+    text.push_str(
+        "      launch = system: (product system).mkLaunch { inherit ((build system)) config; };\n",
+    );
     text.push_str(&format!(
         "      report = system: import ./{REPORT_FILE} {{\n"
     ));
@@ -737,7 +778,17 @@ fn render_flake(
     text.push_str(&format!(
         "      {REPORT_ATTR} = {{ x86_64-linux = report \"x86_64-linux\"; "
     ));
-    text.push_str("aarch64-linux = report \"aarch64-linux\"; };\n    };\n}\n");
+    text.push_str("aarch64-linux = report \"aarch64-linux\"; };\n");
+    // What `viv start` builds. The runner is the same expression the diagnostic path executes,
+    // so the host-resolved token substitution has one implementation rather than a second
+    // spelling of it in Rust.
+    text.push_str(concat!(
+        "      launchArguments = { x86_64-linux = (launch \"x86_64-linux\").launchArguments; ",
+        "aarch64-linux = (launch \"aarch64-linux\").launchArguments; };\n",
+        "      runner = { x86_64-linux = (launch \"x86_64-linux\").runner; ",
+        "aarch64-linux = (launch \"aarch64-linux\").runner; };\n",
+    ));
+    text.push_str("    };\n}\n");
     text
 }
 

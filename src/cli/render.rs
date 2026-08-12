@@ -22,6 +22,8 @@ use crate::config::{
     Egress, EgressMode, Manifest, ResolvedArtifact, ResolvedBinding, Resources, XdgRoots,
 };
 
+use super::lifecycle::Report;
+
 /// `viv config --json` — the binding record.
 pub fn binding_json(
     binding: &ResolvedBinding,
@@ -472,6 +474,73 @@ const fn egress_mode(mode: EgressMode) -> &'static str {
         EgressMode::Open => "open",
         EgressMode::Allowlist => "allowlist",
     }
+}
+
+/// `viv status --json` — one record of operational state (spec/01 "Status output").
+///
+/// Every key is present whatever the state, because a consumer needs a stable shape. A field this
+/// slice cannot fill honestly is `null` rather than fabricated: `generation` in particular, since
+/// spec/11's generations are out of scope here and a number invented for the slot would be a
+/// different and wrong answer.
+///
+/// `resources` and `runtime` stay separate objects even when both are absent. spec/01 is explicit
+/// that a consumer must never have to guess which it is holding, so collapsing them while one
+/// happens to be empty would publish a shape that changes meaning with the state.
+pub fn status_json(report: &Report) -> String {
+    line(&json!({
+        "manifest": report.manifest,
+        "state": report.state.as_str(),
+        // Required whenever `state` is `failed` (spec/01), and present as `null` otherwise for the
+        // same reason `generation` is: a key that appears and disappears is a shape a consumer has
+        // to branch on before it can read the record.
+        "reason": report.reason,
+        // Meaningful only while running (ADR-0030), and reported as a boolean regardless so the
+        // key does not appear and disappear.
+        "stale": report.stale,
+        "generation": Value::Null,
+        "store_path": report.store_path,
+        "uptime_seconds": report.uptime_seconds,
+        "resources": report.resources.as_ref().map(|resources| json!({
+            "mem_mib": resources.mem_mib,
+            "vcpu": resources.vcpu,
+        })),
+        // Measured use, which nothing in this slice measures. Slice 005 owns spec/17's readings.
+        "runtime": Value::Null,
+    }))
+}
+
+/// `viv status` — the human reading of the same record.
+pub fn status_human(report: &Report) -> String {
+    let mut rendered = String::new();
+    if let Some(manifest) = &report.manifest {
+        let _ = writeln!(rendered, "manifest  {manifest}");
+    }
+    let _ = writeln!(rendered, "state     {}", report.state.as_str());
+    if let Some(reason) = report.reason {
+        let _ = writeln!(rendered, "reason    {reason}");
+    }
+    if let Some(store_path) = &report.store_path {
+        let _ = writeln!(rendered, "build     {store_path}");
+    }
+    if let Some(uptime) = report.uptime_seconds {
+        let _ = writeln!(rendered, "uptime    {uptime}s");
+    }
+    if let Some(resources) = &report.resources {
+        let _ = writeln!(
+            rendered,
+            "resources {} MiB, {} vcpu",
+            resources.mem_mib, resources.vcpu
+        );
+    }
+    if report.stale {
+        // The remedy beside the fact, because a stale VM is a state a user acts on rather than one
+        // they only read (spec/01).
+        let _ = writeln!(
+            rendered,
+            "\nthis VM is stale: a newer build exists. `viv start --rebuild` replaces it"
+        );
+    }
+    rendered
 }
 
 fn display(path: &Path) -> String {

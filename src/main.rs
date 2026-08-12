@@ -103,6 +103,9 @@ const fn requested_output(invocation: &Invocation) -> Output {
         | Invocation::ConfigSources { output }
         | Invocation::ManifestList { output }
         | Invocation::ManifestShow { output, .. }
+        | Invocation::Start { output, .. }
+        | Invocation::Status { output, .. }
+        | Invocation::Stop { output, .. }
         | Invocation::Deferred { output, .. } => *output,
         Invocation::StartSpec { .. } => Output::Human,
     }
@@ -172,9 +175,13 @@ impl StartError {
     /// The exit category, chosen in one place rather than at each failing call.
     ///
     /// Exhaustive by construction: a new variant will not compile until it is classified here.
-    /// Whether the runtime-directory and socket failures below belong in [`ExitKind::IoErr`] at
-    /// all is open as Q-008 — this preserves the categories the untyped version emitted, and
-    /// makes them visible in one place so the question can be settled from evidence.
+    ///
+    /// The six [`ExitKind::IoErr`] arms were Q-008, and slice 012 settled it in their favour: the
+    /// private runtime directory vivarium creates, the launch specification it writes there, and
+    /// the readiness socket it binds are all channels vivarium owns, which is spec/14's own
+    /// description of `74`. The `start` row already admitted `74` for generated-tree and lock
+    /// staging I/O, so the resolution widened that admission to name these too rather than adding
+    /// a code to a row that had none.
     const fn exit_code(&self) -> ExitKind {
         match self {
             Self::InvalidSpec(_) | Self::ReadinessPathOccupied => ExitKind::Usage,
@@ -283,6 +290,10 @@ mod tests {
 
     /// One row per variant. The classification is a contract with whoever reads `$?`, so it is
     /// asserted rather than left to whichever arm a later edit happens to land in.
+    ///
+    /// The six `IoErr` rows now pin a settled answer rather than a preserved status quo: slice 012
+    /// resolved Q-008 by widening the `start` row of spec/14 to admit `74` for runtime-directory
+    /// and readiness-socket I/O, so moving one of them is a spec change and not a refactor.
     #[test]
     fn every_variant_is_classified() {
         let rows: Vec<(StartError, ExitKind)> = vec![

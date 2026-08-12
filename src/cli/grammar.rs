@@ -75,6 +75,24 @@ pub enum Invocation {
     ManifestList { output: Output },
     /// Show one manifest.
     ManifestShow { name: String, output: Output },
+    /// Bring the project's VM up, detached, and return once it is running (spec/10).
+    Start {
+        rebuild: bool,
+        no_rebuild: bool,
+        /// The console-streaming form, whose post-condition differs from the detached one.
+        attach: bool,
+        output: Output,
+    },
+    /// What the project's VM is doing, read-only (spec/01, ADR-0030).
+    Status { global: bool, output: Output },
+    /// Bring the project's VM down, stopping at the teardown boundary (ADR-0018).
+    Stop {
+        all: bool,
+        force: bool,
+        /// Seconds of grace before a hard poweroff. `-1` waits indefinitely (spec/10).
+        timeout: Option<i64>,
+        output: Output,
+    },
     /// The slice-002 supervisor handoff, which `nix/runner.sh` invokes directly.
     ///
     /// Kept as a sub-form of `start` rather than promoted to its own verb because it is not part of
@@ -93,10 +111,8 @@ pub enum Invocation {
 /// The verbs whose grammar is settled here and whose work belongs to slices 012 through 014.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Deferred {
-    Start,
     Shell,
     Exec,
-    Stop,
     VolumeList,
     Destroy,
     /// The one cross-project sweep. Needs no binding, so it never answers `78`.
@@ -116,10 +132,8 @@ impl Deferred {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Start => "start",
             Self::Shell => "shell",
             Self::Exec => "exec",
-            Self::Stop => "stop",
             Self::VolumeList => "volume list",
             Self::Destroy => "destroy",
             Self::Gc => "gc",
@@ -160,6 +174,7 @@ where
         Some("config") => config(rest),
         Some("manifest") => manifest(rest),
         Some("start") => start(rest),
+        Some("status") => status(rest),
         Some("shell") => deferred_flagless(Deferred::Shell, rest, SHELL_USAGE),
         Some("exec") => exec(rest, streams),
         Some("stop") => stop(rest),
@@ -174,13 +189,14 @@ where
 }
 
 const TOP_USAGE: &str =
-    "viv <init|config|manifest|start|shell|exec|stop|volume|destroy|gc> [options]";
+    "viv <init|config|manifest|start|status|shell|exec|stop|volume|destroy|gc> [options]";
 const INIT_USAGE: &str = "viv init [--manifest <name>] [--write] [--yes] [--json] [--no-input]";
 const CONFIG_USAGE: &str = "viv config [--manifest <name>] [--json]";
 const CONFIG_EVAL_USAGE: &str = "viv config eval [--json]";
 const CONFIG_SOURCES_USAGE: &str = "viv config sources [--json]";
 const MANIFEST_USAGE: &str = "viv manifest <list|show <name>> [--json]";
 const START_USAGE: &str = "viv start [--rebuild|--no-rebuild] [--json]";
+const STATUS_USAGE: &str = "viv status [--json] [-g|--global]";
 const SHELL_USAGE: &str = "viv shell [--json]";
 const EXEC_USAGE: &str = "viv exec [-t|--no-tty] -- <command> [args...]";
 const STOP_USAGE: &str = "viv stop [--all] [--force] [-t|--timeout <secs>] [--json]";
@@ -314,13 +330,18 @@ fn start(rest: &[OsString]) -> Result<Invocation, UsageError> {
         return Ok(Invocation::StartSpec { spec });
     }
 
-    let (mut rebuild, mut no_rebuild) = (false, false);
+    let (mut rebuild, mut no_rebuild, mut attach) = (false, false, false);
     let mut output = Output::Human;
     for token in rest {
         match token.to_str() {
             Some("--rebuild") => rebuild = true,
             Some("--no-rebuild") => no_rebuild = true,
-            Some("--attach") => {}
+            // Parsed, never dropped: spec/10 makes `--attach` a console-streaming form whose
+            // post-condition differs from the detached one, so the verb refuses it by name rather
+            // than performing a different operation under it. The refusal is in `lifecycle::start`
+            // with the other unimplemented forms, because it is a missing capability and not a
+            // malformed invocation.
+            Some("--attach") => attach = true,
             Some("--json") => output = Output::Json,
             _ => return Err(unknown(token, START_USAGE)),
         }
@@ -331,10 +352,25 @@ fn start(rest: &[OsString]) -> Result<Invocation, UsageError> {
             Some(START_USAGE),
         ));
     }
-    Ok(Invocation::Deferred {
-        verb: Deferred::Start,
+    Ok(Invocation::Start {
+        rebuild,
+        no_rebuild,
+        attach,
         output,
     })
+}
+
+fn status(rest: &[OsString]) -> Result<Invocation, UsageError> {
+    let mut global = false;
+    let mut output = Output::Human;
+    for token in rest {
+        match token.to_str() {
+            Some("-g" | "--global") => global = true,
+            Some("--json") => output = Output::Json,
+            _ => return Err(unknown(token, STATUS_USAGE)),
+        }
+    }
+    Ok(Invocation::Status { global, output })
 }
 
 fn exec(rest: &[OsString], streams: Streams) -> Result<Invocation, UsageError> {
@@ -395,18 +431,31 @@ fn stop(rest: &[OsString]) -> Result<Invocation, UsageError> {
             Some("--all") => all = true,
             Some("-t" | "--timeout") => {
                 let raw = value(&mut tokens, "--timeout", STOP_USAGE)?;
-                timeout = Some(raw.parse().map_err(|_| {
+                let seconds: i64 = raw.parse().map_err(|_| {
                     UsageError::new(
                         format!("`--timeout` expects a whole number of seconds, got `{raw}`"),
                         Some(STOP_USAGE),
                     )
-                })?);
+                })?;
+                // spec/10 reserves exactly one negative value: `-1` waits indefinitely. Anything
+                // below it is outside the option's domain, and accepting it would silently turn a
+                // mistyped bounded stop into an unbounded one — the reading a user is least able
+                // to notice, since the command simply never returns.
+                if seconds < -1 {
+                    return Err(UsageError::new(
+                        format!(
+                            "`--timeout` accepts seconds from `0` up, or `-1` to wait \
+                            indefinitely, got `{raw}`"
+                        ),
+                        Some(STOP_USAGE),
+                    ));
+                }
+                timeout = Some(seconds);
             }
             Some("--json") => output = Output::Json,
             _ => return Err(unknown(token, STOP_USAGE)),
         }
     }
-    let _ = all;
     // `--force` powers off immediately, so a nonzero grace period is not a preference it overrides
     // but a request it contradicts. `--force --timeout 0` says the same thing twice and is fine.
     if force && timeout.is_some_and(|seconds| seconds != 0) {
@@ -415,8 +464,10 @@ fn stop(rest: &[OsString]) -> Result<Invocation, UsageError> {
             Some(STOP_USAGE),
         ));
     }
-    Ok(Invocation::Deferred {
-        verb: Deferred::Stop,
+    Ok(Invocation::Stop {
+        all,
+        force,
+        timeout,
         output,
     })
 }
@@ -553,6 +604,9 @@ mod tests {
             | Invocation::ManifestList { output }
             | Invocation::ManifestShow { output, .. }
             | Invocation::Init { output, .. }
+            | Invocation::Start { output, .. }
+            | Invocation::Status { output, .. }
+            | Invocation::Stop { output, .. }
             | Invocation::Deferred { output, .. } => Some(*output),
             Invocation::StartSpec { .. } => None,
         }
@@ -596,6 +650,27 @@ mod tests {
         }
         // The same pair saying one thing twice is not a contradiction.
         assert!(parse(argv(&["stop", "--force", "--timeout", "0"]), tty()).is_ok());
+    }
+
+    /// spec/10's `--timeout` domain: seconds from zero up, and `-1` alone for an indefinite wait.
+    ///
+    /// The lower bound is load-bearing rather than tidy. `grace_seconds` reads any negative value
+    /// as "no deadline", so a value the grammar let through would turn a mistyped bounded stop
+    /// into one that never returns.
+    #[test]
+    fn the_timeout_domain_admits_only_zero_up_and_minus_one() {
+        for accepted in ["0", "1", "600", "-1"] {
+            assert!(
+                parse(argv(&["stop", "--timeout", accepted]), tty()).is_ok(),
+                "rejected `{accepted}`"
+            );
+        }
+        for rejected in ["-2", "-10", "1.5", "abc", ""] {
+            assert!(
+                parse(argv(&["stop", "--timeout", rejected]), tty()).is_err(),
+                "accepted `{rejected}`"
+            );
+        }
     }
 
     /// Pins the two decisions that read the host's own streams rather than a flag.
@@ -659,10 +734,8 @@ mod tests {
     fn only_gc_is_exempt_from_needing_a_binding() {
         assert!(!Deferred::Gc.needs_binding());
         for verb in [
-            Deferred::Start,
             Deferred::Shell,
             Deferred::Exec,
-            Deferred::Stop,
             Deferred::VolumeList,
             Deferred::Destroy,
         ] {
