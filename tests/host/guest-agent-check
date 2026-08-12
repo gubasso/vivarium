@@ -88,7 +88,12 @@ if [[ ${1:-} == --clean ]]; then
   # named by `VIVARIUM_HEAVY_DRIVE` when there is one, so that is where the
   # retained roots are — and a cleaner must be told where the bytes are even on a
   # disk too full to start a run.
-  for dir in "$("$SCRIPT_DIR/disk-preflight" --locate)"/vivarium-agent-host-*; do
+  # Two names, because the trial is split across two filesystems on purpose: the volumes
+  # and retained evidence sit under the drive-backed scratch root, while the runtime
+  # directory and its sockets sit under `$XDG_RUNTIME_DIR`, where the 108-byte socket
+  # limit is reachable. A cleaner that knew only the first would leave the second behind.
+  for dir in "$("$SCRIPT_DIR/disk-preflight" --locate)"/vivarium-agent-host-* \
+    "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/viv-agent-*; do
     [[ -d $dir ]] || continue
     rm -rf -- "$dir" && removed=$((removed + 1))
   done

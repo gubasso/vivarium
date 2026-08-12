@@ -280,8 +280,16 @@ else
   # live in `tests/nix/measurement/` — a non-descending glob would silently drop ~1000
   # lines from the nixfmt and deadnix lanes. (statix walks the tree itself and
   # was never affected, which is exactly why this would have gone unnoticed.)
+  # `examples/` is in the set because it is tracked Nix a reader is invited to copy;
+  # it was added after this glob was written, and the coverage check below is what
+  # reported the drift rather than a linter silently skipping three files.
   shopt -s nullglob globstar
-  explicit_nix_files=("$REPO_ROOT/flake.nix" "$REPO_ROOT"/nix/**/*.nix "$REPO_ROOT"/tests/nix/**/*.nix)
+  explicit_nix_files=(
+    "$REPO_ROOT/flake.nix"
+    "$REPO_ROOT"/nix/**/*.nix
+    "$REPO_ROOT"/tests/nix/**/*.nix
+    "$REPO_ROOT"/examples/**/*.nix
+  )
   shopt -u nullglob globstar
   mapfile -t glob_nix_files < <(printf '%s\n' "${explicit_nix_files[@]#"$REPO_ROOT"/}" | sort -u)
   mapfile -t git_nix_files < <(

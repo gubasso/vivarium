@@ -21,7 +21,7 @@ Ordered, because a workspace the guest cannot write to makes every persistence q
 3. Back the guest home with a volume that survives stop and start.
 4. Implement `viv volume` list and the prune boundary the volume model fixes.
 5. Implement `viv destroy` and its cold-rebuild boundary.
-6. Land the three `Virtualization` trials this slice's `Acceptance` names, unskipped.
+6. Land the three `Virtualization` trials this slice's `Acceptance` names, unskipped, and restore the pre-push gate as the last of them goes green. `profile.pre-push` selects `kind(test) - binary(user_workflows)` because the acceptance trials assert verbs slices 013 and 014 implement; this slice is where that whole-binary exclusion narrows to the one trial still waiting on a verb, `- test(=workflow_05_restrict_egress_allowlist)`, which [slice 004](../004-enforce-egress-allowlist/README.md) removes when it enforces the allowlist. Narrowing rather than deleting, because the binary carries trials this slice greens and one it cannot: dropping the clause outright would put the stage straight back to failing on a capable host. [`../../sequencing.md`](../../sequencing.md) owns the obligation and carries the measurement to replace.
 
 ## Out of scope
 

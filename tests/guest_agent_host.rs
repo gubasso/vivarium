@@ -321,19 +321,38 @@ async fn guest_agent_and_credential_relay(runner: &Path) {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    // The heavy half — the two volume images, and whatever a failure leaves behind to read —
+    // stays under `TMPDIR`, which `tests/host/guest-agent-check` points at the configured
+    // drive. Gigabytes belong there, and `--clean` looks for this name.
     let root = std::env::temp_dir().join(format!("vivarium-agent-host-{nonce}"));
-    let runtime = root.join("runtime");
+    // The runtime half does not, and the reason is a hard limit rather than tidiness. A Unix
+    // socket path cannot exceed 108 bytes, and this directory is where the launcher binds
+    // `workspace.sock`, `store.sock`, `api.sock` and `ready.sock`. Under a drive-backed
+    // `TMPDIR` the longest of them measured 109 — one byte over — and the whole lane failed as
+    // `child startup child exited unexpectedly with status Some(1)`, two seconds in, saying
+    // nothing about a path length. `TempProject` in `tests/support/mod.rs` learned this in
+    // slice 012 and moved for the same reason; this trial did not, and only started failing
+    // when the lane began redirecting `TMPDIR` at a drive whose mountpoint is long.
+    //
+    // `/run/user/<uid>` is short, is a per-user tmpfs, and is where runtime files belong.
+    let base = PathBuf::from(format!("/run/user/{}", vivarium::config::effective_uid()))
+        .join(format!("viv-agent-{nonce}"));
+    let runtime = base.join("runtime");
     tokio::fs::create_dir_all(&runtime).await.unwrap();
+    tokio::fs::create_dir_all(&root).await.unwrap();
     // The supervisor refuses a launch specification whose directory is not private, which
     // is the runtime-directory rule spec/02 states. `create_dir_all` applies the ambient
     // umask, so the mode is set rather than inherited: a test that prepares the directory
     // itself has to satisfy the same rule the runner's own `umask 077` satisfies.
-    for directory in [&root, &runtime] {
+    for directory in [&root, &base, &runtime] {
         tokio::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
             .await
             .unwrap();
     }
-    let agent_path = root.join("ssh-agent.sock");
+    // Beside the runtime directory rather than inside it: the supervisor's cleanup refuses to
+    // proceed when it finds a runtime artifact it does not own, and this socket is the
+    // harness's own listener rather than one of the launcher's.
+    let agent_path = base.join("ssh-agent.sock");
     let agent = UnixListener::bind(&agent_path).unwrap();
     let echo = tokio::spawn(async move {
         loop {
@@ -477,6 +496,10 @@ async fn guest_agent_and_credential_relay(runner: &Path) {
 
     stop_unit().await;
     echo.abort();
+    // Once the supervisor has cleaned the runtime directory this holds no evidence, so a
+    // passing run takes it with it. A failing one panics before here and leaves it beside the
+    // diagnostics root, which is where a reader is told to look.
+    let _result = tokio::fs::remove_dir_all(&base).await;
 }
 
 /// Stop and forget this lane's transient unit, whatever state it is in.

@@ -83,9 +83,24 @@ failure-output = "immediate-final"
 # faked. `kind(test)` matches every separate test binary Cargo compiles
 # from tests/*.rs.
 #
-# The user-workflow acceptance harness is the deliberate exception to the
-# E2E-at-CI-only policy: its runtime gates keep it inert until viv, Nix, and
-# KVM are available, so it remains skipped on developer hosts without KVM.
+# The user-workflow acceptance harness is subtracted, which is this profile
+# finally saying what `docs/reference/testing-lanes.md` has always graded it:
+# acceptance is informational, and it gates the host runbooks and CI rather
+# than a developer's push. `kind(test)` alone pulled it in, which was invisible
+# while no contributor host had `/dev/kvm` and became load-bearing the moment
+# one did — the trials then assert verbs that later slices implement and the
+# stage fails by construction. The cost of leaving it was never the four reds;
+# it was the twenty trials passing beside them going unread, because a stage
+# that always fails is a stage people push past.
+#
+# Subtracted rather than ignored per-trial, because an `#[ignore]` is a knob
+# whose removal nothing enforces, and four of them would outlive the slices
+# that justify them. This line is undone by slice 013 item 8 and slice 014
+# item 6, which land those trials unskipped; `docs/plan/sequencing.md` owns
+# the order and the obligation.
+#
+# `profile.ci` deliberately does not inherit this: CI runs everything.
+#
 # Ignored trials are hidden by `cargo nextest list`; pass
 # `--run-ignored=all` to see them. If all matching trials are ignored,
 # nextest exits 4, so `harness_self_check` must remain ungated. At nextest
@@ -93,7 +108,7 @@ failure-output = "immediate-final"
 #
 # `fail-fast` is off so a single failure does not hide other regressions.
 [profile.pre-push]
-default-filter = "kind(test)"
+default-filter = "kind(test) - binary(user_workflows)"
 fail-fast = false
 slow-timeout = { period = "120s", terminate-after = 2 }
 status-level = "fail"

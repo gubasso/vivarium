@@ -19,6 +19,7 @@ Each VM has isolated networking and a gating resolver that installs address poli
 - Implement address expiry and update behavior from the specification.
 - Run Q-006's direct vhost-user experiment and use the tap-plus-uplink fallback if it fails.
 - Add implementation-level ordering and denial tests.
+- Land `workflow_05_restrict_egress_allowlist` unskipped on a capable host and delete the last pre-push subtraction, returning `profile.pre-push` to `kind(test)`. This trial is the final one the acceptance harness holds against an unimplemented verb, so this slice is where the stage becomes a real gate again; [`../../sequencing.md`](../../sequencing.md) owns the order and the two slices that narrowed the clause before it.
 
 ## Out of scope
 

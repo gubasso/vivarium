@@ -233,6 +233,56 @@ fn probe_kvm() -> Result<(), String> {
         .map_err(|error| format!("/dev/kvm is not read-write openable: {error}"))
 }
 
+/// Refuses the roots N24 refuses, and their ancestors, matching `reject_session_source` in
+/// `src/launch/spec.rs` rather than guessing at it.
+fn under_temp_root(path: &Path) -> bool {
+    [Path::new("/tmp"), Path::new("/var/tmp")]
+        .iter()
+        .any(|forbidden| path.starts_with(forbidden) || forbidden.starts_with(path))
+}
+
+/// Where a fixture puts its project tree and its four durable XDG roots.
+///
+/// Deliberately not `std::env::temp_dir()`, and the reason is a product rule rather than a
+/// preference. N24 refuses a share source that resolves under `/tmp` or `/var/tmp`, and the
+/// project directory built on this base is exactly what a booting trial hands the launcher as
+/// its workspace. With `TMPDIR` unset — the default on a host nobody has configured for this
+/// suite — `temp_dir()` is `/tmp`, so a fixture defect surfaced wearing the product's own error
+/// vocabulary: `vm.start-failed … share source violates N24`, from a spec line that was working
+/// exactly as written. Measured on a host with `/dev/kvm`: all seven virtualization-gated trials
+/// failed that way, and the same run passed 13 of 17 once `TMPDIR` named an external drive.
+///
+/// So the base is resolved rather than inherited, and the answer is the one
+/// `tests/host/disk-preflight --locate --images` already gives for the same question, in the same
+/// order — the configured drive when there is one, the state root otherwise, and never a temp
+/// root. Only the environment variable is read here; the untracked shell file `disk-preflight`
+/// also consults is a lane's concern, and this fallback is correct without it.
+fn fixture_base() -> io::Result<PathBuf> {
+    if let Some(drive) = std::env::var_os("VIVARIUM_HEAVY_DRIVE").filter(|value| !value.is_empty())
+    {
+        let drive = PathBuf::from(drive);
+        // Validated rather than trusted: an unplugged drive looks exactly like an empty
+        // directory, and a drive pointed at a temp root would reintroduce the refusal above.
+        if drive.is_absolute() && !under_temp_root(&drive) && fs::create_dir_all(&drive).is_ok() {
+            return Ok(drive.join("test-fixtures"));
+        }
+    }
+    let state = match std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
+        Some(value) => PathBuf::from(value),
+        None => PathBuf::from(std::env::var_os("HOME").ok_or_else(|| {
+            io::Error::other("neither VIVARIUM_HEAVY_DRIVE, XDG_STATE_HOME, nor HOME is set")
+        })?)
+        .join(".local/state"),
+    };
+    if !state.is_absolute() || under_temp_root(&state) {
+        return Err(io::Error::other(format!(
+            "the state root `{}` cannot hold a fixture N24 will accept as a workspace",
+            state.display()
+        )));
+    }
+    Ok(state.join("vivarium/test-fixtures"))
+}
+
 #[derive(Debug)]
 pub struct TempProject {
     root: PathBuf,
@@ -254,7 +304,7 @@ impl TempProject {
 
     pub fn with_project_name(name: &str) -> io::Result<Self> {
         let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
+        let root = fixture_base()?.join(format!(
             "vivarium-user-workflows-{}-{sequence}",
             std::process::id()
         ));

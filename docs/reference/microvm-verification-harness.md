@@ -113,7 +113,7 @@ Three properties are worth knowing before reading a result from it.
 - The trial gates itself at run time and reports why it skipped, so an incapable host does not panic on a missing variable. `VIVARIUM_TEST_REQUIRE=1` is deliberately not set by this script, which has already proved the gate before running the trial; it is the knob for CI, where a silently disabled lane is the failure mode.
 - The measured figures are `[RECORD]` lines the trial writes to stderr, and nextest replays captured output only for failures. The script therefore passes `--success-output=immediate`. Without it the figures survive exactly the runs that produce untrustworthy numbers and vanish from every green one.
 
-Retained diagnostics live under `${TMPDIR:-/tmp}/vivarium-agent-host-*` and are removed only by `--clean`, because a failure is meant to be readable afterwards.
+Retained diagnostics live under `${TMPDIR:-/tmp}/vivarium-agent-host-*` and are removed only by `--clean`, because a failure is meant to be readable afterwards. The trial's runtime directory and its sockets are the one part that does not live there: they sit under `${XDG_RUNTIME_DIR}/viv-agent-*`, because a Unix socket path cannot exceed 108 bytes and a drive-backed scratch root is long enough to overrun it — measured at 109 for `workspace.sock`, which fails the boot two seconds in with a message about a child exit rather than about a path. `--clean` removes both names.
 
 ## The sibling script: `tests/host/guest-system-check`
 
@@ -133,6 +133,18 @@ The build tier is opt-in because it realises a complete NixOS closure and no fas
 ## Findings register
 
 Verified on a real host. Each entry names the version it applies to; nothing here is inferred from an agent's execution environment.
+
+### Pointing the lanes at a configured drive moved three latent defects into reach, and each one wore another subsystem's vocabulary
+
+Measured 2026-08-12 on a real host with `/dev/kvm`, a systemd user manager, `$XDG_RUNTIME_DIR`, and `VIVARIUM_HEAVY_DRIVE` set to an ext4 mount at `/run/media/<user>/<label>`. The drive wiring itself was correct — all seven heavy lanes now place their bytes where the resolver says, and the twelve resolver behaviours hold under an environment variable, under the untracked file, and under each fallback. What the run found is what the drive made reachable, and the common shape is worth more than the three fixes: each defect was a harness assumption that only held while the paths were short and the disks were the same one.
+
+- The acceptance fixture built its project tree under `std::env::temp_dir()`, which is `/tmp` whenever `TMPDIR` is unset. That directory is what a booting trial hands the launcher as its workspace, and N24 refuses a share source there. All seven virtualization-gated trials failed as `vm.start-failed … share source violates N24` — a product invariant working exactly as written, reporting a fixture defect. It had been latent since the harness was written and was invisible while no capable host ran it. The fixture now resolves a base the same way `disk-preflight --locate --images` does, so the answer no longer depends on ambient `TMPDIR`.
+- `tests/guest_agent_host.rs` kept its runtime directory under `TMPDIR` too, and pointing that at the drive pushed `workspace.sock` to 109 bytes against the 108-byte `sun_path` limit. The lane failed as `child startup child exited unexpectedly with status Some(1)`, two seconds in, saying nothing about a path length; readiness simply never arrived. `TempProject` learned this in slice 012 and moved to `$XDG_RUNTIME_DIR`; this trial had not, so the lane's own drive redirection is what exposed it. One byte, and the diagnostic points at the child.
+- `tests/host/guest-system-check` pinned two of the generated flake's three baseline inputs. The third — the product flake itself, added in slice 012 — resolved `github:gubasso/vivarium` live on every evaluation and eventually returned an anonymous-API `403`, surfaced as `store.evaluation-failed`. The lane reported on GitHub's rate limit in the vocabulary of a store failure, which is precisely what the pin convention exists to prevent; the lane had a `pin_baseline` function and simply had not learned about the input.
+
+Two things follow for any lane written after this. A path that a developer's machine makes short is a precondition nothing checks, so runtime sockets belong under `$XDG_RUNTIME_DIR` by construction rather than by inheriting whatever scratch root a lane was given. And a pin that enumerates inputs by name goes stale the moment an input is added, with no failure until the network answers differently — which is a reason to notice when the generated flake's input set changes, not a reason to trust the pin because it exists.
+
+After the three fixes, every heavy lane passes on this host: `first-microvm-check` 40/0, `guest-agent-check` 4/0 across both runs, `guest-system-check` 5/0/1, `share-benchmark-check` 17/0, `store-density-check` 10/0, `store-gc-interlock-check` 16/0, `store-pressure-check` 20/0/3.
 
 ### A manifest-built guest reached the launcher only after the guest module was composed into the generated flake
 

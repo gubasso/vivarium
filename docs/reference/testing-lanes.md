@@ -88,4 +88,6 @@ Lanes 1, 2, 3, and 6 are required on every change and run anywhere. Lanes 4 and 
 
 The gated acceptance lane stays informational until a virtualization-capable runner exists. A skipped trial is never implementation evidence — that rule is [`implementation-status.md`](./implementation-status.md)'s, and it is why the middle status level exists.
 
+The profiles state that grading as of 2026-08-12. `profile.pre-push` selects `kind(test) - binary(user_workflows)`: on a developer host with `/dev/kvm` the acceptance trials would otherwise run and fail against verbs later slices implement, taking the twenty integration trials beside them out of anyone's reading. `profile.ci` still runs everything. The subtraction is temporary and is narrowed by the slices that green those trials — [`../plan/sequencing.md`](../plan/sequencing.md) owns which slice removes what, and carries the measurement to replace when the last one lands.
+
 Mutation testing runs on a schedule against the parser, resolver, and precedence modules — never per-change. It guards the specific risk of a suite that is mostly snapshots: assertions that would not notice if the code changed underneath them.

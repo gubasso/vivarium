@@ -52,6 +52,31 @@ No slice consumes these. Each cluster is a decision made in advance of the work,
 - Binding hygiene — `ADR-0054`.
 - Repository boundaries and best-effort confinement — `ADR-0098`, `ADR-0099`.
 
+## What the acceptance harness is still owed
+
+Phase 1 is being built in the order the acceptance trials already assert, so on a host with `/dev/kvm` part of the harness is red by construction rather than by defect. That distinction only survives if it is written down: a red nobody has mapped to work reads exactly like a regression, and the next person to see it either debugs a verb that was never written or learns to ignore the lane.
+
+Measured 2026-08-12 on a host with `/dev/kvm`, a systemd user manager, and `$XDG_RUNTIME_DIR`: 20 of 24 integration trials pass, and all four failures are `internal.not-implemented` from a verb whose slice has not run yet.
+
+| Trial                                         | Refused by                     | Turns green in                                              |
+| --------------------------------------------- | ------------------------------ | ----------------------------------------------------------- |
+| `workflow_06_exec_exit_code_propagation`      | `viv exec`                     | slice 013, item 8                                           |
+| `workflow_05_restrict_egress_allowlist`       | `viv exec`, then the allowlist | slice 013 for the session, slice 004 for the assertion      |
+| `workflow_07_stop_restart_preserving_volumes` | `viv volume list`              | slice 014, item 6                                           |
+| `workflow_08_destroy_cold_rebuild`            | `viv exec`, then `viv destroy` | slice 013 for the session, slice 014 item 6 for the rebuild |
+
+The execution order is the chain already in flight and is not changed by this table: slice 013, then slice 014, then slice 004 out of Phase 2. Two of the four need both ends, which is why neither can be read as a single slice's debt. Nothing is added to a slice's `In scope` here; each trial is already named by the item that lands it.
+
+### The pre-push gate, and the obligation to come back to it
+
+The executable lanes did not say what [`../reference/testing-lanes.md`](../reference/testing-lanes.md) grades. That page calls acceptance informational, while `profile.pre-push` selected `kind(test)`, which pulled the acceptance binary in with the rest of the integration lane. On a host without virtualization the trials gate themselves and the difference never shows. On a capable host the stage failed, and the cost was never the four reds — it was the twenty trials passing beside them going unread, because a stage that always fails is a stage that gets pushed past.
+
+Owed, in this order, and each step is a revision to this section:
+
+1. Taken 2026-08-12: `profile.pre-push` now selects `kind(test) - binary(user_workflows)`, so the executable form states the grading the lane table already carried, and acceptance gates the host runbooks and CI instead. The alternative — an `#[ignore]` per trial naming its slice — was refused as four knobs whose removal nothing enforces. This subtraction is the knob, it is one line, and steps 2 and 3 are what remove it.
+2. Narrow the subtraction as each slice lands, which is the step neither slice may quietly skip. Slice 013 item 8 and slice 014 item 6 land their trials unskipped on a capable host; slice 014, greening the last trial any slice in flight can, replaces the whole-binary exclusion with `- test(=workflow_05_restrict_egress_allowlist)`. That one trial waits on the allowlist, so slice 004 deletes the final clause and returns `profile.pre-push` to `kind(test)`. A slice that lands its trials and leaves the subtraction as it found it has moved a row without restoring the gate.
+3. Re-measure on a capable host once slice 014 closes, and replace the table above with the result rather than amending it. Four reds becoming one is the signal that the remainder belongs to slice 004 and to nothing in flight — and it is the check that step 2 was actually performed, since a subtraction nobody narrowed reports the same green either way.
+
 ## Known cost
 
 This page restates cluster membership that each slice's `Governed by` section also carries, so the two can drift. The mitigation is scope, not process: this page names clusters and consuming slices and never restates a decision, and it is revised whenever a slice opens or closes. If a cluster here disagrees with a slice's `Governed by`, the slice wins and this page is wrong.
