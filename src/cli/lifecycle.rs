@@ -65,10 +65,11 @@ pub struct Report {
     /// Why a `failed` VM failed, and `None` in every other state (spec/01, ADR-0030).
     ///
     /// ADR-0030 makes `failed` the state and the cause a reason, so the field is the only place
-    /// the published causes — `crashed`, `boot-timeout`, `socket-lost` — can be told apart. Today
-    /// every `failed` reads `crashed`, which is exact for a dead recorded process and approximate
-    /// for the other conditions `classify` reaches `failed` from. Which reasons vivarium publishes,
-    /// and whether an unreadable launch specification is one of them, is Q-015.
+    /// the published causes — `crashed`, `boot-timeout`, `socket-lost` — can be told apart. spec/01
+    /// fixes the set as open and obliges a consumer to tolerate a value it does not recognize, so
+    /// vivarium names one cause per condition it can actually tell apart and adds to the set as it
+    /// learns to tell more apart. Today only a dead recorded process is named; the other conditions
+    /// `classify` reaches `failed` from share that name and are the next ones to earn their own.
     pub reason: Option<&'static str>,
     /// Meaningful only while `running` (ADR-0030): freshness derives from the store output path.
     pub stale: bool,
@@ -674,8 +675,8 @@ fn host_vcpu() -> u64 {
 /// what is in force for the running VM, and the launch specification is the one artifact that
 /// records it. The fallback covers a VM whose specification cannot be read; it is operational data
 /// derived from no running VM, which spec/01's "never `null` while it runs" leaves no better answer
-/// to today. Q-015 owns the choice between this floor and a `failed` state that says the record is
-/// unreadable.
+/// to today. Q-015 owns the choice between this floor and admitting `null` for the one case where
+/// the record is unreadable; a `failed` state is not the alternative, because this VM is running.
 fn declared_resources(runtime: &Runtime) -> Resources {
     let fallback = Resources {
         mem_mib: 4096,
