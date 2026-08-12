@@ -84,13 +84,27 @@ record() {
 # normal exit path would throw away the evidence the run exists to produce.
 if [[ ${1:-} == --clean ]]; then
   removed=0
-  for dir in "${TMPDIR:-/tmp}"/vivarium-agent-host-*; do
+  # Located rather than gated: the run below redirects its scratch to the drive
+  # named by `VIVARIUM_HEAVY_DRIVE` when there is one, so that is where the
+  # retained roots are — and a cleaner must be told where the bytes are even on a
+  # disk too full to start a run.
+  for dir in "$("$SCRIPT_DIR/disk-preflight" --locate)"/vivarium-agent-host-*; do
     [[ -d $dir ]] || continue
     rm -rf -- "$dir" && removed=$((removed + 1))
   done
   printf 'removed %d retained diagnostics root(s)\n' "$removed"
   exit 0
 fi
+
+# DUP: before anything writes. This builds the agent image and then boots a guest
+# twice, which measures in gigabytes, and the honest moment to ask where those go
+# is while deferring is still free (AGENTS.md). The trial roots its own retained
+# diagnostics under `TMPDIR`, so redirecting it here moves the trial too.
+if ! heavy_scratch=$("$SCRIPT_DIR/disk-preflight" --need 8 --label "the guest agent lane"); then
+  printf '\n0 passed, 0 failed, 0 skipped (nothing ran: disk preflight refused)\n'
+  exit 1
+fi
+[[ -n $heavy_scratch ]] && export TMPDIR="$heavy_scratch"
 
 printf 'Evaluation tier\n'
 

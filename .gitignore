@@ -1,5 +1,7 @@
 /target
 /.draft/
+# Per-machine environment answers; see .envrc.
+/.envrc.local
 
 # --- cog gitignore (rust) ---
 # Rust

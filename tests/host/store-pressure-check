@@ -76,9 +76,17 @@ BUDGET_SECONDS=${VIVARIUM_PRESSURE_BUDGET:-3600}
 # DUP: NOT under $TMPDIR. N24 (runner.nix) refuses a workspace source that
 # resolves to /tmp, /var/tmp or the runtime dir *or to any ancestor of them*, and
 # this script's scratch directory IS the workspace it hands the launcher.
-STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
-TEMP_BASE=${VIVARIUM_PRESSURE_TEMP_BASE:-$STATE_HOME/vivarium/pressure}
-VOLUME_DIR=$STATE_HOME/vivarium/diagnostics
+#
+# DUP: the root is `disk-preflight`'s answer, so the drive named by
+# `VIVARIUM_HEAVY_DRIVE` absorbs the images when there is one and the state root
+# takes them when there is not. Located rather than gated at this point: `--clean`
+# must be able to find the bytes without facing a capacity decision. The gated
+# call happens after argument parsing, before the first write.
+set_roots() {
+  TEMP_BASE=${VIVARIUM_PRESSURE_TEMP_BASE:-$1/pressure}
+  VOLUME_DIR=$1/diagnostics
+}
+set_roots "$("$SCRIPT_DIR/disk-preflight" --locate --images)"
 
 # DUP
 if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
@@ -250,6 +258,19 @@ if [[ $ARM == e ]]; then
 else
   FLAKE_ATTR='first-microvm-measurement'
 fi
+
+# DUP: before anything writes. The arm is settled by now, so the ballast figure
+# this asks for is the one the run will actually write, plus the two sparse
+# images that sit beside it. The volume-headroom check further down is not this
+# and does not replace it: that one measures inodes, and it runs after the
+# closure has already been realised.
+if ! heavy_root=$("$SCRIPT_DIR/disk-preflight" \
+  --need $(((BALLAST_TOTAL_MIB + 2048 + 1023) / 1024)) \
+  --label "the store pressure measurement" --images); then
+  printf '\nnothing ran: disk preflight refused\n'
+  exit 1
+fi
+set_roots "$heavy_root"
 
 mkdir -p "$TEMP_BASE" "$VOLUME_DIR" 2>/dev/null
 TEMP_ROOT=$(mktemp -d "$TEMP_BASE/run.XXXXXX" 2>/dev/null || true)

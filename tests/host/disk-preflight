@@ -16,24 +16,50 @@
 #   scratch=$(tests/host/disk-preflight --need 6 --label "guest system build") || exit 1
 #   [[ -n $scratch ]] && export TMPDIR="$scratch"
 #
-# stdout carries the scratch directory to use and nothing else, so a caller can
-# capture it. Everything a human reads goes to stderr.
+# A lane that creates disk images rather than scratch asks the same question in
+# the other mode, and gets the root to hang them off. It names its own
+# subdirectories, because only the lane knows which of them it shares:
+#
+#   root=$(tests/host/disk-preflight --need 6 --label bench --images) || exit 1
+#   TEMP_BASE=$root/bench
+#   VOLUME_DIR=$root/diagnostics
+#
+# `--locate` answers either question for a cleanup or help path — with `--images`
+# for the image root, without it for the scratch root — and does so with no
+# capacity gate, no prompt, and nothing on stderr.
+#
+# stdout carries the directory to use and nothing else, so a caller can capture
+# it. Everything a human reads goes to stderr.
 #
 # `VIVARIUM_HEAVY_DRIVE` is the answer given in advance: point it at a directory
-# on the drive that should absorb this, and no prompt appears. Without it, a
-# terminal is asked and a non-interactive run is refused rather than guessed for
-# — an automated lane that silently filled the boot disk is the outcome this
-# exists to prevent.
+# on the drive that should absorb this, and no prompt appears. It is read from
+# the environment first and from the repository's untracked `.envrc.local`
+# second, so a developer answers once per machine rather than once per shell —
+# and a lane invoked outside a direnv shell, which is how an agent runs one,
+# still gets the answer. Without a usable drive, a terminal is asked and a
+# non-interactive run is refused rather than guessed for; an automated lane that
+# silently filled the boot disk is the outcome this exists to prevent.
+#
+# A configured drive that is absent, unwritable, or short is a fallback and not a
+# failure — an external disk gets unplugged, and that should cost a notice rather
+# than a run. What it must never cost is silence: the reason is named on stderr
+# and the run then faces the ordinary short-disk decision on the host disk.
 #
 # One thing it deliberately cannot promise: the Nix store's own location. A
 # closure lands in the store this daemon serves, and moving that is a machine
-# decision, not a lane's. What this moves is build scratch, and what it does
-# about the store is refuse to start a run that will not fit in it.
+# decision, not a lane's. What this moves is build scratch and image roots; what
+# it does about the store is refuse, in either mode, to start a run that will not
+# fit in it.
 
 set -u
 
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
+
 NEED_GIB=0
 LABEL="this run"
+IMAGES=0
+LOCATE=0
 # Enough headroom that a run finishing exactly at the line still leaves the host
 # usable. A disk at literally zero takes more than the build down with it.
 MARGIN_GIB=2
@@ -47,6 +73,14 @@ while (($#)); do
     --label)
       LABEL="${2:-this run}"
       shift 2
+      ;;
+    --images)
+      IMAGES=1
+      shift
+      ;;
+    --locate)
+      LOCATE=1
+      shift
       ;;
     *)
       printf 'disk-preflight: unknown argument %s\n' "$1" >&2
@@ -66,39 +100,180 @@ free_gib() {
   df -PB1G -- "$path" 2>/dev/null | awk 'NR == 2 { print $4 + 0 }'
 }
 
+# N24 (`src/launch/spec.rs`) refuses a workspace source that resolves to /tmp or
+# /var/tmp, or to any ancestor of them, and three of the lanes that ask for a
+# base hand that directory to the launcher as the workspace. A drive pointed
+# there produces a refusal from the product, one boot later, in a vocabulary that
+# says nothing about the disk.
+under_temp() {
+  local path=$1
+  case "$path" in
+    /tmp | /tmp/* | /var/tmp | /var/tmp/* | / | /var) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 STORE=${NIX_STORE_DIR:-/nix/store}
 SCRATCH=${TMPDIR:-/tmp}
+STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
 REQUIRED=$((NEED_GIB + MARGIN_GIB))
+
+# The answer given in advance, from the environment or from the developer's own
+# untracked file. Sourced in a subshell with its output discarded: the file is
+# documented as plain exports, but a lane must not inherit whatever else someone
+# put there, and a file that fails to source is worth no drive rather than a
+# dead run.
+drive=${VIVARIUM_HEAVY_DRIVE:-}
+drive_from_file=0
+if [[ -z $drive && -f $REPO_ROOT/.envrc.local ]]; then
+  drive=$(
+    # shellcheck disable=SC1091
+    . "$REPO_ROOT/.envrc.local" >/dev/null 2>&1 || exit 0
+    printf '%s' "${VIVARIUM_HEAVY_DRIVE:-}"
+  )
+  [[ -n $drive ]] && drive_from_file=1
+fi
+
+# `--locate` answers where a lane's bytes live without gating on capacity and
+# without asking anything. It exists for the cleanup and help paths, which read
+# and remove rather than write: refusing to tell a cleaner where the bytes are
+# because the disk is full would withhold the answer exactly when it is needed.
+# Silence is right here for the same reason — nothing is being written, so there
+# is no decision for an operator to make.
+if ((LOCATE == 1)); then
+  if [[ -n $drive ]] && mkdir -p -- "$drive" 2>/dev/null && [[ -w $drive ]] \
+    && { ((IMAGES == 0)) || ! under_temp "$drive"; }; then
+    printf '%s\n' "$drive"
+  elif ((IMAGES == 1)); then
+    printf '%s\n' "$STATE_HOME/vivarium"
+  else
+    printf '%s\n' "$SCRATCH"
+  fi
+  exit 0
+fi
 
 store_free=$(free_gib "$STORE")
 scratch_free=$(free_gib "$SCRATCH")
 
 note "disk-preflight: $LABEL needs about ${NEED_GIB}G, plus ${MARGIN_GIB}G headroom"
 note "  store   $STORE: ${store_free}G free"
-note "  scratch $SCRATCH: ${scratch_free}G free"
+if ((IMAGES == 0)); then
+  note "  scratch $SCRATCH: ${scratch_free}G free"
+fi
+((drive_from_file == 1)) && note "  drive named by .envrc.local"
 
-# The answer given in advance. Validated rather than trusted: a drive that is not
-# mounted looks exactly like an empty directory, and writing the run into the
-# mountpoint of an absent disk is the same failure with extra steps.
-if [[ -n ${VIVARIUM_HEAVY_DRIVE:-} ]]; then
-  drive=$VIVARIUM_HEAVY_DRIVE
+# Validated rather than trusted: a drive that is not mounted looks exactly like
+# an empty directory, and writing the run into the mountpoint of an absent disk
+# is the same failure with extra steps.
+drive_ok=0
+if [[ -n $drive ]]; then
   if ! mkdir -p -- "$drive" 2>/dev/null || [[ ! -w $drive ]]; then
-    note "disk-preflight: VIVARIUM_HEAVY_DRIVE=$drive is not a writable directory"
+    note "disk-preflight: VIVARIUM_HEAVY_DRIVE=$drive is not a writable directory; falling back to this disk"
+  elif ((IMAGES == 1)) && under_temp "$drive"; then
+    note "disk-preflight: VIVARIUM_HEAVY_DRIVE=$drive is under a temp root, which N24 refuses as a workspace;"
+    note "                falling back to this disk"
+  else
+    drive_free=$(free_gib "$drive")
+    note "  drive   $drive: ${drive_free}G free"
+    if ((drive_free < REQUIRED)); then
+      note "disk-preflight: $drive has ${drive_free}G, short of the ${REQUIRED}G this needs; falling back to this disk"
+    else
+      drive_ok=1
+    fi
+  fi
+fi
+
+# Worth saying plainly rather than proceeding into it: the drive can hold the
+# bytes this moves, and cannot hold the closure. Moving one does not answer for
+# the other, and every lane that asks here also realises something into the
+# store, so a short store is a refusal in both modes rather than a warning in one.
+store_gate() {
+  ((store_free >= REQUIRED)) && return 0
+  if ((drive_ok == 1)); then
+    note "disk-preflight: the drive takes what this moves, but the closure still lands in $STORE,"
+    note "                which has ${store_free}G free."
+  fi
+  note "disk-preflight: free space in $STORE or expect this to fail; it has ${store_free}G."
+  if [[ ! -t 0 ]]; then
+    note "  Nothing was run. The store cannot be moved by this."
     exit 69
   fi
-  drive_free=$(free_gib "$drive")
-  note "  drive   $drive: ${drive_free}G free"
-  if ((drive_free < REQUIRED)); then
-    note "disk-preflight: $drive has ${drive_free}G, short of the ${REQUIRED}G this needs"
+  note "  'here' to run anyway, anything else to stop now."
+  printf '  here/defer> ' >&2
+  read -r store_answer
+  if [[ $store_answer == here ]]; then
+    note "disk-preflight: proceeding at your say-so"
+    return 0
+  fi
+  note "disk-preflight: deferred; nothing was run"
+  exit 75
+}
+
+# `--images` mode: the root a lane hangs its disk images off. Deliberately not
+# under $TMPDIR even when falling back — /tmp is a tmpfs on an ordinary Linux
+# desktop, and a sparse image declared in tens of gibibytes belongs on a real
+# filesystem. The fallback is the state root, which is both what these lanes used
+# before this had a mode for it and the filesystem the launcher would have used.
+if ((IMAGES == 1)); then
+  if ((drive_ok == 1)); then
+    root="$drive"
+  else
+    root="$STATE_HOME/vivarium"
+    root_free=$(free_gib "$root")
+    note "  images  $root: ${root_free}G free"
+    if ((root_free < REQUIRED)); then
+      note "disk-preflight: not enough room for $LABEL under $root."
+      if [[ ! -t 0 ]]; then
+        note "  Nothing was run. Set VIVARIUM_HEAVY_DRIVE to a directory on a drive with"
+        note "  ${REQUIRED}G free and start again, or free space where the state root lives."
+        exit 69
+      fi
+      note "  Enter a directory on another drive to use, or:"
+      note "    'here' to run on the current disk anyway"
+      note "    'defer' to stop now and set a drive up first"
+      printf '  path/here/defer> ' >&2
+      read -r answer
+      case "$answer" in
+        here)
+          note "disk-preflight: proceeding on the current disk at your say-so"
+          ;;
+        defer | '' | q | quit)
+          note "disk-preflight: deferred; nothing was run"
+          exit 75
+          ;;
+        *)
+          if under_temp "$answer"; then
+            note "disk-preflight: $answer is under a temp root, which N24 refuses; nothing was run"
+            exit 69
+          fi
+          if ! mkdir -p -- "$answer" 2>/dev/null || [[ ! -w $answer ]]; then
+            note "disk-preflight: $answer is not a writable directory; nothing was run"
+            exit 69
+          fi
+          answer_free=$(free_gib "$answer")
+          if ((answer_free < REQUIRED)); then
+            note "disk-preflight: $answer has ${answer_free}G, short of ${REQUIRED}G; nothing was run"
+            exit 69
+          fi
+          root="$answer"
+          ;;
+      esac
+    fi
+  fi
+  if ! mkdir -p -- "$root" 2>/dev/null || [[ ! -w $root ]]; then
+    note "disk-preflight: cannot create $root; nothing was run"
     exit 69
   fi
-  if ((store_free < REQUIRED)); then
-    # Worth saying plainly rather than proceeding into it: scratch moved, the
-    # closure did not, and the closure is the larger half.
-    note "disk-preflight: scratch moves to $drive, but the closure still lands in $STORE,"
-    note "                which has ${store_free}G. Free space there or expect this to fail."
-    exit 69
-  fi
+  store_gate
+  note "disk-preflight: $LABEL puts its images under $root"
+  printf '%s\n' "$root"
+  exit 0
+fi
+
+# Scratch mode. A usable drive answers for the scratch half regardless of what
+# the host disk holds; only the store can still refuse the run.
+if ((drive_ok == 1)); then
+  store_gate
   printf '%s\n' "$drive"
   exit 0
 fi

@@ -28,7 +28,24 @@ $ tests/host/first-microvm-check
 
 No arguments. It resolves the flake from its own location, so it works from any working directory. Output is one `[PASS]` / `[FAIL]` / `[SKIP]` / `[RECORD]` line per check plus a verdict, and the whole run is meant to be pasted into a review.
 
-Artefacts are retained beside the diagnostic volume under the state root: `console.log` (the raw guest console) and `memfd-series.txt` (the memory series described below). They are the reason to run it, so they outlive the run.
+Artefacts are retained beside the diagnostic volume, under the drive when one is configured and under the state root otherwise: `console.log` (the raw guest console) and `memfd-series.txt` (the memory series described below). They are the reason to run it, so they outlive the run.
+
+## Where a heavy run puts its bytes
+
+Every lane here writes in gigabytes, and [`../../tests/host/disk-preflight`](../../tests/host/disk-preflight) is the one thing that decides where. Each lane calls it before its first write, naming what it needs; a refusal means nothing ran, which is the whole point of asking first.
+
+Point `VIVARIUM_HEAVY_DRIVE` at a directory on the drive that should absorb this. It is read from the environment, and failing that from `.envrc.local` — an untracked file of plain `export` lines beside [`../../.envrc`](../../.envrc), which is how a developer answers once per machine rather than once per shell. Reading the file directly rather than relying on direnv is deliberate: a lane run outside a direnv shell must find the same answer.
+
+```bash
+# .envrc.local — untracked, per machine
+export VIVARIUM_HEAVY_DRIVE=/run/media/you/external/vivarium
+```
+
+A configured drive that is absent, unwritable, or short falls back to the host disk with the reason on stderr. An external disk gets unplugged, and that should cost a notice rather than a run — but the fallback then faces the ordinary short-disk decision: enough room proceeds, a short disk with a terminal asks, and a short disk without one refuses. Nothing proceeds silently onto a full disk, and the store's own location is never moved by this, so a run that will not fit in the store is refused rather than relocated.
+
+Two modes, because the lanes need different answers. A lane that wants build scratch gets a directory to use as `TMPDIR`. A lane that creates disk images asks with `--images` and gets a root to hang them off, which falls back to the state root rather than to `TMPDIR`: `/tmp` is a tmpfs on an ordinary Linux desktop, and N24 refuses a workspace source that resolves under one. `--locate` answers either question with no capacity gate and no prompt, which is what the `--clean` paths use — a cleaner must be told where the bytes are even on a disk too full to start a run.
+
+Per-lane overrides stay available and win over the resolved root: `VIVARIUM_BENCH_TEMP_BASE`, `VIVARIUM_DENSITY_TEMP_BASE`, `VIVARIUM_GC_TEMP_BASE`, and `VIVARIUM_PRESSURE_TEMP_BASE` each place one lane's scratch base explicitly.
 
 ## The two tiers
 
@@ -107,7 +124,7 @@ $ tests/host/guest-system-check          # evaluation tier only
 $ tests/host/guest-system-check --build  # also realise the derivation
 ```
 
-It runs [`../../tests/host/disk-preflight`](../../tests/host/disk-preflight) before anything else, declaring three gibibytes for the evaluation tier and eight for the build tier. Point `VIVARIUM_HEAVY_DRIVE` at a directory on another drive to answer in advance; on a short disk with a terminal it asks, and without one it refuses. A refusal means nothing ran, which is the whole point of asking first.
+It runs [`../../tests/host/disk-preflight`](../../tests/host/disk-preflight) before anything else, declaring three gibibytes for the evaluation tier and eight for the build tier. See [Where a heavy run puts its bytes](#where-a-heavy-run-puts-its-bytes) for how that is answered.
 
 It then copies [`../../examples/`](../../examples/README.md) into a temporary config root under a temporary `HOME`, binds a project, and evaluates twice. The second run is the assertion rather than a repetition of the first: the first resolves the flake inputs and installs the tool-owned pin, and the second must reuse that pin and reach upstream for nothing.
 

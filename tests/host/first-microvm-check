@@ -55,6 +55,26 @@ PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
 RECORD_COUNT=0
+
+# DUP: where this lane's volume images live. Located rather than gated, because
+# `--clean` must be able to find the bytes without facing a capacity decision;
+# the gated call is below, before the first write.
+VOLUME_DIR=$("$SCRIPT_DIR/disk-preflight" --locate --images)/diagnostics
+
+# DUP: before anything writes. This realises the guest closure and boots it,
+# which measures in gigabytes, and the honest moment to ask where those go is
+# while deferring is still free (AGENTS.md). A usable drive named by
+# `VIVARIUM_HEAVY_DRIVE` takes the scratch; the closure lands in the store either
+# way, which is why the preflight checks that separately and refuses when it will
+# not fit. `--clean` is exempt because it only removes.
+if [[ ${1:-} != --clean ]]; then
+  if ! heavy_scratch=$("$SCRIPT_DIR/disk-preflight" --need 8 --label "the first-microVM check"); then
+    printf '\n0 passed, 0 failed, 0 skipped (nothing ran: disk preflight refused)\n'
+    exit 1
+  fi
+  [[ -n $heavy_scratch ]] && export TMPDIR="$heavy_scratch"
+fi
+
 TEMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/vivarium-first-microvm.XXXXXX" 2>/dev/null || true)
 if [[ -z $TEMP_ROOT ]]; then
   printf '[FAIL] cannot create a private temporary directory\n' >&2
@@ -133,8 +153,7 @@ lane_artefacts() {
     "$volume_dir/memfd-series.txt"
 }
 clean_lane() {
-  local state_home=${XDG_STATE_HOME:-$HOME/.local/state}
-  local volume_dir=$state_home/vivarium/diagnostics
+  local volume_dir=$VOLUME_DIR
   local removed=0 kept=0 entry dir pidfile pid alive
 
   while IFS= read -r entry; do
@@ -431,10 +450,9 @@ if ((${#missing[@]})); then
     skip "$check: missing prerequisites: $reason"
   done
 else
-  state_home=${XDG_STATE_HOME:-$HOME/.local/state}
   run_id="first-microvm-$$"
   runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
-  volume_dir=$state_home/vivarium/diagnostics
+  volume_dir=$VOLUME_DIR
   volume=$volume_dir/first-microvm.img
   store_volume=$volume_dir/first-microvm-store.img
   mkdir -p "$runtime_dir" "$volume_dir"
