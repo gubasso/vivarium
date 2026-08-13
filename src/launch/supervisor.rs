@@ -21,7 +21,77 @@ use tokio_util::sync::CancellationToken;
 const STARTUP_POLLS: usize = 400;
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the guest is given to act on the ACPI power button before the VM is destroyed.
+///
+/// Sized against the bound above it rather than against a measurement of one guest: `viv stop`
+/// defaults to a ten-second grace (spec/10), and this whole ladder has to finish inside it.
+///
+/// Six and not eight, which is the difference between fitting and exactly filling. The ladder also
+/// issues two `ch-remote` calls, overshoots each wait by up to one poll interval, reaps every
+/// child, and then removes the runtime directory — none of which is free, and all of which happens
+/// after these two constants have spent their budget. At eight the total was exactly the ten the
+/// host allows, so a guest that ignored the power button had the whole group killed out from under
+/// the supervisor before `cleanup` ran, leaving the runtime directory populated and `viv stop`
+/// reporting `teardown-incomplete` for a teardown that had in fact reached its last rung. Two
+/// seconds of headroom is what keeps the escalation path reporting the outcome it actually had.
+///
+/// It is the whole grace and not the default one, which is a limitation rather than a design.
+/// spec/10 gives the operator `viv stop --timeout` and says `-1` waits indefinitely, but that flag
+/// is read by the CLI at stop time and this supervisor was started at `viv start` — nothing carries
+/// the value across, so a longer request currently buys a longer wait before `systemctl kill`, not
+/// a longer wait before the guest is destroyed. Tracked as `Q-018` in
+/// `docs/plan/open-questions.md`; widening this constant is not the fix, because the default grace
+/// is what it has to fit inside.
+const GUEST_POWEROFF_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// How long the destroyed VM's processes are given to exit before they are killed.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// RFC 3986's unreserved set plus `/`: the bytes a path crosses the kernel command line as itself.
+const CMDLINE_UNRESERVED: &[u8] = b"-._~/";
+
+/// Linux's `COMMAND_LINE_SIZE`, which is 2048 on both supported architectures.
+///
+/// A hard refusal rather than a warning, because the kernel copies what fits and drops the rest in
+/// silence. A percent sequence cut mid-way usually fails the guest's allowlist, but a cut on a
+/// byte boundary decodes to a shorter path that is perfectly valid and wrong — a workspace bound
+/// somewhere nobody asked for. The rendered command line is around 300 bytes today, so the
+/// remaining budget is real: `PATH_MAX` is 4096, and a fully-encoded path exhausts this at ~550
+/// characters.
+const CMDLINE_LIMIT: usize = 2048;
+
+/// Percent-encode a host path for the kernel command line (ADR-0100).
+///
+/// Over the raw bytes rather than over a `String`, because a path is bytes and `to_string_lossy`
+/// would substitute U+FFFD for a non-UTF-8 component and hand the guest a path that silently
+/// differs from the host's.
+///
+/// That makes this function byte-exact and does not make the pipeline byte-exact, which is worth
+/// separating because the test below proves the first and could be misread as proving the second.
+/// The specification reaches here as JSON, and [`../../nix/runner.sh`] injects the workspace path
+/// into it with `jq --arg`, which is where a non-UTF-8 byte is already replaced — so such a path is
+/// U+FFFD before this function ever sees it, and N16's promise of one path string quietly does not
+/// hold for it. Tracked as `Q-019` in `docs/plan/open-questions.md`; the repair belongs at the JSON
+/// boundary, not here, and encoding bytes here is still the right shape for it to land on.
+///
+/// Percent rather than base64, for one sufficient reason and two supporting ones. The `=` in
+/// base64's alphabet would make `vivarium.workspace=` ambiguous to split on; the guest decodes
+/// percent in one line of shell and needs no new binary in the image; and an ordinary path stays
+/// legible in `/proc/cmdline` and in the console log, which is where a failed boot is read.
+fn encode_cmdline_path(path: &Path) -> String {
+    use std::fmt::Write as _;
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut encoded = String::new();
+    for byte in path.as_os_str().as_bytes() {
+        if byte.is_ascii_alphanumeric() || CMDLINE_UNRESERVED.contains(byte) {
+            encoded.push(char::from(*byte));
+        } else {
+            // Upper-case hex, matching the allowlist the guest checks before it decodes.
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ChildKind {
@@ -307,6 +377,13 @@ impl Supervisor {
         let boot_identity = boot_identity.trim();
         validate_boot_identity(boot_identity)
             .map_err(|_| LaunchError::InvalidSpec("kernel UUID is malformed"))?;
+        // Read before the command line is rebuilt: since ADR-0100 the same value is both the boot
+        // record's host path and the guest's mount path, and it crosses on the command line.
+        let workspace_host_path = self
+            .spec
+            .workspace_share()
+            .map(|share| share.source.clone())
+            .ok_or(LaunchError::InvalidSpec("workspace share is missing"))?;
         let cmdline = self
             .spec
             .vm_create
@@ -314,13 +391,16 @@ impl Supervisor {
             .and_then(|payload| payload.get_mut("cmdline"))
             .and_then(|value| value.as_str())
             .ok_or(LaunchError::InvalidSpec("VM create cmdline is missing"))?;
-        let cmdline = format!("{cmdline} vivarium.boot_identity={boot_identity}");
+        let cmdline = format!(
+            "{cmdline} vivarium.boot_identity={boot_identity} vivarium.workspace={}",
+            encode_cmdline_path(&workspace_host_path)
+        );
+        if cmdline.len() >= CMDLINE_LIMIT {
+            return Err(LaunchError::InvalidSpec(
+                "the workspace path does not fit the guest kernel command line",
+            ));
+        }
         self.spec.vm_create["payload"]["cmdline"] = serde_json::Value::String(cmdline);
-        let workspace_host_path = self
-            .spec
-            .workspace_share()
-            .map(|share| share.source.clone())
-            .ok_or(LaunchError::InvalidSpec("workspace share is missing"))?;
         Ok(BootMetadata {
             schema_version: crate::protocol::SCHEMA_VERSION,
             boot_identity: boot_identity.to_owned(),
@@ -407,22 +487,51 @@ impl Supervisor {
         }
     }
 
-    async fn shutdown_children(&mut self) -> Result<(), LaunchError> {
-        let _ = self.remote("shutdown", None).await;
-        let deadline = tokio::time::Instant::now() + SHUTDOWN_TIMEOUT;
-        loop {
-            let mut alive = false;
-            for managed in &mut self.children {
-                alive |= managed
-                    .child
-                    .try_wait()
-                    .map_err(|error| LaunchError::io("poll shutdown", error))?
-                    .is_none();
-            }
-            if !alive || tokio::time::Instant::now() >= deadline {
+    /// Whether any backend child is still running.
+    fn children_alive(&mut self) -> Result<bool, LaunchError> {
+        let mut alive = false;
+        for managed in &mut self.children {
+            alive |= managed
+                .child
+                .try_wait()
+                .map_err(|error| LaunchError::io("poll shutdown", error))?
+                .is_none();
+        }
+        Ok(alive)
+    }
+
+    /// Wait until every backend child has exited, or the budget expires.
+    async fn await_children(&mut self, budget: Duration) -> Result<(), LaunchError> {
+        let deadline = tokio::time::Instant::now() + budget;
+        while self.children_alive()? {
+            if tokio::time::Instant::now() >= deadline {
                 break;
             }
             tokio::time::sleep(POLL_INTERVAL).await;
+        }
+        Ok(())
+    }
+
+    async fn shutdown_children(&mut self) -> Result<(), LaunchError> {
+        // spec/10's ladder, rungs two and three. `power-button` raises an ACPI event the guest
+        // handles, so systemd inside it runs its own shutdown transaction and unmounts the volumes
+        // — which is the whole of N18's "a stop removes nothing". `shutdown` does not do that: it
+        // destroys the VM where it stands, and everything the guest had not yet committed is gone.
+        //
+        // Measured, and this is why the rung exists rather than being assumed: with `shutdown`
+        // alone, a file written into the home volume and not explicitly `sync`ed was absent after
+        // the next `viv start`, while a synced one survived. Nothing was wrong with the volume —
+        // it was retained, reattached, and mounted from the same image — so the loss was the
+        // shutdown path's, and no volume assertion could have found it.
+        let _ = self.remote("power-button", None).await;
+        self.await_children(GUEST_POWEROFF_TIMEOUT).await?;
+        // Rung three, and it is reached only when the guest did not take the invitation. This
+        // ladder sits inside spec/10's default ten-second grace, and inside that one only: a
+        // `--timeout` larger than the default does not reach this process, so it does not move
+        // the moment the guest is destroyed (`Q-018`, and the note on `GUEST_POWEROFF_TIMEOUT`).
+        if self.children_alive()? {
+            let _ = self.remote("shutdown", None).await;
+            self.await_children(SHUTDOWN_TIMEOUT).await?;
         }
         for managed in &mut self.children {
             if managed
@@ -569,5 +678,62 @@ async fn cleanup_runtime(spec: &LaunchSpec) -> Result<(), LaunchError> {
                 .map_err(|error| LaunchError::io("remove runtime directory", error))
         }
         Err(error) => Err(LaunchError::io("inspect startup lock", error)),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encodes_every_byte_the_command_line_cannot_carry() {
+        // The ordinary case stays legible, which is the whole reason this is not base64: a boot
+        // that fails is read out of `/proc/cmdline` and the console log.
+        assert_eq!(
+            encode_cmdline_path(Path::new("/home/u/Projects/my-repo.git")),
+            "/home/u/Projects/my-repo.git"
+        );
+        assert_eq!(encode_cmdline_path(Path::new("/a/~_-.")), "/a/~_-.");
+        // Whitespace ends a kernel parameter, so a space is the case that motivates encoding.
+        assert_eq!(encode_cmdline_path(Path::new("/a/my repo")), "/a/my%20repo");
+        assert_eq!(encode_cmdline_path(Path::new("/a/b\tc")), "/a/b%09c");
+        assert_eq!(encode_cmdline_path(Path::new("/a/b\nc")), "/a/b%0Ac");
+        // `=` would otherwise make `vivarium.workspace=` ambiguous to split on.
+        assert_eq!(encode_cmdline_path(Path::new("/a/b=c")), "/a/b%3Dc");
+        // `%` must round-trip, or the guest's decode reads the next two bytes as its hex.
+        assert_eq!(encode_cmdline_path(Path::new("/a/100%")), "/a/100%25");
+        // A literal backslash, which is what makes the guest's `printf %b` decode safe.
+        assert_eq!(encode_cmdline_path(Path::new("/a/b\\c")), "/a/b%5Cc");
+        assert_eq!(encode_cmdline_path(Path::new("/a/\"q'")), "/a/%22q%27");
+        assert_eq!(encode_cmdline_path(Path::new("/a/pkg@1.0")), "/a/pkg%401.0");
+    }
+
+    #[test]
+    fn encodes_a_non_utf8_path_byte_for_byte() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+        // Over bytes rather than `to_string_lossy`, whose U+FFFD would hand the guest a path that
+        // silently differs from the host's.
+        //
+        // What this proves and what it does not. It proves this function is byte-exact, which is
+        // the shape a repair has to land on. It does not prove a non-UTF-8 project path reaches
+        // the guest intact, because the specification arrives as JSON and `nix/runner.sh` has
+        // already replaced such a byte by the time it gets here — so the assertion is about the
+        // encoder alone and is stated that way rather than left to read as end-to-end coverage
+        // (`Q-019`).
+        let path = PathBuf::from(OsStr::from_bytes(b"/a/\xff\xfe"));
+        assert_eq!(encode_cmdline_path(&path), "/a/%FF%FE");
+    }
+
+    #[test]
+    fn the_encoded_form_matches_what_the_guest_will_accept() {
+        // The guest checks this allowlist before it decodes, so the two must agree by construction.
+        let encoded = encode_cmdline_path(Path::new("/home/u/a b/pkg@1.0/100%"));
+        assert!(encoded.bytes().all(|byte| byte.is_ascii_alphanumeric()
+            || CMDLINE_UNRESERVED.contains(&byte)
+            || byte == b'%'
+            || byte.is_ascii_hexdigit()));
+        assert!(!encoded.contains(' '));
     }
 }

@@ -45,13 +45,33 @@ echo 'VIVARIUM_CONSOLE_BYTES_CLAIMED=1048576'
 rm -f "$burst"
 sleep 10
 
-mount_line="$(awk '$2 == "/workspaces/vivarium" { print; exit }' /proc/self/mounts)"
+# Two facts since ADR-0100, and they are separate on purpose. The share mounts at
+# a build-time constant, which is what this first probe reads; where a session
+# actually finds the project is a bind made at boot from the kernel command line,
+# which the second probe reads. A run where the share is rw and the mirror never
+# happened is exactly the state that would otherwise look like a working guest
+# with an empty project directory.
+mount_line="$(awk -v want="$VIVARIUM_WORKSPACE_INTERNAL" '$2 == want { print; exit }' /proc/self/mounts)"
 echo "VIVARIUM_WORKSPACE_MOUNT=$mount_line"
 if printf '%s\n' "$mount_line" | grep -Eq ' virtiofs (.*,)?rw(,| )'; then
   echo 'VIVARIUM_WORKSPACE_CONTRACT=virtiofs-rw'
 else
   echo 'VIVARIUM_WORKSPACE_CONTRACT=unexpected'
 fi
+
+# The mirror is `vivarium-workspace.service`'s to make, and it says so on the
+# console itself. Re-read here from the mount table so the diagnostic reports what
+# the kernel holds rather than what a unit claimed, and so the two can disagree.
+mirror_source=$(awk -v want="$VIVARIUM_WORKSPACE_INTERNAL" '$2 == want { print $1; exit }' /proc/self/mounts)
+mirror_line=$(awk -v want="$VIVARIUM_WORKSPACE_INTERNAL" -v src="$mirror_source" \
+  '$1 == src && $2 != want { print $2; exit }' /proc/self/mounts)
+# Reported in the mount table's own escaping rather than decoded here. `/proc/self/mounts`
+# writes a space as `\040` and a newline as `\012` for exactly the reason this marker needs:
+# the value stays on one line and carries no delimiter a reader has to guess. Decoding it
+# in the guest would undo that — a decoded newline would split this marker in two, and the
+# command substitution doing the decoding would strip a trailing one first. The host lane
+# decodes instead, where the result is compared rather than printed.
+echo "VIVARIUM_WORKSPACE_MIRROR_PATH=${mirror_line:-absent}"
 
 echo "VIVARIUM_STORE_PING_BEGIN"
 # Same feature gate as the inner-develop spike below: without it these two
@@ -158,7 +178,7 @@ echo "VIVARIUM_MEM_PHASE=settled MEMFREE=$(mem_kib MemFree) MEMAVAIL=$(mem_kib M
 inner_status=0
 runuser -u vivarium -- env HOME=/home/vivarium \
   timeout 120 nix --extra-experimental-features 'nix-command flakes' \
-  --offline develop /workspaces/vivarium --command true \
+  --offline develop "$VIVARIUM_WORKSPACE_INTERNAL" --command true \
   >/home/vivarium/inner-nix-develop.log 2>&1 || inner_status=$?
 echo "VIVARIUM_INNER_NIX_DEVELOP_STATUS=$inner_status"
 tail -n 40 /home/vivarium/inner-nix-develop.log || true

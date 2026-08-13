@@ -162,8 +162,12 @@ else
         missing_fields=()
         [[ $(jq -r '.runtimePaths.lock' <<<"$spec_log") == "$spec_root/rt/lock" ]] \
           || missing_fields+=("the startup lock is not an exact child of the runtime directory")
-        [[ $(jq -r '.shares[] | select(.tag == "workspace") | .mountPoint' <<<"$spec_log") == /* ]] \
-          || missing_fields+=("the workspace share names no absolute mount point")
+        # `.source`, not `.mountPoint`. Since ADR-0100 a session starts at the
+        # host's own path, which the guest binds the share to at boot; `.mountPoint`
+        # is the share's internal mount and would pass this check while telling
+        # nothing about the cwd `viv exec` actually sends.
+        [[ $(jq -r '.shares[] | select(.tag == "workspace") | .source' <<<"$spec_log") == "$REPO_ROOT" ]] \
+          || missing_fields+=("the workspace share does not mirror this repository's own path")
         [[ -n $(jq -r '.guestSession.path' <<<"$spec_log") ]] \
           || missing_fields+=("the guest session carries no PATH")
         [[ $(jq -r '.guestSession.user' <<<"$spec_log") != root ]] \
@@ -172,7 +176,8 @@ else
           fail "the launch specification carries what a session reads" "$(printf '%s\n' "${missing_fields[@]}")"
         else
           pass "the launch specification carries what a session reads"
-          record "guest cwd: $(jq -r '.shares[] | select(.tag == "workspace") | .mountPoint' <<<"$spec_log")"
+          record "guest cwd: $(jq -r '.shares[] | select(.tag == "workspace") | .source' <<<"$spec_log")"
+          record "workspace share internal mount: $(jq -r '.shares[] | select(.tag == "workspace") | .mountPoint' <<<"$spec_log")"
           record "guest session user: $(jq -r '.guestSession.user' <<<"$spec_log")"
           record "guest session PATH: $(jq -r '.guestSession.path' <<<"$spec_log")"
         fi

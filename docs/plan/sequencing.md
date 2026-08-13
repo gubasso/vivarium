@@ -24,7 +24,7 @@ The chain in flight. These clusters are consumed by slices 011 through 014, and 
 - Guest store provisioning — `ADR-0038`, `ADR-0084`, `ADR-0087`, `ADR-0088`. Consumed by slice 012.
 - Open egress by default — `ADR-0007`. Consumed by slice 012 as the reason a first boot needs no network work.
 - Guest control transport — `ADR-0016`, `ADR-0065`, `ADR-0071`. Guest half realized in slice 003; host half realized in [slice 013](slices/013-exec-and-shell/README.md).
-- Workspace, volumes, and disposability — `ADR-0009`, `ADR-0017`, `ADR-0019`, `ADR-0037`, `ADR-0043`, `ADR-0066`, `ADR-0067`, `ADR-0080`, `ADR-0092`. Consumed by slice 012 for the mount launch constructs and [slice 014](slices/014-workspace-and-persistence/README.md) for what persists; slice 014 item 2 settles which side `ADR-0066` and `ADR-0092` fall on.
+- Workspace, volumes, and disposability — `ADR-0009`, `ADR-0017`, `ADR-0019`, `ADR-0037`, `ADR-0043`, `ADR-0066`, `ADR-0067`, `ADR-0080`, `ADR-0092`, `ADR-0100`. Consumed by slice 012 for the mount launch constructs and [slice 014](slices/014-workspace-and-persistence/README.md) for what persists; slice 014 item 2 settled `ADR-0066` and `ADR-0092` as first-boot correctness, so slice 012's `Governed by` now carries both. `ADR-0100` was raised by slice 014 item 1 rather than shaped ahead of it, and supersedes `ADR-0017` in the same slice that consumes it.
 
 ## Phase 2 — funded and sequenced behind it
 
@@ -63,6 +63,10 @@ Re-measured 2026-08-12 after slice 013, on the same host with `/dev/kvm`, a syst
 | `workflow_05_restrict_egress_allowlist`       | the allowlist     | slice 004         |
 | `workflow_07_stop_restart_preserving_volumes` | `viv volume list` | slice 014, item 6 |
 | `workflow_08_destroy_cold_rebuild`            | `viv destroy`     | slice 014, item 6 |
+
+Interim, 2026-08-13, and deliberately not a replacement for the table above: slice 014 has landed items 1 to 3 and is not closed, so step 3 below is still owed. The binary now carries 19 trials — `workflow_09_workspace_round_trip` is new, and it is the first to assert the workspace contract at all — and 16 of them pass. The same three are red, for the same reasons, so the table stands unchanged.
+
+One thing that measurement did change is the boot group's width. `profile.pre-push` was recorded below as running 23 tests green; run repeatedly it does not, failing intermittently on `viv start` readiness under load, and reproducing with slice 014's new trial excluded. The width the acceptance harness bounds concurrent boots at was already marked provisional pending exactly such a sweep; it is now `1`, measured green twice at no wall-clock cost, and the argument is carried in [`../../.config/nextest.toml`](../../.config/nextest.toml) rather than restated here.
 
 The two that slice 013 half-unblocked are worth naming, because "turns green in slice 014" now means something narrower than it did. `workflow_08` gets as far as `viv destroy`, and `workflow_05` gets all the way into the guest and returns the guest command's own status — `6`, from a `curl` that could not resolve a `.example` host — which is the session contract working and the enforcement fixture the trial's own `TODO(impl)` already records as missing.
 

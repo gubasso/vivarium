@@ -411,7 +411,9 @@ mod tests {
             mode: crate::protocol::SessionMode::Exec,
             argv: vec![crate::protocol::UnixBytes::new(b"true".to_vec())],
             environment: Vec::new(),
-            cwd: crate::protocol::UnixBytes::new(b"/workspaces/vivarium".to_vec()),
+            // Shaped like the mirrored path a session really starts in (ADR-0100), not like the
+            // share's internal mount point: this stands in for what `viv exec` sends.
+            cwd: crate::protocol::UnixBytes::new(b"/home/u/Projects/demo".to_vec()),
             pty,
         }
     }

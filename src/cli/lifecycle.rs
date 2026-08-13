@@ -19,7 +19,7 @@ use super::{Context, Failure, ResolvedForLaunch, Success, diagnosed};
 use crate::config::{self, Environment};
 use crate::diagnostic::{Locus, Namespace};
 use crate::exit::ExitKind;
-use crate::launch::{BootMetadata, GuestSession, LaunchSpec, secure_fs};
+use crate::launch::{BootMetadata, GuestSession, LaunchSpec, secure_fs, unmirrorable};
 
 /// The only target a project has today (spec/15).
 pub(super) const DEFAULT_TARGET: &str = "default";
@@ -934,9 +934,13 @@ fn prepared(runtime: &Runtime, boot: BootMetadata) -> Result<Prepared, Failure> 
     // were true when the VM was launched, and a session has no business re-litigating them.
     let spec: LaunchSpec = serde_json::from_slice(&bytes)
         .map_err(|_| unreadable("it does not match the launch schema this version understands"))?;
+    // The share's `source`, not its `mount_point`: since ADR-0100 the guest binds the workspace at
+    // the host's own path, so that is where a session starts and the fstab entry is the internal
+    // mount the bind was made from. `LAUNCH_SCHEMA_VERSION` is what stops an older launcher's JSON
+    // reaching this line, since both shapes parse.
     let workspace_cwd = spec
-        .workspace_share()
-        .map(|share| share.mount_point.clone())
+        .workspace_guest_path()
+        .map(Path::to_path_buf)
         .ok_or_else(|| unreadable("it declares no workspace share to start a session in"))?;
     Ok(Prepared {
         control_socket: runtime.control_socket(),
@@ -1042,6 +1046,23 @@ fn execute_runner<E: Environment>(
     // at `projects/<project-id>/<target>/volumes/<name>.img`, under the same two components the
     // runtime root mirrors. Anywhere else and `viv volume list`, `viv volume rm`, and `viv destroy`
     // could not find the user's own data, because each of them looks under the project's subtree.
+    // Before anything is created, because this is the refusal a user meets rather than a defect
+    // to survive. ADR-0100 mirrors the project at its own absolute path inside the guest, and a
+    // few host paths have no mirror: the guest owns them. The launch specification checks the same
+    // rule and the guest re-derives it from the booted image, but only here is there a place to
+    // say which path collided and what the user can do about it.
+    if let Some(reason) = unmirrorable(&context.project) {
+        return Err(diagnosed(
+            Namespace::Host,
+            "workspace-path-unmirrorable",
+            "this project cannot be mounted inside the guest at the path it occupies",
+            Locus::File(context.project.clone()),
+            reason.to_owned(),
+            ExitKind::Config,
+        )
+        .with_hint("move the project under a path the guest does not own, such as your home"));
+    }
+
     let volumes = volume_directory(&context.roots, project_id, DEFAULT_TARGET);
     std::fs::create_dir_all(&volumes).map_err(|source| {
         diagnosed(
@@ -1376,14 +1397,22 @@ fn unconfirmed_teardown(directory: &Path, source: &std::io::Error) -> Failure {
 /// The escalation ladder of spec/10 "Stopping", expressed against the transient unit.
 ///
 /// Stopping the unit converges every exit route through the supervisor's single cancellation path
-/// (ADR-0097), and `KillMode=control-group` makes it a whole-group operation — so the VMM, every
-/// per-share daemon, and any launch helper go away together. The ladder's first two rungs are the
-/// supervisor's own; what is decided here is how long to wait before the last one.
+/// (ADR-0097). `KillMode=mixed` means the stop signal reaches the supervisor alone, which is what
+/// lets it raise the guest's ACPI power button and wait — a whole-group signal would kill the VMM
+/// where it stood and lose whatever the guest had not committed.
+///
+/// Rungs two and three are the supervisor's; rung one does not exist yet. spec/10 opens the ladder
+/// by asking the in-guest agent for an orderly shutdown over the control socket, and
+/// [`crate::protocol::ClientFrame`] carries no such request — so what actually runs starts at the
+/// backend's ACPI signal. That is a real gap and not a shortcut, recorded in
+/// `docs/reference/implementation-status.md`; it is named here because a reader comparing this
+/// function against spec/10 would otherwise count the rungs and reach the wrong conclusion about
+/// which one this deadline bounds. What is decided here is the last one.
 fn stop_unit(runtime: &Runtime, force: bool, timeout: Option<i64>) -> Result<(), Failure> {
-    // The ladder's first two rungs are the supervisor's own: stopping the unit runs its single
-    // cancellation path, which signals the guest agent and then the backend. What is decided here
-    // is the third — how long to wait before pulling the power — so the stop is issued without
-    // waiting and the deadline is enforced here.
+    // The rungs that run are the supervisor's own: stopping the unit runs its single cancellation
+    // path, which raises the guest's ACPI power button and then destroys the VM if the guest did
+    // not take it. What is decided here is the rung after those — how long to wait before pulling
+    // the power — so the stop is issued without waiting and the deadline is enforced here.
     let grace = grace_seconds(force, timeout);
     let mut child = Command::new("systemctl")
         .args(["--user", "--no-block", "stop", &runtime.unit])
@@ -1431,8 +1460,10 @@ fn stop_unit(runtime: &Runtime, force: bool, timeout: Option<i64>) -> Result<(),
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    // The last rung. `KillMode=control-group` makes this a whole-group operation, so the VMM,
-    // every per-share daemon, and any launch helper go away together (ADR-0097, spec/17).
+    // The last rung, and it is whole-group regardless of `KillMode`: `systemctl kill` defaults to
+    // `--kill-whom=all`, so the VMM, every per-share daemon, and any launch helper go away together
+    // (ADR-0097, spec/17). That is why narrowing `KillMode` to `mixed` for the graceful path costs
+    // nothing here — this rung never depended on it.
     let killed = Command::new("systemctl")
         .args(["--user", "kill", "--signal=SIGKILL", &runtime.unit])
         .output();

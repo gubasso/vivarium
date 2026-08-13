@@ -130,7 +130,11 @@ let
   };
 in
 {
-  schemaVersion = 3;
+  # 4 since ADR-0100: `shareLaunch[workspace].mountPoint` stopped being the path a
+  # session starts in and became the share's internal one, so a new `viv` reading
+  # an older launcher's JSON would compute a guest cwd that does not exist. The
+  # version is the only thing that catches that pairing, because both halves parse.
+  schemaVersion = 4;
   inherit guestSession;
   descriptorBudget = {
     limit = 524288;

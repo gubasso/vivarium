@@ -4,7 +4,7 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 014 workspace-and-persistence — shaped — 2 sessions
+- 014 workspace-and-persistence — active — 2 sessions
 
 ## later
 

@@ -78,7 +78,7 @@ fn fixture(name: &str) -> LaunchSpec {
         shares: vec![ShareSpec {
             tag: "workspace".into(),
             source: std::env::current_dir().unwrap(),
-            mount_point: "/workspaces/vivarium".into(),
+            mount_point: "/run/vivarium-workspace".into(),
             socket: child("workspace.sock"),
             cache: "auto".into(),
             read_only: false,
@@ -282,7 +282,11 @@ async fn detached() {
         let rendered = TransientUnitSpec::new(&spec).command().rendered().join(" ");
         assert!(rendered.contains("--no-block"));
         assert!(rendered.contains("--service-type=exec"));
-        assert!(rendered.contains("KillMode=control-group"));
+        // `mixed` and not `control-group`: the latter signals cloud-hypervisor directly, so
+        // `systemctl stop` destroyed the VM before the supervisor could power the guest down and
+        // uncommitted guest writes were lost. Asserted by name so the value cannot drift back.
+        assert!(rendered.contains("KillMode=mixed"));
+        assert!(!rendered.contains("KillMode=control-group"));
         assert!(!rendered.contains("--scope"));
     }
 }

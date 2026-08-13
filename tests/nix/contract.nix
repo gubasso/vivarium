@@ -12,6 +12,7 @@
   runner,
   volumeLabel,
   storeVolumeLabel,
+  workspaceInternalMountPoint,
   expect,
 }:
 
@@ -25,6 +26,7 @@ pkgs.runCommand "vivarium-first-microvm-contract" {
   VIVARIUM_GUEST_SYSTEM = guest.config.system.build.toplevel;
   VIVARIUM_VOLUME_LABEL = volumeLabel;
   VIVARIUM_STORE_VOLUME_LABEL = storeVolumeLabel;
+  VIVARIUM_WORKSPACE_INTERNAL = workspaceInternalMountPoint;
   VIVARIUM_STORE_MIN_FREE = toString expect.storeMinFree;
   VIVARIUM_STORE_MAX_FREE = toString expect.storeMaxFree;
   VIVARIUM_STORE_VOLUME_SIZE_MIB = toString expect.storeVolumeSizeMiB;
@@ -34,6 +36,7 @@ pkgs.runCommand "vivarium-first-microvm-contract" {
       [
         "vivarium-agent.service"
         "vivarium-volume-prepare.service"
+        "vivarium-workspace.service"
       ]
       ++ expect.units
     )

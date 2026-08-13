@@ -29,7 +29,7 @@ Guest stdout maps raw to host stdout, guest stderr maps raw to host stderr, and 
 
 ## Guest process environment
 
-`exec` runs the argv directly with `execve`; `shell` opens the configured user shell as a login-interactive shell. Both start in the workspace cwd: the primary workspace mount `/workspaces/<repo>`, or the corresponding guest subdirectory when invoked from a subdirectory of the host workspace.
+`exec` runs the argv directly with `execve`; `shell` opens the configured user shell as a login-interactive shell. Both start in the workspace cwd: the primary workspace mount, or the corresponding guest subdirectory when invoked from a subdirectory of the host workspace. Because that mount is host-symmetric (N16), the correspondence is identity — the guest cwd is the host cwd, spelled the same way.
 
 The default guest user is non-root `vivarium`; root is allowed only when an image or piece explicitly opts in. The workspace mount is writable for that user.
 
@@ -39,7 +39,7 @@ Agent forwarding is not an exception to that rule, and naming `--env SSH_AUTH_SO
 
 ## Workspace mounts
 
-Mount semantics are owned by [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md). The primary workspace is mounted read-write at `/workspaces/<repo>`, and additional mounts may be declared for other guest paths. All host paths for primary and extra mounts are launch-time inputs or personal/machine-local config and must never enter the Nix build output or a shared image or piece.
+Mount semantics are owned by [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md). The primary workspace is mounted read-write at the absolute path it occupies on the host, and additional mounts may be declared for other guest paths. All host paths for primary and extra mounts are launch-time inputs or personal/machine-local config and must never enter the Nix build output or a shared image or piece — which is why the mirrored path is applied at boot rather than declared as the share's own mount point.
 
 ## Ensure running and control socket
 

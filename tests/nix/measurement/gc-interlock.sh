@@ -19,7 +19,10 @@ exec >/dev/console 2>&1
 echo 'VIVARIUM_GC_INTERLOCK_BEGIN=yes'
 echo 'VIVARIUM_GC_INTERLOCK_PROTOCOL=1'
 
-ws=/workspaces/vivarium/.vivarium-gc-interlock
+# From the unit rather than spelled here: the share's guest mount point is a
+# product constant now (ADR-0100), and a second copy of it would be a second
+# thing to move.
+ws=$VIVARIUM_GC_INTERLOCK_DIR
 
 # Guest uid 0 sits inside virtiofsd's `forbid-guest:0:1000` range, so
 # *every* workspace syscall — including this existence test — has to run

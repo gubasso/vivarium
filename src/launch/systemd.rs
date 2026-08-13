@@ -24,7 +24,19 @@ impl TransientUnitSpec {
             "--no-block".into(),
             "--slice=vivarium.slice".into(),
             "--property=CollectMode=inactive-or-failed".into(),
-            "--property=KillMode=control-group".into(),
+            // `mixed`, not `control-group`, and the difference is N18 rather than taste.
+            // `control-group` sends the stop signal to every process in the unit at once, so
+            // `systemctl stop` reaches cloud-hypervisor directly and the VM dies where it stands —
+            // the guest never runs its shutdown transaction, never unmounts its volumes, and
+            // anything it had not committed is lost. Measured: a file written into the home volume
+            // and not explicitly `sync`ed was absent after the next `viv start`, while a synced one
+            // survived. `mixed` sends it to the supervisor alone, which is what lets the supervisor
+            // walk spec/10's ladder and power the guest down properly.
+            //
+            // Nothing is given up. `KillMode=mixed` still SIGKILLs whatever remains in the cgroup
+            // when the stop timeout expires, so a supervisor that hangs or dies leaves no strays —
+            // the guarantee `control-group` was here for.
+            "--property=KillMode=mixed".into(),
             // No `CPUAccounting=`. systemd deprecated it — v261 answers the
             // assignment with "D-Bus property CPUAccounting is deprecated,
             // ignoring assignment" and stops reporting the property at all — and
@@ -107,7 +119,7 @@ mod tests {
             "--collect",
             "--slice=vivarium.slice",
             "CollectMode=inactive-or-failed",
-            "KillMode=control-group",
+            "KillMode=mixed",
             "MemoryAccounting=yes",
             "IOAccounting=yes",
             "CPUWeight=",
@@ -116,7 +128,16 @@ mod tests {
         // `CPUAccounting` is forbidden rather than merely absent: systemd
         // deprecated it, so setting it is a warning on every launch and buys
         // accounting that unified cgroups already provide unconditionally.
-        let forbidden = ["CPUAccounting=", "MemoryMax=", "MemoryHigh=", "IOWeight="];
+        // `KillMode=control-group` is forbidden rather than merely replaced: it is the value
+        // that made `viv stop` lose a guest's uncommitted writes, and nothing else in the product
+        // would catch its return.
+        let forbidden = [
+            "CPUAccounting=",
+            "MemoryMax=",
+            "MemoryHigh=",
+            "IOWeight=",
+            "KillMode=control-group",
+        ];
         for value in required {
             assert!(rendered.contains(value), "missing {value} in {rendered}");
         }

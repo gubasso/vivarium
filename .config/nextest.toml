@@ -21,18 +21,38 @@
 # spec/17). An unattended run has nobody to read that warning and decide, so
 # the harness needs the bound the product deliberately does not impose.
 #
-# `2` rather than `1` because serialising these would discard the very
-# concurrency they are meant to exercise, and rather than `3` because the
-# host this was sized on showed roughly 8 GiB available with three guests
-# live — no room left for a closure landing in the store beside them. It is
-# provisional: one clean run at a given width is evidence of possibility, not
-# of reliability, and the number moves when a repeated sweep says so.
+# `1` since 2026-08-13, and the sweep the previous value asked for is why.
+# It was `2`, argued as keeping the concurrency these trials exercise while
+# staying under a host that showed roughly 8 GiB available with three guests
+# live — and recorded as provisional, because one clean run at a width is
+# evidence of possibility rather than of reliability.
+#
+# The repeated run disagreed with it. At `2`, `profile.pre-push` failed
+# intermittently and not always on the same trial: three failures in one run,
+# two in the next, one in a third, every one of them `viv start` answering
+# `69` because the supervisor did not report readiness within its budget.
+# Reproduced with slice 014's new trial excluded, so the width was already
+# short of reliable and an added boot trial only made it likelier to show.
+#
+# The bound the group applies is boots, and the pressure is not only boots:
+# this binary's evaluating trials realise guest closures beside them, and the
+# comment on the slow-timeout override below already records one that passes
+# in 40s alone and exceeds 120s next to two booting guests. Narrowing the
+# boots is the lever this file has for that; it does not have one for the
+# rest.
+#
+# It costs nothing measurable. At `1`, two consecutive `pre-push` runs passed
+# 24 of 24 in 247s and 263s, against 231–257s for the flaky runs at `2` — the
+# serialised boots overlap the evaluating trials instead of each other. The
+# concurrency argument for `2` was real and is simply outweighed: a stage
+# that fails for a reason unrelated to the change under test is a stage that
+# gets pushed past, which is the cost this whole section exists to avoid.
 #
 # `num-cpus` would be the wrong shape even where nextest accepts it. The
 # scarce resource here is host memory and store space; logical CPU count
 # tracks neither.
 [test-groups]
-boot = { max-threads = 2 }
+boot = { max-threads = 1 }
 
 [profile.default]
 # Sane defaults for ad-hoc `cargo nextest run`.
@@ -59,7 +79,7 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # `cargo nextest show-config test-groups --profile <name>` rather than
 # assumed.
 [[profile.default.overrides]]
-filter = 'test(=workflow_01_first_time_bind_boot) + test(=workflow_02_identity_collision_suffix) + test(=workflow_05_restrict_egress_allowlist) + test(=workflow_06_exec_exit_code_propagation) + test(=workflow_06_shell_interactive_session) + test(=workflow_07_stop_restart_preserving_volumes) + test(=workflow_07_stop_completes_within_budget) + test(=workflow_08_destroy_cold_rebuild)'
+filter = 'test(=workflow_01_first_time_bind_boot) + test(=workflow_02_identity_collision_suffix) + test(=workflow_05_restrict_egress_allowlist) + test(=workflow_06_exec_exit_code_propagation) + test(=workflow_06_shell_interactive_session) + test(=workflow_07_stop_restart_preserving_volumes) + test(=workflow_07_stop_completes_within_budget) + test(=workflow_08_destroy_cold_rebuild) + test(=workflow_09_workspace_round_trip)'
 test-group = "boot"
 
 # The acceptance binary's own clock. Its trials evaluate a manifest through Nix, build a guest

@@ -8,7 +8,7 @@ set -eu
 launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' \
   "$VIVARIUM_RUNNER/bin/vivarium-first-microvm" | head -n1)
 test -n "$launcher_json"
-test "$(jq -r .schemaVersion "$launcher_json")" = 3
+test "$(jq -r .schemaVersion "$launcher_json")" = 4
 test "$(jq -r .descriptorBudget.limit "$launcher_json")" = 524288
 test "$(jq -r .descriptorBudget.workerPoolSize "$launcher_json")" = "$VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE"
 test "$(jq -r .socketLegs.api "$launcher_json")" = '@API_SOCKET@'
@@ -48,9 +48,14 @@ grep -qF '/run/vivarium/gpg-agent.sock' agent.strings
 if grep -Rq 'control\.sock_[0-9]' "$VIVARIUM_RUNNER" "$VIVARIUM_GUEST_SYSTEM"; then exit 1; fi
 fstab=$VIVARIUM_GUEST_SYSTEM/etc/fstab
 # Every share's mount point is a build-to-launch contract of the same kind as the
-# volume labels below: the guest's own fstab enacts it, and `viv exec` reads the
-# workspace one out of the launcher's JSON to name the cwd a session starts in.
-# Compare the two artifacts rather than two copies of one Nix string.
+# volume labels below: the guest's own fstab enacts it. Compare the two artifacts
+# rather than two copies of one Nix string.
+#
+# Still total over every share, which ADR-0100 is the reason to say out loud. The
+# workspace's session-visible path moved to the host's own, and the temptation was
+# to except that share here; instead `mountPoint` kept meaning "what the fstab
+# mounts" and the mirror became a separate assertion below. An exception in this
+# loop would have been a share nothing compares.
 checked_mounts=0
 while read -r tag mount_point; do
   test -n "$mount_point"
@@ -65,6 +70,44 @@ done < <(jq -r '.shareLaunch[] | "\(.tag) \(.mountPoint)"' "$launcher_json")
 # of a check that reports on a field it stopped reading.
 test "$checked_mounts" = "$(jq -r '.shareLaunch | length' "$launcher_json")"
 test "$checked_mounts" -ge 1
+# ADR-0100's guest half, asserted on the built unit rather than on a boot.
+#
+# The mirror is what puts the project where a session expects it, and every way it
+# can fail quietly is checked here, because none of them fails loudly at runtime.
+mirror_unit=$VIVARIUM_GUEST_SYSTEM/etc/systemd/system/vivarium-workspace.service
+test -f "$mirror_unit"
+# The share this binds must be the share the launcher serves. Two independently
+# realised artifacts again: the unit's own requirement against the launcher JSON.
+workspace_mount_point=$(jq -r '.shareLaunch[] | select(.tag == "workspace") | .mountPoint' "$launcher_json")
+test "$workspace_mount_point" = "$VIVARIUM_WORKSPACE_INTERNAL"
+grep -qF "RequiresMountsFor=$VIVARIUM_WORKSPACE_INTERNAL" "$mirror_unit"
+# A mount namespace of its own would make the bind invisible to every other
+# process: the unit would succeed, log nothing, and change nothing. This is the
+# only thing standing between that outcome and a later blanket-hardening pass, so
+# it is an exact denial rather than a spot check.
+if grep -qE '^(PrivateMounts|ProtectSystem|ProtectHome|PrivateTmp|PrivateDevices|ReadOnlyPaths|ProtectKernelTunables|RootDirectory|MountAPIVFS)=' "$mirror_unit"; then exit 1; fi
+# spec/12 starts every session in the workspace, so an agent that can accept one
+# before the mirror exists hands out a cwd that does not exist.
+grep -qF 'vivarium-workspace.service' <<<"$(sed -n 's/^Requires=//p' "$agent_unit")"
+grep -qF 'vivarium-workspace.service' <<<"$(sed -n 's/^After=//p' "$agent_unit")"
+# And spec/06 requires the first-boot home ownership applied before the agent
+# accepts a session. Both units are `WantedBy=multi-user.target`, so without an
+# ordering edge which one wins is undefined — and the losing order hands a session
+# a home its own user cannot write. Asserted here because the failure is a race:
+# it would pass a boot test most of the time.
+grep -qF 'vivarium-volume-prepare.service' <<<"$(sed -n 's/^Requires=//p' "$agent_unit")"
+grep -qF 'vivarium-volume-prepare.service' <<<"$(sed -n 's/^After=//p' "$agent_unit")"
+# Not under `/run/vivarium`, which `RuntimeDirectory=vivarium` on the agent has
+# systemd delete whenever that unit restarts.
+case $VIVARIUM_WORKSPACE_INTERNAL in /run/vivarium | /run/vivarium/*) exit 1 ;; esac
+# The host refuses to mirror a project onto this path, and it has to name it as a
+# literal because Nix cannot reach across into the Rust. That literal is here
+# rather than assumed: the supervisor is the binary that carries the host's copy,
+# so the Nix constant is compared against the built program instead of against a
+# second spelling in this file. Two independently realised artifacts, which is the
+# rule this whole check exists to keep.
+grep -qF -- "$VIVARIUM_WORKSPACE_INTERNAL" supervisor.strings
+
 # The guest process environment (spec/12). The agent clears the environment before
 # every spawn, so a session gets exactly what the launcher carries here — and a
 # `PATH` that disagreed with the guest's own would surface as a missing program

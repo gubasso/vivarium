@@ -49,6 +49,8 @@ Ordered, because the first item decides whether the rest is wiring or repair. Do
 - [`../../../decisions/ADR-0030-vm-status-and-state-model.md`](../../../decisions/ADR-0030-vm-status-and-state-model.md) — fixes what `viv status` reports.
 - [`../../../decisions/ADR-0038-guest-store-sharing.md`](../../../decisions/ADR-0038-guest-store-sharing.md) — fixes how the host store reaches the guest.
 - [`../../../decisions/ADR-0055-runtime-directory-is-required.md`](../../../decisions/ADR-0055-runtime-directory-is-required.md) — fixes the runtime directory as a precondition.
+- [`../../../decisions/ADR-0066-share-uid-gid-translation.md`](../../../decisions/ADR-0066-share-uid-gid-translation.md) — fixes the share identity a first boot needs to reach the workspace at all; added by [slice 014](../014-workspace-and-persistence/README.md) item 2.
+- [`../../../decisions/ADR-0092-the-guest-masks-the-host-link-farm.md`](../../../decisions/ADR-0092-the-guest-masks-the-host-link-farm.md) — fixes the mask a first boot failed without; added by [slice 014](../014-workspace-and-persistence/README.md) item 2.
 - [`../../../decisions/ADR-0056-vm-lifetime-bounded-by-user-session.md`](../../../decisions/ADR-0056-vm-lifetime-bounded-by-user-session.md) — fixes the outer lifetime bound.
 - [`../../../decisions/ADR-0067-volume-prune-and-first-boot-home.md`](../../../decisions/ADR-0067-volume-prune-and-first-boot-home.md) — fixes the home a first boot finds.
 - [`../../../decisions/ADR-0084-the-inner-layer-provisions-its-own-store.md`](../../../decisions/ADR-0084-the-inner-layer-provisions-its-own-store.md) — fixes inner-store provisioning.

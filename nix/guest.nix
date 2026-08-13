@@ -6,6 +6,7 @@
   volumeLabel,
   storeVolumeLabel,
   workspaceSourceSentinel,
+  workspaceInternalMountPoint,
   volumeImageSentinel,
   storeVolumeImageSentinel,
   guestAgentPackage,
@@ -40,6 +41,12 @@ let
     upperStateDir
     nixDaemonEnvironment
     ;
+
+  # Read back out of the account declared below rather than respelled as literals,
+  # so the first-boot unit and the user it prepares a home for cannot disagree about
+  # the path, the name, or the group. `launch-arguments.nix` reads the same
+  # attribute for the session it renders.
+  sessionUser = config.users.users.vivarium;
 in
 {
   options.vivarium.credentials.agents = lib.mkOption {
@@ -101,7 +108,14 @@ in
         {
           tag = "workspace";
           source = workspaceSourceSentinel;
-          mountPoint = "/workspaces/vivarium";
+          # A build-time constant, and not where a session finds the project.
+          # N16 puts the project at the host's own absolute path so git's linked
+          # worktrees resolve from either side; that path is launch-channel and
+          # this field is build output, so `vivarium-workspace.service` below
+          # binds the share where the host holds it (ADR-0100). The workspace is
+          # consequently the one share whose session-visible location is absent
+          # from the guest's own fstab.
+          mountPoint = workspaceInternalMountPoint;
           proto = "virtiofs";
           cache = "auto";
           posixAcl = false;
@@ -296,9 +310,66 @@ in
       ];
 
       services = {
+        # ADR-0100's guest half. The share mounts at a build-time constant
+        # because a host path may not enter a build output (N19); this binds it
+        # where the host holds the project, reading that path from the kernel
+        # command line the launcher wrote it to.
+        vivarium-workspace = {
+          description = "Bind the project tree at the host path it occupies";
+          wantedBy = [ "multi-user.target" ];
+          # `RequiresMountsFor` rather than a bare `after`, and the `Requires`
+          # half is what matters: a virtiofs mount that FAILED leaves an empty
+          # directory behind, a bind onto it succeeds, and every write a session
+          # makes then lands on the guest's own root filesystem while looking
+          # exactly like the project — lost at shutdown, silently. Ordering alone
+          # does not exclude that; a requirement does.
+          unitConfig.RequiresMountsFor = [ workspaceInternalMountPoint ];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            UMask = "0022";
+            # No `PrivateMounts`, `ProtectSystem`, `ProtectHome`, `PrivateTmp`,
+            # `ReadOnlyPaths` or any relative. Each of them puts this unit in its
+            # own mount namespace, where the bind it makes is invisible to every
+            # other process: the unit would succeed, log nothing, and change
+            # nothing. `contract.sh` asserts their absence, because a later
+            # blanket-hardening pass is exactly how this would come back.
+          };
+          path = [
+            pkgs.coreutils
+            pkgs.util-linux
+            pkgs.gnugrep
+          ];
+          environment.VIVARIUM_WORKSPACE_INTERNAL = workspaceInternalMountPoint;
+          # Same `enableStrictShellChecks` exemption as `vivarium-volume-prepare`
+          # below, for the same reason: this unit ships in the image, and the
+          # swap to `writeShellApplication` would move the guest's derivation
+          # path.
+          script = builtins.readFile ./workspace-mirror.sh;
+        };
+
         vivarium-agent = {
           description = "Vivarium guest control and credential agent";
           wantedBy = [ "multi-user.target" ];
+          # spec/12 starts every session in the workspace, so a mirror that is
+          # not yet in place is not a slow session but a missing cwd. `requires`
+          # rather than `wants`: the failure is then one loud boot failure on the
+          # console the host already captures, rather than one refusal per
+          # session naming three possible causes.
+          # spec/06 requires the first-boot home ownership applied before the agent
+          # accepts a session: a session that wins the race gets a home its own user
+          # cannot write. Both units were `wantedBy = multi-user.target` with no
+          # ordering between them, so which one won was undefined — measured, by
+          # reading `systemctl show -p After vivarium-agent.service` in a live guest,
+          # where neither name appeared.
+          after = [
+            "vivarium-workspace.service"
+            "vivarium-volume-prepare.service"
+          ];
+          requires = [
+            "vivarium-workspace.service"
+            "vivarium-volume-prepare.service"
+          ];
           serviceConfig = {
             Type = "simple";
             User = "vivarium";
@@ -331,11 +402,19 @@ in
         };
 
         vivarium-volume-prepare = {
-          description = "Prepare the first diagnostic volume";
+          description = "Give the guest user its home on the volume's first boot";
           wantedBy = [ "multi-user.target" ];
-          after = [ "home-vivarium.mount" ];
-          requires = [ "home-vivarium.mount" ];
-          serviceConfig.Type = "oneshot";
+          # `RequiresMountsFor` carries both halves, so the escaped unit name for
+          # the home volume no longer appears here or anywhere else.
+          unitConfig.RequiresMountsFor = [ sessionUser.home ];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+          };
+          environment = {
+            VIVARIUM_HOME = sessionUser.home;
+            VIVARIUM_HOME_OWNER = "${sessionUser.name}:${sessionUser.group}";
+          };
           path = [ pkgs.coreutils ];
           # The one extracted unit body without `enableStrictShellChecks`, and the
           # exemption is deliberate rather than an oversight: this unit is in the

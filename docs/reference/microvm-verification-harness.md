@@ -2,7 +2,7 @@
 
 `tests/` verifies product behavior across Rust, Nix, and host lanes. `scripts/` contains repository operations such as release helpers and structural gates.
 
-`tests/host/first-microvm-check` builds the first microVM, boots it on a real host, and checks the things only a real host can answer. It is the base the host lane of [`testing-lanes.md`](./testing-lanes.md) grows from, and it is run by hand today.
+`tests/host/first-microvm-check` builds the first microVM, boots it on a real host, and checks the things only a real host can answer — including, since ADR-0100, that the project is reachable inside the guest at its own host path, read once from the mirror unit's console claim and once from the guest's own mount table so the two can be seen to disagree. It is the base the host lane of [`testing-lanes.md`](./testing-lanes.md) grows from, and it is run by hand today.
 
 `tests/host/store-gc-interlock-check` is its sibling, described below: same shapes, separate script because it mutates the host store.
 

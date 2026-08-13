@@ -4,7 +4,11 @@ vivarium distinguishes two layers: the sandbox it manages, and the project's own
 
 ## The mounted workspace
 
-The tool mounts the user's working directory into the guest at `/workspaces/<repo>`, where `<repo>` is the repository directory name, not the host absolute path. The mount is:
+The tool mounts the user's working directory into the guest at the same absolute path it occupies on the host, so the project is reachable by one path string on both sides ([`../../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md`](../../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md)). Symmetry is the point rather than an aesthetic: git's linked worktrees record two absolute paths — a forward pointer under the main repository's `.git/worktrees/`, and a back-pointer in the worktree's own `.git` file, which `git worktree add` writes from the repository it resolved through the current directory and which no argument overrides. A tree reachable only at a guest-invented path therefore yields worktree metadata that resolves on one side and not the other, and the failure is quiet: `git worktree list` reports it healthy from both sides while `remove` and `move` fail from one.
+
+Mirroring the path may not put that path in a build output (N19). So the share itself mounts at a build-time constant the guest owns, the host path crosses on the kernel command line at launch, and a guest unit binds the share at the mirrored path before the agent accepts a session. Two consequences are contract rather than incident: the tree is reachable at both paths, and a mirrored path that equals, contains, or lies under a path the guest owns — the guest home included — is refused before boot with `78` rather than mounted somewhere adjacent.
+
+The mount is:
 
 - Read-write. The project builds, editors write, and tools generate output in place. (Read-only mounts are reserved for injected identity such as credential directories; see [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md).)
 - A shared host directory, exposed through the backend's filesystem sharing, so changes are visible on both sides.

@@ -83,6 +83,16 @@ let
   volumeLabel = "vivarium-default";
   storeVolumeLabel = "vivarium-store";
   workspaceSourceSentinel = "VIVARIUM_LAUNCH_WORKSPACE_SOURCE";
+  # Where the workspace share mounts, and deliberately not where a session finds
+  # the project. N16 puts the project at the host's own absolute path, and a
+  # share's `mountPoint` is build output that N19 keeps host paths out of — so the
+  # share lands on this constant and `workspace-mirror.sh` binds it into place at
+  # boot from the launch-channel path (ADR-0100).
+  #
+  # Not `/run/vivarium`: the agent unit declares `RuntimeDirectory = "vivarium"`,
+  # which makes systemd create that directory at agent start and delete it at
+  # agent stop. A live mount inside it would not survive the unit restarting.
+  workspaceInternalMountPoint = "/run/vivarium-workspace";
   volumeImageSentinel = "VIVARIUM_LAUNCH_VOLUME_IMAGE";
   storeVolumeImageSentinel = "VIVARIUM_LAUNCH_STORE_VOLUME_IMAGE";
   # The persistence spike's canary, and the one artifact that must exist on
@@ -169,6 +179,7 @@ let
       volumeLabel
       storeVolumeLabel
       workspaceSourceSentinel
+      workspaceInternalMountPoint
       volumeImageSentinel
       storeVolumeImageSentinel
       guestAgentPackage
@@ -262,6 +273,7 @@ in
     storeCanaryExpression
     volumeLabel
     storeVolumeLabel
+    workspaceInternalMountPoint
     imageDefaults
     mkImage
     shipped

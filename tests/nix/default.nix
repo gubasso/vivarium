@@ -35,7 +35,12 @@ let
   contractFor =
     image: units:
     import ./contract.nix {
-      inherit (product) pkgs volumeLabel storeVolumeLabel;
+      inherit (product)
+        pkgs
+        volumeLabel
+        storeVolumeLabel
+        workspaceInternalMountPoint
+        ;
       inherit (image) guest runner;
       expect = {
         # Read off the image's own resolved settings. Re-deriving them from the

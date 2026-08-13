@@ -37,7 +37,7 @@ $ viv config eval
 $ viv start
 ```
 
-This compiles the manifest to a flake ([the decision to make TOML compile rather than be interpreted](../decisions/ADR-0004-toml-manifest-compiles-to-flake.md)), builds the VM with Nix, and boots it — mounting your current project read-write at `/workspaces/<repo>` inside the guest. The working-directory path is supplied at this launch step, not built in, which is why the same manifest is reproducible across machines ([`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md), decided in [the workspace-mount ADR](../decisions/ADR-0017-workspace-mount-path-and-extra-mounts.md)).
+This compiles the manifest to a flake ([the decision to make TOML compile rather than be interpreted](../decisions/ADR-0004-toml-manifest-compiles-to-flake.md)), builds the VM with Nix, and boots it — mounting your current project read-write inside the guest at the same absolute path it has on the host. One path string names the project on both sides, which is what keeps git's linked worktrees resolvable either way ([the decision to mirror the host path](../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md)). The path is supplied at this launch step and applied at boot, never built in, which is why the same manifest still builds the same guest on every machine ([`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md)).
 
 `start` boots the sandbox in the background and returns; running it again on an unchanged project is a no-op, because [the lifecycle decision](../decisions/ADR-0013-vm-lifecycle-and-up.md) made starting detached, idempotent, and non-destructive. Each successful build is kept as a numbered generation you can list with `viv generations list` and boot with `viv start --generation <n>` — see [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md) and [`../reference/spec/11-generations-and-build-history.md`](../reference/spec/11-generations-and-build-history.md), and [the decision pinning each generation as a garbage-collector root](../decisions/ADR-0014-build-generations-and-gc-roots.md) for why an old build survives until you prune it.
 
@@ -51,7 +51,7 @@ $ viv shell
 
 `exec` runs one command with transparent stdio and returns the guest status. It defaults to no PTY, so use `-t` for interactive terminal behavior.
 
-`shell` opens a login-interactive PTY shell. Multiple `exec`/`shell` sessions for the same project share the same VM and see the repository at `/workspaces/<repo>`.
+`shell` opens a login-interactive PTY shell. Multiple `exec`/`shell` sessions for the same project share the same VM and see the repository at the path it occupies on the host, so a path you copy out of the guest is one you can paste on the host.
 
 Inside the workspace, your project's own development environment loads independently of vivarium — the inner layer described in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md). Detailed `exec`/`shell` behavior is specified in [`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exec-and-shell.md), and [the decision fixing the control transport and exec contract](../decisions/ADR-0016-guest-control-transport-and-exec-contract.md) explains where the status boundary falls.
 

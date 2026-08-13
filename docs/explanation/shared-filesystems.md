@@ -2,7 +2,9 @@
 
 The share launch profile and descriptor arithmetic are implemented in [`src/launch`](../../src/launch/mod.rs) and [`src/doctor/descriptors.rs`](../../src/doctor/descriptors.rs). Guest mounts remain Nix-owned, and public doctor rendering remains later CLI work; see [implementation status](../reference/implementation-status.md).
 
-vivarium shares three classes of host content into a guest: the project workspace, explicitly declared configuration or extra mounts, and the immutable host Nix store. Host source paths are supplied only at launch. Guest targets are stable and project-scoped, and sources representing host temporary or session directories are refused.
+vivarium shares three classes of host content into a guest: the project workspace, explicitly declared configuration or extra mounts, and the immutable host Nix store. Host source paths are supplied only at launch, and sources representing host temporary or session directories are refused.
+
+Guest targets divide by who chose them. A declared mount names its own target, and the store's is a constant. The primary workspace is the exception: its target is the host path itself, so one absolute path names the project on both sides. That target is launch data and may not reach a build output, so the share mounts at a build-time constant the guest owns and a boot-time unit binds it at the mirrored path — which is why the workspace is the one share whose guest location is absent from the guest's own `/etc/fstab`, and why it is reachable at two paths rather than one.
 
 Each share is served by its own confined daemon. The daemon translates a fixed guest identity to the invoking host user so build outputs remain host-independent. Cache mode expresses coherency, not confinement, and is selected per share by the mechanism it enables. Worker-pool and descriptor settings form one capacity budget: pool size affects concurrent service, while explicit file-descriptor limits make the maximum safe load inspectable.
 
@@ -14,7 +16,7 @@ The host store is exposed read-only. Guest writes never modify it and belong to 
 
 ## Governing decisions
 
-- [ADR-0017](../decisions/ADR-0017-workspace-mount-path-and-extra-mounts.md) — fixes the stable workspace target and the extra-mount form.
+- [ADR-0100](../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md) — mirrors the host path as the workspace target, superseding [ADR-0017](../decisions/ADR-0017-workspace-mount-path-and-extra-mounts.md), whose extra-mount form stands.
 - [ADR-0020](../decisions/ADR-0020-mount-and-config-mirroring-schema.md) — fixes the declarative schema those mounts are authored in.
 - [ADR-0027](../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md) — fixes the confinement each sharing daemon runs under.
 - [ADR-0038](../decisions/ADR-0038-guest-store-sharing.md) — exposes the host store read-only rather than copying it.

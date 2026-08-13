@@ -8,7 +8,13 @@ use std::collections::HashSet;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Component, Path, PathBuf};
 
-pub const LAUNCH_SCHEMA_VERSION: u32 = 3;
+/// The launch handoff's own version, bumped to 4 by ADR-0100.
+///
+/// `ShareSpec::mount_point` for the workspace stopped being the path a session starts in and became
+/// the share's internal one, so a `viv` of this version reading an older launcher's JSON would
+/// compute a guest cwd that does not exist. Both shapes parse, so the version is the only thing
+/// that separates them.
+pub const LAUNCH_SCHEMA_VERSION: u32 = 4;
 pub const VIRTIOFSD_RLIMIT_NOFILE: u64 = 524_288;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -137,11 +143,14 @@ pub struct BootMetadata {
 pub struct ShareSpec {
     pub tag: String,
     pub source: PathBuf,
-    /// Where the guest mounts this share.
+    /// Where the guest's own `/etc/fstab` mounts this share.
     ///
-    /// The guest module owns the value and the guest's own `/etc/fstab` enacts it; carried here so
-    /// the host can name the workspace cwd a session starts in without a second spelling of a
-    /// path only the guest decides.
+    /// The guest module owns the value, which is what lets `tests/nix/contract.sh` compare every
+    /// share against the guest's fstab as a total check rather than an exception list.
+    ///
+    /// For the workspace this is no longer the path a session starts in. N16 puts the project at
+    /// the host's own absolute path, this field is build output, and N19 keeps a host path out of
+    /// one — so the share mounts here and the guest binds it at `source` (ADR-0100).
     pub mount_point: PathBuf,
     pub socket: PathBuf,
     pub cache: String,
@@ -244,6 +253,16 @@ impl LaunchSpec {
         self.shares
             .iter()
             .find(|share| share.tag == WORKSPACE_SHARE_TAG)
+    }
+
+    /// The guest path the workspace occupies, which the mirror makes equal to the host's own.
+    ///
+    /// Derived rather than declared. The guest binds the share at the path the launcher put on the
+    /// kernel command line, and that path is this share's `source`; a second field would be a
+    /// second spelling of one value that has to agree with itself byte for byte.
+    #[must_use]
+    pub fn workspace_guest_path(&self) -> Option<&Path> {
+        self.workspace_share().map(|share| share.source.as_path())
     }
 
     /// Deserialize and validate the strict internal launch schema.
@@ -362,6 +381,14 @@ impl LaunchSpec {
                 return Err(LaunchError::InvalidSpec("duplicate socket path"));
             }
             reject_session_source(&share.source, &self.runtime_paths.root)?;
+            // The contract backstop, not the diagnostic: `src/cli/lifecycle.rs` refuses the same
+            // paths first and with an explanation, and this catches a hand-written or stale
+            // specification that walked past it.
+            if share.tag == WORKSPACE_SHARE_TAG
+                && let Some(reason) = unmirrorable(&share.source)
+            {
+                return Err(LaunchError::InvalidSpec(reason));
+            }
             let metadata = std::fs::metadata(&share.source)
                 .map_err(|error| LaunchError::io("inspect share source", error))?;
             if !(metadata.is_dir() || metadata.is_file()) {
@@ -407,10 +434,118 @@ fn require_absolute_resolved(path: &Path) -> Result<(), LaunchError> {
             "path must be absolute and normalized",
         ));
     }
-    if path.to_string_lossy().contains('@') {
+    if contains_unresolved_token(&path.to_string_lossy()) {
         return Err(LaunchError::InvalidRuntimePath("unresolved token"));
     }
     Ok(())
+}
+
+/// Whether a rendered path still carries one of `runner.sh`'s `@NAME@` substitution sentinels.
+///
+/// Matched as the sentinel shape rather than as a bare `@`, which is what this was. Since ADR-0100
+/// the workspace share's source is also the guest's mount path, so a project directory holding an
+/// `@` — a version-pinned checkout such as `pkg@1.0` is the ordinary case — would be refused here
+/// and the refusal would read as a mirroring defect rather than as the false positive it is.
+fn contains_unresolved_token(rendered: &str) -> bool {
+    let mut rest = rendered;
+    while let Some(open) = rest.find('@') {
+        let after = &rest[open + 1..];
+        match after.find('@') {
+            // Every sentinel `launch-arguments.nix` emits is upper-case ASCII with underscores and
+            // is never empty, so `a@b@c` is a filename and `@WORKSPACE_SOURCE@` is a leftover.
+            Some(close)
+                if close > 0
+                    && after[..close]
+                        .bytes()
+                        .all(|byte| byte.is_ascii_uppercase() || byte == b'_') =>
+            {
+                return true;
+            }
+            Some(close) => rest = &after[close..],
+            None => return false,
+        }
+    }
+    false
+}
+
+/// Guest paths the image owns, which a mirrored workspace may neither occupy nor contain.
+///
+/// The guest unit re-derives the same answer from the booted image and is the authority; this list
+/// exists so the refusal carries a diagnostic before a VM is started, and so a generation whose
+/// `/etc` is not a mount of its own still refuses `/etc/...`.
+///
+/// Two whole subtrees are deliberately absent, and both for the same reason: a host keeps real
+/// projects under them, so a blanket denial refuses ordinary work. `/var`, because ostree-based
+/// hosts put home directories at `/var/home/<user>`. And `/run`, because a removable drive is
+/// mounted at `/run/media/<user>/<label>` on an ordinary desktop — measured, by this repository's
+/// own acceptance fixtures, which live on exactly such a drive and were refused by the first
+/// version of this list. What the guest owns under those two roots is named individually instead.
+const GUEST_OWNED_PATHS: &[&str] = &[
+    "/nix",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/etc",
+    "/boot",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/root",
+    "/tmp",
+    "/var/lib",
+    "/var/log",
+    "/var/tmp",
+    "/var/empty",
+    // The guest's own `/run` names. `/run/vivarium` is the agent's `RuntimeDirectory`, and
+    // `/run/vivarium-workspace` is where the share itself mounts; the guest re-derives the latter
+    // from the value it was built with, so this spelling is the host's copy and `tests/nix`
+    // asserts the Nix constant against it.
+    "/run/vivarium",
+    "/run/vivarium-workspace",
+    "/run/user",
+    "/run/current-system",
+    "/run/booted-system",
+    "/run/wrappers",
+    "/run/systemd",
+    "/run/udev",
+    "/run/dbus",
+    "/run/lock",
+    "/run/log",
+    "/run/keys",
+    "/run/credentials",
+    "/run/binfmt",
+    "/run/nscd",
+    "/run/opengl-driver",
+    // The guest home, and not a corner case: a host user named `vivarium` keeps their projects
+    // under exactly this path, and it is an ext4 volume, so mirroring into it would create
+    // root-owned directories inside a persistent home the user cannot clear. Refused rather than
+    // worked around; moving the guest home is `Q-017` in `docs/plan/open-questions.md`.
+    "/home/vivarium",
+];
+
+/// Why a host path cannot be mirrored as the guest's workspace, or `None` when it can (ADR-0100).
+///
+/// Returns the message the refusal is stated with, so the CLI diagnostic and this module's contract
+/// check share one vocabulary instead of describing the same rule twice.
+#[must_use]
+pub fn unmirrorable(path: &Path) -> Option<&'static str> {
+    if !path.is_absolute() {
+        return Some("workspace path must be absolute to be mirrored into the guest");
+    }
+    if path.parent().is_none() {
+        return Some("the filesystem root cannot be mirrored into the guest");
+    }
+    for owned in GUEST_OWNED_PATHS {
+        let owned = Path::new(owned);
+        // `Path::starts_with` compares whole components, so `/nix` does not match
+        // `/nixos-projects`. A string prefix would, which is the bug this notes rather than risks.
+        if path.starts_with(owned) || owned.starts_with(path) {
+            return Some("workspace path collides with a path the guest owns");
+        }
+    }
+    None
 }
 
 fn require_exact_child(path: &Path, root: &Path) -> Result<(), LaunchError> {
@@ -507,7 +642,7 @@ pub mod tests {
             shares: vec![ShareSpec {
                 tag: WORKSPACE_SHARE_TAG.into(),
                 source,
-                mount_point: "/workspaces/vivarium".into(),
+                mount_point: "/run/vivarium-workspace".into(),
                 socket: child("workspace.sock"),
                 cache: "auto".into(),
                 read_only: false,
@@ -554,12 +689,84 @@ pub mod tests {
                 let duplicate = s.shares[0].clone();
                 s.shares.push(duplicate);
             }),
+            // ADR-0100: the workspace source is also the guest's mount path, so a source the guest
+            // owns is now a refusal here and not only in the CLI that usually gets there first.
+            Box::new(|s| s.shares[0].source = PathBuf::from("/home/vivarium/work")),
+            Box::new(|s| s.shares[0].source = PathBuf::from("/home")),
         ];
         for mutate in mutations {
             let mut spec = fixture();
             assert_eq!(spec.shares.len(), 1);
             mutate(&mut spec);
             assert!(spec.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn unmirrorable_names_the_paths_the_guest_owns() {
+        // Refused: the guest owns these, or the mirror would contain something it owns.
+        for refused in [
+            "/",
+            "/nix",
+            "/nix/store/x",
+            "/etc/projects",
+            "/home/vivarium",
+            "/home/vivarium/work",
+            // A proper ancestor: mirroring here would bury `/home/vivarium` under the share.
+            "/home",
+            "/var/lib/thing",
+            "/run/vivarium/x",
+            "/run/vivarium-workspace/x",
+            "/run/user/1000/x",
+            "relative/path",
+        ] {
+            assert!(
+                unmirrorable(Path::new(refused)).is_some(),
+                "{refused} should be refused"
+            );
+        }
+        // Allowed. `/nixos-projects` is the component-wise check earning its keep: a string prefix
+        // would read it as `/nix`. `/var/home/u` is the ostree layout a blanket `/var` would break.
+        for allowed in [
+            "/home/u/Projects/foo",
+            "/nixos-projects/foo",
+            "/var/home/u/foo",
+            // A removable drive on an ordinary desktop, and the reason `/run` is not denied
+            // wholesale: this repository's own acceptance fixtures live at exactly this shape.
+            "/run/media/u/drive/projects/foo",
+            "/mnt/work/foo",
+            "/srv/foo",
+            "/data/foo",
+            "/home/vivariumesque/foo",
+        ] {
+            assert!(
+                unmirrorable(Path::new(allowed)).is_none(),
+                "{allowed} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn unresolved_token_matches_the_sentinel_shape_only() {
+        for leftover in [
+            "/x/@WORKSPACE_SOURCE@",
+            "@VOLUME_IMAGE@",
+            "/a/@GID@/b",
+            "/@A@",
+        ] {
+            assert!(contains_unresolved_token(leftover), "{leftover}");
+        }
+        // Ordinary paths that the previous bare-`@` check refused. The first is the common one: a
+        // version-pinned checkout directory, which since ADR-0100 is also a guest mount path.
+        for ordinary in [
+            "/home/u/src/pkg@1.0",
+            "/home/u/@",
+            "/home/u/a@b",
+            "/home/u/@@",
+            "/home/u/@lower@",
+            "/home/u/node_modules/@scope/pkg",
+        ] {
+            assert!(!contains_unresolved_token(ordinary), "{ordinary}");
         }
     }
 }

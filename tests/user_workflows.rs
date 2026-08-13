@@ -1,7 +1,7 @@
 mod support;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -24,7 +24,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 17] = [
+const WORKFLOWS: [WorkflowSpec; 18] = [
     (
         "workflow_01_first_time_bind_usage",
         GateLevel::Cli,
@@ -109,6 +109,11 @@ const WORKFLOWS: [WorkflowSpec; 17] = [
         "workflow_08_destroy_cold_rebuild",
         GateLevel::Virtualization,
         workflow_08_rebuild,
+    ),
+    (
+        "workflow_09_workspace_round_trip",
+        GateLevel::Virtualization,
+        workflow_09_round_trip,
     ),
 ];
 
@@ -1531,6 +1536,118 @@ fn workflow_08_rebuild() -> Result<(), Failed> {
         &viv(&tp, &["exec", "--", "sh", "-lc", "test -f \"$HOME/warm\""])?,
         0,
     ))
+}
+
+/// The workspace is the product's central promise, and until this trial nothing asserted it.
+///
+/// Three claims, and the third is the one that has no other home. The project is reachable inside
+/// the guest at the absolute path it occupies on the host (N16, ADR-0100); an edit crosses the
+/// boundary in both directions; and a file the guest creates belongs, on the host, to the user who
+/// ran `viv` (ADR-0066). That last one cannot be checked from inside the guest at all — the share's
+/// identity translation is precisely what makes the guest see its own uid there — so it is read
+/// from the host side of the same file.
+fn workflow_09_round_trip() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("workspace-project").map_err(io_failed)?;
+    arrange_manifest(&tp, "workspace-demo", "", "")?;
+    bind(&tp, "workspace-demo")?;
+
+    // Written before the VM exists, so the guest cannot have observed the host's write through
+    // some later synchronisation: the file is part of the tree at the moment the share is served.
+    let from_host = tp.project().join("from-host.txt");
+    write_file(&from_host, "host wrote this\n").map_err(io_failed)?;
+
+    // No `viv start`: ensure-running cold-starts, and `pwd` in the session is the assertion. The
+    // guest is told nothing about the host's layout except through the mirror, so a `pwd` that
+    // equals the host path is the whole of N16 observed rather than argued.
+    let host_project = tp.project().to_string_lossy().into_owned();
+    let cwd = viv(&tp, &["exec", "--", "sh", "-lc", "pwd"])?;
+    check(expect_code(&cwd, 0))?;
+    check(expect_stdout_mentions(&cwd, &host_project))?;
+    if String::from_utf8_lossy(&cwd.stdout).trim() != host_project {
+        return fail(format!(
+            "the guest session starts at `{}`, not at the project's own host path `{host_project}`",
+            String::from_utf8_lossy(&cwd.stdout).trim()
+        ));
+    }
+
+    // Host to guest. Read by absolute path rather than relative to the cwd, so this stays an
+    // assertion about the mount and not a second assertion about the working directory.
+    let read_back = viv(
+        &tp,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-lc",
+            // The path is an argument rather than shell source, and every use below does the same.
+            // The fixture root follows `VIVARIUM_HEAVY_DRIVE`, which is routinely a removable drive
+            // mounted at `/run/media/<user>/<label>` — and a volume label is a place spaces live.
+            // Interpolated bare, such a path would word-split and fail this trial for a reason that
+            // has nothing to do with the mirror, while the encoder it exercises supports spaces on
+            // purpose.
+            "cat \"$1\"/from-host.txt",
+            "sh",
+            &host_project,
+        ],
+    )?;
+    check(expect_code(&read_back, 0))?;
+    check(expect_stdout_mentions(&read_back, "host wrote this"))?;
+
+    // Guest to host.
+    check(expect_code(
+        &viv(
+            &tp,
+            &[
+                "exec",
+                "--",
+                "sh",
+                "-lc",
+                "printf 'guest wrote this\\n' > \"$1\"/from-guest.txt",
+                "sh",
+                &host_project,
+            ],
+        )?,
+        0,
+    ))?;
+    let from_guest = tp.project().join("from-guest.txt");
+    let landed = fs::read_to_string(&from_guest).map_err(io_failed)?;
+    if landed.trim() != "guest wrote this" {
+        return fail(format!(
+            "the host reads `{}` at {}, not what the guest wrote",
+            landed.trim(),
+            from_guest.display()
+        ));
+    }
+
+    // ADR-0066, from the only side that can see it. Without the share's bidirectional translation
+    // this file would land owned by the guest's own fixed uid, which on the host is either some
+    // unrelated account or nobody at all — the failure being that a user cannot edit, commit, or
+    // delete what their own sandbox produced.
+    let owner = fs::metadata(&from_guest).map_err(io_failed)?.uid();
+    if owner != vivarium::config::effective_uid() {
+        return fail(format!(
+            "the guest's file is owned by uid {owner} on the host, not by the invoking user {}",
+            vivarium::config::effective_uid()
+        ));
+    }
+
+    // And back the other way once more, over a file the guest already owns: a mount that served
+    // the initial tree and then diverged would satisfy everything above.
+    write_file(&from_guest, "host overwrote this\n").map_err(io_failed)?;
+    let overwritten = viv(
+        &tp,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-lc",
+            "cat \"$1\"/from-guest.txt",
+            "sh",
+            &host_project,
+        ],
+    )?;
+    check(expect_code(&overwritten, 0))?;
+    check(expect_stdout_mentions(&overwritten, "host overwrote this"))
 }
 
 fn arrange_manifest(

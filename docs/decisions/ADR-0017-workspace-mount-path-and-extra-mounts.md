@@ -24,7 +24,9 @@ The primary workspace mount is `/workspaces/<repo>`. Additional mounts may be de
 
 ## Status
 
-Accepted
+Superseded
+
+Superseded by [`ADR-0100-the-workspace-mirrors-its-host-path.md`](./ADR-0100-the-workspace-mirrors-its-host-path.md) — 2026-08-13, on the option this record considered and rejected. Git's linked worktrees record absolute paths that must resolve on both sides, which the fixed project-scoped path cannot satisfy. The extra-mount model decided here stands; what moved is the primary workspace path.
 
 Amended by [`ADR-0020-mount-and-config-mirroring-schema.md`](./ADR-0020-mount-and-config-mirroring-schema.md) — the deferred mount declaration schema (the "Bad" consequence above) is now decided: declarative `[[mounts]]` entries with launch-time per-side expansion. The path model decided here stands.
 

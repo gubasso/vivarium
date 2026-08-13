@@ -190,7 +190,7 @@ fi
 
 printf 'vivarium first microVM check\n'
 printf 'repository: %s\n' "$REPO_ROOT"
-printf 'guest workspace mount: /workspaces/vivarium (host source: %s)\n' "$REPO_ROOT"
+printf 'guest workspace mount: %s (mirrored from the host, ADR-0100)\n' "$REPO_ROOT"
 printf 'system: %s\n' "$SYSTEM"
 printf 'kernel: %s\n' "$(uname -sr 2>/dev/null || echo unavailable)"
 printf 'nix: %s\n' "$(nix --version 2>/dev/null || echo unavailable)"
@@ -255,7 +255,11 @@ else
       if grep -Fq -- "$canary" "$graph"; then concrete_hits+="$canary"$'\n'; fi
     done
     if [[ -z $concrete_hits ]]; then
-      pass "derivation graph contains no concrete host paths (the equal /workspaces/vivarium guest constant is covered by metamorphism and sentinels)"
+      # A sharper claim since ADR-0100 than it was: the project's own path is now
+      # the guest's mount path too, and this is what keeps it out of the build.
+      # The mirror is applied at boot from the kernel command line, so the closure
+      # stays byte-identical for every host and every user (N19).
+      pass "derivation graph contains no concrete host paths (the mirrored workspace path reaches the guest at boot, never through the build)"
     else fail "derivation graph contains concrete host paths" "$concrete_hits"; fi
     # Read the graph this block already realised rather than evaluating it a second
     # time. `$graph` is the recursive derivation JSON for the same attribute and is
@@ -545,7 +549,7 @@ else
     # `IOAccounting` are NOT deprecated and stay required: a unit started without
     # them reports `IOAccounting=no`, so these two still discriminate.
     unit_properties=$(systemctl --user show "$unit_name" -p Slice -p KillMode -p MemoryAccounting -p IOAccounting -p CPUWeight -p LimitNOFILE -p MemoryMax -p MemoryHigh -p IOWeight 2>&1 || true)
-    required_unit='Slice=vivarium.slice KillMode=control-group MemoryAccounting=yes IOAccounting=yes CPUWeight=100 LimitNOFILE=524288'
+    required_unit='Slice=vivarium.slice KillMode=mixed MemoryAccounting=yes IOAccounting=yes CPUWeight=100 LimitNOFILE=524288'
     missing_unit=
     for property in $required_unit; do grep -qxF "$property" <<<"$unit_properties" || missing_unit+="  $property"$'\n'; done
     # `forbidden_unit` is captured rather than tested inline so the evidence can
@@ -874,9 +878,58 @@ the guest is expected to silence PID 1 status output for the burst (systemd SIGR
 rejoined count is below expected, so bytes are genuinely missing rather than split."
     fi
 
+    # Two facts, and separating them is the point. The share can be mounted rw and
+    # the mirror can still have failed, which is the state that reads as a working
+    # guest whose project directory is empty — and where every session write would
+    # land on a filesystem that vanishes at shutdown.
+    # Field 2 of the guest's own `/proc/self/mounts` line, which the marker carries
+    # whole: field 1 is the virtiofs tag and would print as the bare word `workspace`.
+    workspace_internal=$(grep -a 'VIVARIUM_WORKSPACE_MOUNT=' "$console_log" | head -n1 | tr -d '\r' \
+      | sed 's/.*VIVARIUM_WORKSPACE_MOUNT=//' | awk '{ print $2 }' || true)
     if grep -Fq 'VIVARIUM_WORKSPACE_CONTRACT=virtiofs-rw' "$console_log"; then
-      pass "workspace is virtiofs rw at /workspaces/vivarium; no write probe touched it"
+      pass "workspace share is virtiofs rw at ${workspace_internal:-its internal mount point}; no write probe touched it"
     else fail "guest workspace mount contract" "$(grep -a VIVARIUM_WORKSPACE "$console_log" || tail -n 100 "$console_log")"; fi
+    # The unit's own claim and the guest's mount table are read separately, because
+    # a unit that says `ok` while nothing is mounted is exactly the failure the
+    # four in-unit guards exist to make impossible — so the check must be able to
+    # observe them disagreeing rather than trust either one.
+    # `tr -d '\r'` on both: the console is a serial line, so a marker that ends a
+    # line carries the carriage return with it and an equality test fails against a
+    # value that prints identically. The mirror marker is the first one here that
+    # can end a line, which is why the surrounding checks did not need this.
+    # Both markers arrive escaped and are decoded here, which is what lets this compare a
+    # real path rather than a legible approximation of one. A project path may hold a space
+    # — the fixture root follows the configured drive, and `/run/media/<user>/<label>` takes
+    # its label from a volume that is often named with one — so a space-truncating `[^ ]*`
+    # would report a mirror failure on a host where the mirror was correct, which is the
+    # wrong-reason failure this file exists to avoid.
+    #
+    # Two escapings and therefore two decoders, because the two markers have different
+    # authors: the unit percent-encodes (the same encoding the launcher put on the kernel
+    # command line), and the diagnostic passes the mount table's octal form through. Each
+    # decode appends and strips an `x`, because command substitution deletes a trailing
+    # newline and a path may end in one — the same sentinel `nix/workspace-mirror.sh` uses.
+    mirror_claim=$(grep -a 'VIVARIUM_WORKSPACE_MIRROR=' "$console_log" | head -n1 | tr -d '\r' || true)
+    mirror_encoded=$(sed -n 's/.*VIVARIUM_WORKSPACE_MIRROR=ok internal=[^ ]* path=//p' <<<"$mirror_claim" || true)
+    mirror_path=
+    if [[ -n $mirror_encoded ]]; then
+      mirror_path=$(printf '%b' "${mirror_encoded//%/\\x}x")
+      mirror_path=${mirror_path%x}
+    fi
+    mirror_escaped=$(grep -a 'VIVARIUM_WORKSPACE_MIRROR_PATH=' "$console_log" | head -n1 | tr -d '\r' \
+      | sed -n 's/.*VIVARIUM_WORKSPACE_MIRROR_PATH=//p' || true)
+    mirror_seen=
+    if [[ -n $mirror_escaped && $mirror_escaped != absent ]]; then
+      mirror_seen=$(printf '%b' "${mirror_escaped}x")
+      mirror_seen=${mirror_seen%x}
+    fi
+    if [[ $mirror_path == "$REPO_ROOT" && $mirror_seen == "$REPO_ROOT" ]]; then
+      pass "the project is mirrored into the guest at its own host path ($REPO_ROOT)"
+    else
+      fail "guest workspace mirror" "unit claim: ${mirror_claim:-absent}
+mount table: ${mirror_escaped:-absent}
+expected both to name $REPO_ROOT (N16, ADR-0100)"
+    fi
     free_lines=$(grep -ao 'VIVARIUM_MEM_PHASE=[a-z]* MEMFREE=[0-9]* MEMAVAIL=[0-9]*' "$console_log" || true)
     # VmRSS is not authoritative here and must not be reported as if it were.
     # `--memory shared=on` backs guest RAM with a memfd; MADV_DONTNEED tears down

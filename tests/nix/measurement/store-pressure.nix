@@ -14,6 +14,7 @@
   pkgs,
   storeLayout,
   storeFreeSpaceHook,
+  workspaceInternalMountPoint,
   ...
 }:
 
@@ -32,7 +33,7 @@ let
   # by default. Measured not to reach `autoGC`, which is why the scaled image
   # exists at all; retained because arm D's negative result is the evidence.
   extraConfFile = "${freeSpaceHookDir}/nix-extra.conf";
-  pressureHandshakeDir = "/workspaces/vivarium/.vivarium-store-pressure";
+  pressureHandshakeDir = "${workspaceInternalMountPoint}/.vivarium-store-pressure";
 in
 {
   systemd = {
@@ -66,12 +67,11 @@ in
       };
       description = "ADR-0089/ADR-0091 store pressure and collection-trigger measurement";
       wantedBy = [ "multi-user.target" ];
-      after = [
-        "nix-daemon.socket"
-        "workspaces-vivarium.mount"
-      ];
+      after = [ "nix-daemon.socket" ];
+      # `RequiresMountsFor` carries both the requirement and the ordering, so the
+      # share needs no separately spelled — and separately escaped — unit name.
       unitConfig.RequiresMountsFor = [
-        "/workspaces/vivarium"
+        workspaceInternalMountPoint
         upperRoot
       ];
       serviceConfig = {
