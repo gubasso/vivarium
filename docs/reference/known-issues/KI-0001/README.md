@@ -13,5 +13,5 @@ Reproduced at the pinned version on 2026-08-10: the attempted path was absent fr
 - [`issue.yaml`](./issue.yaml) — supplies the machine-readable case metadata.
 - [`investigation.md`](./investigation.md) — owns the symptom, root cause, vivarium path, and recheck condition.
 - [`microvm-verification-harness.md`](../../microvm-verification-harness.md) — owns the durable guest evidence and per-iteration classification table.
-- [`escalation.md`](./escalation.md) — records the public upstream report, reproducer, Valgrind trace, and verified fix.
+- [`escalation.md`](./escalation.md) — records the public upstream report, its evidence, the upstream state since, and why no pull request is filed yet.
 - [`investigation.md#recheck-condition`](./investigation.md#recheck-condition) — defines the exact command and resolution signal.
