@@ -318,9 +318,7 @@ impl Supervisor {
         self.spec.vm_create["payload"]["cmdline"] = serde_json::Value::String(cmdline);
         let workspace_host_path = self
             .spec
-            .shares
-            .iter()
-            .find(|share| share.tag == "workspace")
+            .workspace_share()
             .map(|share| share.source.clone())
             .ok_or(LaunchError::InvalidSpec("workspace share is missing"))?;
         Ok(BootMetadata {
@@ -328,7 +326,7 @@ impl Supervisor {
             boot_identity: boot_identity.to_owned(),
             project_id: self.spec.project_id.clone(),
             target: self.spec.target.clone(),
-            backend: "cloud-hypervisor".to_owned(),
+            backend: crate::launch::BACKEND.to_owned(),
             workspace_host_path,
         })
     }
@@ -498,6 +496,19 @@ async fn socket_exists(path: &Path) -> Result<bool, LaunchError> {
 }
 
 async fn cleanup_runtime(spec: &LaunchSpec) -> Result<(), LaunchError> {
+    // The per-target startup lock (spec/12) is tolerated by the scan below and removed by nothing.
+    //
+    // This sweep runs from teardowns a lock holder itself triggered: `viv start --rebuild` stops
+    // the old VM while holding the lock, and a session's stale-record repair does the same. On
+    // Unix, `flock` is held against an inode rather than a name, so unlinking the file here would
+    // not release the holder's lock — it would end the mutual exclusion the name provides. The
+    // next `viv` would create a fresh `lock`, take an uncontended lock on a different inode, and
+    // walk into the boot decision beside a process that is still rebuilding. One boot per target
+    // is exactly what the lock exists to guarantee, so the sweep leaves the name alone.
+    //
+    // It stays listed rather than unlisted because an unallowed entry aborts the sweep before
+    // anything is removed, and every `stop` would then report an incomplete teardown.
+    let lock = spec.runtime_paths.lock.clone();
     let mut allowed = vec![
         spec.runtime_paths.launch_spec.clone(),
         spec.runtime_paths.ready_socket.clone(),
@@ -535,7 +546,7 @@ async fn cleanup_runtime(spec: &LaunchSpec) -> Result<(), LaunchError> {
         .map_err(|error| LaunchError::io("read runtime entry", error))?
     {
         let path = entry.path();
-        if !allowed.contains(&path) {
+        if path != lock && !allowed.contains(&path) {
             return Err(LaunchError::UnknownRuntimeArtifact(path));
         }
     }
@@ -546,7 +557,17 @@ async fn cleanup_runtime(spec: &LaunchSpec) -> Result<(), LaunchError> {
             Err(error) => return Err(LaunchError::io("remove runtime artifact", error)),
         }
     }
-    fs::remove_dir(&spec.runtime_paths.root)
-        .await
-        .map_err(|error| LaunchError::io("remove runtime directory", error))
+    // The directory goes only when the retained lock is not in it. A `viv`-driven boot leaves the
+    // lock behind and therefore the directory too, which costs one empty file under a runtime root
+    // that does not outlive the session (spec/10); the diagnostic runner takes no lock, so the
+    // paths that assert an empty runtime directory after shutdown still see one.
+    match fs::metadata(&lock).await {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::remove_dir(&spec.runtime_paths.root)
+                .await
+                .map_err(|error| LaunchError::io("remove runtime directory", error))
+        }
+        Err(error) => Err(LaunchError::io("inspect startup lock", error)),
+    }
 }

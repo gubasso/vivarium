@@ -13,6 +13,8 @@
 pub mod grammar;
 pub mod lifecycle;
 mod render;
+// The two verbs the process boundary dispatches itself; see the module's own note on why.
+pub mod session;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -152,9 +154,12 @@ pub fn run<E: Environment>(
             ..
         } => lifecycle::stop(context, *all, *force, *timeout),
         Invocation::Deferred { verb, .. } => deferred(context, *verb),
-        // The caller performs the handoff, because it is the async half of this program and
-        // nothing else here needs a runtime.
-        Invocation::StartSpec { .. } => Ok(Success::plain(String::new())),
+        // The caller performs all three, because they are the async half of this program and
+        // nothing else here needs a runtime. A session additionally returns a code this signature
+        // cannot express — the guest's own — and streams bytes rather than accumulating a string.
+        Invocation::StartSpec { .. } | Invocation::Exec(_) | Invocation::Shell(_) => {
+            Ok(Success::plain(String::new()))
+        }
     }
 }
 

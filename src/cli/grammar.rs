@@ -11,6 +11,7 @@
 //! listing both codes against one verb.
 
 use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::PathBuf;
 
 /// Why an invocation is not well-formed. Every one of these is `64`.
@@ -93,6 +94,10 @@ pub enum Invocation {
         timeout: Option<i64>,
         output: Output,
     },
+    /// Run one command inside the project's sandbox and return its status (spec/12).
+    Exec(Session),
+    /// Open an interactive login shell inside the project's sandbox (spec/12).
+    Shell(Session),
     /// The slice-002 supervisor handoff, which `nix/runner.sh` invokes directly.
     ///
     /// Kept as a sub-form of `start` rather than promoted to its own verb because it is not part of
@@ -108,11 +113,26 @@ pub enum Invocation {
     Deferred { verb: Deferred, output: Output },
 }
 
-/// The verbs whose grammar is settled here and whose work belongs to slices 012 through 014.
+/// Everything one guest session is asked for, in the form the wire's `Start` needs it.
+///
+/// `OsString` rather than `String` throughout because spec/12 makes the guest argv byte-for-byte
+/// and the wire carries argv and environment values as raw bytes. A grammar that decoded them
+/// would refuse an invocation the contract admits.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Session {
+    /// Guest argv, everything after the first `--`. Empty for `shell`, which resolves the user's
+    /// own login shell in the guest and ignores argv entirely.
+    pub argv: Vec<OsString>,
+    /// Whether the guest allocates a PTY. Resolved here because the two flags, the verb, and the
+    /// host's own stdin are all facts this stage already holds.
+    pub pty: bool,
+    /// Each `--env` in the order given. `None` is the `KEY` form: copy from the host if it exists.
+    pub env: Vec<(OsString, Option<OsString>)>,
+}
+
+/// The verbs whose grammar is settled here and whose work belongs to slice 014.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Deferred {
-    Shell,
-    Exec,
     VolumeList,
     Destroy,
     /// The one cross-project sweep. Needs no binding, so it never answers `78`.
@@ -132,8 +152,6 @@ impl Deferred {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Shell => "shell",
-            Self::Exec => "exec",
             Self::VolumeList => "volume list",
             Self::Destroy => "destroy",
             Self::Gc => "gc",
@@ -175,7 +193,7 @@ where
         Some("manifest") => manifest(rest),
         Some("start") => start(rest),
         Some("status") => status(rest),
-        Some("shell") => deferred_flagless(Deferred::Shell, rest, SHELL_USAGE),
+        Some("shell") => shell(rest),
         Some("exec") => exec(rest, streams),
         Some("stop") => stop(rest),
         Some("volume") => volume(rest),
@@ -197,8 +215,9 @@ const CONFIG_SOURCES_USAGE: &str = "viv config sources [--json]";
 const MANIFEST_USAGE: &str = "viv manifest <list|show <name>> [--json]";
 const START_USAGE: &str = "viv start [--rebuild|--no-rebuild] [--json]";
 const STATUS_USAGE: &str = "viv status [--json] [-g|--global]";
-const SHELL_USAGE: &str = "viv shell [--json]";
-const EXEC_USAGE: &str = "viv exec [-t|--no-tty] -- <command> [args...]";
+const SHELL_USAGE: &str = "viv shell";
+const EXEC_USAGE: &str =
+    "viv exec [-t|--tty] [-T|--no-tty] [--env KEY[=VAL]]... -- <command> [args...]";
 const STOP_USAGE: &str = "viv stop [--all] [--force] [-t|--timeout <secs>] [--json]";
 const VOLUME_USAGE: &str = "viv volume list [--json]";
 const DESTROY_USAGE: &str = "viv destroy [-f|--yes] [--keep-volumes] [--json]";
@@ -373,23 +392,55 @@ fn status(rest: &[OsString]) -> Result<Invocation, UsageError> {
     Ok(Invocation::Status { global, output })
 }
 
+/// `viv shell`, whose whole grammar is its own name.
+///
+/// No `--json`: spec/12's grammar line carries none, and a verb that hands the terminal to a guest
+/// shell has no keyed object to emit. It always allocates a guest PTY, so the flags `exec` needs to
+/// choose one have nothing to decide here.
+///
+/// Off a terminal it is still well-formed. What the host cannot supply — raw mode, a size —
+/// is a capability the session degrades on, not a malformed invocation, and the trials that run
+/// `viv shell` unbound through a pipe expect `78` from the binding it lacks rather than `64`.
+fn shell(rest: &[OsString]) -> Result<Invocation, UsageError> {
+    if let Some(token) = rest.first() {
+        return Err(unknown(token, SHELL_USAGE));
+    }
+    Ok(Invocation::Shell(Session {
+        argv: Vec::new(),
+        pty: true,
+        env: Vec::new(),
+    }))
+}
+
 fn exec(rest: &[OsString], streams: Streams) -> Result<Invocation, UsageError> {
     let (mut tty, mut no_tty) = (false, false);
+    let mut env = Vec::new();
     let mut separator = None;
-    for (index, token) in rest.iter().enumerate() {
+    let mut index = 0;
+    while let Some(token) = rest.get(index) {
+        // The first `--` ends vivarium's parsing entirely, which is what makes everything past it
+        // guest argv byte for byte — including a second `--`, which is an ordinary guest argument.
         if token == "--" {
             separator = Some(index);
             break;
         }
         match token.to_str() {
             Some("-t" | "--tty") => tty = true,
-            Some("--no-tty") => no_tty = true,
+            Some("-T" | "--no-tty") => no_tty = true,
+            Some("--env") => {
+                let assignment = rest
+                    .get(index + 1)
+                    .ok_or_else(|| UsageError::new("`--env` needs a value", Some(EXEC_USAGE)))?;
+                env.push(env_assignment(assignment)?);
+                index += 1;
+            }
             _ => return Err(unknown(token, EXEC_USAGE)),
         }
+        index += 1;
     }
     if tty && no_tty {
         return Err(UsageError::new(
-            "`-t` and `--no-tty` contradict each other",
+            "`-t` and `-T` contradict each other",
             Some(EXEC_USAGE),
         ));
     }
@@ -408,16 +459,44 @@ fn exec(rest: &[OsString], streams: Streams) -> Result<Invocation, UsageError> {
             Some(EXEC_USAGE),
         ));
     };
-    if rest.len() <= separator + 1 {
+    let argv = &rest[separator + 1..];
+    if argv.is_empty() {
         return Err(UsageError::new(
             "`viv exec --` needs a command to run",
             Some(EXEC_USAGE),
         ));
     }
-    Ok(Invocation::Deferred {
-        verb: Deferred::Exec,
-        output: Output::Human,
-    })
+    Ok(Invocation::Exec(Session {
+        argv: argv.to_vec(),
+        // spec/12: `exec` defaults to no guest PTY, `-t` allocates one, and `-T` forces none. With
+        // the contradiction already refused, the flag that was given is the whole answer.
+        pty: tty,
+        env,
+    }))
+}
+
+/// Splits one `--env` operand into `KEY` or `KEY=VAL`.
+///
+/// Deliberately not routed through [`value`]: that helper refuses anything but UTF-8, and an
+/// environment value on this wire is raw bytes. Only the split point is decided here, so a name
+/// vivarium cannot decode still reaches the guest exactly as the host spelled it.
+fn env_assignment(token: &OsStr) -> Result<(OsString, Option<OsString>), UsageError> {
+    let bytes = token.as_bytes();
+    match bytes.iter().position(|byte| *byte == b'=') {
+        Some(0) => Err(UsageError::new(
+            "`--env` needs a variable name before `=`",
+            Some(EXEC_USAGE),
+        )),
+        Some(split) => Ok((
+            OsString::from_vec(bytes[..split].to_vec()),
+            Some(OsString::from_vec(bytes[split + 1..].to_vec())),
+        )),
+        None if bytes.is_empty() => Err(UsageError::new(
+            "`--env` needs a variable name",
+            Some(EXEC_USAGE),
+        )),
+        None => Ok((token.to_os_string(), None)),
+    }
 }
 
 fn stop(rest: &[OsString]) -> Result<Invocation, UsageError> {
@@ -608,7 +687,9 @@ mod tests {
             | Invocation::Status { output, .. }
             | Invocation::Stop { output, .. }
             | Invocation::Deferred { output, .. } => Some(*output),
-            Invocation::StartSpec { .. } => None,
+            // Neither carries a `--json` slot: the private handoff predates the published surface,
+            // and the two session verbs hand their streams to a guest process.
+            Invocation::StartSpec { .. } | Invocation::Exec(_) | Invocation::Shell(_) => None,
         }
     }
 
@@ -694,6 +775,88 @@ mod tests {
         assert!(parse(argv(&["exec", "--", "true"]), tty()).is_ok());
     }
 
+    /// Pins that everything past the first `--` survives parsing unexamined.
+    ///
+    /// The predecessor of this stage found the separator, used it for the arity check above, and
+    /// discarded what followed. That is the defect this asserts against: a flag spelling, a second
+    /// separator, and a lone `-` all have meanings to vivarium that they must not have here.
+    #[test]
+    fn the_argv_boundary_is_a_boundary() -> Result<(), String> {
+        let session = match parsed(&["exec", "--", "sh", "-lc", "x", "--json", "--", "-"])? {
+            Invocation::Exec(session) => session,
+            other => return Err(format!("`exec` parsed as {other:?}")),
+        };
+        assert_eq!(
+            session.argv,
+            ["sh", "-lc", "x", "--json", "--", "-"].map(OsString::from)
+        );
+        Ok(())
+    }
+
+    /// Pins the terminal-allocation tri-state onto the one boolean the wire carries.
+    #[test]
+    fn terminal_allocation_resolves_to_what_the_wire_asks_for() -> Result<(), String> {
+        let pty_of = |rest: &[&str]| match parse(argv(rest), tty()).map_err(|error| error.message) {
+            Ok(Invocation::Exec(session)) => Ok(session.pty),
+            Ok(other) => Err(format!("parsed as {other:?}")),
+            Err(message) => Err(message),
+        };
+        assert!(!pty_of(&["exec", "--", "true"])?, "exec defaults to a pty");
+        assert!(pty_of(&["exec", "-t", "--", "true"])?);
+        assert!(pty_of(&["exec", "--tty", "--", "true"])?);
+        assert!(!pty_of(&["exec", "-T", "--", "true"])?);
+        assert!(!pty_of(&["exec", "--no-tty", "--", "true"])?);
+        // `shell` has no flag to read: spec/12 gives it a pty unconditionally.
+        match parsed(&["shell"])? {
+            Invocation::Shell(session) => {
+                assert!(session.pty);
+                assert!(session.argv.is_empty());
+            }
+            other => return Err(format!("`shell` parsed as {other:?}")),
+        }
+        Ok(())
+    }
+
+    /// Pins both `--env` forms, their order, and the split that separates them.
+    ///
+    /// `KEY` and `KEY=VAL` mean different things — copy from the host if present, versus supply
+    /// this literal — so collapsing them would silently turn a missing host variable into an empty
+    /// one. Order is kept because the same name may be given twice and the last one wins.
+    #[test]
+    fn env_carries_both_forms_in_the_order_given() -> Result<(), String> {
+        let session = match parsed(&[
+            "exec", "--env", "TERM", "--env", "A=1", "--env", "B=", "--env", "A=2", "--", "true",
+        ])? {
+            Invocation::Exec(session) => session,
+            other => return Err(format!("`exec` parsed as {other:?}")),
+        };
+        let named =
+            |name: &str, value: Option<&str>| (OsString::from(name), value.map(OsString::from));
+        assert_eq!(
+            session.env,
+            vec![
+                named("TERM", None),
+                named("A", Some("1")),
+                // An empty value is a value, not an absent one.
+                named("B", Some("")),
+                named("A", Some("2")),
+            ]
+        );
+
+        for rejected in [
+            vec!["exec", "--env", "--", "true"], // the separator was eaten as the value
+            vec!["exec", "--env", "=1", "--", "true"],
+            vec!["exec", "--env", "", "--", "true"],
+            vec!["exec", "--env"],
+        ] {
+            assert!(
+                parse(argv(&rejected), tty()).is_err(),
+                "accepted a malformed `--env`: {rejected:?}"
+            );
+        }
+        Ok(())
+    }
+
     /// Pins `manifest show`'s exact-one-name arity in both directions.
     #[test]
     fn manifest_show_takes_exactly_one_name() -> Result<(), String> {
@@ -733,12 +896,7 @@ mod tests {
     #[test]
     fn only_gc_is_exempt_from_needing_a_binding() {
         assert!(!Deferred::Gc.needs_binding());
-        for verb in [
-            Deferred::Shell,
-            Deferred::Exec,
-            Deferred::VolumeList,
-            Deferred::Destroy,
-        ] {
+        for verb in [Deferred::VolumeList, Deferred::Destroy] {
             assert!(
                 verb.needs_binding(),
                 "{} should need a binding",

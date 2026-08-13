@@ -55,6 +55,30 @@ pub async fn private_dir(path: &Path) -> Result<(), LaunchError> {
         .map_err(|error| LaunchError::io("set runtime permissions", error))
 }
 
+/// [`private_dir`] for the synchronous command surface.
+///
+/// Two spellings rather than one because the two callers genuinely differ: the supervisor handoff
+/// is the async half of this program, and the lifecycle verbs are not — and threading a runtime
+/// through the whole command surface to create one directory would make every verb pay for it. The
+/// rules stay single-sourced: same constant, same symlink rejection, same order.
+///
+/// # Errors
+///
+/// The same three as [`private_dir`].
+pub fn private_dir_blocking(path: &Path) -> Result<(), LaunchError> {
+    std::fs::create_dir_all(path)
+        .map_err(|error| LaunchError::io("create runtime directory", error))?;
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| LaunchError::io("inspect runtime directory", error))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(LaunchError::InvalidRuntimePath(
+            "runtime root is not a directory",
+        ));
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(PRIVATE_DIR_MODE))
+        .map_err(|error| LaunchError::io("set runtime permissions", error))
+}
+
 /// Writes a file readable only by its owner, creating it with that mode rather than fixing it up.
 ///
 /// Opening with the mode closes the window in which a freshly created file is world-readable.

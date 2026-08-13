@@ -23,6 +23,7 @@ use vivarium::launch::secure_fs::{self, SocketState};
 use vivarium::launch::{
     LaunchError, LaunchSpec, ReadinessError, ReadinessReport, ReadinessStatus, TransientUnitSpec,
 };
+use vivarium::protocol::SessionMode;
 
 /// How long the launcher waits for the supervisor to report on the handoff socket.
 const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
@@ -62,21 +63,40 @@ async fn main() -> ExitCode {
     }
 
     let output = requested_output(&invocation);
-    match context() {
-        Ok(context) => match vivarium::cli::run(&invocation, &context) {
-            Ok(success) => {
-                print!("{}", success.stdout);
-                let _ = std::io::stdout().flush();
-                // A note is not the result, so it never joins stdout: `config sources` marks a tie
-                // and still succeeds, and a consumer piping stdout to `jq` must not receive it.
-                if !success.notes.is_empty() {
-                    eprint!("{}", success.notes);
-                    let _ = std::io::stderr().flush();
-                }
-                ExitCode::from(ExitKind::Success)
-            }
+    let context = match context() {
+        Ok(context) => context,
+        Err(failure) => return fail(&failure, output),
+    };
+
+    // The two session verbs, dispatched here for the same reason the handoff above is: they are
+    // async, and they return a code the synchronous surface cannot express — the guest command's
+    // own. `cli::run` stays synchronous, and the environment is read at the one boundary that owns
+    // reading it, so the passthrough policy below it is a function of its inputs.
+    if let Invocation::Exec(requested) | Invocation::Shell(requested) = &invocation {
+        let mode = if matches!(invocation, Invocation::Shell(_)) {
+            SessionMode::Shell
+        } else {
+            SessionMode::Exec
+        };
+        let host: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        return match vivarium::cli::session::run(requested, mode, &context, &host).await {
+            Ok(kind) => ExitCode::from(kind),
             Err(failure) => fail(&failure, output),
-        },
+        };
+    }
+
+    match vivarium::cli::run(&invocation, &context) {
+        Ok(success) => {
+            print!("{}", success.stdout);
+            let _ = std::io::stdout().flush();
+            // A note is not the result, so it never joins stdout: `config sources` marks a tie
+            // and still succeeds, and a consumer piping stdout to `jq` must not receive it.
+            if !success.notes.is_empty() {
+                eprint!("{}", success.notes);
+                let _ = std::io::stderr().flush();
+            }
+            ExitCode::from(ExitKind::Success)
+        }
         Err(failure) => fail(&failure, output),
     }
 }
@@ -107,7 +127,9 @@ const fn requested_output(invocation: &Invocation) -> Output {
         | Invocation::Status { output, .. }
         | Invocation::Stop { output, .. }
         | Invocation::Deferred { output, .. } => *output,
-        Invocation::StartSpec { .. } => Output::Human,
+        // Neither the private handoff nor a session carries `--json`, and a session's own failures
+        // are vivarium's own: spec/12 puts them on stderr beside the guest's, in the human form.
+        Invocation::StartSpec { .. } | Invocation::Exec(_) | Invocation::Shell(_) => Output::Human,
     }
 }
 

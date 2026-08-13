@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use support::{
-    EX_CONFIG, EX_DATAERR, EX_USAGE, GateLevel, TempProject, VivOutput, expect_code,
+    EX_CONFIG, EX_DATAERR, EX_IOERR, EX_USAGE, GateLevel, TempProject, VivOutput, expect_code,
     expect_json_array_items, expect_json_array_nonempty, expect_json_fields_at, expect_json_keys,
     expect_json_map_entries, expect_json_string, expect_marker_absent, expect_marker_id,
     expect_no_project_binding_files, expect_no_volume_images, expect_nonzero,
@@ -24,7 +24,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 16] = [
+const WORKFLOWS: [WorkflowSpec; 17] = [
     (
         "workflow_01_first_time_bind_usage",
         GateLevel::Cli,
@@ -79,6 +79,11 @@ const WORKFLOWS: [WorkflowSpec; 16] = [
         "workflow_06_exec_exit_code_propagation",
         GateLevel::Virtualization,
         workflow_06_propagation,
+    ),
+    (
+        "workflow_06_shell_interactive_session",
+        GateLevel::Virtualization,
+        workflow_06_shell,
     ),
     (
         "workflow_07_volume_list_requires_binding",
@@ -999,8 +1004,33 @@ fn workflow_06_propagation() -> Result<(), Failed> {
     let tp = TempProject::new().map_err(io_failed)?;
     arrange_manifest(&tp, "agent-command", "", "")?;
     bind(&tp, "agent-command")?;
-    check(expect_code(&viv(&tp, &["start"])?, 0))?;
-    check(expect_code(&viv(&tp, &["exec", "--", "true"])?, 0))?;
+    // No `viv start` first, on purpose: spec/12's ensure-running says a command that needs a VM
+    // brings one up. This very invocation is the cold start, and it is also the first half of the
+    // reuse assertion: the guest's own boot id, which the kernel mints once per boot, is read here
+    // so the value being compared against belongs to the VM this command booted. Reading it any
+    // later would leave the first reuse decision — the one immediately after the cold start —
+    // outside the comparison, and an implementation that replaced the VM exactly once would pass.
+    //
+    // Wall clock cannot stand in for this. Nothing in this trial asserts elapsed time, so a `stop`
+    // and a re-boot between every command would satisfy every other assertion in it.
+    let boot_id = |out: &VivOutput| String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let first = viv(
+        &tp,
+        &["exec", "--", "cat", "/proc/sys/kernel/random/boot_id"],
+    )?;
+    check(expect_code(&first, 0))?;
+    let booted = boot_id(&first);
+    if booted.is_empty() {
+        return Err(Failed::from(
+            "the guest reported no boot id to compare reuse against",
+        ));
+    }
+    check(expect_json_string(
+        &viv(&tp, &["status", "--json"])?,
+        "state",
+        "running",
+    ))?;
+
     check(expect_code(&viv(&tp, &["exec", "--", "false"])?, 1))?;
     check(expect_code(
         &viv(&tp, &["exec", "--", "sh", "-lc", "exit 42"])?,
@@ -1016,6 +1046,33 @@ fn workflow_06_propagation() -> Result<(), Failed> {
     check(expect_code(&boundary, 0))?;
     check(expect_stdout_mentions(&boundary, "--"))?;
 
+    // Host environment passthrough is deny-by-default (spec/12, N17), and this is the assertion
+    // that makes that a fact about a running guest rather than about a function. `TMPDIR` is the
+    // load-bearing name: the harness deliberately passes it through to `viv` itself, so a guest
+    // that could see it would be seeing a variable this very process was given — which is exactly
+    // the leak the rule exists to stop, and exactly what a unit test of the policy cannot catch.
+    // `PATH` is the other half: the guest gets its own, never the host's.
+    let environment = viv(
+        &tp,
+        &[
+            "exec",
+            "--env",
+            "NAMED=carried",
+            "--",
+            "sh",
+            "-lc",
+            "printf 'named=%s tmpdir=%s path=%s' \"${NAMED-unset}\" \"${TMPDIR-unset}\" \"$PATH\"",
+        ],
+    )?;
+    check(expect_code(&environment, 0))?;
+    check(expect_stdout_mentions(&environment, "named=carried"))?;
+    check(expect_stdout_mentions(&environment, "tmpdir=unset"))?;
+    check(expect_stdout_mentions(
+        &environment,
+        "/run/current-system/sw/bin",
+    ))?;
+    check(expect_stdout_lacks(&environment, "path=/nix/store"))?;
+
     // Assumes the specified guest toolchain supplies POSIX sh. The exec'd shell
     // signals itself, so this is a genuinely signal-killed guest process — not a
     // shell converting a signal into an exit code.
@@ -1025,8 +1082,271 @@ fn workflow_06_propagation() -> Result<(), Failed> {
             &["exec", "--", "sh", "-lc", "exec sh -c 'kill -TERM $$'"],
         )?,
         143,
+    ))?;
+
+    // Reuse, closed. Every command above ran against the VM the first `exec` booted, and this is
+    // the read that says so: a guest that had been stopped and re-booted anywhere in between would
+    // answer with a different boot id here, and the equality would fail.
+    let last = viv(
+        &tp,
+        &["exec", "--", "cat", "/proc/sys/kernel/random/boot_id"],
+    )?;
+    check(expect_code(&last, 0))?;
+    let after = boot_id(&last);
+    if after != booted {
+        return Err(Failed::from(format!(
+            "ensure-running booted a second VM: the guest boot id was {booted} \
+            before the session commands and {after} after"
+        )));
+    }
+
+    // The other side of the exit-status boundary, and the one a passing suite is least likely to
+    // notice is missing. Everything above returns a number the guest chose; this returns a number
+    // vivarium chose, because the guest's own answer was lost in transit.
+    //
+    // spec/12 is explicit that the transport dying after guest start is `74` and that no
+    // guest-shaped code may be guessed for it — the command may well have succeeded, and any
+    // number reported for it would be inventing the one fact that went missing. So the session is
+    // put in flight against a guest that is then taken away underneath it.
+    let mut inflight = spawn_viv(&tp, &["exec", "--", "sh", "-lc", "sleep 60"])?;
+    // Long enough for the guest process to exist, which is what puts this after the boundary
+    // rather than before it. A refusal before spawn is a different code and a different clause.
+    std::thread::sleep(Duration::from_secs(3));
+    check(expect_code(&viv(&tp, &["stop"])?, 0))?;
+    let severed = inflight.wait().map_err(io_failed)?;
+    if severed.code() != Some(EX_IOERR) {
+        return Err(Failed::from(format!(
+            "a transport that died after guest start returned {:?}, not {EX_IOERR}",
+            severed.code()
+        )));
+    }
+    Ok(())
+}
+
+/// Starts `viv` without waiting for it, for the one assertion that needs a session still running.
+///
+/// [`run_viv`] runs to completion by construction, which is right for every other trial here and
+/// cannot express "kill the VM while this is talking to it".
+fn spawn_viv(tp: &TempProject, args: &[&str]) -> Result<std::process::Child, Failed> {
+    let mut command = std::process::Command::new(gate().viv());
+    command
+        .args(args)
+        .current_dir(tp.project())
+        .env_clear()
+        .envs(support::viv_environment(tp))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command.spawn().map_err(io_failed)
+}
+
+/// The one trial that cannot use [`run_viv`], because the thing under test is the terminal.
+///
+/// Everything else in this file runs `viv` with its streams captured and no controlling terminal,
+/// which is the right shape for a verb that produces output. `viv shell` produces a session: it
+/// puts the host terminal in raw mode, sends its size before the guest process starts, follows a
+/// later resize, and has to put the terminal back on every way out. None of those is observable
+/// through a pipe, and three of them are acceptance assertions of slice 013.
+///
+/// So the child gets a real pty and this trial holds the other end. What it asserts from there is
+/// what a user would notice if it broke: the guest agreed about the size before the shell drew
+/// anything, job control is on, a window resize reached the guest, and a terminal handed to a
+/// session that is then killed comes back the way it was lent.
+// Guide: docs/guides/run-agent-command.md
+fn workflow_06_shell() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("shell-project").map_err(io_failed)?;
+    arrange_manifest(&tp, "interactive", "", "")?;
+    bind(&tp, "interactive")?;
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+
+    let (mut pty, pts) = pty_process::blocking::open().map_err(|error| pty_failed(&error))?;
+    // Non-blocking, so [`ask`]'s deadline is a deadline. A blocking read waiting for output a
+    // broken session will never produce hangs until the harness kills the whole run, and reports
+    // "timed out" rather than what did come back — which is the one thing worth knowing.
+    rustix::io::ioctl_fionbio(&pty, true).map_err(errno_failed)?;
+    // Wider than the default 80 columns because every line this trial sends is echoed back by the
+    // guest's readline, and a line that wraps arrives with escape sequences threaded through the
+    // token being matched. The width is asserted rather than assumed, so it costs nothing to
+    // choose one that leaves room.
+    pty.resize(pty_process::Size::new(40, 120))
+        .map_err(|error| pty_failed(&error))?;
+    // Read before the session starts, so the comparison after it ends is against this host's own
+    // settings rather than against an assumption about what a terminal looks like.
+    let lent = rustix::termios::tcgetattr(&pty).map_err(errno_failed)?;
+
+    let mut child = pty_process::blocking::Command::new(gate().viv())
+        .arg("shell")
+        .current_dir(tp.project())
+        .env_clear()
+        .envs(support::viv_environment(&tp))
+        .spawn(pts)
+        .map_err(|error| pty_failed(&error))?;
+
+    // Wait for the shell before typing at it. A login shell inside a guest that has just booted is
+    // not ready the instant the session opens, and a line delivered before its readline is prepared
+    // is echoed by the line discipline and then lost — which reads as a broken session and is not
+    // one. Measured: the first attempt at this trial failed exactly that way, with the guest's own
+    // prompt visible in the capture beside a command that never ran.
+    settle(&mut pty)?;
+    // A marker rather than a prompt: the guest's shell prompt is the image's business, and a trial
+    // that waited for one would be asserting something spec/12 does not fix.
+    let ready = ask(&mut pty, "printf 'READY-%s\\n' ok")?;
+    if !ready.contains("READY-ok") {
+        let _ = child.kill();
+        return fail(format!("the guest shell never answered: {ready:?}"));
+    }
+
+    // Raw mode, observed from the other end of the same pty. This is what makes the interrupt
+    // reach the guest's own foreground process group as a byte rather than being turned into a
+    // host signal by the host's line discipline (spec/12).
+    let live = rustix::termios::tcgetattr(&pty).map_err(errno_failed)?;
+    if live
+        .local_modes
+        .contains(rustix::termios::LocalModes::ICANON)
+        || live.local_modes.contains(rustix::termios::LocalModes::ECHO)
+    {
+        let _ = child.kill();
+        return fail("`viv shell` did not put the host terminal in raw mode");
+    }
+
+    // The size the guest saw. Sent before `Start`, so it is right from the first frame the shell
+    // draws rather than after a correction the user would see.
+    let initial = ask(&mut pty, "stty size")?;
+    if !initial.contains("40 120") {
+        let _ = child.kill();
+        return fail(format!(
+            "the guest did not receive the initial size: {initial:?}"
+        ));
+    }
+
+    // Job control. `$-` carries `m` exactly when the shell has monitor mode, which is the thing
+    // that makes a background job, `jobs`, and `fg` work at all.
+    let flags = ask(&mut pty, "echo \"flags:$-\"")?;
+    if !flags
+        .lines()
+        .any(|line| line.starts_with("flags:") && line.contains('m'))
+    {
+        let _ = child.kill();
+        return fail(format!("the guest shell has no job control: {flags:?}"));
+    }
+    let jobs = ask(&mut pty, "sleep 30 & jobs")?;
+    if !jobs.contains("[1]") {
+        let _ = child.kill();
+        return fail(format!("a background job was not tracked: {jobs:?}"));
+    }
+
+    // A later resize has to reach the guest, which is what keeps a full-screen program correct
+    // when the user drags the window rather than only when they start it.
+    pty.resize(pty_process::Size::new(30, 100))
+        .map_err(|error| pty_failed(&error))?;
+    let resized = ask(&mut pty, "stty size")?;
+    if !resized.contains("30 100") {
+        let _ = child.kill();
+        return fail(format!(
+            "a host resize did not reach the guest: {resized:?}"
+        ));
+    }
+
+    // The exit path that matters, because it is the one that used to leave a terminal unusable
+    // after the process that broke it was gone.
+    let pid = rustix::process::Pid::from_raw(
+        i32::try_from(child.id()).map_err(|error| Failed::from(error.to_string()))?,
+    )
+    .ok_or_else(|| Failed::from("the shell child has no pid"))?;
+    rustix::process::kill_process(pid, rustix::process::Signal::TERM).map_err(errno_failed)?;
+    child.wait().map_err(io_failed)?;
+
+    let returned = rustix::termios::tcgetattr(&pty).map_err(errno_failed)?;
+    if returned.local_modes != lent.local_modes || returned.input_modes != lent.input_modes {
+        return fail("the host terminal was not restored after the session was signalled");
+    }
+    Ok(())
+}
+
+/// Waits for the guest's login shell to finish starting, by waiting for it to stop talking.
+///
+/// Deliberately not "wait for a prompt": the prompt is the guest image's to choose, and a trial
+/// that matched one would fail on an image that changed it for reasons spec/12 says nothing about.
+/// Quiet after output is the property that actually matters here — the shell has drawn whatever it
+/// draws and is now reading.
+fn settle(pty: &mut pty_process::blocking::Pty) -> Result<(), Failed> {
+    use std::io::Read as _;
+    let deadline = Instant::now() + SHELL_BUDGET;
+    let mut buffer = [0u8; 4096];
+    let mut seen = false;
+    let mut quiet = Instant::now();
+    while Instant::now() < deadline {
+        match pty.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(_) => {
+                seen = true;
+                quiet = Instant::now();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if seen && quiet.elapsed() >= SHELL_QUIET {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => return Err(io_failed(error)),
+        }
+    }
+    fail("the guest shell produced no prompt within the budget")
+}
+
+/// Sends one line to the guest shell and collects what comes back before the next marker.
+///
+/// Bounded by a deadline rather than by a read count, because a shell's output arrives in whatever
+/// pieces the pty hands over and a trial that read once would be timing-dependent.
+fn ask(pty: &mut pty_process::blocking::Pty, line: &str) -> Result<String, Failed> {
+    use std::io::{Read as _, Write as _};
+    let token = format!("done-{}", line.len());
+    // `\r` rather than `\n`: the guest's terminal is in canonical mode and its line discipline
+    // maps carriage return to newline, which is what a real key press delivers.
+    write!(pty, "{line}; echo {token}\r").map_err(io_failed)?;
+    pty.flush().map_err(io_failed)?;
+    let deadline = Instant::now() + SHELL_BUDGET;
+    let mut collected = String::new();
+    let mut buffer = [0u8; 4096];
+    while Instant::now() < deadline {
+        match pty.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                collected.push_str(&String::from_utf8_lossy(&buffer[..read]));
+                // The echo of the command carries the token too, so the second occurrence is the
+                // one the shell produced.
+                if collected.matches(&token).count() >= 2 {
+                    return Ok(collected);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => return Err(io_failed(error)),
+        }
+    }
+    fail(format!(
+        "the guest shell did not answer `{line}` within {}s: {collected:?}",
+        SHELL_BUDGET.as_secs()
     ))
 }
+
+fn pty_failed(error: &pty_process::Error) -> Failed {
+    Failed::from(error.to_string())
+}
+
+fn errno_failed(error: rustix::io::Errno) -> Failed {
+    Failed::from(error.to_string())
+}
+
+/// How long one round trip through a guest shell may take.
+///
+/// Generous, because the first one waits for a login shell to finish starting inside a guest that
+/// has just booted, and a trial that timed that tightly would report on the host's load.
+const SHELL_BUDGET: Duration = Duration::from_mins(1);
+
+/// How long the guest shell must stay silent before it counts as ready for input.
+const SHELL_QUIET: Duration = Duration::from_millis(750);
 
 // Guide: docs/guides/stop-restart-preserving-volumes.md
 fn workflow_07_usage() -> Result<(), Failed> {

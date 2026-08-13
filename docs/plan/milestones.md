@@ -4,7 +4,6 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 013 exec-and-shell — shaped — 3 sessions — reshaped before start; see the slice `Revisions`
 - 014 workspace-and-persistence — shaped — 2 sessions
 
 ## later
@@ -24,3 +23,4 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 010 repair-the-host-runbooks — done — 3 sessions
 - 011 resolve-and-evaluate — done — 3 sessions — appetite exceeded; see the slice `Revisions`
 - 012 first-boot — done — 3 sessions — the guest module had to be composed into the generated flake; see the slice `Revisions`
+- 013 exec-and-shell — done — 3 sessions — the launch specification had to carry the guest cwd, the startup lock, and the guest process environment; see the slice `Revisions`

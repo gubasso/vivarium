@@ -12,12 +12,13 @@ use vivarium::exit::ExitKind;
 // respelled here, so a trial and the binary it runs cannot disagree about what a number means.
 // `ExitStatus::code` yields `i32`, which is the only reason these are not `u8`.
 //
-// Only the reachable three are named. A trial that gains a way to provoke another category writes
+// Only the reachable four are named. A trial that gains a way to provoke another category writes
 // `ExitKind::TempFail.code()` at its assertion; an unused constant kept alive by a dead-code
 // suppression would be a knob neutralized rather than absent.
 pub const EX_USAGE: i32 = ExitKind::Usage.code() as i32;
 pub const EX_DATAERR: i32 = ExitKind::DataErr.code() as i32;
 pub const EX_CONFIG: i32 = ExitKind::Config.code() as i32;
+pub const EX_IOERR: i32 = ExitKind::IoErr.code() as i32;
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 static GATE: OnceLock<GateDecision> = OnceLock::new();
@@ -617,26 +618,32 @@ fn baseline_inputs() -> &'static Vec<(OsString, OsString)> {
 /// turn every expected `78` into a success.
 const HOST_PASSTHROUGH: [&str; 6] = ["PATH", "TERM", "LANG", "LC_ALL", "SSL_CERT_FILE", "TMPDIR"];
 
+/// The complete environment a `viv` under test runs with, as pairs.
+///
+/// Returned rather than applied so the one trial that cannot use [`run_viv`] — `viv shell`, which
+/// needs a real pty and therefore a different spawner — configures its child from the same source
+/// rather than from a second reading of these rules.
+pub fn viv_environment(tp: &TempProject) -> Vec<(OsString, OsString)> {
+    let mut environment: Vec<(OsString, OsString)> = HOST_PASSTHROUGH
+        .iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| (OsString::from(name), value)))
+        .collect();
+    // `nix` needs its own ambient configuration to run at all; it carries no manifest
+    // resolution meaning, so passing the family through is safe.
+    environment
+        .extend(std::env::vars_os().filter(|(name, _)| name.to_string_lossy().starts_with("NIX_")));
+    environment.extend(tp.env());
+    environment.extend(baseline_inputs().iter().cloned());
+    environment
+}
+
 pub fn run_viv(bin: &Path, tp: &TempProject, cwd: &Path, args: &[&str]) -> io::Result<VivOutput> {
     let command_line = std::iter::once(bin.display().to_string())
         .chain(args.iter().map(|arg| (*arg).to_owned()))
         .collect();
     let mut command = Command::new(bin);
     command.args(args).current_dir(cwd).env_clear();
-    for name in HOST_PASSTHROUGH {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
-    }
-    // `nix` needs its own ambient configuration to run at all; it carries no manifest
-    // resolution meaning, so passing the family through is safe.
-    for (name, value) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("NIX_") {
-            command.env(name, value);
-        }
-    }
-    command.envs(tp.env());
-    command.envs(baseline_inputs().iter().cloned());
+    command.envs(viv_environment(tp));
     let output = command.output()?;
     Ok(VivOutput {
         argv: command_line,

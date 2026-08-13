@@ -624,6 +624,7 @@ name = "vivarium"
 version = "0.1.0"
 dependencies = [
  "libtest-mimic",
+ "pty-process",
  "rustix",
  "serde",
  "serde_json",

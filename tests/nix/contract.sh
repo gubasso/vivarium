@@ -8,7 +8,7 @@ set -eu
 launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' \
   "$VIVARIUM_RUNNER/bin/vivarium-first-microvm" | head -n1)
 test -n "$launcher_json"
-test "$(jq -r .schemaVersion "$launcher_json")" = 2
+test "$(jq -r .schemaVersion "$launcher_json")" = 3
 test "$(jq -r .descriptorBudget.limit "$launcher_json")" = 524288
 test "$(jq -r .descriptorBudget.workerPoolSize "$launcher_json")" = "$VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE"
 test "$(jq -r .socketLegs.api "$launcher_json")" = '@API_SOCKET@'
@@ -47,6 +47,43 @@ grep -qF '/run/vivarium/ssh-agent.sock' agent.strings
 grep -qF '/run/vivarium/gpg-agent.sock' agent.strings
 if grep -Rq 'control\.sock_[0-9]' "$VIVARIUM_RUNNER" "$VIVARIUM_GUEST_SYSTEM"; then exit 1; fi
 fstab=$VIVARIUM_GUEST_SYSTEM/etc/fstab
+# Every share's mount point is a build-to-launch contract of the same kind as the
+# volume labels below: the guest's own fstab enacts it, and `viv exec` reads the
+# workspace one out of the launcher's JSON to name the cwd a session starts in.
+# Compare the two artifacts rather than two copies of one Nix string.
+checked_mounts=0
+while read -r tag mount_point; do
+  test -n "$mount_point"
+  awk -v want="$mount_point" '$2 == want { found = 1 } END { exit !found }' "$fstab" \
+    || {
+      echo "share $tag declares $mount_point, which the guest fstab does not mount" >&2
+      exit 1
+    }
+  checked_mounts=$((checked_mounts + 1))
+done < <(jq -r '.shareLaunch[] | "\(.tag) \(.mountPoint)"' "$launcher_json")
+# A loop over an empty list passes without asserting anything, which is the shape
+# of a check that reports on a field it stopped reading.
+test "$checked_mounts" = "$(jq -r '.shareLaunch | length' "$launcher_json")"
+test "$checked_mounts" -ge 1
+# The guest process environment (spec/12). The agent clears the environment before
+# every spawn, so a session gets exactly what the launcher carries here — and a
+# `PATH` that disagreed with the guest's own would surface as a missing program
+# rather than as a missing variable. Sourced from the guest's own
+# `/etc/set-environment`, which is what a login in that guest would run, so this
+# compares two independently realised artifacts.
+session_home=$(jq -r .guestSession.home "$launcher_json")
+session_user=$(jq -r .guestSession.user "$launcher_json")
+# Absolute, because `env -i` takes away the PATH that would have found it — and an
+# empty environment is the whole point: what the guest's own script sets has to be
+# the only thing in the answer.
+bash_path=$(command -v bash)
+# shellcheck disable=SC2016  # `$0` and `$PATH` are the inner shell's, on purpose.
+guest_path=$(env -i HOME="$session_home" USER="$session_user" \
+  "$bash_path" --norc --noprofile -c '. "$0" >/dev/null 2>&1; printf %s "$PATH"' \
+  "$VIVARIUM_GUEST_SYSTEM/etc/set-environment")
+test "$(jq -r .guestSession.path "$launcher_json")" = "$guest_path"
+# The shell a session reports is the executable, not the package that holds it.
+test -x "$(jq -r .guestSession.shell "$launcher_json")"
 for label in $VIVARIUM_VOLUME_LABEL $VIVARIUM_STORE_VOLUME_LABEL; do
   grep -F "\"label\":\"$label\"" "$launcher_json"
   grep -F "/dev/disk/by-label/$label" "$fstab"

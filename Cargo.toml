@@ -64,12 +64,19 @@ harness = false
 # `process` for the two host facts the lifecycle verbs need and cannot be given: the invoking
 # user's uid/gid, which the share identity translation maps, and whether the recorded VM pid is
 # still alive, which is half of ADR-0030's state discriminator.
-rustix = { version = "1.1.4", features = ["fs", "process"] }
+# `termios` for the host end of an interactive session: `viv shell` puts the local terminal in raw
+# mode so the guest's own line discipline raises the interrupt, and reads the window size to send
+# before the guest process starts. The crate is already here and the workspace forbids `unsafe`, so
+# a safe binding is the only route to either.
+rustix = { version = "1.1.4", features = ["fs", "process", "termios"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.17"
 tokio = { version = "1.49.0", features = [
   "fs",
+  # `io-std` for the session verbs: guest output maps raw onto the host's own stdout and stderr,
+  # and guest stdin stays attached to the host's (spec/12, ADR-0015).
+  "io-std",
   "io-util",
   "macros",
   "net",
@@ -106,4 +113,9 @@ lto = "thin"
 
 [dev-dependencies]
 libtest-mimic = "0.8.2"
+# The acceptance harness runs `viv` with its output captured and no terminal, which is the right
+# shape for every verb but one: `viv shell` hands the terminal to a guest shell, so proving it works
+# means giving the child a real pty. Already in this workspace's lock through the guest agent, which
+# allocates the other end of the same kind of device.
+pty-process = "0.5.3"
 serde_json = "1.0.151"

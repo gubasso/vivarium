@@ -10,7 +10,7 @@ Read it to answer one question: a decision exists, so when does it become code?
 
 These bound every phase and no slice re-decides them, so they are not sequenced. `ADR-0001` fixes the isolation boundary, `ADR-0008` the two-layer separation, `ADR-0010` that secrets never enter the store, `ADR-0024` the backend security requirements, and `ADR-0025` the default hypervisor. A slice that appears to need one of these relaxed has found a charter question, not a sequencing one.
 
-A decision consumed by a closed slice is already realized; [`../reference/implementation-status.md`](../reference/implementation-status.md) records how far. `ADR-0016`, `ADR-0065`, and `ADR-0071` appear below anyway, because their guest half is realized and their host half is not.
+A decision consumed by a closed slice is already realized; [`../reference/implementation-status.md`](../reference/implementation-status.md) records how far. `ADR-0016`, `ADR-0065`, and `ADR-0071` appeared below through slice 013 for the opposite reason to the others: their guest half was realized a slice before their host half.
 
 ## Phase 1 — a sandbox that runs
 
@@ -23,7 +23,7 @@ The chain in flight. These clusters are consumed by slices 011 through 014, and 
 - Lifecycle and runtime ownership — `ADR-0013`, `ADR-0018`, `ADR-0030`, `ADR-0055`, `ADR-0056`, `ADR-0097`. Consumed by slice 012 for the boot itself, and again by [slice 013](slices/013-exec-and-shell/README.md) for the reuse-or-boot routine a command needing a VM runs.
 - Guest store provisioning — `ADR-0038`, `ADR-0084`, `ADR-0087`, `ADR-0088`. Consumed by slice 012.
 - Open egress by default — `ADR-0007`. Consumed by slice 012 as the reason a first boot needs no network work.
-- Guest control transport — `ADR-0016`, `ADR-0065`, `ADR-0071`. Guest half realized in slice 003; host half consumed by [slice 013](slices/013-exec-and-shell/README.md).
+- Guest control transport — `ADR-0016`, `ADR-0065`, `ADR-0071`. Guest half realized in slice 003; host half realized in [slice 013](slices/013-exec-and-shell/README.md).
 - Workspace, volumes, and disposability — `ADR-0009`, `ADR-0017`, `ADR-0019`, `ADR-0037`, `ADR-0043`, `ADR-0066`, `ADR-0067`, `ADR-0080`, `ADR-0092`. Consumed by slice 012 for the mount launch constructs and [slice 014](slices/014-workspace-and-persistence/README.md) for what persists; slice 014 item 2 settles which side `ADR-0066` and `ADR-0092` fall on.
 
 ## Phase 2 — funded and sequenced behind it
@@ -56,16 +56,17 @@ No slice consumes these. Each cluster is a decision made in advance of the work,
 
 Phase 1 is being built in the order the acceptance trials already assert, so on a host with `/dev/kvm` part of the harness is red by construction rather than by defect. That distinction only survives if it is written down: a red nobody has mapped to work reads exactly like a regression, and the next person to see it either debugs a verb that was never written or learns to ignore the lane.
 
-Measured 2026-08-12 on a host with `/dev/kvm`, a systemd user manager, and `$XDG_RUNTIME_DIR`: 20 of 24 integration trials pass, and all four failures are `internal.not-implemented` from a verb whose slice has not run yet.
+Re-measured 2026-08-12 after slice 013, on the same host with `/dev/kvm`, a systemd user manager, and `$XDG_RUNTIME_DIR`: 15 of 18 acceptance trials pass, and the three that do not are each waiting on a verb a later slice implements. `viv exec` and `viv shell` no longer appear in the `Refused by` column at all, and a new interactive trial joined the set.
 
-| Trial                                         | Refused by                     | Turns green in                                              |
-| --------------------------------------------- | ------------------------------ | ----------------------------------------------------------- |
-| `workflow_06_exec_exit_code_propagation`      | `viv exec`                     | slice 013, item 8                                           |
-| `workflow_05_restrict_egress_allowlist`       | `viv exec`, then the allowlist | slice 013 for the session, slice 004 for the assertion      |
-| `workflow_07_stop_restart_preserving_volumes` | `viv volume list`              | slice 014, item 6                                           |
-| `workflow_08_destroy_cold_rebuild`            | `viv exec`, then `viv destroy` | slice 013 for the session, slice 014 item 6 for the rebuild |
+| Trial                                         | Refused by        | Turns green in    |
+| --------------------------------------------- | ----------------- | ----------------- |
+| `workflow_05_restrict_egress_allowlist`       | the allowlist     | slice 004         |
+| `workflow_07_stop_restart_preserving_volumes` | `viv volume list` | slice 014, item 6 |
+| `workflow_08_destroy_cold_rebuild`            | `viv destroy`     | slice 014, item 6 |
 
-The execution order is the chain already in flight and is not changed by this table: slice 013, then slice 014, then slice 004 out of Phase 2. Two of the four need both ends, which is why neither can be read as a single slice's debt. Nothing is added to a slice's `In scope` here; each trial is already named by the item that lands it.
+The two that slice 013 half-unblocked are worth naming, because "turns green in slice 014" now means something narrower than it did. `workflow_08` gets as far as `viv destroy`, and `workflow_05` gets all the way into the guest and returns the guest command's own status — `6`, from a `curl` that could not resolve a `.example` host — which is the session contract working and the enforcement fixture the trial's own `TODO(impl)` already records as missing.
+
+The execution order is the chain already in flight and is not changed by this table: slice 014, then slice 004 out of Phase 2. Nothing is added to a slice's `In scope` here; each trial is already named by the item that lands it.
 
 ### The pre-push gate, and the obligation to come back to it
 
@@ -74,8 +75,8 @@ The executable lanes did not say what [`../reference/testing-lanes.md`](../refer
 Owed, in this order, and each step is a revision to this section:
 
 1. Taken 2026-08-12: `profile.pre-push` now selects `kind(test) - binary(user_workflows)`, so the executable form states the grading the lane table already carried, and acceptance gates the host runbooks and CI instead. The alternative — an `#[ignore]` per trial naming its slice — was refused as four knobs whose removal nothing enforces. This subtraction is the knob, it is one line, and steps 2 and 3 are what remove it.
-2. Narrow the subtraction as each slice lands, which is the step neither slice may quietly skip. Slice 013 item 8 and slice 014 item 6 land their trials unskipped on a capable host; slice 014, greening the last trial any slice in flight can, replaces the whole-binary exclusion with `- test(=workflow_05_restrict_egress_allowlist)`. That one trial waits on the allowlist, so slice 004 deletes the final clause and returns `profile.pre-push` to `kind(test)`. A slice that lands its trials and leaves the subtraction as it found it has moved a row without restoring the gate.
-3. Re-measure on a capable host once slice 014 closes, and replace the table above with the result rather than amending it. Four reds becoming one is the signal that the remainder belongs to slice 004 and to nothing in flight — and it is the check that step 2 was actually performed, since a subtraction nobody narrowed reports the same green either way.
+2. Taken 2026-08-12 by slice 013: the whole-binary exclusion is gone, and `profile.pre-push` now subtracts three named trials — `workflow_05_restrict_egress_allowlist`, `workflow_07_stop_restart_preserving_volumes`, and `workflow_08_destroy_cold_rebuild`. Measured on a capable host, the profile runs 23 tests and all 23 pass. Slice 014 removes two of the three by greening its own trials; slice 004 deletes the last clause and returns `profile.pre-push` to `kind(test)`. A slice that lands its trials and leaves the subtraction as it found it has moved a row without restoring the gate.
+3. Re-measure on a capable host once slice 014 closes, and replace the table above with the result rather than amending it. Three reds becoming one is the signal that the remainder belongs to slice 004 and to nothing in flight — and it is the check that step 2 was actually performed, since a subtraction nobody narrowed reports the same green either way. Slice 013 performed its own half of this: the table above is the re-measurement, not an amendment of the previous one.
 
 ## Known cost
 

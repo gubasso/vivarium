@@ -11,8 +11,8 @@ use tokio_util::sync::CancellationToken;
 use vivarium::doctor::descriptors::host_fd_limit_sufficient;
 use vivarium::launch::{
     BackendPrograms, ConfinementProfile, ConsoleReader, ConsoleSink, DescriptorBudget,
-    IdentityTranslation, LaunchSpec, ResourceSpec, RuntimePaths, ShareSpec, SocketLegs, Supervisor,
-    TransientUnitSpec,
+    GuestSession, IdentityTranslation, LAUNCH_SCHEMA_VERSION, LaunchSpec, ResourceSpec,
+    RuntimePaths, ShareSpec, SocketLegs, Supervisor, TransientUnitSpec,
 };
 
 fn fixture(name: &str) -> LaunchSpec {
@@ -23,12 +23,13 @@ fn fixture(name: &str) -> LaunchSpec {
     let root = std::env::temp_dir().join(format!("vivarium-supervision-{name}-{nonce}"));
     let child = |name: &str| root.join(name);
     LaunchSpec {
-        schema_version: 2,
+        schema_version: LAUNCH_SCHEMA_VERSION,
         project_id: "project".into(),
         target: "target".into(),
         runtime_paths: RuntimePaths {
             root: root.clone(),
             launch_spec: child("launch.json"),
+            lock: child("lock"),
             ready_socket: child("ready.sock"),
             api_socket: child("api.sock"),
             console_socket: child("console.sock"),
@@ -68,9 +69,16 @@ fn fixture(name: &str) -> LaunchSpec {
             overflow_gid: 65534,
             id_max: 4_294_967_294,
         },
+        guest_session: GuestSession {
+            user: "vivarium".into(),
+            home: "/home/vivarium".into(),
+            shell: "/nix/store/fake/bin/bash".into(),
+            path: "/run/wrappers/bin:/run/current-system/sw/bin".into(),
+        },
         shares: vec![ShareSpec {
             tag: "workspace".into(),
             source: std::env::current_dir().unwrap(),
+            mount_point: "/workspaces/vivarium".into(),
             socket: child("workspace.sock"),
             cache: "auto".into(),
             read_only: false,
@@ -206,6 +214,50 @@ async fn cleanup_is_allowlisted_and_idempotent() {
     Supervisor::new(spec.clone()).cleanup().await.unwrap();
     assert!(!spec.runtime_paths.root.exists());
     Supervisor::new(spec).cleanup().await.unwrap();
+}
+
+/// The sweep tolerates the startup lock and removes it under no circumstances.
+///
+/// `viv start --rebuild` and a session's stale-record repair both stop the old VM while holding the
+/// per-target `flock` (spec/12 step 1), and this sweep is what that stop runs. `flock` is held
+/// against an inode rather than a name, so unlinking the file here would leave the holder locked to
+/// an inode nobody can reach while the next `viv` created a fresh `lock` and took it uncontended —
+/// two processes inside a decision that exists to admit one. The lock outliving the sweep is what
+/// makes the exclusion a property of the name.
+#[tokio::test]
+async fn cleanup_retains_the_startup_lock_and_its_directory() {
+    let spec = fixture("held-lock");
+    tokio::fs::create_dir_all(&spec.runtime_paths.root)
+        .await
+        .unwrap();
+    tokio::fs::write(&spec.runtime_paths.launch_spec, b"owned")
+        .await
+        .unwrap();
+    tokio::fs::write(&spec.runtime_paths.lock, b"")
+        .await
+        .unwrap();
+
+    Supervisor::new(spec.clone()).cleanup().await.unwrap();
+
+    assert!(
+        spec.runtime_paths.lock.exists(),
+        "the sweep unlinked a startup lock a caller may still hold"
+    );
+    assert!(
+        !spec.runtime_paths.launch_spec.exists(),
+        "retaining the lock must not retain the rest of the runtime artefacts"
+    );
+    assert!(
+        spec.runtime_paths.root.exists(),
+        "the directory holding the retained lock cannot be removed"
+    );
+    // Idempotent over the retained lock rather than only over an absent directory.
+    Supervisor::new(spec.clone()).cleanup().await.unwrap();
+    assert!(spec.runtime_paths.lock.exists());
+
+    tokio::fs::remove_dir_all(&spec.runtime_paths.root)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

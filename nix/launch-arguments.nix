@@ -70,15 +70,68 @@ let
       cache
       readOnly
       extraArgs
+      # Where the guest mounts it. The guest's own fstab is what enacts this; the
+      # launcher carries it so `viv exec` can name the workspace cwd a session
+      # starts in without a second, silently divergent spelling of a path the
+      # guest module alone decides.
+      mountPoint
       ;
     socketToken = "@${lib.toUpper share.tag}_SOCKET@";
     # The store source is a machine-independent constant (mounts.nix selects on
     # it); the workspace source is launch-channel and stays a token (N5).
     sourceToken = if share.source == "/nix/store" then "/nix/store" else "@WORKSPACE_SOURCE@";
   }) shares;
+  # What a guest process gets that no host variable could supply.
+  #
+  # The guest agent clears the environment before every spawn and inherits
+  # nothing, and spec/12 makes host passthrough deny-by-default — so without
+  # this a non-login `viv exec` has no PATH at all and cannot resolve a bare
+  # program name. These are facts of the image, not forwarded host values, which
+  # is why they are derived here rather than named on the host side.
+  sessionUser = config.users.users.vivarium;
+  # NixOS spells the session profile list with the shell placeholders that
+  # `/etc/set-environment` leaves to the shell. A session started through the
+  # control socket has no shell to expand them, so they are expanded here against
+  # the environment that session actually has — while the list itself still comes
+  # from the guest's own configuration.
+  #
+  # `XDG_STATE_HOME` expands to nothing, and that is not an oversight: spec/12
+  # makes host passthrough deny-by-default and the variable is not on the
+  # allowlist, so it is unset in every session and the shell would drop it too.
+  # Guessing its conventional value instead produced a PATH entry the guest does
+  # not have, which `tests/nix/contract.sh` caught by comparing this against the
+  # guest's own script rather than against a second reading of these rules.
+  expandProfile =
+    lib.replaceStrings
+      [
+        "$HOME"
+        "\${XDG_STATE_HOME}"
+        "$USER"
+      ]
+      [
+        sessionUser.home
+        ""
+        sessionUser.name
+      ];
+  guestSession = {
+    user = sessionUser.name;
+    inherit (sessionUser) home;
+    # The option holds the shell *package*; `/etc/passwd` holds the executable
+    # inside it, which is what a `SHELL` value has to name.
+    shell = lib.getExe sessionUser.shell;
+    # Deduplicated because two of NixOS's placeholders expand to the same
+    # directory once `$HOME` is known, and a PATH that names one twice is a
+    # difference the guest would show and nothing would explain.
+    path = lib.concatStringsSep ":" (
+      lib.unique (
+        [ config.security.wrapperDir ] ++ map (p: "${expandProfile p}/bin") config.environment.profiles
+      )
+    );
+  };
 in
 {
-  schemaVersion = 2;
+  schemaVersion = 3;
+  inherit guestSession;
   descriptorBudget = {
     limit = 524288;
     workerPoolSize = virtiofsdThreadPoolSize;

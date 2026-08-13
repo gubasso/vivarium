@@ -59,8 +59,23 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # `cargo nextest show-config test-groups --profile <name>` rather than
 # assumed.
 [[profile.default.overrides]]
-filter = 'test(=workflow_01_first_time_bind_boot) + test(=workflow_02_identity_collision_suffix) + test(=workflow_05_restrict_egress_allowlist) + test(=workflow_06_exec_exit_code_propagation) + test(=workflow_07_stop_restart_preserving_volumes) + test(=workflow_07_stop_completes_within_budget) + test(=workflow_08_destroy_cold_rebuild)'
+filter = 'test(=workflow_01_first_time_bind_boot) + test(=workflow_02_identity_collision_suffix) + test(=workflow_05_restrict_egress_allowlist) + test(=workflow_06_exec_exit_code_propagation) + test(=workflow_06_shell_interactive_session) + test(=workflow_07_stop_restart_preserving_volumes) + test(=workflow_07_stop_completes_within_budget) + test(=workflow_08_destroy_cold_rebuild)'
 test-group = "boot"
+
+# The acceptance binary's own clock. Its trials evaluate a manifest through Nix, build a guest
+# closure, and boot a microVM before they assert anything, and the profile-wide 120s ceiling was
+# sized for trials that do none of that. Two failures measured it: a booting trial killed with
+# `(test timed out)` and no account of where it got to — which reads as a hang in the product and
+# was a boot that had not finished — and an evaluating trial that passes in 40s alone and exceeded
+# 120s while two guests were booting beside it.
+#
+# The group above bounds how many trials may boot at once; it cannot bound what an evaluating trial
+# competes with, because the scarce resource is the host's CPU and store rather than the guest
+# count. So the clock is widened for the binary rather than the width narrowed further, which would
+# discard the concurrency the group deliberately keeps.
+[[profile.default.overrides]]
+filter = 'binary(user_workflows)'
+slow-timeout = { period = "120s", terminate-after = 3 }
 
 # Unit-test lane. Unit tests run at BOTH `pre-commit` (gate every commit)
 # and `pre-push` (gate every push — guards against rebases/amends bypassing
@@ -83,21 +98,22 @@ failure-output = "immediate-final"
 # faked. `kind(test)` matches every separate test binary Cargo compiles
 # from tests/*.rs.
 #
-# The user-workflow acceptance harness is subtracted, which is this profile
-# finally saying what `docs/reference/testing-lanes.md` has always graded it:
-# acceptance is informational, and it gates the host runbooks and CI rather
-# than a developer's push. `kind(test)` alone pulled it in, which was invisible
-# while no contributor host had `/dev/kvm` and became load-bearing the moment
-# one did — the trials then assert verbs that later slices implement and the
-# stage fails by construction. The cost of leaving it was never the four reds;
-# it was the twenty trials passing beside them going unread, because a stage
-# that always fails is a stage people push past.
+# Three named acceptance trials are subtracted, and nothing else. Each waits on
+# a verb a later slice implements, so on a capable host it fails by construction
+# rather than by defect: `workflow_05` needs the egress allowlist (slice 004),
+# and the other two need `viv volume list` and `viv destroy` (slice 014).
+#
+# This began as `- binary(user_workflows)`, which was the same statement made
+# bluntly: acceptance is informational, and it gates the host runbooks and CI
+# rather than a developer's push. The cost of subtracting the whole binary was
+# never the reds — it was the trials passing beside them going unread. Slice 013
+# narrowed it to these three by landing `viv exec` and `viv shell`, which is the
+# step `docs/plan/sequencing.md` requires of every slice that greens a trial:
+# moving a row without restoring the gate would leave the gate off.
 #
 # Subtracted rather than ignored per-trial, because an `#[ignore]` is a knob
-# whose removal nothing enforces, and four of them would outlive the slices
-# that justify them. This line is undone by slice 013 item 8 and slice 014
-# item 6, which land those trials unskipped; `docs/plan/sequencing.md` owns
-# the order and the obligation.
+# whose removal nothing enforces. Slice 014 removes two of these three, and
+# slice 004 removes the last and returns this to `kind(test)`.
 #
 # `profile.ci` deliberately does not inherit this: CI runs everything.
 #
@@ -108,7 +124,7 @@ failure-output = "immediate-final"
 #
 # `fail-fast` is off so a single failure does not hide other regressions.
 [profile.pre-push]
-default-filter = "kind(test) - binary(user_workflows)"
+default-filter = "kind(test) - test(=workflow_05_restrict_egress_allowlist) - test(=workflow_07_stop_restart_preserving_volumes) - test(=workflow_08_destroy_cold_rebuild)"
 fail-fast = false
 slow-timeout = { period = "120s", terminate-after = 2 }
 status-level = "fail"

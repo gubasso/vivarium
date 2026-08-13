@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Component, Path, PathBuf};
 
-pub const LAUNCH_SCHEMA_VERSION: u32 = 2;
+pub const LAUNCH_SCHEMA_VERSION: u32 = 3;
 pub const VIRTIOFSD_RLIMIT_NOFILE: u64 = 524_288;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -82,6 +82,12 @@ pub struct BackendPrograms {
 pub struct RuntimePaths {
     pub root: PathBuf,
     pub launch_spec: PathBuf,
+    /// The per-target startup lock spec/12 places here.
+    ///
+    /// Declared rather than derived by whoever takes it, because the supervisor's teardown sweep
+    /// refuses any runtime-directory entry it was not told about — and refuses the whole sweep, not
+    /// the one file. A lock nobody declared would turn every `stop` into an incomplete teardown.
+    pub lock: PathBuf,
     pub ready_socket: PathBuf,
     pub api_socket: PathBuf,
     pub console_socket: PathBuf,
@@ -108,6 +114,13 @@ pub struct SocketLegs {
     pub credentials: Vec<CredentialSpec>,
 }
 
+/// The one backend a launch uses today (ADR-0025).
+///
+/// Named once because two sides read it: the supervisor stamps it into the boot record, and
+/// spec/12 step 3 compares that record against what this invocation expects. A second literal
+/// would let the writer and the comparison drift into a reuse check that can never fail.
+pub const BACKEND: &str = "cloud-hypervisor";
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct BootMetadata {
@@ -124,6 +137,12 @@ pub struct BootMetadata {
 pub struct ShareSpec {
     pub tag: String,
     pub source: PathBuf,
+    /// Where the guest mounts this share.
+    ///
+    /// The guest module owns the value and the guest's own `/etc/fstab` enacts it; carried here so
+    /// the host can name the workspace cwd a session starts in without a second spelling of a
+    /// path only the guest decides.
+    pub mount_point: PathBuf,
     pub socket: PathBuf,
     pub cache: String,
     pub read_only: bool,
@@ -167,6 +186,27 @@ pub struct IdentityTranslation {
     pub id_max: u32,
 }
 
+/// What a guest process gets that no host variable could supply.
+///
+/// spec/12 makes host passthrough deny-by-default, which settles what may *cross* from the host and
+/// says nothing about what the guest itself provides. These four are the latter: facts of the guest
+/// image that a process started through the control socket would otherwise not have, because the
+/// agent clears the environment before every spawn and inherits nothing.
+///
+/// `PATH` is the load-bearing one. Without it a non-login `exec` cannot resolve a bare program name
+/// at all, so `viv exec -- true` would fail to spawn while looking like a missing guest tool.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GuestSession {
+    /// The default user a session runs as, which is the one the agent's own unit runs as.
+    pub user: String,
+    pub home: PathBuf,
+    pub shell: PathBuf,
+    /// Rendered from the guest's own profile list, so a profile added to the image reaches a
+    /// session rather than only an interactive login.
+    pub path: String,
+}
+
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -180,6 +220,7 @@ pub struct LaunchSpec {
     pub resources: ResourceSpec,
     pub descriptor_budget: DescriptorBudget,
     pub identity_translation: IdentityTranslation,
+    pub guest_session: GuestSession,
     pub shares: Vec<ShareSpec>,
     pub volumes: Vec<VolumeSpec>,
     pub vm_create: Value,
@@ -193,7 +234,18 @@ const fn default_console_log() -> bool {
     true
 }
 
+/// The share whose mount point a session starts in, and whose host path `boot.json` records.
+pub const WORKSPACE_SHARE_TAG: &str = "workspace";
+
 impl LaunchSpec {
+    /// The workspace share, by the one tag both halves of the launch agree on.
+    #[must_use]
+    pub fn workspace_share(&self) -> Option<&ShareSpec> {
+        self.shares
+            .iter()
+            .find(|share| share.tag == WORKSPACE_SHARE_TAG)
+    }
+
     /// Deserialize and validate the strict internal launch schema.
     ///
     /// # Errors
@@ -242,6 +294,7 @@ impl LaunchSpec {
         require_absolute_resolved(&self.runtime_paths.root)?;
         let runtime_paths = [
             &self.runtime_paths.launch_spec,
+            &self.runtime_paths.lock,
             &self.runtime_paths.ready_socket,
             &self.runtime_paths.api_socket,
             &self.runtime_paths.console_socket,
@@ -254,6 +307,15 @@ impl LaunchSpec {
         for path in runtime_paths {
             require_exact_child(path, &self.runtime_paths.root)?;
         }
+        // An empty `PATH` is the one value here that fails silently: the guest spawns, resolves
+        // nothing, and reports a missing program rather than a missing environment.
+        if self.guest_session.user.is_empty() || self.guest_session.path.is_empty() {
+            return Err(LaunchError::InvalidSpec(
+                "guest session user and path are required",
+            ));
+        }
+        require_absolute_resolved(&self.guest_session.home)?;
+        require_absolute_resolved(&self.guest_session.shell)?;
         if self.socket_legs.api != self.runtime_paths.api_socket
             || self.socket_legs.console != self.runtime_paths.console_socket
         {
@@ -294,6 +356,7 @@ impl LaunchSpec {
                 return Err(LaunchError::InvalidSpec("duplicate share tag"));
             }
             require_absolute_resolved(&share.source)?;
+            require_absolute_resolved(&share.mount_point)?;
             require_exact_child(&share.socket, &self.runtime_paths.root)?;
             if !sockets.insert(&share.socket) {
                 return Err(LaunchError::InvalidSpec("duplicate socket path"));
@@ -395,6 +458,7 @@ pub mod tests {
             runtime_paths: RuntimePaths {
                 root: root.clone(),
                 launch_spec: child("launch.json"),
+                lock: child("lock"),
                 ready_socket: child("ready.sock"),
                 api_socket: child("api.sock"),
                 console_socket: child("console.sock"),
@@ -434,9 +498,16 @@ pub mod tests {
                 overflow_gid: 65534,
                 id_max: 4_294_967_294,
             },
+            guest_session: GuestSession {
+                user: "vivarium".into(),
+                home: "/home/vivarium".into(),
+                shell: "/nix/store/h/bin/bash".into(),
+                path: "/run/wrappers/bin:/run/current-system/sw/bin".into(),
+            },
             shares: vec![ShareSpec {
-                tag: "workspace".into(),
+                tag: WORKSPACE_SHARE_TAG.into(),
                 source,
+                mount_point: "/workspaces/vivarium".into(),
                 socket: child("workspace.sock"),
                 cache: "auto".into(),
                 read_only: false,

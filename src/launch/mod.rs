@@ -2,7 +2,9 @@
 
 mod command;
 mod console;
-mod control;
+// The guest control plane, which is both the supervisor's readiness handshake and the host end of
+// every `exec` and `shell` session (spec/12).
+pub mod control;
 mod credentials;
 mod error;
 mod policy;
@@ -18,9 +20,9 @@ pub use error::LaunchError;
 pub use policy::ConfinementProfile;
 pub use readiness::{ReadinessError, ReadinessReport, ReadinessStatus};
 pub use spec::{
-    BackendPrograms, BootMetadata, CredentialSpec, DescriptorBudget, IdentityTranslation,
-    LaunchSpec, ResourceSpec, RuntimePaths, ShareSpec, SocketLegs, VIRTIOFSD_RLIMIT_NOFILE,
-    VolumeSpec,
+    BACKEND, BackendPrograms, BootMetadata, CredentialSpec, DescriptorBudget, GuestSession,
+    IdentityTranslation, LAUNCH_SCHEMA_VERSION, LaunchSpec, ResourceSpec, RuntimePaths, ShareSpec,
+    SocketLegs, VIRTIOFSD_RLIMIT_NOFILE, VolumeSpec, WORKSPACE_SHARE_TAG,
 };
 pub use supervisor::{
     ChildExit, ChildKind, GuestReadiness, LaunchReady, ShutdownReason, Supervisor,

@@ -26,7 +26,7 @@ Each script also accepts `--clean`, which removes that lane's retained images, l
 $ tests/host/first-microvm-check
 ```
 
-No arguments. It resolves the flake from its own location, so it works from any working directory. Output is one `[PASS]` / `[FAIL]` / `[SKIP]` / `[RECORD]` line per check plus a verdict, and the whole run is meant to be pasted into a review.
+The sibling lanes below are invoked the same way and are listed with what each proves. No arguments. It resolves the flake from its own location, so it works from any working directory. Output is one `[PASS]` / `[FAIL]` / `[SKIP]` / `[RECORD]` line per check plus a verdict, and the whole run is meant to be pasted into a review.
 
 Artefacts are retained beside the diagnostic volume, under the drive when one is configured and under the state root otherwise: `console.log` (the raw guest console) and `memfd-series.txt` (the memory series described below). They are the reason to run it, so they outlive the run.
 
@@ -115,6 +115,20 @@ Three properties are worth knowing before reading a result from it.
 
 Retained diagnostics live under `${TMPDIR:-/tmp}/vivarium-agent-host-*` and are removed only by `--clean`, because a failure is meant to be readable afterwards. The trial's runtime directory and its sockets are the one part that does not live there: they sit under `${XDG_RUNTIME_DIR}/viv-agent-*`, because a Unix socket path cannot exceed 108 bytes and a drive-backed scratch root is long enough to overrun it — measured at 109 for `workspace.sock`, which fails the boot two seconds in with a message about a child exit rather than about a path. `--clean` removes both names.
 
+## The sibling script: `tests/host/exec-and-shell-check`
+
+Where `guest-agent-check` proves the guest half of the control plane, this one proves the host half — the two verbs a user actually types. Its host tier is the acceptance harness rather than a shell probe: three trials in `tests/user_workflows.rs` that boot a guest and then run commands in it.
+
+```console
+$ tests/host/exec-and-shell-check
+```
+
+Its evaluation tier is not a build check. It renders a launch specification through the launcher's own jq and reads back the three facts a session takes from it rather than from a host constant: where the workspace is mounted in the guest, where the per-target startup lock sits, and what environment the guest itself supplies to a process the agent spawns with a cleared environment. The launch contract check it builds first is what compares those against the guest's own `/etc/fstab` and `/etc/set-environment`; this tier confirms they survive the render.
+
+It runs the trials twice for the reason every lane here does, and this one has a case to point at: the first version of the interactive trial found a `viv shell` that completed every assertion and then never exited, because a read parked on a terminal that never reaches end-of-file held the async runtime open past its own shutdown. That is a session-lifetime defect, which is exactly the class a single clean run cannot rule out.
+
+Unlike the other heavy lanes it pins nothing itself, and that is not an omission. The acceptance harness pins all three of the generated flake's baseline inputs from this repository's own lock before it runs anything, and places its runtime directory and sockets under `$XDG_RUNTIME_DIR` rather than under the configured drive, for the 108-byte reason below. Both conventions are reached from inside the harness; a second copy in the script would be a second thing to keep true.
+
 ## The sibling script: `tests/host/guest-system-check`
 
 The one lane that needs no guest at all. It exists because nothing in the product builds a guest system: `viv config eval` reads the merged option surface and never forces `system.build.toplevel`, and no verb builds one until slice 012 boots. Without this script the claim that a shipped example manifest reaches a derivation would rest on somebody having run it by hand once.
@@ -133,6 +147,24 @@ The build tier is opt-in because it realises a complete NixOS closure and no fas
 ## Findings register
 
 Verified on a real host. Each entry names the version it applies to; nothing here is inferred from an agent's execution environment.
+
+### A session that finished its work and would not exit, and a launch contract that caught a PATH nobody had
+
+Measured 2026-08-12 on a real host with `/dev/kvm`, a systemd user manager, `$XDG_RUNTIME_DIR`, and `VIVARIUM_HEAVY_DRIVE` set. `tests/host/exec-and-shell-check` passes clean on both runs: `PASS=4 FAIL=0 SKIP=0`, with run wall clocks of 30s and 40s against a warm store. `profile.pre-push` runs 23 tests green on the same host with only the three trials later slices own subtracted.
+
+Three findings are worth keeping. Two were visible from nowhere except a real host; the third is a bound whose current value a repeated sweep did not move.
+
+`viv shell` completed every assertion of the interactive trial — raw mode entered, the size delivered before the guest process started, job control on, a resize forwarded, the terminal restored after a `SIGTERM` — and then did not exit. The async runtime waits for its blocking pool when it shuts down, and the host's standard input had a read parked on a terminal that never reaches end-of-file. The trial reported it as a run that timed out, which reads as a hang in the session and was a hang in process teardown after the session was over. The reader is now an ordinary detached thread, which the runtime does not wait for. Nothing about this is reachable through a pipe, which is why the trial needed a pty and why it needed to run twice.
+
+The supervisor's teardown sweep unlinked the per-target startup lock. `flock` binds to an inode rather than a name, so removing the file would not have released a holder's lock — it would have ended the mutual exclusion the name provides, leaving the next `viv` free to create a fresh `lock`, take an uncontended lock on a different inode, and enter the boot decision beside a process still rebuilding. The sweep reaches this from teardowns a lock holder itself triggers, `viv start --rebuild` among them, so the window is real rather than theoretical. The sweep now tolerates the name and removes it never; the directory goes when nothing remains. Retaining it then broke `viv stop`'s own post-condition, which counted a non-empty runtime directory as an incomplete teardown and failed every stop with `69` — a second-order defect that only a run of the stop trials surfaced.
+
+The guest session's `PATH` was wrong the first time it was rendered, and the launch contract said so before any guest ran. The launcher builds it from the guest's own `environment.profiles`, which NixOS spells with the shell placeholders `/etc/set-environment` leaves to the shell. Expanding `${XDG_STATE_HOME}` to its conventional value produced `/home/vivarium/.local/state/nix/profile/bin` where the guest's own script produces `/nix/profile/bin` — because a session started through the control socket has that variable unset, and the shell drops the segment. The check that caught it sources the guest's own script under the launcher's own `HOME` and `USER` and diffs the answer, which is the same two-artifacts-compared shape the volume labels use, applied to an environment instead of a filesystem.
+
+### The acceptance binary's concurrency bound held across a repeated sweep, and one contrary observation did not reproduce
+
+Measured 2026-08-12 on the same host. A review pass reported one run in four failing with guest-readiness timeouts under the `boot` group's declared width of two, against the launcher's fixed 30s readiness budget. Six consecutive full runs of the acceptance binary here — four of them back to back on an otherwise idle machine — produced the same result every time: 15 of 18, the same three trials waiting on later slices, and no readiness timeout at any point.
+
+The bound is therefore left where it is, and the observation is recorded rather than acted on. `max-threads = 2` is documented in `.config/nextest.toml` as provisional and revisable by a repeated sweep, which is exactly the instrument applied here. What the contrary observation most likely measured is host load: a machine also building something else has less to give a booting guest than an idle one, and the readiness budget is wall clock. That is a real cost on a busy CI runner, and the honest form of this entry is that six clean runs are evidence of possibility at this width, not proof that no host will ever miss the budget — the same rule this register applies to everything else.
 
 ### Pointing the lanes at a configured drive moved three latent defects into reach, and each one wore another subsystem's vocabulary
 

@@ -20,4 +20,4 @@ Treat a successfully started command as a guest-process result. Use the [exit-co
 
 ## Acceptance coverage
 
-Two gated trials in [`user_workflows.rs`](../../tests/user_workflows.rs) cover this: `workflow_06_exec_usage_surface` checks the usage errors that are answered before anything boots, and `workflow_06_exec_exit_code_propagation` checks ordinary statuses, signal termination, and the argument boundary in a running guest.
+Three trials in [`user_workflows.rs`](../../tests/user_workflows.rs) cover this: `workflow_06_exec_usage_surface` checks the usage errors that are answered before anything boots, `workflow_06_exec_exit_code_propagation` checks ordinary statuses, signal termination, and the argument boundary in a running guest, and `workflow_06_shell_interactive_session` drives `viv shell` under a real terminal for the parts only a terminal shows — the size the guest receives before the shell starts, job control, a window resize reaching the guest, and the host terminal restored after the session is signalled. [`../../tests/host/exec-and-shell-check`](../../tests/host/exec-and-shell-check) is the runbook that drives all three on a capable host.
