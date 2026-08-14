@@ -862,22 +862,42 @@ mod tests {
         Ok(())
     }
 
-    /// A written index reads back as the same assignments.
+    /// Pins the written file's text as the on-disk contract — the header, the row
+    /// shape, and document order — then proves the reader accepts that literal.
+    /// Only the two paths are interpolated, because the scratch root moves.
     #[test]
-    fn the_index_round_trips_through_its_own_file() -> Outcome {
+    fn the_index_file_carries_the_pinned_text_and_reads_back() -> Outcome {
         let scratch = ScratchDirectory::new()?;
         let state = scratch.path().join("state");
         let first = project(&scratch, "one")?;
         let second = project(&scratch, "two")?;
 
         super::write_index(&state, &index_of(&[("one", &first), ("two", &second)]))?;
+        let written = std::fs::read_to_string(identity_path(&state))?;
+        let pinned = format!(
+            concat!(
+                "# vivarium's identity index (spec/15). Tool-managed; not a supported interface.\n",
+                "# It records which project directory currently holds each assigned id, and ",
+                "nothing\n",
+                "# more — no timestamps, and no cached liveness, which must be read live.\n",
+                "\n[[identities]]\n",
+                "id = \"one\"\npath = \"{}\"\n",
+                "\n[[identities]]\n",
+                "id = \"two\"\npath = \"{}\"\n",
+            ),
+            first.display(),
+            second.display(),
+        );
+        assert_eq!(written, pinned);
+
         let reread = read_index(&state)?;
         assert_eq!(reread.path_of("one"), Some(first.as_path()));
         assert_eq!(reread.id_at(&second), Some("two"));
         Ok(())
     }
 
-    /// Pins lowercase, replacement, collapse, and both-end trimming in spec/15's order.
+    /// Pins lowercase, replacement, collapse, and both-end trimming in spec/15's
+    /// order, and the `project` fallback when sanitization leaves nothing usable.
     #[test]
     fn project_name_sanitization_follows_the_fixed_pipeline() {
         let rows = [
@@ -885,9 +905,11 @@ mod tests {
             ("Mixed name_value!", "mixed-name-value"),
             ("alpha___...beta", "alpha-beta"),
             ("---trim me---", "trim-me"),
+            ("", "project"),
+            ("___!!!", "project"),
         ];
         for (input, expected) in rows {
-            assert_eq!(sanitize_project_name(input), expected);
+            assert_eq!(sanitize_project_name(input), expected, "input {input:?}");
         }
     }
 
@@ -908,13 +930,6 @@ mod tests {
             sanitize_project_name(&format!("{shared_prefix}one")),
             sanitize_project_name(&format!("{shared_prefix}two"))
         );
-    }
-
-    /// Pins spec/15's fallback when sanitization produces no usable characters.
-    #[test]
-    fn project_name_sanitization_uses_project_for_empty_output() {
-        assert_eq!(sanitize_project_name(""), "project");
-        assert_eq!(sanitize_project_name("___!!!"), "project");
     }
 
     /// The pairing `is_project_id` claims: it accepts everything the minting path can produce.

@@ -453,17 +453,10 @@ fn removal_failure(path: &Path, source: &std::io::Error) -> Failure {
 mod tests {
     use super::*;
     use crate::config::volumes::{Composition, DeclaredVolume};
+    use crate::test_support::ScratchDirectory;
 
-    fn scratch() -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "vivarium-volume-rows-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        path
+    fn scratch() -> ScratchDirectory {
+        ScratchDirectory::new().unwrap()
     }
 
     fn image(directory: &Path, name: &str, bytes: u64) {
@@ -484,12 +477,12 @@ mod tests {
         // empty declaration set, and a third image nothing knows about. A predicate that tested
         // for "no layer declares it" without the arms would flag all three.
         let directory = scratch();
-        image(&directory, DEFAULT_VOLUME, 4096);
-        image(&directory, STORE_VOLUME, 4096);
-        image(&directory, "old", 4096);
+        image(directory.path(), DEFAULT_VOLUME, 4096);
+        image(directory.path(), STORE_VOLUME, 4096);
+        image(directory.path(), "old", 4096);
 
         let rows = enumerate(
-            &directory,
+            directory.path(),
             &record_with(Vec::new()),
             &config::Manifest::default(),
             "demo",
@@ -506,7 +499,6 @@ mod tests {
         let home = rows.iter().find(|row| row.name == DEFAULT_VOLUME).unwrap();
         assert_eq!(home.mount.as_deref(), Some(DEFAULT_VOLUME_MOUNT));
         assert_eq!(home.declared_by(), None);
-        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
@@ -521,14 +513,19 @@ mod tests {
             kind: "piece".to_owned(),
             size_gib: Some(20),
         }]);
-        let rows = enumerate(&directory, &record, &config::Manifest::default(), "demo").unwrap();
+        let rows = enumerate(
+            directory.path(),
+            &record,
+            &config::Manifest::default(),
+            "demo",
+        )
+        .unwrap();
 
         let cache = rows.iter().find(|row| row.name == "cache").unwrap();
         assert!(!cache.is_orphan());
         assert_eq!(cache.allocated_bytes, 0);
         assert_eq!(cache.declared_by(), Some("cache-piece"));
         assert_eq!(cache.virtual_bytes, Some(gib_to_bytes(20)));
-        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
@@ -546,7 +543,13 @@ mod tests {
             }],
             ..config::Manifest::default()
         };
-        let rows = enumerate(&directory, &record_with(Vec::new()), &manifest, "demo").unwrap();
+        let rows = enumerate(
+            directory.path(),
+            &record_with(Vec::new()),
+            &manifest,
+            "demo",
+        )
+        .unwrap();
 
         let cache = rows.iter().find(|row| row.name == "cache").unwrap();
         assert!(!cache.is_orphan());
@@ -556,7 +559,6 @@ mod tests {
         // And the reserved pair keeps its null, which is what the row above must not look like.
         let home = rows.iter().find(|row| row.name == DEFAULT_VOLUME).unwrap();
         assert_eq!(home.declared_by(), None);
-        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
@@ -564,9 +566,9 @@ mod tests {
         // The distinction ADR-0037 turns on: a 1 GiB hole costs nothing on disk, and reading
         // `len()` for both columns would report a project as using a gibibyte it has not touched.
         let directory = scratch();
-        image(&directory, DEFAULT_VOLUME, 1024 * 1024 * 1024);
+        image(directory.path(), DEFAULT_VOLUME, 1024 * 1024 * 1024);
         let rows = enumerate(
-            &directory,
+            directory.path(),
             &record_with(Vec::new()),
             &config::Manifest::default(),
             "demo",
@@ -580,7 +582,6 @@ mod tests {
             "a hole occupied {} bytes",
             home.allocated_bytes
         );
-        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

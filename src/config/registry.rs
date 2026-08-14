@@ -580,10 +580,11 @@ mod tests {
         );
         assert_eq!(registry.lookup(Path::new("/home/alice/absent")), None);
 
-        // The rendering a write publishes must be readable by the parse that reads it back, or a
-        // binding survives one process and not two.
-        let reparsed = parse(&registry.render(), Path::new("registry.toml"))?;
-        assert_eq!(reparsed, registry);
+        // The rendering a write publishes is pinned as the source text itself, not
+        // a reparse: the literal is the on-disk contract, and equality against it
+        // proves the reader accepts what the writer emits without the loop being
+        // self-referential.
+        assert_eq!(registry.render(), registry_source());
         Ok(())
     }
 

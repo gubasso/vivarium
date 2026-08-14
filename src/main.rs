@@ -26,6 +26,15 @@ use vivarium::launch::{
 use vivarium::protocol::SessionMode;
 
 /// How long the launcher waits for the supervisor to report on the handoff socket.
+///
+/// This is the launcher's own wait, not the guest's boot budget: the supervisor
+/// bounds each launch rung itself (`AGENT_STARTUP_TIMEOUT` and its siblings in
+/// `src/launch/supervisor.rs`) and reports failure through the readiness socket
+/// before its teardown unlinks it. Those budgets are deliberately strictly
+/// smaller than this one, with headroom for the report to cross — so the
+/// supervisor is always the party that reports, and this timeout's expiry keeps
+/// a distinct meaning: no report arrived at all, which points at the unit never
+/// running or the supervisor being killed, not at a slow guest.
 const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The process's own environment, as the resolver's injected source.
@@ -184,8 +193,12 @@ enum StartError {
     SubmitUnit(#[source] std::io::Error),
     #[error("the transient user service was rejected")]
     UnitRejected,
-    #[error("the supervisor did not report readiness within {}s", READINESS_TIMEOUT.as_secs())]
-    ReadinessTimeout,
+    #[error(
+        "no readiness report arrived within the launcher's {}s handoff wait; a failing launch \
+            reports promptly, so nothing reported at all — the unit may never have run",
+        READINESS_TIMEOUT.as_secs()
+    )]
+    HandoffTimeout,
     #[error("the readiness connection failed")]
     AcceptReadiness(#[source] std::io::Error),
     #[error("cannot read the readiness report")]
@@ -220,7 +233,7 @@ impl StartError {
             // machinery vivarium owns rather than of a channel it was using.
             Self::SubmitUnit(_)
             | Self::UnitRejected
-            | Self::ReadinessTimeout
+            | Self::HandoffTimeout
             | Self::InvalidReadiness(_)
             | Self::SupervisorFailed => ExitKind::Software,
         }
@@ -281,7 +294,7 @@ async fn handoff(spec_path: &Path) -> Result<(), StartError> {
 async fn await_readiness(listener: &UnixListener) -> Result<ReadinessReport, StartError> {
     let (mut stream, _) = tokio::time::timeout(READINESS_TIMEOUT, listener.accept())
         .await
-        .map_err(|_| StartError::ReadinessTimeout)?
+        .map_err(|_| StartError::HandoffTimeout)?
         .map_err(StartError::AcceptReadiness)?;
     let mut response = Vec::new();
     stream
@@ -341,7 +354,7 @@ mod tests {
             (StartError::ReadReadiness(io()), ExitKind::IoErr),
             (StartError::SubmitUnit(io()), ExitKind::Software),
             (StartError::UnitRejected, ExitKind::Software),
-            (StartError::ReadinessTimeout, ExitKind::Software),
+            (StartError::HandoffTimeout, ExitKind::Software),
             (
                 StartError::InvalidReadiness(ReadinessError::UnsupportedSchema(2)),
                 ExitKind::Software,

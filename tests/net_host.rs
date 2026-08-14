@@ -18,6 +18,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use libtest_mimic::{Arguments, Failed, Trial};
+
+#[path = "support/harness.rs"]
+mod harness;
 use tokio::process::{Child, Command};
 use vivarium::net::allowlist::{AllowEntry, Allowlist};
 use vivarium::net::resolver::{ServeConfig, serve};
@@ -31,12 +34,13 @@ const GATEWAY_CIDR: &str = "10.177.0.1/24";
 fn main() -> std::process::ExitCode {
     let args = Arguments::from_args();
     let decision = gate();
-    let require = std::env::var("VIVARIUM_TEST_REQUIRE").is_ok_and(|value| value == "1");
+    let require = harness::gate_required();
     let ignored = decision.is_err() && !require;
     if ignored && let Err(reason) = &decision {
         eprintln!("gated: net_host trials — {reason}");
     }
     let trials = vec![
+        Trial::test("net_host_self_check", self_check),
         gated_trial("netns_pair_is_distinct_and_joinable", ignored, |tools| {
             Box::pin(pair_is_distinct_and_joinable(tools))
         }),
@@ -81,19 +85,12 @@ struct Tools {
 /// unprivileged user+net pair actually creatable — which a container or a
 /// `kernel.unprivileged_userns_clone=0` host refuses.
 fn gate() -> Result<Tools, String> {
-    let find = |name: &str| -> Result<PathBuf, String> {
-        let path = std::env::var_os("PATH").ok_or_else(|| "PATH is unset".to_owned())?;
-        std::env::split_paths(&path)
-            .map(|dir| dir.join(name))
-            .find(|candidate| candidate.is_file())
-            .ok_or_else(|| format!("`{name}` is not on PATH"))
-    };
     let tools = Tools {
-        unshare: find("unshare")?,
-        nsenter: find("nsenter")?,
-        ip: find("ip")?,
-        nft: find("nft")?,
-        sleep: find("sleep")?,
+        unshare: harness::tool_on_path("unshare")?,
+        nsenter: harness::tool_on_path("nsenter")?,
+        ip: harness::tool_on_path("ip")?,
+        nft: harness::tool_on_path("nft")?,
+        sleep: harness::tool_on_path("sleep")?,
     };
     let probe = std::process::Command::new(&tools.unshare)
         .args(netns::create_pair_args(&netns::holder_program("true")))
@@ -107,6 +104,31 @@ fn gate() -> Result<Tools, String> {
         ));
     }
     Ok(tools)
+}
+
+/// Assertions that need no namespaces, so the lane is never entirely ignored.
+///
+/// nextest exits 4 when every trial matching a filter is ignored, and a binary
+/// whose every trial is gated reports a failure that means nothing on an
+/// ordinary developer host.
+fn self_check() -> Result<(), Failed> {
+    // An unmet gate must carry a reason a reader can act on — the difference
+    // between a skip that informs and one that hides.
+    if let Err(reason) = gate()
+        && reason.is_empty()
+    {
+        return Err(Failed::from("the gate gave no reason for not running"));
+    }
+    // The rendering the gated trials feed the real `nft` is constructible from
+    // this vantage too; the exact shape is the unit lane's golden.
+    let rendered = serde_json::to_value(nft::base_ruleset())
+        .map_err(|error| Failed::from(error.to_string()))?;
+    if rendered["nftables"][0]["add"]["table"]["name"] != serde_json::json!("vivarium") {
+        return Err(Failed::from(
+            "base_ruleset does not open the vivarium table",
+        ));
+    }
+    Ok(())
 }
 
 /// A running holder whose pair the trial works inside; killed on drop.

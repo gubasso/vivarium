@@ -165,39 +165,43 @@ mod tests {
         Allowlist::parse(&owned).unwrap()
     }
 
+    /// One table over spec/05's name grammar: exact entries match that name alone
+    /// (case- and trailing-dot-insensitive), `*.` spans exactly one label, `**.`
+    /// spans one or more, and a wildcard is a label suffix, never a substring —
+    /// `*.example.com` must not admit `evil-example.com`, which ends with the
+    /// suffix's characters but not with its labels.
     #[test]
-    fn exact_matches_that_name_alone() {
-        let allow = list(&["example.com"]);
-        assert!(allow.matches_name("example.com"));
-        assert!(allow.matches_name("EXAMPLE.COM"));
-        assert!(allow.matches_name("example.com."));
-        assert!(!allow.matches_name("api.example.com"));
-        assert!(!allow.matches_name("notexample.com"));
-    }
-
-    #[test]
-    fn one_label_wildcard_spans_exactly_one_label() {
-        let allow = list(&["*.example.com"]);
-        assert!(allow.matches_name("api.example.com"));
-        assert!(!allow.matches_name("example.com"));
-        assert!(!allow.matches_name("a.b.example.com"));
-    }
-
-    #[test]
-    fn many_labels_wildcard_spans_one_or_more() {
-        let allow = list(&["**.example.com"]);
-        assert!(allow.matches_name("api.example.com"));
-        assert!(allow.matches_name("a.b.example.com"));
-        assert!(!allow.matches_name("example.com"));
-    }
-
-    #[test]
-    fn wildcard_suffix_is_not_a_substring_match() {
-        // `*.example.com` must not admit `evil-example.com` or `x.badexample.com`,
-        // which end with the suffix's characters but not with its labels.
-        let allow = list(&["*.example.com", "**.example.org"]);
-        assert!(!allow.matches_name("evil-example.com"));
-        assert!(!allow.matches_name("x.badexample.org"));
+    fn name_matching_follows_the_pattern_grammar() {
+        let rows: &[(&[&str], &str, bool)] = &[
+            (&["example.com"], "example.com", true),
+            (&["example.com"], "EXAMPLE.COM", true),
+            (&["example.com"], "example.com.", true),
+            (&["example.com"], "api.example.com", false),
+            (&["example.com"], "notexample.com", false),
+            (&["*.example.com"], "api.example.com", true),
+            (&["*.example.com"], "example.com", false),
+            (&["*.example.com"], "a.b.example.com", false),
+            (&["**.example.com"], "api.example.com", true),
+            (&["**.example.com"], "a.b.example.com", true),
+            (&["**.example.com"], "example.com", false),
+            (
+                &["*.example.com", "**.example.org"],
+                "evil-example.com",
+                false,
+            ),
+            (
+                &["*.example.com", "**.example.org"],
+                "x.badexample.org",
+                false,
+            ),
+        ];
+        for (patterns, name, expected) in rows {
+            assert_eq!(
+                list(patterns).matches_name(name),
+                *expected,
+                "{patterns:?} vs {name:?}"
+            );
+        }
     }
 
     #[test]

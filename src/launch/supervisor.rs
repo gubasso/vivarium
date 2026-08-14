@@ -20,7 +20,36 @@ use tokio_util::sync::CancellationToken;
 
 const STARTUP_POLLS: usize = 400;
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the guest is given to boot to the point where its agent answers on
+/// the control socket — the rung a `viv start`'s wall clock is dominated by, and
+/// the one that expires under host pressure. Expiry surfaces in the journal as
+/// `timed out waiting for guest agent`.
+///
+/// 20s, and deliberately interim: it is sized as roughly 2.3x the ~8.5s
+/// end-to-end boot observed on the development host (2026-08-14), not from a
+/// per-rung distribution — the measurement that would settle it is Q-026 in
+/// `docs/plan/open-questions.md`. Its predecessor was 10s, a ~1.2x margin that
+/// a loaded host missed twice in one day. Two constraints bound it either way:
+/// it MUST stay strictly below the launcher's `READINESS_TIMEOUT` (30s,
+/// `src/main.rs`), with headroom for the failure report to cross the readiness
+/// socket, so the supervisor is always the party that reports and the
+/// launcher's own expiry keeps its distinct meaning (nothing reported at all);
+/// and widening it further is not the reflex repair for readiness flakes under
+/// load — `.config/nextest.toml`'s boot-width note records that pressure, which
+/// no budget repairs.
+const AGENT_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long the credential relay legs are given to come up: host-local socket
+/// work after the agent has already answered, so it shares no reason to grow
+/// with the boot budget above.
+const CREDENTIAL_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the namespace pair may take to appear in `/proc`: host-local
+/// process creation, milliseconds in practice — this is generous slack rather
+/// than a boot budget, and a pair this slow points at the host, not the guest.
+const NAMESPACE_PAIR_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// How long the guest is given to act on the ACPI power button before the VM is destroyed.
 ///
 /// Sized against the bound above it rather than against a measurement of one guest: `viv stop`
@@ -132,6 +161,11 @@ pub enum ShutdownReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LaunchReady {
     ProcessReady,
+    /// The launch failed before readiness. Sent before the shutdown ladder and
+    /// cleanup run, because cleanup unlinks the readiness socket — a report
+    /// attempted after it can never connect, and the launcher would spend its
+    /// whole handoff budget discovering nothing.
+    Failed,
 }
 
 pub trait GuestReadiness: Send + Sync {
@@ -175,8 +209,19 @@ impl Supervisor {
         mut self,
         ready: mpsc::Sender<LaunchReady>,
     ) -> Result<ShutdownReason, LaunchError> {
-        self.prepare_runtime().await?;
+        if let Err(error) = self.prepare_runtime().await {
+            let _ = ready.send(LaunchReady::Failed).await;
+            return Err(error);
+        }
         if let Err(error) = self.run_inner(&ready).await {
+            // Failure is reported before the ladder, not after: `cleanup` unlinks
+            // the readiness socket, and the receiver is already parked on this
+            // channel, so the report crosses while the ladder (child shutdown,
+            // then cleanup) is still spending its own budget. `let _` because a
+            // departed receiver must not turn a launch failure into a different
+            // failure. The `monitor` arm below deliberately sends nothing —
+            // readiness was already reported by then.
+            let _ = ready.send(LaunchReady::Failed).await;
             self.cancellation.cancel();
             let _ = self.shutdown_children().await;
             let cleanup = self.cleanup().await;
@@ -254,14 +299,14 @@ impl Supervisor {
         crate::launch::control::wait_for_agent(
             &self.spec.runtime_paths.control_socket,
             &metadata,
-            STARTUP_TIMEOUT,
+            AGENT_STARTUP_TIMEOUT,
         )
         .await?;
         let credential_tasks = crate::launch::credentials::start(
             self.spec.runtime_paths.control_socket.clone(),
             &self.spec.socket_legs.credentials,
             self.cancellation.clone(),
-            STARTUP_TIMEOUT,
+            CREDENTIAL_STARTUP_TIMEOUT,
         )
         .await?;
         for task in credential_tasks {
@@ -296,7 +341,7 @@ impl Supervisor {
     ) -> Result<CommandSpec, LaunchError> {
         self.spawn_child(ChildKind::NetnsHolder, holder)?;
         let holder_pid = self.child_pid(&ChildKind::NetnsHolder)?;
-        crate::net::netns::await_pair(holder_pid, STARTUP_TIMEOUT)
+        crate::net::netns::await_pair(holder_pid, NAMESPACE_PAIR_TIMEOUT)
             .await
             .map_err(|_| LaunchError::Readiness("namespace pair"))?;
         let plan = {
@@ -932,14 +977,8 @@ mod tests {
         // landed, and nothing exercised this loop at any length — `tests/launch_supervision.rs`
         // builds its specification with `volumes: vec![]`. So "already generic over N volumes"
         // was a reading of the code rather than an observation of it.
-        let root = std::env::temp_dir().join(format!(
-            "vivarium-provision-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let scratch = crate::test_support::ScratchDirectory::new().unwrap();
+        let root = scratch.path().to_path_buf();
         let log = root.join("argv.log");
         let truncate = root.join("truncate");
         let mkfs = root.join("mkfs.ext4");
@@ -1021,7 +1060,5 @@ mod tests {
                 "{name} left staging residue"
             );
         }
-
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

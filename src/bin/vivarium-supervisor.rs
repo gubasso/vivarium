@@ -147,15 +147,25 @@ async fn run(spec_path: &Path, ready_path: &Path) -> Result<(), SupervisorError>
         Some(LaunchReady::ProcessReady) => {
             send_ready(ready_path, ReadinessReport::process_ready()).await?;
         }
+        Some(LaunchReady::Failed) => {
+            // The supervisor sends `Failed` before its teardown unlinks the
+            // readiness socket, so this report is what spares the launcher its
+            // full handoff wait. Best-effort, because the journal and the exit
+            // code below carry the real cause either way.
+            let _ = send_ready(ready_path, ReadinessReport::failed()).await;
+            return Err(join(task)
+                .await
+                .err()
+                .unwrap_or(SupervisorError::ReadinessNotReported));
+        }
         None => {
-            // Not `?`: a supervision failure early enough to run cleanup takes the runtime
-            // directory with it, and the readiness socket lives there, so reporting is very
-            // often impossible on exactly the path where the cause matters most. Failing
-            // here first would replace that cause with the fact that the socket was gone,
-            // leaving the launcher's readiness timeout as the only account of the run.
+            // The channel dropping without a report is the unexpected shape now
+            // that both outcomes send one; reporting is attempted anyway, and
+            // best-effort, because the runtime directory — where the readiness
+            // socket lives — may already be gone on this path. The task's own
+            // error is the real account; wait for it rather than reporting the
+            // empty channel, which is only the symptom.
             let reported = send_ready(ready_path, ReadinessReport::failed()).await;
-            // The task's own error is the real account of what went wrong; wait for it rather
-            // than reporting the empty channel, which is only the symptom.
             return Err(join(task)
                 .await
                 .err()

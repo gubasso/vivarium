@@ -408,32 +408,122 @@ mod tests {
         response.to_vec().unwrap()
     }
 
+    /// One table over `gate_query`'s (record type, allowlist verdict, v6
+    /// withholding, upstream answer) domain. A denied name is REFUSED and never
+    /// forwarded; denial outranks family withholding, because REFUSED is the
+    /// policy signal an empty answer would hide; a permitted AAAA is withheld as
+    /// NoError-with-no-records where the host has no IPv6 path — never REFUSED,
+    /// which means policy; and both families program the filter through the same
+    /// install call (spec/05).
     #[tokio::test]
-    async fn a_denied_name_is_refused_and_never_forwarded() {
-        let forwarded = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&forwarded);
-        let mut programmer = Recording::new(false);
-        let reply = gate_query(
-            &query_bytes("blocked.example.", 7),
-            |_| false,
-            false,
-            move |_bytes: Vec<u8>| {
-                counter.fetch_add(1, Ordering::SeqCst);
-                async move { Ok(Vec::new()) }
+    #[allow(clippy::too_many_lines)]
+    async fn gating_follows_type_allowlist_and_withholding() {
+        struct Row {
+            case: &'static str,
+            record_type: RecordType,
+            allow: bool,
+            withhold_v6: bool,
+            answers_upstream: bool,
+            rcode: ResponseCode,
+            forwarded: usize,
+            batches_installed: usize,
+        }
+        let v6: IpAddr = "2001:db8::7".parse().unwrap();
+        let rows = [
+            Row {
+                case: "a denied A name is refused and never forwarded",
+                record_type: RecordType::A,
+                allow: false,
+                withhold_v6: false,
+                answers_upstream: false,
+                rcode: ResponseCode::Refused,
+                forwarded: 0,
+                batches_installed: 0,
             },
-            &mut programmer,
-        )
-        .await
-        .unwrap();
-        let parsed = Message::from_vec(&reply).unwrap();
-        assert_eq!(parsed.metadata.response_code, ResponseCode::Refused);
-        assert_eq!(parsed.metadata.id, 7);
-        assert_eq!(
-            forwarded.load(Ordering::SeqCst),
-            0,
-            "the denied name leaked upstream"
-        );
-        assert!(programmer.installed.is_empty());
+            Row {
+                case: "a permitted AAAA is withheld empty without an IPv6 path",
+                record_type: RecordType::AAAA,
+                allow: true,
+                withhold_v6: true,
+                answers_upstream: false,
+                rcode: ResponseCode::NoError,
+                forwarded: 0,
+                batches_installed: 0,
+            },
+            Row {
+                case: "a denied AAAA is refused even while withholding",
+                record_type: RecordType::AAAA,
+                allow: false,
+                withhold_v6: true,
+                answers_upstream: false,
+                rcode: ResponseCode::Refused,
+                forwarded: 0,
+                batches_installed: 0,
+            },
+            Row {
+                case: "an AAAA answer installs the v6 family identically",
+                record_type: RecordType::AAAA,
+                allow: true,
+                withhold_v6: false,
+                answers_upstream: true,
+                rcode: ResponseCode::NoError,
+                forwarded: 1,
+                batches_installed: 1,
+            },
+        ];
+        for (index, row) in rows.iter().enumerate() {
+            let id = 40 + u16::try_from(index).unwrap();
+            let forwarded = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&forwarded);
+            let mut programmer = Recording::new(false);
+            let upstream = row
+                .answers_upstream
+                .then(|| answer_bytes("api.example.com.", id, &[(v6, 120)]));
+            let allow = row.allow;
+            let reply = gate_query(
+                &typed_query_bytes("api.example.com.", id, row.record_type),
+                |_| allow,
+                row.withhold_v6,
+                move |_bytes: Vec<u8>| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let response = upstream.unwrap_or_default();
+                    async move { Ok(response) }
+                },
+                &mut programmer,
+            )
+            .await
+            .unwrap();
+            let parsed = Message::from_vec(&reply).unwrap();
+            assert_eq!(parsed.metadata.response_code, row.rcode, "{}", row.case);
+            assert_eq!(parsed.metadata.id, id, "{}", row.case);
+            assert_eq!(
+                forwarded.load(Ordering::SeqCst),
+                row.forwarded,
+                "{}",
+                row.case
+            );
+            assert_eq!(
+                programmer.installed.len(),
+                row.batches_installed,
+                "{}",
+                row.case
+            );
+            if row.batches_installed > 0 {
+                assert_eq!(
+                    programmer.installed,
+                    vec![vec![TimedAddress {
+                        addr: v6,
+                        ttl_seconds: 120,
+                    }]],
+                    "{}",
+                    row.case
+                );
+            }
+            if row.rcode == ResponseCode::NoError && row.forwarded == 0 {
+                // Withheld means NoError with no records.
+                assert!(parsed.answers.is_empty(), "{}", row.case);
+            }
+        }
     }
 
     #[tokio::test]
@@ -604,76 +694,6 @@ mod tests {
         assert!(
             programmer.installed.is_empty(),
             "an errored answer must not program the filter"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_permitted_aaaa_is_withheld_empty_when_the_host_has_no_ipv6_path() {
-        // spec/05: where the host has no working IPv6 path, the resolver withholds
-        // AAAA rather than releasing addresses the guest cannot reach. Withheld
-        // means NoError with no records — never REFUSED, which means policy.
-        let forwarded = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&forwarded);
-        let mut programmer = Recording::new(false);
-        let reply = gate_query(
-            &typed_query_bytes("api.example.com.", 23, RecordType::AAAA),
-            |_| true,
-            true,
-            move |_bytes: Vec<u8>| {
-                counter.fetch_add(1, Ordering::SeqCst);
-                async move { Ok(Vec::new()) }
-            },
-            &mut programmer,
-        )
-        .await
-        .unwrap();
-        let parsed = Message::from_vec(&reply).unwrap();
-        assert_eq!(parsed.metadata.response_code, ResponseCode::NoError);
-        assert!(parsed.answers.is_empty());
-        assert_eq!(forwarded.load(Ordering::SeqCst), 0);
-        assert!(programmer.installed.is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_denied_aaaa_is_refused_even_while_withholding() {
-        // Denial outranks family withholding: REFUSED is the policy signal and an
-        // empty answer would hide it.
-        let mut programmer = Recording::new(false);
-        let reply = gate_query(
-            &typed_query_bytes("blocked.example.", 24, RecordType::AAAA),
-            |_| false,
-            true,
-            move |_bytes: Vec<u8>| async move { Ok(Vec::new()) },
-            &mut programmer,
-        )
-        .await
-        .unwrap();
-        let parsed = Message::from_vec(&reply).unwrap();
-        assert_eq!(parsed.metadata.response_code, ResponseCode::Refused);
-    }
-
-    #[tokio::test]
-    async fn an_aaaa_answer_installs_the_v6_family_identically() {
-        // IPv6 parity (spec/05): both families are programmed from the same
-        // answers, through the same install call.
-        let v6: IpAddr = "2001:db8::7".parse().unwrap();
-        let upstream = answer_bytes("api.example.com.", 25, &[(v6, 120)]);
-        let mut programmer = Recording::new(false);
-        gate_query(
-            &typed_query_bytes("api.example.com.", 25, RecordType::AAAA),
-            |_| true,
-            false,
-            move |_bytes: Vec<u8>| async move { Ok(upstream) },
-            &mut programmer,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            programmer.installed,
-            vec![vec![TimedAddress {
-                addr: v6,
-                ttl_seconds: 120,
-            }]]
         );
     }
 

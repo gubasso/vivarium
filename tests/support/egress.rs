@@ -21,6 +21,8 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use super::harness::wait_until;
+
 /// The name the allowlist admits; the stub upstream answers it with [`ALLOWED_ADDR`].
 pub const ALLOWED_NAME: &str = "allowed.test";
 /// Allowlisted, but the stub upstream answers `NXDOMAIN`: the leg that proves the
@@ -212,7 +214,7 @@ fn claim_resolver_socket() -> std::process::ExitCode {
 ///
 /// Returns the observation that contradicted absence.
 pub fn expect_open_mode_absence(vm_pid: u32) -> Result<(), String> {
-    let tables = enter_pair(vm_pid, &[tool("nft")?, "list".into(), "tables".into()])
+    let tables = enter_pair(vm_pid, &[tool("nft")?, "list".into(), "tables".into()])?
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("listing tables in the pair: {error}"))?;
@@ -382,7 +384,7 @@ impl EgressFixture {
     }
 
     fn spawn_in_pair(&mut self, program: &[String]) -> Result<u32, String> {
-        let child = enter_pair(self.vm_pid, program)
+        let child = enter_pair(self.vm_pid, program)?
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -439,7 +441,7 @@ fn probe(vm_pid: u32, server: &str, name: &str) -> Result<String, String> {
             server.into(),
             format!("{name}."),
         ],
-    )
+    )?
     .stdin(Stdio::null())
     .output()
     .map_err(|error| format!("running the probe: {error}"))?;
@@ -456,24 +458,19 @@ fn probe(vm_pid: u32, server: &str, name: &str) -> Result<String, String> {
         .ok_or_else(|| "probe printed no rcode".to_owned())
 }
 
-/// `nsenter` joining the pair by the VMM's pid — the same flag shape the
-/// supervisor renders, resolved from `PATH` because the trial runs in the dev
-/// shell rather than from a launch specification.
-fn enter_pair(vm_pid: u32, program: &[String]) -> Command {
-    let mut command = Command::new(tool("nsenter").unwrap_or_else(|_| "nsenter".into()));
-    command.args([
-        "--preserve-credentials",
-        "--user",
-        "--net",
-        "--target",
-        &vm_pid.to_string(),
-    ]);
-    command.args(program);
-    command
+/// `nsenter` joining the pair by the VMM's pid — the argv the supervisor
+/// renders, taken from the product (`netns::enter_pair_args`) so a flag change
+/// there is what this fixture verifies rather than a copy that drifts. Only the
+/// binary is resolved from `PATH`, because the trial runs in the dev shell
+/// rather than from a launch specification.
+fn enter_pair(vm_pid: u32, program: &[String]) -> Result<Command, String> {
+    let mut command = Command::new(super::harness::tool_on_path("nsenter")?);
+    command.args(vivarium::net::netns::enter_pair_args(vm_pid, program));
+    Ok(command)
 }
 
 fn run_in_pair(vm_pid: u32, program: &[String]) -> Result<(), String> {
-    run_ok(enter_pair(vm_pid, program), program)
+    run_ok(enter_pair(vm_pid, program)?, program)
 }
 
 /// Run inside the nested endpoint namespace: the pair's user namespace (which owns
@@ -517,26 +514,11 @@ fn nested_namespace_ready(vm_pid: u32, endpoint_pid: u32) -> bool {
     endpoint != pair && endpoint != own
 }
 
-fn wait_until(mut condition: impl FnMut() -> bool, what: &str) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if condition() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    Err(what.to_owned())
-}
-
 fn ip() -> Result<String, String> {
     tool("ip")
 }
 
+/// `harness::tool_on_path`, as the `String` this fixture's argv vectors carry.
 fn tool(name: &str) -> Result<String, String> {
-    let path = std::env::var_os("PATH").ok_or_else(|| "PATH is unset".to_owned())?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-        .map(|found| found.display().to_string())
-        .ok_or_else(|| format!("`{name}` is not on PATH; the fixture needs the dev shell"))
+    super::harness::tool_on_path(name).map(|found| found.display().to_string())
 }

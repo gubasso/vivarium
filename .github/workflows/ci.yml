@@ -1,9 +1,16 @@
-# CI workflow — lint, test, build.
+# CI workflow — lint, test, build, hooks.
 # Every job reuses the project's Nix devshell (flake.nix) so CI runs the exact
 # toolchain pinned in rust-toolchain.toml, the same one local development uses.
 # Jobs invoke the justfile recipes through the devshell
 # (`nix develop --command just <recipe>`) so CI and local runs share one
 # definition of each task — the recipes themselves already wrap `cargo`.
+#
+# The hooks job runs the same pre-commit set the git hooks gate locally, so a
+# contributor without hooks installed cannot pass CI without them. The
+# autofixing hooks are what make it a real gate here: pre-commit fails with
+# "files were modified by this hook", which is exactly the failure such a
+# contributor should see. Its `fetch-depth: 0` is load-bearing for gitleaks —
+# a shallow clone would let it pass over history it never fetched.
 name: ci
 
 on:
@@ -55,3 +62,41 @@ jobs:
         uses: DeterminateSystems/flakehub-cache-action@v3.21.5
       - name: Build
         run: nix develop --command just build
+
+  hooks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Cache Nix store
+        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
+      - name: Cache pre-commit environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: Hooks
+        run: nix develop --command just hooks
+      - name: Commit messages
+        # The commit-msg stage is the one installed hook type `pre-commit run
+        # --all-files` cannot replay — it lints a message, not files — so the
+        # `committed` gate gets its own lane over the commits each event
+        # proposes, with the same leniency flags the local hook carries. A
+        # pull request anchors at its base branch; a push anchors at the
+        # ref's previous tip (`github.event.before`), which is all zeros only
+        # while the ref is being created — that one push has no anchor and is
+        # skipped by name rather than guessed at. The anchor crosses as an
+        # environment variable rather than by interpolation so a ref name is
+        # data, not script.
+        env:
+          RANGE_START: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: |
+          if [ "$RANGE_START" = "0000000000000000000000000000000000000000" ]; then
+            echo "ref creation carries no previous tip to anchor a message range; skipping"
+            exit 0
+          fi
+          nix develop --command committed --fixup --wip "${RANGE_START}..HEAD"

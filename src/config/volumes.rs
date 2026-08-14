@@ -532,8 +532,11 @@ mod tests {
         }
     }
 
+    /// Pins the rendered text as the on-disk contract, then proves the reader
+    /// accepts that literal — rather than a render-parse loop, which would hold
+    /// even if writer and reader drifted from the format together.
     #[test]
-    fn a_record_round_trips_through_its_own_renderer() {
+    fn a_record_renders_the_pinned_text_and_the_parser_accepts_it() {
         let record = Record {
             composition: Composition {
                 image: "rust".to_owned(),
@@ -546,12 +549,24 @@ mod tests {
                 volume
             }],
         };
-        assert_eq!(
-            parse(&render(&record), Path::new("/v")).unwrap(),
-            record,
-            "{}",
-            render(&record)
+        let pinned = concat!(
+            "image = \"rust\"\n",
+            "pieces = [ \"git\", \"ssh-agent\" ]\n",
+            "extends = \"./module.nix\"\n",
+            "\n[[volumes]]\n",
+            "name = \"cache\"\n",
+            "mount = \"/mnt/cache\"\n",
+            "declared_by = \"some-layer\"\n",
+            "kind = \"piece\"\n",
+            "size_gib = 20\n",
+            "\n[[volumes]]\n",
+            "name = \"build\"\n",
+            "mount = \"/mnt/build\"\n",
+            "declared_by = \"some-layer\"\n",
+            "kind = \"manifest\"\n",
         );
+        assert_eq!(render(&record), pinned);
+        assert_eq!(parse(pinned, Path::new("/v")).unwrap(), record);
     }
 
     #[test]
@@ -592,13 +607,8 @@ mod tests {
 
     #[test]
     fn a_project_that_never_started_has_no_record_and_that_is_not_an_error() {
-        let root = std::env::temp_dir().join(format!(
-            "vivarium-volumes-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let scratch = crate::test_support::ScratchDirectory::new().unwrap();
+        let root = scratch.path().join("never-started");
         assert_eq!(read(&root, "p", "default").unwrap(), Record::default());
 
         let record = Record {
@@ -611,6 +621,5 @@ mod tests {
         };
         write(&root, "p", "default", &record).unwrap();
         assert_eq!(read(&root, "p", "default").unwrap(), record);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

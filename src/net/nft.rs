@@ -460,67 +460,89 @@ mod tests {
     // rendering that drifts from them is a rendering `nft` has not accepted. The
     // ct-state and l4proto guards and the interval literal sets joined later; the
     // gated `net_host` trial applies the whole rendering through the real `nft`.
+    //
+    // Whole-value goldens rather than index-addressed spot checks, because a
+    // spot check cannot notice an inserted or reordered object. The pinned text
+    // necessarily encodes some of the `nftables` crate's serialization (field
+    // order, `null` optionals), so a crate upgrade that moves the rendering
+    // fails these on purpose: the new bytes are what `nft` will be fed, and
+    // accepting the diff is a decision, not a re-record.
+
+    fn tcp_daddr_accept(protocol: &str, set: &str) -> serde_json::Value {
+        json!({"add": {"rule": {
+            "family": "inet", "table": "vivarium", "chain": "egress",
+            "expr": [
+                {"match": {
+                    "left": {"meta": {"key": "l4proto"}},
+                    "right": "tcp", "op": "=="
+                }},
+                {"match": {
+                    "left": {"payload": {"protocol": protocol, "field": "daddr"}},
+                    "right": set, "op": "=="
+                }},
+                {"accept": null}
+            ]
+        }}})
+    }
 
     #[test]
     fn base_ruleset_renders_the_spike_accepted_shape() {
         let rendered = serde_json::to_value(base_ruleset()).unwrap();
-        let objects = rendered.get("nftables").unwrap().as_array().unwrap();
         assert_eq!(
-            objects[0],
-            json!({"add": {"table": {"family": "inet", "name": "vivarium"}}})
-        );
-        assert_eq!(
-            objects[1],
-            json!({"add": {"set": {
-                "family": "inet", "table": "vivarium", "name": "allow4",
-                "type": "ipv4_addr", "flags": ["timeout"]
-            }}})
-        );
-        assert_eq!(
-            objects[3],
-            json!({"add": {"set": {
-                "family": "inet", "table": "vivarium", "name": "allow4net",
-                "type": "ipv4_addr", "flags": ["interval"]
-            }}})
-        );
-        assert_eq!(
-            objects[5],
-            json!({"add": {"chain": {
-                "family": "inet", "table": "vivarium", "name": "egress",
-                "type": "filter", "hook": "forward", "prio": 0, "policy": "drop"
-            }}})
-        );
-        assert_eq!(
-            objects[6]["add"]["rule"]["expr"][0],
-            json!({"match": {
-                "left": {"ct": {"key": "state"}},
-                "right": ["established", "related"], "op": "in"
-            }})
-        );
-        let allow4_rule = &objects[7]["add"]["rule"]["expr"];
-        assert_eq!(
-            allow4_rule[0]["match"]["left"],
-            json!({"meta": {"key": "l4proto"}})
-        );
-        assert_eq!(allow4_rule[0]["match"]["right"], json!("tcp"));
-        assert_eq!(allow4_rule[1]["match"]["right"], json!("@allow4"));
-        let allow6_rule = &objects[8]["add"]["rule"]["expr"];
-        assert_eq!(allow6_rule[0]["match"]["right"], json!("tcp"));
-        assert_eq!(allow6_rule[1]["match"]["right"], json!("@allow6"));
-        let allow4net_rule = &objects[9]["add"]["rule"]["expr"];
-        assert_eq!(allow4net_rule[0]["match"]["right"], json!("tcp"));
-        assert_eq!(allow4net_rule[1]["match"]["right"], json!("@allow4net"));
-        let allow6net_rule = &objects[10]["add"]["rule"]["expr"];
-        assert_eq!(allow6net_rule[1]["match"]["right"], json!("@allow6net"));
-        let tcp_reject = &objects[11]["add"]["rule"]["expr"];
-        assert_eq!(
-            tcp_reject[0]["match"]["left"],
-            json!({"meta": {"key": "l4proto"}})
-        );
-        assert_eq!(tcp_reject[1], json!({"reject": {"type": "tcp reset"}}));
-        assert_eq!(
-            objects[12]["add"]["rule"]["expr"][0],
-            json!({"reject": {"type": "icmpx", "expr": "admin-prohibited"}})
+            rendered,
+            json!({"nftables": [
+                {"add": {"table": {"family": "inet", "name": "vivarium"}}},
+                {"add": {"set": {
+                    "family": "inet", "table": "vivarium", "name": "allow4",
+                    "type": "ipv4_addr", "flags": ["timeout"]
+                }}},
+                {"add": {"set": {
+                    "family": "inet", "table": "vivarium", "name": "allow6",
+                    "type": "ipv6_addr", "flags": ["timeout"]
+                }}},
+                {"add": {"set": {
+                    "family": "inet", "table": "vivarium", "name": "allow4net",
+                    "type": "ipv4_addr", "flags": ["interval"]
+                }}},
+                {"add": {"set": {
+                    "family": "inet", "table": "vivarium", "name": "allow6net",
+                    "type": "ipv6_addr", "flags": ["interval"]
+                }}},
+                {"add": {"chain": {
+                    "family": "inet", "table": "vivarium", "name": "egress",
+                    "type": "filter", "hook": "forward", "prio": 0, "policy": "drop"
+                }}},
+                {"add": {"rule": {
+                    "family": "inet", "table": "vivarium", "chain": "egress",
+                    "expr": [
+                        {"match": {
+                            "left": {"ct": {"key": "state"}},
+                            "right": ["established", "related"], "op": "in"
+                        }},
+                        {"accept": null}
+                    ]
+                }}},
+                tcp_daddr_accept("ip", "@allow4"),
+                tcp_daddr_accept("ip6", "@allow6"),
+                tcp_daddr_accept("ip", "@allow4net"),
+                tcp_daddr_accept("ip6", "@allow6net"),
+                {"add": {"rule": {
+                    "family": "inet", "table": "vivarium", "chain": "egress",
+                    "expr": [
+                        {"match": {
+                            "left": {"meta": {"key": "l4proto"}},
+                            "right": "tcp", "op": "=="
+                        }},
+                        {"reject": {"type": "tcp reset"}}
+                    ]
+                }}},
+                {"add": {"rule": {
+                    "family": "inet", "table": "vivarium", "chain": "egress",
+                    "expr": [
+                        {"reject": {"type": "icmpx", "expr": "admin-prohibited"}}
+                    ]
+                }}}
+            ]})
         );
     }
 
@@ -534,44 +556,25 @@ mod tests {
         ];
         let refs: Vec<&AllowEntry> = entries.iter().collect();
         let rendered = serde_json::to_value(literal_elements(&refs)).unwrap();
-        let objects = rendered.get("nftables").unwrap().as_array().unwrap();
-        // The name entry contributes nothing: its addresses arrive per answer.
-        assert_eq!(objects.len(), 3);
+        // Three objects from four entries: the name entry contributes nothing,
+        // because its addresses arrive per released answer.
         assert_eq!(
-            objects[0],
-            json!({"add": {"element": {
-                "family": "inet", "table": "vivarium", "name": "allow4net",
-                "elem": ["192.0.2.10"]
-            }}})
+            rendered,
+            json!({"nftables": [
+                {"add": {"element": {
+                    "family": "inet", "table": "vivarium", "name": "allow4net",
+                    "elem": ["192.0.2.10"]
+                }}},
+                {"add": {"element": {
+                    "family": "inet", "table": "vivarium", "name": "allow4net",
+                    "elem": [{"prefix": {"addr": "198.51.100.0", "len": 24}}]
+                }}},
+                {"add": {"element": {
+                    "family": "inet", "table": "vivarium", "name": "allow6net",
+                    "elem": [{"prefix": {"addr": "2001:db8::", "len": 32}}]
+                }}}
+            ]})
         );
-        assert_eq!(
-            objects[1]["add"]["element"]["elem"],
-            json!([{"prefix": {"addr": "198.51.100.0", "len": 24}}])
-        );
-        assert_eq!(objects[2]["add"]["element"]["name"], json!("allow6net"));
-        assert_eq!(
-            objects[2]["add"]["element"]["elem"],
-            json!([{"prefix": {"addr": "2001:db8::", "len": 32}}])
-        );
-    }
-
-    #[test]
-    fn a_batch_installs_each_address_into_its_family_set() {
-        let batch = timed_elements(&[
-            TimedAddress {
-                addr: "192.0.2.10".parse().unwrap(),
-                ttl_seconds: 300,
-            },
-            TimedAddress {
-                addr: "2001:db8::1".parse().unwrap(),
-                ttl_seconds: 60,
-            },
-        ]);
-        let rendered = serde_json::to_value(batch).unwrap();
-        let objects = rendered.get("nftables").unwrap().as_array().unwrap();
-        assert_eq!(objects.len(), 2);
-        assert_eq!(objects[0]["add"]["element"]["name"], json!("allow4"));
-        assert_eq!(objects[1]["add"]["element"]["name"], json!("allow6"));
     }
 
     #[tokio::test]
@@ -581,9 +584,8 @@ mod tests {
         // same either way; the pinned `nft` itself meets the rendering in the gated
         // host trial.
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = std::env::temp_dir().join(format!("viv-nft-runner-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let accepting = dir.join("accepts");
+        let scratch = crate::test_support::ScratchDirectory::new().unwrap();
+        let accepting = scratch.path().join("accepts");
         std::fs::write(&accepting, "#!/bin/sh\ncat >/dev/null\nexit 0\n").unwrap();
         std::fs::set_permissions(&accepting, std::fs::Permissions::from_mode(0o755)).unwrap();
         let payload = timed_element("192.0.2.1".parse().unwrap(), 5);
@@ -591,7 +593,7 @@ mod tests {
         let accepts = NftRunner::direct(&accepting);
         assert!(accepts.apply(&payload).await.is_ok());
 
-        let rejecting = dir.join("rejects");
+        let rejecting = scratch.path().join("rejects");
         std::fs::write(&rejecting, "#!/bin/sh\ncat >/dev/null\nexit 1\n").unwrap();
         std::fs::set_permissions(&rejecting, std::fs::Permissions::from_mode(0o755)).unwrap();
         let rejects = NftRunner::direct(&rejecting);
@@ -605,31 +607,51 @@ mod tests {
             missing.apply(&payload).await,
             Err(NftApplyError::Spawn { .. })
         ));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn the_programmer_treats_an_empty_answer_as_installed() {
         // A NoError answer with no A or AAAA records has nothing to enforce; the
-        // release must not hang on a process that was never needed.
+        // release must not hang on a process that was never needed. The runner
+        // points at a path that cannot spawn, so `Ok` is reachable only if no
+        // process was started at all — which is the claim.
         let mut programmer = NftProgrammer::new(NftRunner::direct("/nonexistent/nft"));
-        assert!(programmer.install(&[]).await.is_ok());
+        assert!(
+            programmer.install(&[]).await.is_ok(),
+            "an empty batch spawned (or tried to spawn) an nft process"
+        );
     }
 
     #[test]
-    fn timed_element_targets_the_family_set_with_the_ttl() {
-        let v4 = serde_json::to_value(timed_element("192.0.2.10".parse().unwrap(), 300)).unwrap();
+    fn timed_elements_target_each_family_set_with_the_ttl() {
+        let batch = timed_elements(&[
+            TimedAddress {
+                addr: "192.0.2.10".parse().unwrap(),
+                ttl_seconds: 300,
+            },
+            TimedAddress {
+                addr: "2001:db8::1".parse().unwrap(),
+                ttl_seconds: 60,
+            },
+        ]);
         assert_eq!(
-            v4["nftables"][0],
-            json!({"add": {"element": {
-                "family": "inet", "table": "vivarium", "name": "allow4",
-                "elem": [{"elem": {
-                    "val": "192.0.2.10", "timeout": 300,
-                    "expires": null, "comment": null, "counter": null
-                }}]
-            }}})
+            serde_json::to_value(batch).unwrap(),
+            json!({"nftables": [
+                {"add": {"element": {
+                    "family": "inet", "table": "vivarium", "name": "allow4",
+                    "elem": [{"elem": {
+                        "val": "192.0.2.10", "timeout": 300,
+                        "expires": null, "comment": null, "counter": null
+                    }}]
+                }}},
+                {"add": {"element": {
+                    "family": "inet", "table": "vivarium", "name": "allow6",
+                    "elem": [{"elem": {
+                        "val": "2001:db8::1", "timeout": 60,
+                        "expires": null, "comment": null, "counter": null
+                    }}]
+                }}}
+            ]})
         );
-        let v6 = serde_json::to_value(timed_element("2001:db8::1".parse().unwrap(), 60)).unwrap();
-        assert_eq!(v6["nftables"][0]["add"]["element"]["name"], json!("allow6"));
     }
 }

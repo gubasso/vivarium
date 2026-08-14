@@ -1,14 +1,27 @@
 # Nix owns runtimes; pre-commit owns hooks.
 default_install_hook_types: [pre-commit, commit-msg, pre-push]
 
+# One stage per claim (ADR-0101). Without this line an unstaged hook runs at
+# every installed stage, so the whole commit-stage set silently re-ran on
+# push. The commit stage owns per-file and autofixing checks; the push stage
+# owns whole-history and whole-tree policy, and a hook that rewrites files
+# never appears there — a fix applied during `git push` cannot enter the push
+# it just failed. A hook belongs at push only via an explicit `stages:` key.
+default_stages: [pre-commit]
+
 repos:
   # --- Housekeeping (auto-fix where possible) ---
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # Explicit stages on the two fixers: upstream declares
+      # `[pre-commit, pre-push, manual]`, which outranks default_stages,
+      # and an autofixer never runs at push.
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
+        stages: [pre-commit]
       - id: end-of-file-fixer
+        stages: [pre-commit]
       - id: check-added-large-files
         args: ['--maxkb=16384']
       - id: check-case-conflict
@@ -20,7 +33,10 @@ repos:
       - id: check-yaml
       - id: check-xml
       - id: destroyed-symlinks
-      - id: detect-private-key
+      # detect-private-key is deliberately absent: its PEM-marker rule is a
+      # subset of ripsecrets (commit stage) and gitleaks (push stage, full
+      # history), verified 2026-08-14 by planting a throwaway key and
+      # confirming both flag it.
       - id: no-commit-to-branch
         args: [--branch, master]
       - id: forbid-submodules
@@ -117,19 +133,25 @@ repos:
         types: [rust]
         pass_filenames: false
 
+      # --all-targets so test-target lints get an autofix offered here at
+      # the commit stage rather than first appearing at the push-only gate.
       - id: clippy-fix
         name: clippy auto-fix
-        entry: cargo clippy --fix --allow-dirty --allow-staged --all-features -- -W clippy::all
+        entry: cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features -- -W clippy::all
         language: system
         types: [rust]
         pass_filenames: false
 
+      # Push-only: the commit stage already pays clippy-fix's compile, and
+      # cargo-nextest-unit compiles the crate there, so what escapes to push
+      # is lint-level findings only, never a compile error.
       - id: clippy-strict
         name: clippy gate
         entry: cargo clippy --all-targets --all-features -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false
+        stages: [pre-push]
 
       - id: taplo-format
         name: taplo format
@@ -166,9 +188,11 @@ repos:
   #                  nextest — covered by the separate `cargo test --doc`
   #                  hook below.
   #
-  # Tier-to-hook mapping (matches 08-testing-strategy.md § CI essentials):
+  # Tier-to-hook mapping (lane taxonomy: docs/reference/testing-lanes.md):
   #   - pre-commit: unit only            (sub-second budget)
-  #   - pre-push:   unit + integration   (single-digit-seconds budget)
+  #   - pre-push:   unit + integration   (minutes; .config/nextest.toml owns
+  #                                       the measurement and the argument
+  #                                       for the boot width)
   #   - CI:         everything + E2E     (live in .github/workflows)
   #
   # The unit hook is therefore wired to BOTH `pre-commit` and `pre-push`
@@ -221,7 +245,9 @@ repos:
         args: [--write-changes, --force-exclude]
         language: system
         types: [text]
-        stages: [pre-commit, pre-merge-commit, pre-push, manual]
+        # No pre-push: --write-changes makes this an autofixer, and a hook
+        # that rewrites files never runs at push (see default_stages above).
+        stages: [pre-commit, pre-merge-commit, manual]
 
       - id: committed
         name: committed
@@ -254,18 +280,13 @@ repos:
 
   - repo: local
     hooks:
-      - id: cargo-audit
-        name: cargo audit
-        entry: cargo audit
-        language: system
-        pass_filenames: false
-        stages: [pre-push]
-
-      # Note: licenses check omitted; requires deny.toml with an allow-list.
-      # Add `licenses` to the check list after creating deny.toml in your project.
+      # cargo-audit is deliberately absent: `cargo deny check advisories`
+      # reads the same RustSec database and adds yanked-crate coverage, so
+      # one policy file (deny.toml) owns advisory, ban, source-registry,
+      # and license posture, and one command reports all four.
       - id: cargo-deny
         name: cargo deny
-        entry: cargo deny check advisories bans sources
+        entry: cargo deny check advisories bans sources licenses
         language: system
         pass_filenames: false
         stages: [pre-push]
@@ -300,11 +321,30 @@ repos:
         language: system
         types: [nix]
         stages: [pre-commit]
-      - id: nix-flake-check
-        name: nix flake check (eval)
+      # Two flake-evaluation hooks, each triggered by exactly the files its
+      # flake contains — a predecessor fired on every `.nix` file while
+      # evaluating only the root flake, whose `checks` the boundary guard
+      # keeps empty, so its trigger and its subject disagreed (the
+      # assumption-shaped-check class the harness method note records).
+      # Neither hook builds a guest: the product checks are guest builds,
+      # and that lane is tests/host/first-microvm-check behind
+      # disk-preflight — a separation the disk-preflight rule requires,
+      # not an omission.
+      - id: dev-flake-check
+        name: root dev flake evaluates (devShells + formatter only)
         entry: nix flake check
         language: system
-        files: '\.nix$'
+        files: '^(flake\.nix|flake\.lock)$'
+        pass_filenames: false
+        stages: [pre-commit]
+      # ~14s warm (measured 2026-08-14): instantiates the three product
+      # checks without realising them, proving the product flake evaluates
+      # and its checks are constructible.
+      - id: product-flake-check
+        name: product flake evaluates (checks instantiate, no build)
+        entry: nix flake check --no-build path:.?dir=nix
+        language: system
+        files: '^(nix/.*\.nix|nix/flake\.lock|tests/nix/.*\.nix)$'
         pass_filenames: false
         stages: [pre-push]
 

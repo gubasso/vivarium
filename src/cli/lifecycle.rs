@@ -1528,37 +1528,21 @@ pub(super) const fn grace_seconds(force: bool, timeout: Option<i64>) -> Option<u
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
         Runtime, State, classify, config, discriminate, effective_resources, grace_seconds,
         host_mem_mib, host_vcpu, ownership_of, vm_is_alive, volume_directory,
     };
+    use crate::test_support::ScratchDirectory;
     use std::fs;
     use std::path::PathBuf;
-
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(tag: &str) -> Self {
-            let root = std::env::temp_dir()
-                .join(format!("vivarium-lifecycle-{}-{tag}", std::process::id()));
-            let _ = fs::remove_dir_all(&root);
-            fs::create_dir_all(&root).ok();
-            Self(root)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     /// The resting states, each reachable from what the filesystem says and nothing else.
     #[test]
     fn the_resting_states_are_decided_by_records_and_build_output() {
-        let scratch = Scratch::new("resting");
-        let runtime = Runtime::locate(&scratch.0, "api", "default");
+        let scratch = ScratchDirectory::new().unwrap();
+        let runtime = Runtime::locate(scratch.path(), "api", "default");
         fs::create_dir_all(&runtime.directory).ok();
 
         // Neither records nor a build.
@@ -1611,8 +1595,8 @@ mod tests {
     /// merely misreporting it.
     #[test]
     fn a_pid_record_that_names_no_process_is_not_alive() {
-        let scratch = Scratch::new("pid-record");
-        let runtime = Runtime::locate(&scratch.0, "api", "default");
+        let scratch = ScratchDirectory::new().unwrap();
+        let runtime = Runtime::locate(scratch.path(), "api", "default");
         fs::create_dir_all(&runtime.directory).ok();
 
         for raw in ["0", "0\n", "-1", "", "  ", "not-a-pid"] {
@@ -1693,8 +1677,8 @@ mod tests {
     /// The gathering half still reads the two files the pure half is told about.
     #[test]
     fn the_records_the_discriminator_reads_are_the_ones_the_supervisor_writes() {
-        let scratch = Scratch::new("records");
-        let runtime = Runtime::locate(&scratch.0, "api", "default");
+        let scratch = ScratchDirectory::new().unwrap();
+        let runtime = Runtime::locate(scratch.path(), "api", "default");
         fs::create_dir_all(&runtime.directory).ok();
 
         // No unit exists for this scratch id, so a live pid can only reach `failed` — which is

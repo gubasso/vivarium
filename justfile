@@ -16,17 +16,20 @@ build:
 test:
     nix develop --command cargo nextest run
 
-# Run the pre-commit unit-test profile.
+# Run the pre-commit unit-test profile (twin of hook cargo-nextest-unit).
 test-pre-commit:
-    nix develop --command cargo nextest run --profile pre-commit
+    nix develop --command cargo nextest run --profile pre-commit --all-features
 
-# Run the pre-push integration-test profile.
+# Run the pre-push integration-test profile (twin of hook
+# cargo-nextest-integration).
 test-pre-push:
-    nix develop --command cargo nextest run --profile pre-push
+    nix develop --command cargo nextest run --profile pre-push --all-features
 
 # Run the complete CI profile.
+# Twin of the cargo-nextest hooks in .pre-commit-config.yaml: keep the
+# feature flags byte-identical so the two cannot drift.
 test-ci:
-    nix develop --command cargo nextest run --profile ci
+    nix develop --command cargo nextest run --profile ci --all-features
 
 # Type-check without producing binaries.
 typecheck:
@@ -35,8 +38,10 @@ typecheck:
 # --- Lint & format --------------------------------------------------------
 
 # Run clippy with warnings denied.
+# Twin of the clippy-strict hook in .pre-commit-config.yaml: keep the
+# command byte-identical so the two cannot drift when a feature lands.
 lint:
-    nix develop --command cargo clippy --all-targets -- -D warnings
+    nix develop --command cargo clippy --all-targets --all-features -- -D warnings
 
 # Format the source tree.
 fmt:
@@ -48,6 +53,17 @@ fmt-check:
 
 # Format, lint, then test.
 check: fmt lint test
+
+# Run the whole hook set over the tree, at both gating stages — what CI's
+# `hooks` job executes, so a contributor without hooks installed cannot pass
+# CI without them. Skips at the push stage: the nextest hooks because
+# `just test-ci` already runs profile `ci`, a superset of `pre-push`, and
+# clippy-strict because `just lint` is its byte-identical twin in CI's lint
+# job. `cargo-doc-tests` is NOT skipped — nextest cannot run doctests, so
+# this is CI's only doctest coverage.
+hooks:
+    nix develop --command pre-commit run --all-files --hook-stage pre-commit
+    SKIP=cargo-nextest-unit,cargo-nextest-integration,clippy-strict nix develop --command pre-commit run --all-files --hook-stage pre-push
 
 # --- Developer install ----------------------------------------------------
 # Install logic lives in scripts/install-dev, never in this file. The devShell

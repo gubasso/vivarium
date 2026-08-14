@@ -312,6 +312,7 @@ fn remove_tree(path: &Path) -> Result<(), Failure> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::test_support::ScratchDirectory;
 
     fn roots() -> config::XdgRoots {
         config::XdgRoots {
@@ -416,13 +417,8 @@ mod tests {
         // The carve-out is enumerated from the directory rather than from a list here, so a state
         // file a later slice adds beside the images is removed without this file being edited.
         // That is the property worth pinning: an exception list would silently retain it.
-        let root = std::env::temp_dir().join(format!(
-            "vivarium-destroy-plan-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let scratch = ScratchDirectory::new().unwrap();
+        let root = scratch.path().to_path_buf();
         let target = root.join("projects/demo/default");
         std::fs::create_dir_all(target.join("volumes")).unwrap();
         std::fs::write(target.join("volumes/default.img"), b"data").unwrap();
@@ -431,7 +427,7 @@ mod tests {
 
         let roots = config::XdgRoots {
             config: PathBuf::from("/c"),
-            state: root.clone(),
+            state: root,
             data: PathBuf::from("/d"),
             cache: PathBuf::from("/k"),
         };
@@ -445,6 +441,5 @@ mod tests {
             "{removals:?}"
         );
         assert!(!removals.contains(&target.join("volumes")), "{removals:?}");
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

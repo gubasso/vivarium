@@ -1,4 +1,5 @@
 pub mod egress;
+pub mod harness;
 
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};

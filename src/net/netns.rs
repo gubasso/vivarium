@@ -117,12 +117,39 @@ mod tests {
         items.iter().map(ToString::to_string).collect()
     }
 
+    /// One table over the three argv renderings: the pair-creating `unshare`
+    /// flags, the pinned holder, and the `nsenter` join flags. Each expected
+    /// vector is written as a literal so a flag change is a visible diff here,
+    /// not something re-derived from the constant under test.
     #[test]
-    fn create_renders_the_pair_flags_then_the_holder() {
-        assert_eq!(
-            create_pair_args(&strings(&["sleep", "infinity"])),
-            strings(&["--user", "--net", "--map-root-user", "sleep", "infinity"])
-        );
+    fn argv_renderings_are_pinned() {
+        let rows: &[(Vec<String>, &[&str])] = &[
+            (
+                create_pair_args(&strings(&["sleep", "infinity"])),
+                &["--user", "--net", "--map-root-user", "sleep", "infinity"],
+            ),
+            (
+                holder_program("/nix/store/x-coreutils/bin/sleep"),
+                &["/nix/store/x-coreutils/bin/sleep", "infinity"],
+            ),
+            (
+                enter_pair_args(4242, &strings(&["nft", "-j", "-f", "-"])),
+                &[
+                    "--preserve-credentials",
+                    "--user",
+                    "--net",
+                    "--target",
+                    "4242",
+                    "nft",
+                    "-j",
+                    "-f",
+                    "-",
+                ],
+            ),
+        ];
+        for (rendered, expected) in rows {
+            assert_eq!(rendered, &strings(expected));
+        }
     }
 
     #[tokio::test]
@@ -145,31 +172,5 @@ mod tests {
         let own_pid = std::process::id();
         let result = await_pair(own_pid, Duration::from_millis(30)).await;
         assert!(matches!(result, Err(PairError::Timeout { .. })));
-    }
-
-    #[test]
-    fn the_holder_program_is_a_pinned_sleep_held_forever() {
-        assert_eq!(
-            holder_program("/nix/store/x-coreutils/bin/sleep"),
-            strings(&["/nix/store/x-coreutils/bin/sleep", "infinity"])
-        );
-    }
-
-    #[test]
-    fn enter_renders_the_join_flags_target_then_the_program() {
-        assert_eq!(
-            enter_pair_args(4242, &strings(&["nft", "-j", "-f", "-"])),
-            strings(&[
-                "--preserve-credentials",
-                "--user",
-                "--net",
-                "--target",
-                "4242",
-                "nft",
-                "-j",
-                "-f",
-                "-",
-            ])
-        );
     }
 }

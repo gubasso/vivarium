@@ -1,37 +1,10 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
 use super::Environment;
 
-static NEXT_SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
-
-pub struct ScratchDirectory {
-    path: PathBuf,
-}
-
-impl ScratchDirectory {
-    pub fn new() -> io::Result<Self> {
-        let id = NEXT_SCRATCH_ID.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("vivarium-config-tests-{}-{id}", std::process::id()));
-        fs::create_dir(&path)?;
-        Ok(Self { path })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for ScratchDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
+pub use crate::test_support::ScratchDirectory;
 
 #[derive(Default)]
 pub struct TestEnvironment {

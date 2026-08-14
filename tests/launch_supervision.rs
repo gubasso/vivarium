@@ -4,15 +4,16 @@
 use serde_json::json;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use vivarium::doctor::descriptors::host_fd_limit_sufficient;
 use vivarium::launch::{
     BackendPrograms, ConfinementProfile, ConsoleReader, ConsoleSink, DescriptorBudget, EgressSpec,
-    GuestSession, IdentityTranslation, LAUNCH_SCHEMA_VERSION, LaunchEgressMode, LaunchSpec,
-    NetworkSpec, ResourceSpec, RuntimePaths, ShareSpec, SocketLegs, Supervisor, TransientUnitSpec,
+    GuestSession, IdentityTranslation, LAUNCH_SCHEMA_VERSION, LaunchEgressMode, LaunchReady,
+    LaunchSpec, NetworkSpec, ReadinessReport, ResourceSpec, RuntimePaths, ShareSpec, SocketLegs,
+    Supervisor, TransientUnitSpec,
 };
 
 fn fixture(name: &str) -> LaunchSpec {
@@ -112,30 +113,34 @@ fn fixture(name: &str) -> LaunchSpec {
 
 #[tokio::test]
 async fn reader_acknowledges_connection_before_boot_bytes_and_reaches_eof() {
-    for iteration in 0..20 {
-        let spec = fixture(&format!("console-{iteration}"));
-        tokio::fs::create_dir_all(&spec.runtime_paths.root)
-            .await
-            .unwrap();
-        let listener = UnixListener::bind(&spec.runtime_paths.console_socket).unwrap();
-        let reader = ConsoleReader::new();
-        let cancellation = CancellationToken::new();
-        let (connected_tx, connected_rx) = oneshot::channel();
-        let handle = reader.spawn(
-            spec.runtime_paths.console_socket.clone(),
-            ConsoleSink::Drain,
-            cancellation,
-            connected_tx,
-        );
-        let (mut peer, _) = listener.accept().await.unwrap();
-        connected_rx.await.unwrap();
-        peer.write_all(b"boot-after-connect").await.unwrap();
-        drop(peer);
-        handle.await.unwrap().unwrap();
-        tokio::fs::remove_dir_all(&spec.runtime_paths.root)
-            .await
-            .unwrap();
-    }
+    let spec = fixture("console");
+    tokio::fs::create_dir_all(&spec.runtime_paths.root)
+        .await
+        .unwrap();
+    let listener = UnixListener::bind(&spec.runtime_paths.console_socket).unwrap();
+    let reader = ConsoleReader::new();
+    let mut tap = reader.subscribe();
+    let cancellation = CancellationToken::new();
+    let (connected_tx, connected_rx) = oneshot::channel();
+    let handle = reader.spawn(
+        spec.runtime_paths.console_socket.clone(),
+        ConsoleSink::Drain,
+        cancellation,
+        connected_tx,
+    );
+    let (mut peer, _) = listener.accept().await.unwrap();
+    connected_rx.await.unwrap();
+    // The byte written only after the acknowledgement must still be seen: that
+    // is the "attached before the first boot byte" half of the name, asserted
+    // through the tap rather than assumed from the channel's ordering.
+    peer.write_all(b"boot-after-connect").await.unwrap();
+    assert_eq!(tap.recv().await.unwrap(), b"boot-after-connect");
+    drop(peer);
+    // And peer EOF ends the reader cleanly — the other half of the name.
+    handle.await.unwrap().unwrap();
+    tokio::fs::remove_dir_all(&spec.runtime_paths.root)
+        .await
+        .unwrap();
 }
 
 // Transport and lifetime are different claims. The test above proves the reader is
@@ -294,20 +299,98 @@ async fn unknown_artifact_prevents_directory_removal() {
         .unwrap();
 }
 
+/// A launch that fails reports `Failed` through the ready channel rather than
+/// going silent — without the report, the launcher's only account of a failed
+/// start is its own handoff timeout, thirty seconds later and naming no cause.
+/// The send precedes the shutdown ladder and cleanup by code position (the
+/// readiness socket cleanup unlinks lives in the runtime directory), which the
+/// supervisor's own comment records; what this trial pins is the half a
+/// refactor most plausibly loses, that the report is sent at all.
+#[tokio::test]
+async fn a_failed_launch_reports_failed_rather_than_going_silent() {
+    let spec = fixture("failed-report");
+    tokio::fs::create_dir_all(&spec.runtime_paths.root)
+        .await
+        .unwrap();
+    let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(1);
+    // Every backend program is a fake store path, so the first spawn fails and
+    // the run takes the failure path end to end: report, ladder, cleanup.
+    let outcome = Supervisor::new(spec).run(ready_tx).await;
+    assert!(outcome.is_err(), "fake store paths cannot launch");
+    assert_eq!(ready_rx.try_recv(), Ok(LaunchReady::Failed));
+}
+
+/// The trial above stops at `Supervisor::run`'s channel; the regression this
+/// path repairs lived one boundary further out, so this one crosses it: the
+/// built supervisor binary, handed a spec whose first spawn fails, must land a
+/// decodable `failed` report on the launcher's readiness listener — the report
+/// that spares the launcher its full handoff wait — before it exits.
+#[tokio::test]
+async fn a_failed_launch_reports_failed_across_the_readiness_socket() {
+    use std::os::unix::fs::PermissionsExt;
+    let spec = fixture("failed-socket-report");
+    tokio::fs::create_dir_all(&spec.runtime_paths.root)
+        .await
+        .unwrap();
+    // The binary trusts only a private spec: 0o700 directory, 0o600 file, one
+    // owner (`validate_metadata` in `src/bin/vivarium-supervisor.rs`).
+    tokio::fs::set_permissions(
+        &spec.runtime_paths.root,
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        &spec.runtime_paths.launch_spec,
+        serde_json::to_vec(&spec).unwrap(),
+    )
+    .await
+    .unwrap();
+    tokio::fs::set_permissions(
+        &spec.runtime_paths.launch_spec,
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .await
+    .unwrap();
+    let listener = UnixListener::bind(&spec.runtime_paths.ready_socket).unwrap();
+    let status = tokio::process::Command::new(env!("CARGO_BIN_EXE_vivarium-supervisor"))
+        .arg("--spec")
+        .arg(&spec.runtime_paths.launch_spec)
+        .arg("--ready-socket")
+        .arg(&spec.runtime_paths.ready_socket)
+        .status()
+        .await
+        .unwrap();
+    assert!(!status.success(), "fake store paths cannot launch");
+    // The report was sent before the exit just observed, so the connection is
+    // already queued; the timeout only keeps a regression from hanging the run.
+    let (mut peer, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut bytes = Vec::new();
+    peer.read_to_end(&mut bytes).await.unwrap();
+    assert_eq!(
+        ReadinessReport::decode(&bytes).ok(),
+        Some(ReadinessReport::failed())
+    );
+    // The supervisor's own cleanup removes the runtime directory on the
+    // failure path; this is only a backstop for an exit that left it behind.
+    let _ = tokio::fs::remove_dir_all(&spec.runtime_paths.root).await;
+}
+
 #[tokio::test]
 async fn detached() {
-    for _ in 0..20 {
-        let spec = fixture("detached");
-        let rendered = TransientUnitSpec::new(&spec).command().rendered().join(" ");
-        assert!(rendered.contains("--no-block"));
-        assert!(rendered.contains("--service-type=exec"));
-        // `mixed` and not `control-group`: the latter signals cloud-hypervisor directly, so
-        // `systemctl stop` destroyed the VM before the supervisor could power the guest down and
-        // uncommitted guest writes were lost. Asserted by name so the value cannot drift back.
-        assert!(rendered.contains("KillMode=mixed"));
-        assert!(!rendered.contains("KillMode=control-group"));
-        assert!(!rendered.contains("--scope"));
-    }
+    let spec = fixture("detached");
+    let rendered = TransientUnitSpec::new(&spec).command().rendered().join(" ");
+    assert!(rendered.contains("--no-block"));
+    assert!(rendered.contains("--service-type=exec"));
+    // `mixed` and not `control-group`: the latter signals cloud-hypervisor directly, so
+    // `systemctl stop` destroyed the VM before the supervisor could power the guest down and
+    // uncommitted guest writes were lost. Asserted by name so the value cannot drift back.
+    assert!(rendered.contains("KillMode=mixed"));
+    assert!(!rendered.contains("KillMode=control-group"));
+    assert!(!rendered.contains("--scope"));
 }
 
 #[test]

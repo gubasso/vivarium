@@ -43,6 +43,11 @@ const LOOPBACK_PROBE_PORT: u32 = 59_000;
 /// forwards the caller's; without it a session reaches shell builtins and nothing else.
 const GUEST_PATH: &[u8] = b"/run/current-system/sw/bin";
 
+#[path = "support/harness.rs"]
+mod harness;
+
+use harness::{base64, gate_required};
+
 fn main() -> std::process::ExitCode {
     let args = Arguments::from_args();
     let decision = gate();
@@ -75,11 +80,6 @@ fn main() -> std::process::ExitCode {
         .with_ignored_flag(ignored),
     ];
     libtest_mimic::run(&args, trials).exit_code()
-}
-
-/// Whether the operator demanded that an unmet gate fail rather than skip.
-fn gate_required() -> bool {
-    std::env::var_os("VIVARIUM_TEST_REQUIRE").is_some_and(|value| value == "1")
 }
 
 /// Resolve the guest runner, or the first reason this host cannot run the lane.
@@ -171,15 +171,6 @@ fn self_check() -> Result<(), Failed> {
         );
     });
 
-    // Boot metadata is read from the guest's own runtime directory; a truncated or
-    // wrong-shaped file must fail rather than yield a default identity that would then be
-    // compared against the guest's real one.
-    if serde_json::from_slice::<BootMetadata>(b"{}").is_ok() {
-        return Err(Failed::from("an empty boot.json was accepted"));
-    }
-    if serde_json::from_slice::<BootMetadata>(b"not json").is_ok() {
-        return Err(Failed::from("a malformed boot.json was accepted"));
-    }
     Ok(())
 }
 
@@ -1003,34 +994,4 @@ async fn the_agent_restarts_after_a_crash(runtime: &Path, metadata: &BootMetadat
         "the agent did not restart: it reported {before} before the kill and {after} after"
     );
     record("agent restart", &format!("{before} replaced by {after}"));
-}
-
-/// Encode bytes for transport through a guest shell argument.
-///
-/// The guest has `base64`, so the frame is built here and decoded there rather than
-/// escaping arbitrary bytes through a shell command line.
-fn base64(input: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in input.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
 }

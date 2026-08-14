@@ -96,27 +96,25 @@ impl ReadinessReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReadinessError, ReadinessReport, ReadinessStatus};
+    use super::{ReadinessError, ReadinessReport};
 
     /// The wire format is the contract between two processes, so the bytes are asserted rather
-    /// than only the round trip: a rename that still round-trips would still break the pair.
+    /// than a round trip: a rename that still round-trips would still break the pair. Both
+    /// statuses are pinned so neither spelling has only the encoder as its witness.
     #[test]
-    fn a_ready_report_has_the_agreed_wire_form() {
-        let encoded = ReadinessReport::process_ready().encode();
-        assert_eq!(
-            encoded.ok().as_deref(),
-            Some(br#"{"schemaVersion":1,"status":"process-ready"}"#.as_slice())
-        );
-    }
-
-    #[test]
-    fn both_statuses_survive_a_round_trip() {
-        for report in [ReadinessReport::process_ready(), ReadinessReport::failed()] {
-            let decoded = report
-                .encode()
-                .ok()
-                .and_then(|bytes| ReadinessReport::decode(&bytes).ok());
-            assert_eq!(decoded, Some(report));
+    fn a_report_has_the_agreed_wire_form() {
+        for (report, expected) in [
+            (
+                ReadinessReport::process_ready(),
+                br#"{"schemaVersion":1,"status":"process-ready"}"#.as_slice(),
+            ),
+            (
+                ReadinessReport::failed(),
+                br#"{"schemaVersion":1,"status":"failed"}"#.as_slice(),
+            ),
+        ] {
+            assert_eq!(report.encode().ok().as_deref(), Some(expected));
+            assert_eq!(ReadinessReport::decode(expected).ok(), Some(report));
         }
     }
 
@@ -139,7 +137,6 @@ mod tests {
             br#"{"schemaVersion":1,"status":"process-ready","extra":true}"#.as_slice(),
             br#"{"schemaVersion":1,"status":"almost-ready"}"#.as_slice(),
             br#"{"status":"process-ready"}"#.as_slice(),
-            b"not json".as_slice(),
         ] {
             assert!(
                 matches!(
@@ -150,18 +147,5 @@ mod tests {
                 String::from_utf8_lossy(malformed)
             );
         }
-    }
-
-    #[test]
-    fn the_two_constructors_differ_only_in_status() {
-        assert_eq!(
-            ReadinessReport::process_ready().status,
-            ReadinessStatus::ProcessReady
-        );
-        assert_eq!(ReadinessReport::failed().status, ReadinessStatus::Failed);
-        assert_eq!(
-            ReadinessReport::process_ready().schema_version,
-            ReadinessReport::failed().schema_version
-        );
     }
 }

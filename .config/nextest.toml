@@ -61,11 +61,21 @@
 # answered inside its budget — and the host was at a load average of 5.9 with
 # 6 GiB of 30 available, after a session of guest builds. That is the pressure
 # the paragraph above says this file has no lever for, arriving from outside
-# the run rather than from the boots inside it. Widening the readiness budget
-# is not obviously the repair: it is the launcher's, it is wall clock, and a
-# guest that needs longer than 30s on an idle host would be a defect worth
-# seeing. Recorded so the next red is read as this and not as the change under
-# test.
+# the run rather than from the boots inside it.
+#
+# A correction, 2026-08-14, after the failure reproduced twice more under the
+# same pressure: the budget that expires is not the launcher's 30s. The
+# supervisor's own agent-startup budget (`src/launch/supervisor.rs`) fires
+# first — both failed runs show the supervisor exiting at ~18.5s wall while
+# the launcher goes on to report its 30s — so an earlier version of this
+# paragraph argued about the wrong constant. The load-pressure half of that
+# argument survives the correction: no budget repairs a host at load 6 with
+# 6 GiB of 30 free, and this file still has no lever for it. The margin half
+# does not survive: a successful boot takes ~8.5s wall, and "a guest that
+# needs longer would be a defect worth seeing" is a fair claim at a 3.5x
+# margin, not at the ~1.2x the agent budget then allowed. The budget's own
+# sizing lives beside the constant it names. Recorded so the next red is read
+# as this and not as the change under test.
 [test-groups]
 boot = { max-threads = 1 }
 

@@ -17,3 +17,6 @@ pub mod launch;
 #[cfg(feature = "host")]
 pub mod net;
 pub mod protocol;
+
+#[cfg(test)]
+pub(crate) mod test_support;
