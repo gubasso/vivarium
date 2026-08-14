@@ -62,7 +62,9 @@ impl<'a> ConfinementProfile<'a> {
         self.drop_bounding_set
     }
 
-    /// The API-only startup command, which carries no guest configuration.
+    /// The API-only startup command, which carries no guest configuration, joined
+    /// into the pair held by `holder_pid` so the VMM can open the tap that lives
+    /// there.
     ///
     /// Landlock is deliberately absent here even when the host supports it. The pinned
     /// hypervisor's `--landlock` flag makes `--kernel` or `--firmware` mandatory on the
@@ -72,19 +74,111 @@ impl<'a> ConfinementProfile<'a> {
     /// own `landlock_enable` and `landlock_rules`, which is the sequence
     /// `../../docs/reference/backend-capabilities.md` records for this version, and where
     /// the guest's paths are actually known.
+    ///
+    /// The bounding set is never emptied here, and by decision rather than by host
+    /// fact: after the join, an exec by the pair's mapped root re-derives its
+    /// capabilities from the bounding set, and the VMM must hold the pair's own
+    /// `CAP_NET_ADMIN` to open the tap by name. Emptying it on a privileged host
+    /// would make the same launch boot a guest without a NIC there and with one
+    /// everywhere else. Nothing host-scoped is given up: the capabilities the join
+    /// grants exist only inside the pair.
     #[must_use]
-    pub fn vmm(&self) -> CommandSpec {
+    pub fn vmm(&self, holder_pid: u32) -> CommandSpec {
         let child = vec![
             "--api-socket".into(),
             format!("path={}", self.spec.runtime_paths.api_socket.display()),
             "--seccomp".into(),
             "true".into(),
         ];
-        wrapped(
+        let inner = wrapped(
             &self.spec.backend_programs.setpriv,
             &self.spec.backend_programs.cloud_hypervisor,
             child,
-            self.drop_bounding_set,
+            false,
+        );
+        self.entered(holder_pid, &inner)
+    }
+
+    /// The holder that creates the pair and keeps it referenced: the pinned
+    /// `unshare` around the pinned `sleep`, unwrapped because the pair's own
+    /// mapped-root capabilities are the point of the process.
+    #[must_use]
+    pub fn netns_holder(&self) -> CommandSpec {
+        CommandSpec::new(
+            self.spec.backend_programs.unshare.clone(),
+            crate::net::netns::create_pair_args(&crate::net::netns::holder_program(
+                &self.spec.backend_programs.sleep.display().to_string(),
+            )),
+        )
+    }
+
+    /// One in-namespace `ip` invocation, joined by the holder's pid.
+    #[must_use]
+    pub fn in_namespace_ip(&self, holder_pid: u32, args: &[String]) -> CommandSpec {
+        let mut program = vec![self.spec.backend_programs.ip.display().to_string()];
+        program.extend_from_slice(args);
+        CommandSpec::new(
+            self.spec.backend_programs.nsenter.clone(),
+            crate::net::netns::enter_pair_args(holder_pid, &program),
+        )
+    }
+
+    /// The supervisor's own `net-init` entrypoint, run inside the pair to raise the
+    /// forwarding sysctl no pinned tool writes.
+    #[must_use]
+    pub fn net_init(&self, holder_pid: u32) -> CommandSpec {
+        let program = vec![
+            self.spec.backend_programs.supervisor.display().to_string(),
+            "net-init".to_owned(),
+        ];
+        CommandSpec::new(
+            self.spec.backend_programs.nsenter.clone(),
+            crate::net::netns::enter_pair_args(holder_pid, &program),
+        )
+    }
+
+    /// The uplink: one unprivileged `pasta` per VM (spec/05). The process stays on
+    /// the host side and opens its own device inside the pair, which is why it takes
+    /// the namespace references rather than an `nsenter` wrap.
+    #[must_use]
+    pub fn uplink(&self, holder_pid: u32) -> CommandSpec {
+        CommandSpec::new(
+            self.spec.backend_programs.pasta.clone(),
+            vec![
+                "--foreground".into(),
+                "--config-net".into(),
+                "--dns-forward".into(),
+                self.spec.network.dns_forward_address.to_string(),
+                "--netns".into(),
+                format!("/proc/{holder_pid}/ns/net"),
+                "--userns".into(),
+                format!("/proc/{holder_pid}/ns/user"),
+            ],
+        )
+    }
+
+    /// The gating resolver, joined into the pair: its socket is the only DNS the
+    /// guest is given, and its filter programmer runs `nft` from inside.
+    #[must_use]
+    pub fn resolver(&self, holder_pid: u32) -> CommandSpec {
+        let program = vec![
+            self.spec.backend_programs.supervisor.display().to_string(),
+            "resolver".to_owned(),
+            "--spec".to_owned(),
+            self.spec.runtime_paths.launch_spec.display().to_string(),
+        ];
+        CommandSpec::new(
+            self.spec.backend_programs.nsenter.clone(),
+            crate::net::netns::enter_pair_args(holder_pid, &program),
+        )
+    }
+
+    fn entered(&self, holder_pid: u32, inner: &CommandSpec) -> CommandSpec {
+        let mut program = vec![inner.program().display().to_string()];
+        program.extend_from_slice(inner.args());
+        CommandSpec::new(
+            self.spec.backend_programs.nsenter.clone(),
+            crate::net::netns::enter_pair_args(holder_pid, &program),
         )
     }
 
@@ -153,7 +247,9 @@ impl<'a> ConfinementProfile<'a> {
         shares: &[CommandSpec],
         bounding_set_dropped: bool,
     ) -> Result<(), LaunchError> {
-        validate_wrapper(vmm, bounding_set_dropped)?;
+        // The VMM's rendering never drops the bounding set — see `vmm` — so its
+        // wrapper is checked against that intent while the shares keep the host's.
+        validate_wrapper(vmm, false)?;
         require_pair(vmm.args(), "--seccomp", "true")?;
         for command in shares {
             validate_wrapper(command, bounding_set_dropped)?;
@@ -286,6 +382,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn mutation_table_rejects_every_mandatory_leg() {
         let base_vmm = [
             "--no-new-privs",
@@ -319,9 +416,11 @@ mod tests {
         let share = command(&base_share);
         assert_eq!(1, [share.clone()].len());
         ConfinementProfile::validate_rendered(&vmm, &[share], true).unwrap();
+        // `--bounding-set=-all` is deliberately absent from the vmm rows: the VMM's
+        // rendering never drops the bounding set (see `vmm`), so its wrapper check
+        // must not require it — asserted positively right below.
         for removed in [
             "--no-new-privs",
-            "--bounding-set=-all",
             "--ambient-caps=-all",
             "--inh-caps=-all",
             "--seccomp",
@@ -338,6 +437,26 @@ mod tests {
                     .is_err()
             );
         }
+        let vmm_without_bounding = command(
+            &base_vmm
+                .iter()
+                .copied()
+                .filter(|arg| *arg != "--bounding-set=-all")
+                .collect::<Vec<_>>(),
+        );
+        ConfinementProfile::validate_rendered(&vmm_without_bounding, &[command(&base_share)], true)
+            .unwrap();
+        // The shares keep requiring the drop when the host could make it.
+        let share_without_bounding = command(
+            &base_share
+                .iter()
+                .copied()
+                .filter(|arg| *arg != "--bounding-set=-all")
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            ConfinementProfile::validate_rendered(&vmm, &[share_without_bounding], true).is_err()
+        );
         let mut false_seccomp = base_vmm.map(str::to_owned);
         false_seccomp[7] = "false".into();
         assert!(

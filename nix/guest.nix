@@ -11,6 +11,7 @@
   homeVolumeName,
   storeVolumeName,
   guestAgentPackage,
+  networkLayout,
   # Variant scalars (ADR-0095). The defaults in `nix/default.nix` reproduce the
   # shipped image; a measurement variant scales them at build time, which is the
   # only route that reaches the Nix daemon's own `autoGC` — measured, and the
@@ -122,6 +123,12 @@ let
       row: "${row.mount} ${sessionUser.name}:${sessionUser.group} ${row.mode} ${row.seed}\n"
     ) preparedVolumes
   );
+
+  # `sandbox.egress` is build-channel policy the guest system is built against.
+  # `or`-defaulted like `vivarium.volumes` above and for the same reason: the
+  # option surface lives in `nix/vivarium-options.nix`, which only a generated
+  # flake composes, and the default is spec/05's own.
+  egressMode = config.sandbox.egress.mode or "open";
 in
 {
   options.vivarium.credentials.agents = lib.mkOption {
@@ -141,7 +148,31 @@ in
     # Everything at normal priority is the launch contract — the shares, the volumes,
     # the store overlay, the guest identity — and a layer that contradicts one of
     # those is meant to fail loudly rather than quietly win.
-    networking.hostName = productDefault "vivarium-first";
+    networking = {
+      hostName = productDefault "vivarium-first";
+      # The guest half of the link `nix/default.nix` declares once (spec/05), at
+      # normal priority: the addressing is a contract with the supervisor's tap
+      # setup, and a layer that contradicts it should fail loudly rather than
+      # quietly win. The interface itself is configured under `systemd.network`
+      # below, matched by the launcher's fixed MAC.
+      useDHCP = false;
+      # Off because the nameserver is a static `/etc/resolv.conf` below, not
+      # `networking.nameservers`: the resolvconf script only collects runtime
+      # data from hooks nothing in this guest feeds, so that option's value
+      # silently reached no file at all — inert, not absent.
+      resolvconf.enable = false;
+    };
+    # And systemd-resolved (which networkd enables by default) stays off too: a
+    # guest-local caching stub between the guest and its nameserver is exactly
+    # what spec/05 rules out under allowlist mode — the gating resolver must be
+    # the only DNS the guest is given, and a cache would re-serve answers on its
+    # own clock. The nameserver is the one mode-dependent value: under allowlist
+    # the gating resolver on the gateway; under open the uplink's DNS forward,
+    # which reaches the host's own resolver.
+    services.resolved.enable = false;
+    environment.etc."resolv.conf".text = "nameserver ${
+      if egressMode == "allowlist" then networkLayout.gatewayAddress else networkLayout.dnsForwardAddress
+    }\n";
     boot.initrd.systemd.enable = true;
     # Naming these as required initrd modules makes evaluation/build fail if the
     # selected guest kernel ceases to provide AF_VSOCK or its virtio transport.
@@ -374,6 +405,17 @@ in
     users.groups.vivarium.gid = 1000;
 
     systemd = {
+      # The guest NIC's addressing, matched by the MAC the launcher gives the
+      # device rather than by an interface name the kernel may spell differently.
+      network = {
+        enable = true;
+        networks."10-vivarium-egress" = {
+          matchConfig.MACAddress = networkLayout.guestMac;
+          address = [ "${networkLayout.guestAddress}/${toString networkLayout.prefixLength}" ];
+          gateway = [ networkLayout.gatewayAddress ];
+        };
+      };
+
       # The local-overlay backend keeps its writable metadata outside /nix/var,
       # which NixOS provisions, and gives the read-only lower store a writable view
       # NixOS knows nothing about. Both must exist and be owned by the daemon.

@@ -8,7 +8,7 @@ set -eu
 launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' \
   "$VIVARIUM_RUNNER/bin/vivarium-first-microvm" | head -n1)
 test -n "$launcher_json"
-test "$(jq -r .schemaVersion "$launcher_json")" = 5
+test "$(jq -r .schemaVersion "$launcher_json")" = 6
 test "$(jq -r .descriptorBudget.limit "$launcher_json")" = 524288
 test "$(jq -r .descriptorBudget.workerPoolSize "$launcher_json")" = "$VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE"
 test "$(jq -r .socketLegs.api "$launcher_json")" = '@API_SOCKET@'
@@ -20,6 +20,17 @@ test "$(jq -r .vmCreate.serial.mode "$launcher_json")" = Socket
 test "$(jq -r .vmCreate.console.mode "$launcher_json")" = Off
 test "$(jq -r .vmCreate.landlock_enable "$launcher_json")" = true
 test "$(jq -r '.vmCreate.fs | length' "$launcher_json")" = "$(jq -r '.shareLaunch | length' "$launcher_json")"
+# Guest networking (schema 6): the two renderings of the one NIC agree with the
+# network object the supervisor reads, and the shipped image defaults to spec/05's
+# open egress with no allowlist entries.
+test "$(jq -r '.vmCreate.net | length' "$launcher_json")" = 1
+test "$(jq -r '.vmCreate.net[0].tap' "$launcher_json")" = "$(jq -r .network.tapName "$launcher_json")"
+test "$(jq -r '.vmCreate.net[0].mac' "$launcher_json")" = "$(jq -r .network.guestMac "$launcher_json")"
+test "$(jq -r .egress.mode "$launcher_json")" = open
+test "$(jq -r '.egress.allow | length' "$launcher_json")" = 0
+# The uplink's DNS forward must sit outside the guest link's subnet, or the guest
+# resolves it on the local link where nothing answers.
+test "$(jq -r .network.dnsForwardAddress "$launcher_json")" != "$(jq -r .network.gatewayAddress "$launcher_json")"
 grep -qF 'exec ' "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"
 if grep -qF -- '--no-landlock' "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"; then exit 1; fi
 if grep -Eq 'pids=|trap .*EXIT|wait .*pid|ulimit -n' "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"; then exit 1; fi

@@ -23,7 +23,10 @@ const MODE_MASK: u32 = 0o777;
 /// [`LaunchError`]'s own rule, every variant stays classified and non-secret.
 #[derive(Debug, thiserror::Error)]
 enum SupervisorError {
-    #[error("invalid invocation: expected `--spec <path> --ready-socket <path>`, both absolute")]
+    #[error(
+        "invalid invocation: expected `--spec <path> --ready-socket <path>` (both \
+        absolute), `net-init`, or `resolver --spec <path>`"
+    )]
     Usage,
     #[error(
         "the launch specification and its directory do not satisfy the ownership and mode rule"
@@ -51,6 +54,12 @@ enum SupervisorError {
     SupervisionTask,
     #[error("supervision ended before it reported process readiness")]
     ReadinessNotReported,
+    #[error("cannot raise the namespace's forwarding sysctl")]
+    NetInit(#[source] std::io::Error),
+    #[error("the gating resolver cannot bind its socket")]
+    ResolverBind(#[source] std::io::Error),
+    #[error("the gating resolver's socket failed")]
+    ResolverServe(#[source] std::io::Error),
 }
 
 impl SupervisorError {
@@ -63,9 +72,12 @@ impl SupervisorError {
             | Self::UntrustedSpecFile
             | Self::SpecPathMismatch
             | Self::InvalidSpec(_) => ExitKind::Usage,
-            Self::ReadSpec(_) | Self::InspectPath { .. } | Self::ReportReadiness(_) => {
-                ExitKind::IoErr
-            }
+            Self::ReadSpec(_)
+            | Self::InspectPath { .. }
+            | Self::ReportReadiness(_)
+            | Self::NetInit(_)
+            | Self::ResolverBind(_)
+            | Self::ResolverServe(_) => ExitKind::IoErr,
             // Encoding a fixed-shape report cannot fail on well-formed input, so a failure here is
             // a defect in this program rather than an I/O condition.
             Self::EncodeReadiness(_)
@@ -86,7 +98,9 @@ async fn main() -> ExitCode {
     // every failure to exit 1 with a `Debug` dump, so the fallible program is `run` and this is
     // its adapter.
     let outcome = match arguments(std::env::args_os()) {
-        Ok((spec_path, ready_path)) => run(&spec_path, &ready_path).await,
+        Ok(Invocation::Supervise { spec, ready }) => run(&spec, &ready).await,
+        Ok(Invocation::NetInit) => net_init(),
+        Ok(Invocation::Resolver { spec }) => run_resolver(&spec).await,
         Err(error) => Err(error),
     };
     match outcome {
@@ -206,17 +220,102 @@ async fn send_ready(path: &Path, report: ReadinessReport) -> Result<(), Supervis
         .map_err(SupervisorError::ReportReadiness)
 }
 
-/// Parses the exact invocation the launcher constructs, and nothing looser.
+/// The three things this binary can be: the supervisor itself, the in-namespace
+/// sysctl one-shot, and the in-namespace gating resolver. The latter two are here
+/// rather than in separate binaries because the launch closure already carries this
+/// program as a store path and both need code the crate owns.
+#[derive(Debug, Eq, PartialEq)]
+enum Invocation {
+    Supervise { spec: PathBuf, ready: PathBuf },
+    NetInit,
+    Resolver { spec: PathBuf },
+}
+
+/// Raise the forwarding sysctl inside the namespace this process was joined into.
+///
+/// `/proc/sys/net` reflects the writing process's own network namespace, so no
+/// remount is needed; and no pinned tool writes sysctls, which is why this
+/// entrypoint exists. IPv4 only: the guest link carries no IPv6 addressing, and
+/// the resolver withholds AAAA for exactly that reason.
+fn net_init() -> Result<(), SupervisorError> {
+    std::fs::write("/proc/sys/net/ipv4/ip_forward", b"1").map_err(SupervisorError::NetInit)
+}
+
+/// How long the gating resolver gives one upstream exchange before `SERVFAIL`.
+const RESOLVER_UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The gating resolver (spec/05), run inside the VM's namespace under allowlist
+/// mode: the only DNS the guest is given, releasing an answer only after its
+/// addresses are in the kernel's allowed set.
+async fn run_resolver(spec_path: &Path) -> Result<(), SupervisorError> {
+    // The same trust rule as supervision; the second argument repeats the spec
+    // path because this entrypoint has no ready socket and the check only needs
+    // the paths to share a directory.
+    validate_metadata(spec_path, spec_path).await?;
+    let bytes = fs::read(spec_path)
+        .await
+        .map_err(SupervisorError::ReadSpec)?;
+    let spec = LaunchSpec::from_json(&bytes).map_err(SupervisorError::InvalidSpec)?;
+    if spec.runtime_paths.launch_spec != spec_path {
+        return Err(SupervisorError::SpecPathMismatch);
+    }
+    // Validation already held every entry to the grammar, so a failure here is a
+    // defect rather than an input.
+    let allowlist = vivarium::net::allowlist::Allowlist::parse(&spec.egress.allow)
+        .map_err(|_| SupervisorError::InvalidSpec(LaunchError::InvalidSpec("egress allowlist")))?;
+    let bind = std::net::SocketAddr::new(spec.network.gateway_address, spec.network.resolver_port);
+    let socket = tokio::net::UdpSocket::bind(bind)
+        .await
+        .map_err(SupervisorError::ResolverBind)?;
+    let upstream = std::net::SocketAddr::new(spec.network.dns_forward_address, 53);
+    let programmer = vivarium::net::nft::NftProgrammer::new(vivarium::net::nft::NftRunner::direct(
+        &spec.backend_programs.nft,
+    ));
+    vivarium::net::resolver::serve(
+        socket,
+        allowlist,
+        vivarium::net::resolver::ServeConfig {
+            upstream,
+            // The guest link is IPv4-only, so there is no working IPv6 path and
+            // spec/05 has the resolver withhold the family rather than release
+            // addresses the guest cannot reach.
+            withhold_aaaa: true,
+            upstream_timeout: RESOLVER_UPSTREAM_TIMEOUT,
+        },
+        programmer,
+    )
+    .await
+    .map_err(SupervisorError::ResolverServe)
+}
+
+/// Parses the exact invocations the launcher constructs, and nothing looser.
 ///
 /// `argv` includes the program name, as `std::env::args_os` yields it. Passing it in rather than
 /// reading it keeps this a pure function of its input, so the whole grammar can be asserted
 /// without a process.
-fn arguments<I>(argv: I) -> Result<(PathBuf, PathBuf), SupervisorError>
+fn arguments<I>(argv: I) -> Result<Invocation, SupervisorError>
 where
     I: IntoIterator<Item = std::ffi::OsString>,
 {
     let mut tokens = argv.into_iter().skip(1);
-    if tokens.next().as_deref() != Some(std::ffi::OsStr::new("--spec")) {
+    let first = tokens.next().ok_or(SupervisorError::Usage)?;
+    if first == *"net-init" {
+        if tokens.next().is_some() {
+            return Err(SupervisorError::Usage);
+        }
+        return Ok(Invocation::NetInit);
+    }
+    if first == *"resolver" {
+        if tokens.next().as_deref() != Some(std::ffi::OsStr::new("--spec")) {
+            return Err(SupervisorError::Usage);
+        }
+        let spec = PathBuf::from(tokens.next().ok_or(SupervisorError::Usage)?);
+        if tokens.next().is_some() || !spec.is_absolute() {
+            return Err(SupervisorError::Usage);
+        }
+        return Ok(Invocation::Resolver { spec });
+    }
+    if first != *"--spec" {
         return Err(SupervisorError::Usage);
     }
     let spec = PathBuf::from(tokens.next().ok_or(SupervisorError::Usage)?);
@@ -227,12 +326,12 @@ where
     if tokens.next().is_some() || !spec.is_absolute() || !ready.is_absolute() {
         return Err(SupervisorError::Usage);
     }
-    Ok((spec, ready))
+    Ok(Invocation::Supervise { spec, ready })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ExitKind, LaunchError, ReadinessError, SupervisorError, arguments};
+    use super::{ExitKind, Invocation, LaunchError, ReadinessError, SupervisorError, arguments};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -250,7 +349,7 @@ mod tests {
     /// The launcher constructs exactly one invocation, so anything else is a usage error rather
     /// than something to interpret. Testable at all only because `arguments` takes its input.
     #[test]
-    fn only_the_exact_invocation_parses() {
+    fn only_the_exact_invocations_parse() {
         let ok = arguments(argv(&[
             "--spec",
             "/run/a/spec.json",
@@ -259,10 +358,20 @@ mod tests {
         ]));
         assert_eq!(
             ok.ok(),
-            Some((
-                PathBuf::from("/run/a/spec.json"),
-                PathBuf::from("/run/a/r.sock")
-            ))
+            Some(Invocation::Supervise {
+                spec: PathBuf::from("/run/a/spec.json"),
+                ready: PathBuf::from("/run/a/r.sock"),
+            })
+        );
+        assert_eq!(
+            arguments(argv(&["net-init"])).ok(),
+            Some(Invocation::NetInit)
+        );
+        assert_eq!(
+            arguments(argv(&["resolver", "--spec", "/run/a/spec.json"])).ok(),
+            Some(Invocation::Resolver {
+                spec: PathBuf::from("/run/a/spec.json"),
+            })
         );
 
         for rejected in [
@@ -272,6 +381,10 @@ mod tests {
             vec!["--spec", "spec.json", "--ready-socket", "/run/a/r.sock"],  // relative spec
             vec!["--spec", "/run/a/spec.json", "--ready-socket", "r.sock"],  // relative socket
             vec!["--spec", "/run/a/s", "--ready-socket", "/run/a/r", "--x"], // trailing argument
+            vec!["net-init", "--x"],                                         // trailing argument
+            vec!["resolver"],                                                // spec absent
+            vec!["resolver", "--spec", "spec.json"],                         // relative spec
+            vec!["resolver", "--spec", "/run/a/s", "--x"],                   // trailing argument
         ] {
             assert!(
                 arguments(argv(&rejected)).is_err(),
@@ -301,6 +414,9 @@ mod tests {
                 ExitKind::IoErr,
             ),
             (SupervisorError::ReportReadiness(io()), ExitKind::IoErr),
+            (SupervisorError::NetInit(io()), ExitKind::IoErr),
+            (SupervisorError::ResolverBind(io()), ExitKind::IoErr),
+            (SupervisorError::ResolverServe(io()), ExitKind::IoErr),
             (
                 SupervisorError::EncodeReadiness(ReadinessError::UnsupportedSchema(2)),
                 ExitKind::Software,

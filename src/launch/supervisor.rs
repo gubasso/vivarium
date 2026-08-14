@@ -97,6 +97,21 @@ fn encode_cmdline_path(path: &Path) -> String {
 pub enum ChildKind {
     Virtiofsd(String),
     Vmm,
+    /// Holds the per-VM user+net namespace pair open (spec/05).
+    NetnsHolder,
+    /// The unprivileged uplink process connecting the pair to the host's network.
+    Uplink,
+    /// The gating resolver, present only under allowlist mode.
+    Resolver,
+}
+
+impl ChildKind {
+    /// Whether this child ends with the guest. The namespace holder, the uplink,
+    /// and the resolver outlive a guest poweroff by design and exit only when this
+    /// supervisor kills them, so the shutdown ladder must not wait on them.
+    const fn ends_with_guest(&self) -> bool {
+        matches!(self, Self::Vmm | Self::Virtiofsd(_))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -189,11 +204,11 @@ impl Supervisor {
     async fn run_inner(&mut self, ready: &mpsc::Sender<LaunchReady>) -> Result<(), LaunchError> {
         self.provision_volumes().await?;
         let profile = ConfinementProfile::new(&self.spec)?;
-        let vmm = profile.vmm();
         let shares = profile.shares();
-        ConfinementProfile::validate_rendered(&vmm, &shares, profile.drops_bounding_set())?;
-        for (share, command) in self.spec.shares.clone().into_iter().zip(shares) {
-            self.spawn_child(ChildKind::Virtiofsd(share.tag), &command)?;
+        let holder = profile.netns_holder();
+        let drops_bounding_set = profile.drops_bounding_set();
+        for (share, command) in self.spec.shares.clone().into_iter().zip(shares.iter()) {
+            self.spawn_child(ChildKind::Virtiofsd(share.tag), command)?;
         }
         let share_sockets = self
             .spec
@@ -204,6 +219,8 @@ impl Supervisor {
         for (socket, tag) in share_sockets {
             self.wait_for_socket(&socket, Some(&tag)).await?;
         }
+        let vmm = self.bring_up_network(&holder, drops_bounding_set).await?;
+        ConfinementProfile::validate_rendered(&vmm, &shares, drops_bounding_set)?;
         self.spawn_child(ChildKind::Vmm, &vmm)?;
         self.write_vmm_pid().await?;
         let api_socket = self.spec.runtime_paths.api_socket.clone();
@@ -261,6 +278,102 @@ impl Supervisor {
     async fn prepare_runtime(&self) -> Result<(), LaunchError> {
         self.spec.validate()?;
         secure_fs::private_dir(&self.spec.runtime_paths.root).await
+    }
+
+    /// Bring up the guest's network and return the VMM command joined into it.
+    ///
+    /// The order is the contract (spec/05): the holder makes the pair; the tap and
+    /// the forwarding sysctl are configured inside it; under allowlist mode the
+    /// default-deny ruleset and its literal destinations reach the kernel before
+    /// the uplink or the VMM exist, so no window is open in which a guest packet
+    /// could cross an unfiltered path; then the uplink, the resolver, and last the
+    /// VMM. The pair, the tap, and the uplink exist in every mode; the filter and
+    /// the resolver exist only under allowlist — absent, not inert.
+    async fn bring_up_network(
+        &mut self,
+        holder: &CommandSpec,
+        drops_bounding_set: bool,
+    ) -> Result<CommandSpec, LaunchError> {
+        self.spawn_child(ChildKind::NetnsHolder, holder)?;
+        let holder_pid = self.child_pid(&ChildKind::NetnsHolder)?;
+        crate::net::netns::await_pair(holder_pid, STARTUP_TIMEOUT)
+            .await
+            .map_err(|_| LaunchError::Readiness("namespace pair"))?;
+        let plan = {
+            let profile =
+                ConfinementProfile::with_bounding_set_drop(&self.spec, drops_bounding_set)?;
+            let tap_steps: Vec<CommandSpec> = crate::net::tap::setup_sequences(
+                &self.spec.network.tap_name,
+                &self.spec.network.gateway_cidr(),
+            )
+            .iter()
+            .map(|sequence| profile.in_namespace_ip(holder_pid, sequence))
+            .collect();
+            let link_show: Vec<String> = ["-j", "link", "show"]
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            (
+                profile.net_init(holder_pid),
+                tap_steps,
+                profile.in_namespace_ip(holder_pid, &link_show),
+                profile.uplink(holder_pid),
+                profile.resolver(holder_pid),
+                profile.vmm(holder_pid),
+            )
+        };
+        let (net_init, tap_steps, link_show, uplink, resolver, vmm) = plan;
+        run_checked(net_init).await?;
+        for step in tap_steps {
+            run_checked(step).await?;
+        }
+        let links = run_captured(&link_show).await?;
+        // No carrier is the expected pre-attach state; what is asserted is that the
+        // tap exists and is administratively up before a VMM is told to open it.
+        crate::net::tap::assert_tap_up(&links, &self.spec.network.tap_name)
+            .map_err(|_| LaunchError::Readiness("tap device"))?;
+        if matches!(
+            self.spec.egress.mode,
+            crate::launch::LaunchEgressMode::Allowlist
+        ) {
+            let allowlist = crate::net::allowlist::Allowlist::parse(&self.spec.egress.allow)
+                .map_err(|_| LaunchError::InvalidSpec("egress allowlist entry is malformed"))?;
+            let runner = crate::net::nft::NftRunner::entered(
+                &self.spec.backend_programs.nsenter,
+                holder_pid,
+                &self.spec.backend_programs.nft.display().to_string(),
+            );
+            runner
+                .apply(&crate::net::nft::base_ruleset(
+                    self.spec.network.gateway_address,
+                    self.spec.network.resolver_port,
+                ))
+                .await
+                .map_err(|_| LaunchError::Readiness("egress ruleset"))?;
+            let literals = allowlist.literal_destinations();
+            if !literals.is_empty() {
+                runner
+                    .apply(&crate::net::nft::literal_elements(&literals))
+                    .await
+                    .map_err(|_| LaunchError::Readiness("egress literal destinations"))?;
+            }
+        }
+        self.spawn_child(ChildKind::Uplink, &uplink)?;
+        if matches!(
+            self.spec.egress.mode,
+            crate::launch::LaunchEgressMode::Allowlist
+        ) {
+            self.spawn_child(ChildKind::Resolver, &resolver)?;
+        }
+        Ok(vmm)
+    }
+
+    fn child_pid(&self, kind: &ChildKind) -> Result<u32, LaunchError> {
+        self.children
+            .iter()
+            .find(|managed| &managed.kind == kind)
+            .and_then(|managed| managed.child.id())
+            .ok_or(LaunchError::Task)
     }
 
     /// Creates any volume image that does not exist yet, formatted before it is reachable.
@@ -344,10 +457,20 @@ impl Supervisor {
                     .try_wait()
                     .map_err(|error| LaunchError::io("poll child", error))?
                 {
+                    // The pair dies with its holder and the guest's network with
+                    // its uplink or resolver, so any of them exiting while a
+                    // socket is awaited fails the launch rather than letting the
+                    // wait run out its budget.
                     let relevant = match (&managed.kind, share_tag) {
                         (ChildKind::Virtiofsd(tag), Some(expected)) => tag == expected,
-                        (ChildKind::Vmm, None) => true,
-                        _ => false,
+                        (
+                            ChildKind::Vmm
+                            | ChildKind::NetnsHolder
+                            | ChildKind::Uplink
+                            | ChildKind::Resolver,
+                            _,
+                        ) => true,
+                        (ChildKind::Virtiofsd(_), None) => false,
                     };
                     if relevant {
                         return Err(LaunchError::ChildExit {
@@ -502,10 +625,18 @@ impl Supervisor {
         }
     }
 
-    /// Whether any backend child is still running.
-    fn children_alive(&mut self) -> Result<bool, LaunchError> {
+    /// Whether any child that ends with the guest is still running.
+    ///
+    /// Deliberately not all children: the namespace holder, the uplink, and the
+    /// resolver exit only when killed, so a ladder that waited on them would spend
+    /// its whole poweroff budget on every stop for processes that were never going
+    /// to comply.
+    fn guest_children_alive(&mut self) -> Result<bool, LaunchError> {
         let mut alive = false;
         for managed in &mut self.children {
+            if !managed.kind.ends_with_guest() {
+                continue;
+            }
             alive |= managed
                 .child
                 .try_wait()
@@ -515,10 +646,10 @@ impl Supervisor {
         Ok(alive)
     }
 
-    /// Wait until every backend child has exited, or the budget expires.
+    /// Wait until every guest-bound child has exited, or the budget expires.
     async fn await_children(&mut self, budget: Duration) -> Result<(), LaunchError> {
         let deadline = tokio::time::Instant::now() + budget;
-        while self.children_alive()? {
+        while self.guest_children_alive()? {
             if tokio::time::Instant::now() >= deadline {
                 break;
             }
@@ -544,7 +675,7 @@ impl Supervisor {
         // ladder sits inside spec/10's default ten-second grace, and inside that one only: a
         // `--timeout` larger than the default does not reach this process, so it does not move
         // the moment the guest is destroyed (`Q-018`, and the note on `GUEST_POWEROFF_TIMEOUT`).
-        if self.children_alive()? {
+        if self.guest_children_alive()? {
             let _ = self.remote("shutdown", None).await;
             self.await_children(SHUTDOWN_TIMEOUT).await?;
         }
@@ -598,6 +729,24 @@ async fn run_checked(spec: CommandSpec) -> Result<(), LaunchError> {
         Err(LaunchError::ChildExit {
             kind: "launch helper",
             status: status.code(),
+        })
+    }
+}
+
+/// Like [`run_checked`], for the helpers whose stdout is the assertion input.
+async fn run_captured(spec: &CommandSpec) -> Result<String, LaunchError> {
+    let output = Command::new(spec.program())
+        .args(spec.args())
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|error| LaunchError::io("run launch helper", error))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(LaunchError::ChildExit {
+            kind: "launch helper",
+            status: output.status.code(),
         })
     }
 }

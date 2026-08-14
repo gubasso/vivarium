@@ -122,7 +122,11 @@ jq \
       vmPid: ($runtime + "/vm.pid"), bootJson: ($runtime + "/boot.json"), vmCreateJson: ($runtime + "/vm-create.json") },
     backendPrograms: { cloudHypervisor: .cloudHypervisor, chRemote: .chRemote,
       virtiofsd: .virtiofsd, setpriv: .setpriv, truncate: .truncate,
-      mkfsExt4: .mkfsExt4, systemdRun: .systemdRun, supervisor: .supervisor },
+      mkfsExt4: .mkfsExt4, systemdRun: .systemdRun, supervisor: .supervisor,
+      unshare: .unshare, nsenter: .nsenter, ip: .ip, nft: .nft,
+      pasta: .pasta, sleep: .sleep },
+    egress: .egress,
+    network: .network,
     socketLegs: { api: $api, console: $console, credentials: [.credentialIds[] as $id |
       { id: $id, hostSocket: (if $id == "ssh" then $sshAgent else $gpgAgent end) }] },
     resources: { vcpus: $vcpu, memoryMiB: $memoryMiB, cpuWeight: 100 },

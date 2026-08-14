@@ -8,18 +8,21 @@ use std::collections::HashSet;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Component, Path, PathBuf};
 
-/// The launch handoff's own version, bumped to 5 by named volumes.
+/// The launch handoff's own version, bumped to 6 by guest networking.
 ///
-/// The launcher takes one `--volume-dir` and joins each image path from a name the build owns, so
-/// `volumes` is as long as the merged configuration declares rather than the fixed two a host used
-/// to name on the command line. It caught the same class at 4 (ADR-0100): `ShareSpec::mount_point`
-/// for the workspace stopped being the path a session starts in and became the share's internal
-/// one, and both shapes parse, so the version is the only thing that separates them.
+/// 6 adds the `egress` and `network` objects and six backend programs (`unshare`, `nsenter`,
+/// `ip`, `nft`, `pasta`, `sleep`): the supervisor now creates a per-VM namespace pair, configures
+/// a tap, and — under allowlist mode — applies a ruleset and spawns the gating resolver, none of
+/// which an older handoff describes. 5 was named volumes: the launcher takes one `--volume-dir`
+/// and joins each image path from a name the build owns. It caught the same class at 4
+/// (ADR-0100): `ShareSpec::mount_point` for the workspace stopped being the path a session starts
+/// in and became the share's internal one, and both shapes parse, so the version is the only
+/// thing that separates them.
 ///
-/// It does not separate every pairing. The runner's own argument names moved with this bump, and a
-/// generated flake pins its own `vivarium` — so a newer `viv` may meet an older runner, which
-/// refuses at its usage line before rendering any JSON for this constant to check.
-pub const LAUNCH_SCHEMA_VERSION: u32 = 5;
+/// It does not separate every pairing. The runner's own argument names moved with the bump to 5,
+/// and a generated flake pins its own `vivarium` — so a newer `viv` may meet an older runner,
+/// which refuses at its usage line before rendering any JSON for this constant to check.
+pub const LAUNCH_SCHEMA_VERSION: u32 = 6;
 pub const VIRTIOFSD_RLIMIT_NOFILE: u64 = 524_288;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -86,6 +89,72 @@ pub struct BackendPrograms {
     pub mkfs_ext4: PathBuf,
     pub systemd_run: PathBuf,
     pub supervisor: PathBuf,
+    /// Creates and holds the per-VM user+net namespace pair (spec/05).
+    pub unshare: PathBuf,
+    /// Joins the pair by the holder's pid for every in-namespace step.
+    pub nsenter: PathBuf,
+    /// Configures the tap inside the pair, as launch-time one-shots.
+    pub ip: PathBuf,
+    /// Applies the egress ruleset and its per-answer elements under allowlist mode.
+    pub nft: PathBuf,
+    /// The unprivileged uplink process, one per VM, connecting the namespace to the
+    /// host's network.
+    pub pasta: PathBuf,
+    /// The holder's body: keeps the pair referenced for the VM's lifetime.
+    pub sleep: PathBuf,
+}
+
+/// The launch half of `sandbox.egress`: the mode and the destinations the build
+/// channel declared, carried across so host-side enforcement needs no evaluation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EgressSpec {
+    pub mode: LaunchEgressMode,
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+/// spec/05's two egress modes, as the launch handoff spells them.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LaunchEgressMode {
+    Open,
+    Allowlist,
+}
+
+/// The addressing the namespace, the guest, and the resolver agree on.
+///
+/// Owned by the build (`nix/default.nix` names the values once) and carried here so
+/// the supervisor's tap setup and the guest's interface configuration are two
+/// readers of one declaration rather than two spellings of it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NetworkSpec {
+    /// The tap the VMM opens by name, inside the pair.
+    pub tap_name: String,
+    /// The namespace side of the guest link — the guest's gateway, and the address
+    /// the gating resolver serves on under allowlist mode.
+    pub gateway_address: std::net::IpAddr,
+    /// The guest link's prefix length.
+    pub prefix_length: u8,
+    /// The guest's own address, configured by the guest image.
+    pub guest_address: std::net::IpAddr,
+    /// The address the uplink maps to the host's own resolver. Deliberately outside
+    /// the guest link's subnet, so the guest routes it through the gateway instead
+    /// of asking the local link for a neighbour that does not exist.
+    pub dns_forward_address: std::net::IpAddr,
+    /// The guest NIC's MAC, fixed so the guest's interface match is stable.
+    pub guest_mac: String,
+    /// The gating resolver's UDP port on the gateway address.
+    pub resolver_port: u16,
+}
+
+impl NetworkSpec {
+    /// The gateway address in CIDR notation, as `ip addr add` takes it.
+    #[must_use]
+    pub fn gateway_cidr(&self) -> String {
+        format!("{}/{}", self.gateway_address, self.prefix_length)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -235,6 +304,8 @@ pub struct LaunchSpec {
     pub descriptor_budget: DescriptorBudget,
     pub identity_translation: IdentityTranslation,
     pub guest_session: GuestSession,
+    pub egress: EgressSpec,
+    pub network: NetworkSpec,
     pub shares: Vec<ShareSpec>,
     pub volumes: Vec<VolumeSpec>,
     pub vm_create: Value,
@@ -307,6 +378,12 @@ impl LaunchSpec {
             &self.backend_programs.mkfs_ext4,
             &self.backend_programs.systemd_run,
             &self.backend_programs.supervisor,
+            &self.backend_programs.unshare,
+            &self.backend_programs.nsenter,
+            &self.backend_programs.ip,
+            &self.backend_programs.nft,
+            &self.backend_programs.pasta,
+            &self.backend_programs.sleep,
         ] {
             require_absolute_resolved(program)?;
             if !program.starts_with("/nix/store") {
@@ -314,6 +391,41 @@ impl LaunchSpec {
                     "backend programs must be store paths",
                 ));
             }
+        }
+        // The grammar backstop for a hand-written or stale handoff: the manifest
+        // refused malformed entries first and with a diagnostic, and under allowlist
+        // mode the resolver and the filter both parse this list again to enforce it.
+        if crate::net::allowlist::Allowlist::parse(&self.egress.allow).is_err() {
+            return Err(LaunchError::InvalidSpec(
+                "egress allowlist entry is malformed",
+            ));
+        }
+        if self.network.tap_name.is_empty()
+            || self.network.tap_name.len() > 15
+            || !self
+                .network
+                .tap_name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            // 15 is IFNAMSIZ minus the terminator; a longer name fails at `ip` with
+            // less to say.
+            return Err(LaunchError::InvalidSpec(
+                "tap name must be a short alphanumeric-and-dash identifier",
+            ));
+        }
+        if self.network.prefix_length == 0 || self.network.prefix_length > 30 {
+            return Err(LaunchError::InvalidSpec(
+                "network prefix must leave room for a gateway and a guest",
+            ));
+        }
+        if self.network.gateway_address.is_ipv4() != self.network.guest_address.is_ipv4() {
+            return Err(LaunchError::InvalidSpec(
+                "gateway and guest addresses must share a family",
+            ));
+        }
+        if self.network.resolver_port == 0 {
+            return Err(LaunchError::InvalidSpec("resolver port must be non-zero"));
         }
         require_absolute_resolved(&self.runtime_paths.root)?;
         let runtime_paths = [
@@ -638,6 +750,12 @@ pub mod tests {
                 mkfs_ext4: "/nix/store/e/bin/mkfs.ext4".into(),
                 systemd_run: "/nix/store/f/bin/systemd-run".into(),
                 supervisor: "/nix/store/g/bin/vivarium-supervisor".into(),
+                unshare: "/nix/store/c/bin/unshare".into(),
+                nsenter: "/nix/store/c/bin/nsenter".into(),
+                ip: "/nix/store/i/bin/ip".into(),
+                nft: "/nix/store/j/bin/nft".into(),
+                pasta: "/nix/store/k/bin/pasta".into(),
+                sleep: "/nix/store/d/bin/sleep".into(),
             },
             socket_legs: SocketLegs {
                 api: child("api.sock"),
@@ -664,6 +782,19 @@ pub mod tests {
                 home: "/home/vivarium".into(),
                 shell: "/nix/store/h/bin/bash".into(),
                 path: "/run/wrappers/bin:/run/current-system/sw/bin".into(),
+            },
+            egress: EgressSpec {
+                mode: LaunchEgressMode::Open,
+                allow: Vec::new(),
+            },
+            network: NetworkSpec {
+                tap_name: "viv-tap0".into(),
+                gateway_address: "10.177.0.1".parse().unwrap(),
+                prefix_length: 24,
+                guest_address: "10.177.0.2".parse().unwrap(),
+                dns_forward_address: "10.177.53.53".parse().unwrap(),
+                guest_mac: "02:56:49:56:41:00".into(),
+                resolver_port: 53,
             },
             shares: vec![ShareSpec {
                 tag: WORKSPACE_SHARE_TAG.into(),
@@ -761,6 +892,16 @@ pub mod tests {
             }),
             Box::new(|s| s.volumes.push(volume("viv-cache", "v/cache.img"))),
             Box::new(|s| s.volumes.push(volume("viv-cache", "/v/../cache.img"))),
+            // The networking half of schema 6: a malformed allowlist entry, an
+            // unrenderable tap name, a subnet with no room, a family split, and a
+            // backend program that is not a store path.
+            Box::new(|s| s.egress.allow.push("https://example.com".into())),
+            Box::new(|s| s.network.tap_name = "a name with spaces".into()),
+            Box::new(|s| s.network.tap_name = String::new()),
+            Box::new(|s| s.network.prefix_length = 31),
+            Box::new(|s| s.network.guest_address = "2001:db8::2".parse().unwrap()),
+            Box::new(|s| s.network.resolver_port = 0),
+            Box::new(|s| s.backend_programs.pasta = "/usr/bin/pasta".into()),
         ];
         for mutate in mutations {
             let mut spec = fixture();

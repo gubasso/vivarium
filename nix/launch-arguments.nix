@@ -7,6 +7,7 @@
   gcInterlockCanaryExpression,
   gcInterlockControlExpression,
   supervisorPackage,
+  networkLayout,
   # ADR-0096 takes the daemon's own default, uniform across shares — measured, on
   # a concurrent sweep in which no non-zero pool won a cell. The *value* lives
   # here rather than in `spec/06`, which states the property only, precisely so a
@@ -149,20 +150,41 @@ let
   };
 in
 {
-  # 5 since named volumes: `volumeLaunch` no longer carries a per-role image
-  # token, and the launcher takes one `--volume-dir` from which each entry's
-  # `imagePath` is joined — so the number of disks is a property of the build
-  # rather than of the host's argv. The version pairs this JSON with the `viv`
-  # that parses the specification rendered from it, which is what it caught at 4:
-  # `shareLaunch[workspace].mountPoint` stopped being the path a session starts
-  # in and became the share's internal one (ADR-0100), and both halves parsed.
+  # 6 since guest networking: the `egress` and `network` objects and six backend
+  # programs joined, and the supervisor that parses this creates a namespace
+  # pair, a tap, and — under allowlist mode — a ruleset and a resolver that an
+  # older handoff never described. 5 was named volumes: `volumeLaunch` stopped
+  # carrying a per-role image token and the launcher took one `--volume-dir`
+  # from which each entry's `imagePath` is joined. The version pairs this JSON
+  # with the `viv` that parses the specification rendered from it.
   #
-  # It deliberately does not catch the other half of this change. The runner's
-  # own argument names moved, and a generated flake pins its own `vivarium`, so a
+  # It deliberately does not catch the other half of a bump. The runner's own
+  # argument names can move, and a generated flake pins its own `vivarium`, so a
   # new `viv` can drive an older runner — which then refuses at `usage()` before
   # any schema is read. That refusal prints this number for exactly that reason.
-  schemaVersion = 5;
+  schemaVersion = 6;
   inherit guestSession;
+  # The launch half of `sandbox.egress` (spec/05): carried across so host-side
+  # enforcement needs no evaluation at start. `or`-defaulted because the shipped
+  # diagnostic image composes no tool options — there "declared nothing" and
+  # "cannot declare" are the same answer, and the default is spec/05's own.
+  egress = {
+    mode = config.sandbox.egress.mode or "open";
+    allow = config.sandbox.egress.allow or [ ];
+  };
+  # The guest link's addressing, from the one declaration in `nix/default.nix`
+  # that the guest module also reads.
+  network = {
+    inherit (networkLayout)
+      tapName
+      gatewayAddress
+      prefixLength
+      guestAddress
+      dnsForwardAddress
+      guestMac
+      resolverPort
+      ;
+  };
   descriptorBudget = {
     limit = 524288;
     workerPoolSize = virtiofsdThreadPoolSize;
@@ -187,6 +209,16 @@ in
   supervisor = lib.getExe' supervisorPackage "vivarium-supervisor";
   truncate = lib.getExe' pkgs.coreutils "truncate";
   mkfsExt4 = lib.getExe' pkgs.e2fsprogs "mkfs.ext4";
+  # The six programs guest networking added (spec/05, schema 6): the pinned
+  # util-linux pair that creates and joins the per-VM namespaces, `ip` for the
+  # tap one-shots, `nft` for the allowlist ruleset, `pasta` as the one
+  # unprivileged uplink process per VM, and `sleep` as the holder's body.
+  unshare = lib.getExe' pkgs.util-linux "unshare";
+  nsenter = lib.getExe' pkgs.util-linux "nsenter";
+  ip = lib.getExe' pkgs.iproute2 "ip";
+  nft = lib.getExe' pkgs.nftables "nft";
+  pasta = lib.getExe' pkgs.passt "pasta";
+  sleep = lib.getExe' pkgs.coreutils "sleep";
   staticArguments = [
     "--cpus"
     "boot=@VCPU@"
@@ -209,6 +241,10 @@ in
     "socket=@CONSOLE_SOCKET@"
     "--vsock"
     "cid=3,socket=@CONTROL_SOCKET@"
+    # The guest NIC: the VMM opens the tap by name inside the VM's own namespace,
+    # where the supervisor created it. No token — both values are build-owned.
+    "--net"
+    "tap=${networkLayout.tapName},mac=${networkLayout.guestMac}"
   ]
   ++ lib.concatMap (volume: [
     "--disk"
@@ -312,6 +348,14 @@ in
       cid = 3;
       socket = "@CONTROL_SOCKET@";
     };
+    # The `--net` entry above, in `VmConfig` spelling: two renderings of one
+    # device, like the serial and vsock pairs around it.
+    net = [
+      {
+        tap = networkLayout.tapName;
+        mac = networkLayout.guestMac;
+      }
+    ];
     watchdog = true;
     landlock_enable = true;
     landlock_rules = [ ];

@@ -179,6 +179,27 @@ let
   # step. A guest that still sees *this* proves the deletion did not propagate at
   # all, which makes the run inconclusive rather than a pass.
   gcInterlockControlExpression = gcInterlockExpression "gc-interlock-control" "vivarium-gc-interlock-control";
+  # The guest link's addressing, named once and read by both halves: the guest
+  # module configures the NIC and the nameserver from it, and the launcher
+  # carries it to the supervisor, which configures the tap and — under allowlist
+  # mode — binds the gating resolver on the gateway. The tap name and gateway are
+  # the values the Q-005 spike proved inside an unprivileged pair.
+  #
+  # `dnsForwardAddress` is the address the uplink maps to the host's own
+  # resolver, and it sits deliberately outside the guest link's /24: an address
+  # inside it would be resolved on the local link, where nothing answers, instead
+  # of being routed through the gateway toward the uplink.
+  networkLayout = {
+    tapName = "viv-tap0";
+    gatewayAddress = "10.177.0.1";
+    prefixLength = 24;
+    guestAddress = "10.177.0.2";
+    dnsForwardAddress = "10.177.53.53";
+    # Locally administered, stable so the guest's interface match never moves.
+    guestMac = "02:56:49:56:41:00";
+    resolverPort = 53;
+  };
+
   # The guest module and its build inputs, published so a generated flake can
   # compose the same guest a diagnostic image composes. Slice 012's item 1
   # measured the alternative: a manifest-built guest carries no vivarium shares,
@@ -208,6 +229,7 @@ let
       homeVolumeName
       storeVolumeName
       guestAgentPackage
+      networkLayout
       ;
     inherit (imageDefaults)
       homeVolumeSizeMiB
@@ -240,6 +262,7 @@ let
           gcInterlockCanaryExpression
           gcInterlockControlExpression
           supervisorPackage
+          networkLayout
           # Launch-channel, so it must not reach the guest: this is what keeps the
           # four pool-size variants on one guest closure and makes the sweep four
           # short boots rather than four full rebuilds.
@@ -306,6 +329,7 @@ in
     storeVolumeLabel
     workspaceInternalMountPoint
     imageDefaults
+    networkLayout
     mkImage
     shipped
     guestAgentPackage

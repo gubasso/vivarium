@@ -10,9 +10,9 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use vivarium::doctor::descriptors::host_fd_limit_sufficient;
 use vivarium::launch::{
-    BackendPrograms, ConfinementProfile, ConsoleReader, ConsoleSink, DescriptorBudget,
-    GuestSession, IdentityTranslation, LAUNCH_SCHEMA_VERSION, LaunchSpec, ResourceSpec,
-    RuntimePaths, ShareSpec, SocketLegs, Supervisor, TransientUnitSpec,
+    BackendPrograms, ConfinementProfile, ConsoleReader, ConsoleSink, DescriptorBudget, EgressSpec,
+    GuestSession, IdentityTranslation, LAUNCH_SCHEMA_VERSION, LaunchEgressMode, LaunchSpec,
+    NetworkSpec, ResourceSpec, RuntimePaths, ShareSpec, SocketLegs, Supervisor, TransientUnitSpec,
 };
 
 fn fixture(name: &str) -> LaunchSpec {
@@ -48,6 +48,12 @@ fn fixture(name: &str) -> LaunchSpec {
             mkfs_ext4: "/nix/store/fake/bin/mkfs.ext4".into(),
             systemd_run: "/nix/store/fake/bin/systemd-run".into(),
             supervisor: "/nix/store/fake/bin/vivarium-supervisor".into(),
+            unshare: "/nix/store/fake/bin/unshare".into(),
+            nsenter: "/nix/store/fake/bin/nsenter".into(),
+            ip: "/nix/store/fake/bin/ip".into(),
+            nft: "/nix/store/fake/bin/nft".into(),
+            pasta: "/nix/store/fake/bin/pasta".into(),
+            sleep: "/nix/store/fake/bin/sleep".into(),
         },
         socket_legs: SocketLegs {
             api: child("api.sock"),
@@ -74,6 +80,19 @@ fn fixture(name: &str) -> LaunchSpec {
             home: "/home/vivarium".into(),
             shell: "/nix/store/fake/bin/bash".into(),
             path: "/run/wrappers/bin:/run/current-system/sw/bin".into(),
+        },
+        egress: EgressSpec {
+            mode: LaunchEgressMode::Open,
+            allow: Vec::new(),
+        },
+        network: NetworkSpec {
+            tap_name: "viv-tap0".into(),
+            gateway_address: "10.177.0.1".parse().unwrap(),
+            prefix_length: 24,
+            guest_address: "10.177.0.2".parse().unwrap(),
+            dns_forward_address: "10.177.53.53".parse().unwrap(),
+            guest_mac: "02:56:49:56:41:00".into(),
+            resolver_port: 53,
         },
         shares: vec![ShareSpec {
             tag: "workspace".into(),
