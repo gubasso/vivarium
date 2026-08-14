@@ -14,4 +14,6 @@ pub mod doctor;
 pub mod exit;
 #[cfg(feature = "host")]
 pub mod launch;
+#[cfg(feature = "host")]
+pub mod net;
 pub mod protocol;

@@ -8,6 +8,8 @@ An allowlist entry may be a name or a literal address or block, and the two take
 
 The contract is independent of the link topology. A direct user-space vhost-user uplink is an implementation experiment; tap plus an uplink is the pre-authorized fallback. Both must preserve per-VM isolation, ordering between rule installation and answer release, and fail-fast denial.
 
+The implementation seams are selected: pinned util-linux `unshare` and `nsenter` for the namespace pair, pinned iproute2 `ip` for the tap, the `nftables` crate rendering the libnftables JSON schema through the pinned `nft` binary, and `hickory-proto` with vivarium's own serve loop for the gating resolver, landed under `src/net/`. The [slice 004 revisions](../plan/slices/004-enforce-egress-allowlist/README.md) carry the selection evidence.
+
 Exact matching, DNS behavior, update rules, and proof fixtures live in [networking and egress](../reference/spec/05-networking-and-egress.md), governed by invariant N8 in the [invariants](../reference/spec/08-invariants-and-guarantees.md).
 
 ## Governing decisions
@@ -18,5 +20,4 @@ Exact matching, DNS behavior, update rules, and proof fixtures live in [networki
 
 ## Unresolved
 
-- [Q-005](../plan/open-questions.md#q-005--which-rust-networking-crates-satisfy-the-namespace-tap-nftables-and-gating-resolver-boundaries) owns crate selection.
-- [Q-006](../plan/open-questions.md#q-006--can-a-user-space-vhost-user-uplink-drive-the-pinned-cloud-hypervisor-directly) owns the topology experiment. [Slice 004](../plan/slices/004-enforce-egress-allowlist/README.md) closes both.
+- [Q-006](../plan/open-questions.md#q-006--can-a-user-space-vhost-user-uplink-drive-the-pinned-cloud-hypervisor-directly) owns the topology experiment. [Slice 004](../plan/slices/004-enforce-egress-allowlist/README.md) closes it.

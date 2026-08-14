@@ -22,3 +22,8 @@ mke2fs = "mke2fs"
 # dictionary maps the `inh` token to `in`, which would rewrite a real flag into
 # one `setpriv` rejects at runtime.
 inh = "inh"
+
+# The user-space networking daemon (passt.top), slice 004's uplink candidate,
+# named in the slice's revisions and the networking design. The dictionary maps
+# it to `passed`/`past`, which would rewrite a program's name into prose.
+passt = "passt"

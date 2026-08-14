@@ -5,10 +5,10 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 ## in flight
 
 - 014 workspace-and-persistence — active — 2 sessions — implementation complete; the coding-agent clause needs the guest connectivity slice 004 builds, so this row closes after it. See the slice `Revisions`
+- 004 enforce-egress-allowlist — active — 4 sessions
 
 ## later
 
-- 004 enforce-egress-allowlist — later — 4 sessions
 - 005 cli-runtime-plumbing — later — 2 sessions
 - 006 generate-config-contract — later — 2 sessions
 - 007 build-test-lanes — later — 4 sessions

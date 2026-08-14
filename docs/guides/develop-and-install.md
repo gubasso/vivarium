@@ -68,6 +68,10 @@ It fails open: on a host that cannot produce the pins it prints the reason on st
 
 It lives in `.envrc` and not in the untracked `.envrc.local` for two reasons. The store paths move whenever [`../../nix/flake.lock`](../../nix/flake.lock) does, so a literal copy would go stale without announcing it, and `.envrc.local` is restricted to plain `export` lines because [`../../tests/host/disk-preflight`](../../tests/host/disk-preflight) sources it directly, with no direnv to evaluate anything. `.envrc.local` keeps its one job, which is the drive a disk-heavy run should absorb.
 
+## A project bound to this tree goes stale when the tree changes
+
+A development-pinned project locks the `vivarium` input to this working tree by content hash, so any source edit after its first evaluation makes the next `viv start` fail at evaluation with a NAR hash mismatch naming this repository's path. The lock is doing its job — a build never re-resolves inputs — but during development the pinned input is the thing being edited, so the mismatch is the normal state rather than a defect. The remedy is removing that project's retained lock under the data root (`.local/share/vivarium/projects/<project>/<target>/flake.lock`); the next evaluation is then lock-creation eligible and re-pins against the current tree, with the upstream inputs still supplied by the baseline store paths. The acceptance harness never meets this because every trial binds a fresh project. Observed 2026-08-14 while hand-running `viv start` in this repository after the slice 004 session-1 edits.
+
 ## Removing it
 
 ```console

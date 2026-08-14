@@ -35,7 +35,7 @@ members = ["crates/vivarium-guest-agent"]
 
 [features]
 default = ["host"]
-host = ["dep:tokio-util"]
+host = ["dep:tokio-util", "dep:hickory-proto", "dep:nftables", "dep:ipnet"]
 
 # The published crate is `vivarium`; the installed command is `viv`.
 [[bin]]
@@ -61,6 +61,17 @@ path = "tests/guest_agent_host.rs"
 harness = false
 
 [dependencies]
+# The three networking seams Q-005 selected; the slice 004 `Revisions` line carries the evidence.
+# `hickory-proto` is wire parsing and serialization only — the gating resolver's serve loop is
+# vivarium's own, because the release-after-programming ordering is the contract and a server
+# framework owns answer release exactly where the gate must sit. No `hickory-resolver`: its cache
+# would release answers no filter rule was programmed for.
+hickory-proto = { version = "0.26.1", optional = true }
+# CIDR entries in `egress.allow` (spec/03 grammar); matching a literal address against a block.
+ipnet = { version = "2.12.1", optional = true }
+# Typed model of the libnftables JSON schema. Rulesets are rendered as JSON and applied through
+# the pinned `nft` binary, so the parser trusted with guest-driven data is nftables' own userland.
+nftables = { version = "0.6.3", optional = true }
 # `process` for the two host facts the lifecycle verbs need and cannot be given: the invoking
 # user's uid/gid, which the share identity translation maps, and whether the recorded VM pid is
 # still alive, which is half of ADR-0030's state discriminator.
