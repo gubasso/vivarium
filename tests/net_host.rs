@@ -27,7 +27,6 @@ use vivarium::net::{netns, nft, tap};
 /// through the launch schema, so these are trial-local, not product constants.
 const TAP: &str = "viv-tap0";
 const GATEWAY_CIDR: &str = "10.177.0.1/24";
-const RESOLVER_ADDR: &str = "10.177.0.1";
 
 fn main() -> std::process::ExitCode {
     let args = Arguments::from_args();
@@ -189,7 +188,7 @@ async fn ruleset_applies_and_elements_expire(tools: Tools) {
     let holder = spawn_holder(&tools).await;
     let runner = nft::NftRunner::entered(&tools.nsenter, holder.pid, &tools.nft.to_string_lossy());
     runner
-        .apply(&nft::base_ruleset(RESOLVER_ADDR.parse().unwrap(), 53))
+        .apply(&nft::base_ruleset())
         .await
         .expect("the base ruleset applies through real nft");
 
@@ -243,7 +242,7 @@ async fn resolver_installs_through_real_nft(tools: Tools) {
     let holder = spawn_holder(&tools).await;
     let runner = nft::NftRunner::entered(&tools.nsenter, holder.pid, &tools.nft.to_string_lossy());
     runner
-        .apply(&nft::base_ruleset(RESOLVER_ADDR.parse().unwrap(), 53))
+        .apply(&nft::base_ruleset())
         .await
         .expect("the base ruleset applies");
 

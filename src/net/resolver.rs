@@ -12,17 +12,26 @@
 //! path, one upstream exchange per query through the namespace's uplink.
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
 use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::{RData, RecordType};
 use thiserror::Error;
 use tokio::net::UdpSocket;
+use tokio::sync::{Mutex, Semaphore};
 
 use super::allowlist::Allowlist;
 
 /// The largest datagram either side of the serve loop accepts: the EDNS ceiling.
 const MAX_DATAGRAM: usize = 65_535;
+
+/// How many queries may be in flight at once before the loop stops receiving.
+///
+/// The bound is backpressure, not policy: a guest resolving a dependency tree in
+/// parallel stays far under it, while a guest flooding queries fills the permits
+/// and then queues in the socket buffer instead of growing a task per datagram.
+const MAX_IN_FLIGHT: usize = 64;
 
 /// One answered address and the record TTL that bounds its life in the filter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,13 +193,17 @@ pub struct ServeConfig {
 
 /// Serve gated queries on `socket` until the socket itself fails.
 ///
-/// One query at a time: the gate's filter installation is a low-milliseconds
-/// subprocess and the upstream exchange dominates, so ordering stays trivially
-/// intact without a concurrent map of in-flight installs. Each exchange uses a
-/// fresh ephemeral upstream socket, so upstream ids never cross queries. A
-/// malformed or response-shaped datagram is dropped without an answer — answering
-/// would make the socket a reflector — and an upstream failure becomes `SERVFAIL`
-/// where the query was well-formed enough to answer at all.
+/// Each query is gated in its own task: the upstream exchange dominates a query's
+/// life, and a serial loop would answer a denied name only after every exchange
+/// queued ahead of it — under a dead upstream, one timeout at a time — where
+/// spec/05 wants denial answered from local policy alone. The ordering contract is
+/// per query, so concurrency does not loosen it: every task still releases its
+/// answer only after its own installation returns, and installations serialize
+/// through a lock around the programmer, which stays low-milliseconds. Each
+/// exchange uses a fresh ephemeral upstream socket, so upstream ids never cross
+/// queries. A malformed or response-shaped datagram is dropped without an answer —
+/// answering would make the socket a reflector — and an upstream failure becomes
+/// `SERVFAIL` where the query was well-formed enough to answer at all.
 ///
 /// # Errors
 ///
@@ -200,32 +213,79 @@ pub async fn serve<F>(
     socket: UdpSocket,
     allowlist: Allowlist,
     config: ServeConfig,
-    mut programmer: F,
+    programmer: F,
 ) -> std::io::Result<()>
+where
+    F: FilterProgrammer + Send + 'static,
+{
+    let socket = Arc::new(socket);
+    let allowlist = Arc::new(allowlist);
+    let programmer = SharedProgrammer::new(programmer);
+    let permits = Arc::new(Semaphore::new(MAX_IN_FLIGHT));
+    let mut buf = vec![0u8; MAX_DATAGRAM];
+    loop {
+        // The permit is taken before the datagram: at the in-flight bound the loop
+        // stops draining the socket and excess queries wait in its buffer.
+        let Ok(permit) = Arc::clone(&permits).acquire_owned().await else {
+            // The semaphore is never closed; an Err here cannot happen.
+            return Ok(());
+        };
+        let (len, from) = socket.recv_from(&mut buf).await?;
+        let query_bytes = buf[..len].to_vec();
+        let socket = Arc::clone(&socket);
+        let allowlist = Arc::clone(&allowlist);
+        let mut programmer = programmer.clone();
+        tokio::spawn(async move {
+            let _in_flight = permit;
+            let outcome = gate_query(
+                &query_bytes,
+                |name| allowlist.matches_name(name),
+                config.withhold_aaaa,
+                |bytes: Vec<u8>| exchange_upstream(bytes, config.upstream, config.upstream_timeout),
+                &mut programmer,
+            )
+            .await;
+            let answer = match outcome {
+                Ok(bytes) => Some(bytes),
+                Err(GateError::Upstream { .. }) => servfail_for(&query_bytes),
+                Err(GateError::MalformedQuery | GateError::Encode(_)) => None,
+            };
+            if let Some(bytes) = answer {
+                // A guest that vanished mid-answer is its problem, not the loop's.
+                let _ = socket.send_to(&bytes, from).await;
+            }
+        });
+    }
+}
+
+/// The per-task face of the one programmer: installations serialize through the
+/// lock while the exchanges around them run concurrently.
+struct SharedProgrammer<F> {
+    inner: Arc<Mutex<F>>,
+}
+
+impl<F> SharedProgrammer<F> {
+    fn new(programmer: F) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(programmer)),
+        }
+    }
+}
+
+impl<F> Clone for SharedProgrammer<F> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<F> FilterProgrammer for SharedProgrammer<F>
 where
     F: FilterProgrammer + Send,
 {
-    let mut buf = vec![0u8; MAX_DATAGRAM];
-    loop {
-        let (len, from) = socket.recv_from(&mut buf).await?;
-        let query_bytes = &buf[..len];
-        let outcome = gate_query(
-            query_bytes,
-            |name| allowlist.matches_name(name),
-            config.withhold_aaaa,
-            |bytes: Vec<u8>| exchange_upstream(bytes, config.upstream, config.upstream_timeout),
-            &mut programmer,
-        )
-        .await;
-        let answer = match outcome {
-            Ok(bytes) => Some(bytes),
-            Err(GateError::Upstream { .. }) => servfail_for(query_bytes),
-            Err(GateError::MalformedQuery | GateError::Encode(_)) => None,
-        };
-        if let Some(bytes) = answer {
-            // A guest that vanished mid-answer is its problem, not the loop's.
-            let _ = socket.send_to(&bytes, from).await;
-        }
+    async fn install(&mut self, additions: &[TimedAddress]) -> Result<(), FilterInstallError> {
+        self.inner.lock().await.install(additions).await
     }
 }
 
@@ -284,7 +344,7 @@ fn reply(query: &Message, code: ResponseCode) -> Result<Vec<u8>, hickory_proto::
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use hickory_proto::op::{MessageType, OpCode, Query};
@@ -714,6 +774,57 @@ mod tests {
         let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let answer = ask(&client, resolver_addr, &query_bytes("api.example.com.", 33)).await;
         assert_eq!(answer.metadata.response_code, ResponseCode::ServFail);
+        loop_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn a_denied_query_is_answered_while_an_exchange_is_stuck() {
+        // Denial is local policy and must not queue behind upstream latency: with an
+        // upstream that swallows the allowed query, a serial loop would hold the
+        // denied answer for the whole upstream timeout. It has to arrive well
+        // inside it.
+        let upstream_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream_socket.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                let _ = upstream_socket.recv_from(&mut buf).await;
+            }
+        });
+        let serve_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let resolver_addr = serve_socket.local_addr().unwrap();
+        let loop_handle = tokio::spawn(serve(
+            serve_socket,
+            Allowlist::parse(&["api.example.com".to_owned()]).unwrap(),
+            ServeConfig {
+                upstream: upstream_addr,
+                withhold_aaaa: false,
+                upstream_timeout: Duration::from_secs(30),
+            },
+            SharedRecording {
+                installed: Arc::new(std::sync::Mutex::new(Vec::new())),
+            },
+        ));
+        let stuck = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        stuck
+            .send_to(&query_bytes("api.example.com.", 41), resolver_addr)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client
+            .send_to(&query_bytes("denied.example.", 42), resolver_addr)
+            .await
+            .unwrap();
+        let mut buf = [0u8; 512];
+        let len = tokio::time::timeout(Duration::from_secs(1), client.recv(&mut buf))
+            .await
+            .expect("the denied answer must not wait out the stuck exchange")
+            .unwrap();
+        let denied = Message::from_vec(&buf[..len]).unwrap();
+        assert_eq!(denied.metadata.response_code, ResponseCode::Refused);
+        assert_eq!(denied.metadata.id, 42);
         loop_handle.abort();
     }
 

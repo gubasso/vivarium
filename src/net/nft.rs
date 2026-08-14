@@ -46,11 +46,17 @@ pub const SET_V6_LIT: &str = "allow6net";
 /// namespace toward the uplink.
 pub const CHAIN: &str = "egress";
 
-/// The base allowlist-mode ruleset: default-deny, established and related replies
-/// accepted, TCP into the two timed sets, DNS permitted to the gating resolver
-/// alone, and reject-not-drop for the rest.
+/// The base allowlist-mode ruleset: default-deny on the forward hook, established
+/// and related replies accepted, TCP into the timed and literal sets, and
+/// reject-not-drop for the rest.
+///
+/// Guest DNS needs no rule here: the resolver listens on the namespace's own
+/// gateway address, and locally delivered traffic takes the input hook, which this
+/// table leaves unfiltered — the resolver is the namespace's only listener. DNS
+/// toward any other destination is forwarded traffic and falls through to the
+/// reject tail like every other denial.
 #[must_use]
-pub fn base_ruleset(resolver: IpAddr, resolver_port: u16) -> Nftables<'static> {
+pub fn base_ruleset() -> Nftables<'static> {
     let objects = vec![
         add(NfListObject::Table(Table {
             family: NfFamily::INet,
@@ -97,19 +103,6 @@ pub fn base_ruleset(resolver: IpAddr, resolver_port: u16) -> Nftables<'static> {
                 ]),
                 op: Operator::IN,
             }),
-            Statement::Accept(None),
-        ])),
-        // The resolver is the only DNS destination; a guest asking anyone else falls
-        // through to the reject rules like any other denied traffic.
-        add(rule(vec![
-            match_eq(
-                payload(ip_protocol(resolver), "daddr"),
-                string(resolver.to_string()),
-            ),
-            match_eq(
-                payload("udp", "dport"),
-                Expression::Number(u32::from(resolver_port)),
-            ),
             Statement::Accept(None),
         ])),
         // The allowlist grants destinations for TCP alone (spec/05): UDP is denied
@@ -405,13 +398,6 @@ impl FilterProgrammer for NftProgrammer {
     }
 }
 
-const fn ip_protocol(addr: IpAddr) -> &'static str {
-    match addr {
-        IpAddr::V4(_) => "ip",
-        IpAddr::V6(_) => "ip6",
-    }
-}
-
 const fn add(object: NfListObject<'static>) -> NfObject<'static> {
     NfObject::CmdObject(NfCmd::Add(object))
 }
@@ -469,7 +455,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // The table, set, chain, DNS, and reject shapes are the ones the Q-005 spike
+    // The table, set, chain, and reject shapes are the ones the Q-005 spike
     // applied through `nft -j -f` inside an unprivileged namespace pair, so a
     // rendering that drifts from them is a rendering `nft` has not accepted. The
     // ct-state and l4proto guards and the interval literal sets joined later; the
@@ -477,8 +463,7 @@ mod tests {
 
     #[test]
     fn base_ruleset_renders_the_spike_accepted_shape() {
-        let rendered =
-            serde_json::to_value(base_ruleset("10.177.0.1".parse().unwrap(), 53)).unwrap();
+        let rendered = serde_json::to_value(base_ruleset()).unwrap();
         let objects = rendered.get("nftables").unwrap().as_array().unwrap();
         assert_eq!(
             objects[0],
@@ -512,41 +497,29 @@ mod tests {
                 "right": ["established", "related"], "op": "in"
             }})
         );
-        let dns_rule = &objects[7]["add"]["rule"]["expr"];
-        assert_eq!(
-            dns_rule[0],
-            json!({"match": {
-                "left": {"payload": {"protocol": "ip", "field": "daddr"}},
-                "right": "10.177.0.1", "op": "=="
-            }})
-        );
-        assert_eq!(
-            dns_rule[1]["match"]["left"],
-            json!({"payload": {"protocol": "udp", "field": "dport"}})
-        );
-        let allow4_rule = &objects[8]["add"]["rule"]["expr"];
+        let allow4_rule = &objects[7]["add"]["rule"]["expr"];
         assert_eq!(
             allow4_rule[0]["match"]["left"],
             json!({"meta": {"key": "l4proto"}})
         );
         assert_eq!(allow4_rule[0]["match"]["right"], json!("tcp"));
         assert_eq!(allow4_rule[1]["match"]["right"], json!("@allow4"));
-        let allow6_rule = &objects[9]["add"]["rule"]["expr"];
+        let allow6_rule = &objects[8]["add"]["rule"]["expr"];
         assert_eq!(allow6_rule[0]["match"]["right"], json!("tcp"));
         assert_eq!(allow6_rule[1]["match"]["right"], json!("@allow6"));
-        let allow4net_rule = &objects[10]["add"]["rule"]["expr"];
+        let allow4net_rule = &objects[9]["add"]["rule"]["expr"];
         assert_eq!(allow4net_rule[0]["match"]["right"], json!("tcp"));
         assert_eq!(allow4net_rule[1]["match"]["right"], json!("@allow4net"));
-        let allow6net_rule = &objects[11]["add"]["rule"]["expr"];
+        let allow6net_rule = &objects[10]["add"]["rule"]["expr"];
         assert_eq!(allow6net_rule[1]["match"]["right"], json!("@allow6net"));
-        let tcp_reject = &objects[12]["add"]["rule"]["expr"];
+        let tcp_reject = &objects[11]["add"]["rule"]["expr"];
         assert_eq!(
             tcp_reject[0]["match"]["left"],
             json!({"meta": {"key": "l4proto"}})
         );
         assert_eq!(tcp_reject[1], json!({"reject": {"type": "tcp reset"}}));
         assert_eq!(
-            objects[13]["add"]["rule"]["expr"][0],
+            objects[12]["add"]["rule"]["expr"][0],
             json!({"reject": {"type": "icmpx", "expr": "admin-prohibited"}})
         );
     }

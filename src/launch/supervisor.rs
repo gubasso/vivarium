@@ -344,10 +344,7 @@ impl Supervisor {
                 &self.spec.backend_programs.nft.display().to_string(),
             );
             runner
-                .apply(&crate::net::nft::base_ruleset(
-                    self.spec.network.gateway_address,
-                    self.spec.network.resolver_port,
-                ))
+                .apply(&crate::net::nft::base_ruleset())
                 .await
                 .map_err(|_| LaunchError::Readiness("egress ruleset"))?;
             let literals = allowlist.literal_destinations();

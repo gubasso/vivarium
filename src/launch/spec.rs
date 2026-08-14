@@ -427,6 +427,14 @@ impl LaunchSpec {
         if self.network.resolver_port == 0 {
             return Err(LaunchError::InvalidSpec("resolver port must be non-zero"));
         }
+        // The MAC goes verbatim into the VMM's device arguments and the guest's
+        // interface match; a malformed one would surface as the VMM's own parse
+        // error mid-boot, with this spec long out of the picture.
+        if !is_mac_address(&self.network.guest_mac) {
+            return Err(LaunchError::InvalidSpec(
+                "guest MAC must be six colon-separated hex octets",
+            ));
+        }
         require_absolute_resolved(&self.runtime_paths.root)?;
         let runtime_paths = [
             &self.runtime_paths.launch_spec,
@@ -560,6 +568,17 @@ impl LaunchSpec {
         }
         Ok(())
     }
+}
+
+/// Whether `mac` is exactly six colon-separated hex octets, e.g. `02:56:49:56:41:00`.
+fn is_mac_address(mac: &str) -> bool {
+    let bytes = mac.as_bytes();
+    bytes.len() == 17
+        && bytes.chunks(3).all(|octet| {
+            octet[0].is_ascii_hexdigit()
+                && octet[1].is_ascii_hexdigit()
+                && (octet.len() == 2 || octet[2] == b':')
+        })
 }
 
 fn require_absolute_resolved(path: &Path) -> Result<(), LaunchError> {
@@ -893,14 +912,17 @@ pub mod tests {
             Box::new(|s| s.volumes.push(volume("viv-cache", "v/cache.img"))),
             Box::new(|s| s.volumes.push(volume("viv-cache", "/v/../cache.img"))),
             // The networking half of schema 6: a malformed allowlist entry, an
-            // unrenderable tap name, a subnet with no room, a family split, and a
-            // backend program that is not a store path.
+            // unrenderable tap name, a subnet with no room, a family split, a MAC
+            // the VMM would choke on, and a backend program that is not a store
+            // path.
             Box::new(|s| s.egress.allow.push("https://example.com".into())),
             Box::new(|s| s.network.tap_name = "a name with spaces".into()),
             Box::new(|s| s.network.tap_name = String::new()),
             Box::new(|s| s.network.prefix_length = 31),
             Box::new(|s| s.network.guest_address = "2001:db8::2".parse().unwrap()),
             Box::new(|s| s.network.resolver_port = 0),
+            Box::new(|s| s.network.guest_mac = "02-56-49-56-41-00".into()),
+            Box::new(|s| s.network.guest_mac = "02:56:49:56:41".into()),
             Box::new(|s| s.backend_programs.pasta = "/usr/bin/pasta".into()),
         ];
         for mutate in mutations {
