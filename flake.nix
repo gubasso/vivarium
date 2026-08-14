@@ -98,6 +98,13 @@
             # `scripts/baseline-pins` reads `nix flake archive --json` with it,
             # and `scripts/install-dev` reaches that script through this shell.
             pkgs.jq
+            # The `tests/net_host` lane runs the four networking seams against
+            # the real tools: `unshare`/`nsenter` for the namespace pair, `ip`
+            # for the tap, `nft` for the ruleset. Dev-shell copies of what the
+            # product pins through nix/flake.lock's backend programs.
+            pkgs.util-linux
+            pkgs.iproute2
+            pkgs.nftables
             # `viv` itself, so entering the shell (or `direnv allow`) needs no
             # separate install step. The shim, not a built package, so what PATH
             # resolves is the working tree rather than the last evaluation of it.

@@ -60,6 +60,14 @@ name = "guest_agent_host"
 path = "tests/guest_agent_host.rs"
 harness = false
 
+# The networking-seams lane gates the same way: on the pinned tools being present and
+# unprivileged user+net namespaces being creatable, decided at run time with the reason
+# reported.
+[[test]]
+name = "net_host"
+path = "tests/net_host.rs"
+harness = false
+
 [dependencies]
 # The three networking seams Q-005 selected; the slice 004 `Revisions` line carries the evidence.
 # `hickory-proto` is wire parsing and serialization only — the gating resolver's serve loop is

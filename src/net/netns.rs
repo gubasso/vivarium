@@ -1,13 +1,18 @@
-//! Argv construction for the user+network namespace pair.
+//! Argv construction and lifecycle for the user+network namespace pair.
 //!
 //! The pair cannot be made in-process twice over: the workspace forbids `unsafe`, and
 //! `unshare(CLONE_NEWUSER)` refuses a multithreaded caller outright, which the
 //! supervisor's runtime is. So the seam is the pinned util-linux pair — `unshare`
 //! creates and holds the namespaces, `nsenter` joins them by the holder's pid — and
 //! what this module owns is the exact flag rendering, the same way `policy.rs` owns
-//! `setpriv`'s. Q-005's spike record: full `CapEff` inside the pair for an
-//! unprivileged caller, and a host-side `AF_UNIX` listener reachable from inside,
-//! because unix sockets are filesystem-scoped rather than netns-scoped.
+//! `setpriv`'s, plus the readiness watch a joiner needs before the pid is safe to
+//! join. Q-005's spike record: full `CapEff` inside the pair for an unprivileged
+//! caller, and a host-side `AF_UNIX` listener reachable from inside, because unix
+//! sockets are filesystem-scoped rather than netns-scoped.
+
+use std::time::Duration;
+
+use thiserror::Error;
 
 /// The legs `unshare` needs to create the pair and hold root's mapping inside it.
 ///
@@ -42,6 +47,68 @@ pub fn enter_pair_args(holder_pid: u32, program: &[String]) -> Vec<String> {
     args
 }
 
+/// The program the holder execs once the pair exists: a pinned `sleep` that keeps
+/// both namespaces referenced for the VM's lifetime without doing anything else.
+#[must_use]
+pub fn holder_program(sleep: &str) -> Vec<String> {
+    vec![sleep.to_owned(), "infinity".to_owned()]
+}
+
+/// A pair that never became joinable.
+#[derive(Debug, Error)]
+pub enum PairError {
+    /// The holder is gone: it exited, or was never the pid the caller thought.
+    #[error("the namespace holder (pid {holder_pid}) is gone before its pair became distinct")]
+    HolderExited { holder_pid: u32 },
+    /// The holder is alive but still shares this process's namespaces.
+    #[error(
+        "the namespace pair held by pid {holder_pid} did not become distinct within {waited_ms} ms"
+    )]
+    Timeout { holder_pid: u32, waited_ms: u64 },
+}
+
+/// Wait until the holder's user and net namespaces are both distinct from this
+/// process's, which is the moment `nsenter` joins the new pair rather than the old
+/// namespaces.
+///
+/// The holder's pid is observable before `unshare` has made the namespaces, so
+/// joining on spawn alone races the syscall; the namespace links flipping to new
+/// inodes is the readiness signal the race needs.
+///
+/// # Errors
+///
+/// Returns [`PairError::HolderExited`] when the holder's `/proc` entry disappears,
+/// and [`PairError::Timeout`] when the links stay shared past `timeout`.
+pub async fn await_pair(holder_pid: u32, timeout: Duration) -> Result<(), PairError> {
+    let started = std::time::Instant::now();
+    loop {
+        match pair_distinct(holder_pid) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(_) => return Err(PairError::HolderExited { holder_pid }),
+        }
+        if started.elapsed() >= timeout {
+            return Err(PairError::Timeout {
+                holder_pid,
+                waited_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            });
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Whether both of the holder's namespace links differ from this process's own.
+fn pair_distinct(holder_pid: u32) -> std::io::Result<bool> {
+    for namespace in ["user", "net"] {
+        let own = std::fs::read_link(format!("/proc/self/ns/{namespace}"))?;
+        let held = std::fs::read_link(format!("/proc/{holder_pid}/ns/{namespace}"))?;
+        if own == held {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,6 +122,36 @@ mod tests {
         assert_eq!(
             create_pair_args(&strings(&["sleep", "infinity"])),
             strings(&["--user", "--net", "--map-root-user", "sleep", "infinity"])
+        );
+    }
+
+    #[tokio::test]
+    async fn awaiting_a_gone_holder_reports_it_rather_than_waiting() {
+        // A pid that cannot exist: one past the kernel's own PID_MAX_LIMIT. The
+        // read fails immediately, which must be HolderExited, not a timeout.
+        let result = await_pair(4_194_305, Duration::from_secs(5)).await;
+        assert!(matches!(
+            result,
+            Err(PairError::HolderExited {
+                holder_pid: 4_194_305
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn awaiting_a_shared_namespace_times_out() {
+        // This process trivially shares its own namespaces, so the watch can never
+        // see a distinct pair and must give up at the deadline.
+        let own_pid = std::process::id();
+        let result = await_pair(own_pid, Duration::from_millis(30)).await;
+        assert!(matches!(result, Err(PairError::Timeout { .. })));
+    }
+
+    #[test]
+    fn the_holder_program_is_a_pinned_sleep_held_forever() {
+        assert_eq!(
+            holder_program("/nix/store/x-coreutils/bin/sleep"),
+            strings(&["/nix/store/x-coreutils/bin/sleep", "infinity"])
         );
     }
 

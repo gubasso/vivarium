@@ -114,7 +114,7 @@ pub struct Resources {
 pub struct Egress {
     /// `open` or `allowlist`.
     pub mode: Option<EgressMode>,
-    /// Destination patterns. Their grammar is spec/05's and is not checked here.
+    /// Destination patterns, each already validated against spec/05's entry grammar.
     pub allow: Vec<String>,
 }
 
@@ -292,12 +292,19 @@ impl Reader<'_> {
             None => None,
         };
 
-        // Each entry's pattern grammar is spec/05's, and enforcing it belongs to the slice that
-        // enforces the allowlist. Accepting the array shape here is deliberate, not an oversight.
         let mut allow = Vec::new();
         if let Some(entry) = entry(table, "allow") {
             for element in self.array(entry, "egress.allow")? {
-                allow.push(self.string(element, "egress.allow")?);
+                let pattern = self.string(element, "egress.allow")?;
+                if crate::net::allowlist::AllowEntry::parse(&pattern).is_err() {
+                    return Err(self.invalid(
+                        element,
+                        "egress.allow",
+                        "a name, wildcard name, address, or CIDR block",
+                        &[],
+                    ));
+                }
+                allow.push(pattern);
             }
         }
 
@@ -772,6 +779,8 @@ persist  = [ "/opt/state" ]
             "image = \"x\"\n[egress]\nmode = \"open\"",
             "image = \"x\"\n[egress]\nmode = \"allowlist\"",
             "image = \"x\"\n[egress]\nallow = [ \"github.com\" ]",
+            "image = \"x\"\n[egress]\nallow = [ \"*.github.com\", \"**.example.org\" ]",
+            "image = \"x\"\n[egress]\nallow = [ \"192.0.2.10\", \"2001:db8::/32\" ]",
             "image = \"x\"\n[env]\n_FOO9 = \"1\"",
             "image = \"x\"\n[[mounts]]\nsource = \"/a\"\ntarget = \"~/a\"",
             "image = \"x\"\n[[volumes]]\nname = \"cache\"\nmount = \"/v\"\nsize_gib = 1",
@@ -791,6 +800,14 @@ persist  = [ "/opt/state" ]
             ("image = \"x\"\n[resources]\nvcpu = 0", "invalid-value"),
             ("image = \"x\"\n[resources]\nvcpu = \"4\"", "wrong-type"),
             ("image = \"x\"\n[egress]\nmode = \"off\"", "invalid-value"),
+            (
+                "image = \"x\"\n[egress]\nallow = [ \"example.com:443\" ]",
+                "invalid-value",
+            ),
+            (
+                "image = \"x\"\n[egress]\nallow = [ \"***.example.com\" ]",
+                "invalid-value",
+            ),
             ("image = \"x\"\n[env]\n9FOO = \"1\"", "invalid-value"),
             ("image = \"x\"\n[env]\nFOO = 1", "wrong-type"),
             ("image = \"x\"\n[[mounts]]\ntarget = \"~/a\"", "missing-key"),
@@ -946,15 +963,21 @@ persist  = [ "/opt/state" ]
         Ok(())
     }
 
-    /// Pins the deliberate hole: pattern well-formedness is spec/05's grammar and slice 004's work,
-    /// so the array shape is checked here and its contents are not.
+    /// The seam slice 004 closed: every entry meets spec/05's grammar at parse, refused rather
+    /// than narrowed, so no malformed pattern survives to the enforcement path.
     #[test]
-    fn egress_patterns_pass_without_their_grammar() -> Result<(), Box<dyn std::error::Error>> {
-        let manifest = parse("image = \"x\"\n[egress]\nallow = [ \"not a pattern\" ]\n")?;
+    fn egress_patterns_hold_their_grammar_at_parse() {
+        let error = parse("image = \"x\"\n[egress]\nallow = [ \"not a pattern\" ]\n").err();
         assert_eq!(
-            manifest.egress.map(|egress| egress.allow),
-            Some(vec!["not a pattern".to_owned()])
+            error.as_ref().map(super::ManifestError::kind_name),
+            Some("invalid-value")
         );
-        Ok(())
+        // A scheme is refused, not stripped to its name (the allowlist grammar's
+        // refuse-not-narrow rule, surfaced through manifest validation).
+        let error = parse("image = \"x\"\n[egress]\nallow = [ \"https://example.com\" ]\n").err();
+        assert_eq!(
+            error.as_ref().map(super::ManifestError::kind_name),
+            Some("invalid-value")
+        );
     }
 }

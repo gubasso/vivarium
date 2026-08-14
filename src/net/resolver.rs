@@ -1,5 +1,5 @@
-//! The gating resolver's core: the ordering between filter programming and answer
-//! release.
+//! The gating resolver: the ordering between filter programming and answer release,
+//! and the UDP serve loop that carries it.
 //!
 //! spec/05 specifies this as an ordering, not an optimization, and the shape of this
 //! module is that sentence made structural: the upstream answer's bytes are returned
@@ -7,15 +7,22 @@
 //! entry matches is answered `REFUSED` without the upstream ever seeing it — a denied
 //! name is not even leaked. Upstream failures pass through as themselves — with the
 //! one exception of an upstream `REFUSED`, downgraded to `SERVFAIL` — so `REFUSED`
-//! means policy, unambiguously. The serve loop and the upstream transport
-//! arrive with the wiring slice; what is fixed here is the part a socket cannot
-//! change.
+//! means policy, unambiguously. [`serve`] is the loop the wired resolver runs inside
+//! the VM's namespace: UDP only, because the filter permits the guest no other DNS
+//! path, one upstream exchange per query through the namespace's uplink.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
 
 use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
-use hickory_proto::rr::RData;
+use hickory_proto::rr::{RData, RecordType};
 use thiserror::Error;
+use tokio::net::UdpSocket;
+
+use super::allowlist::Allowlist;
+
+/// The largest datagram either side of the serve loop accepts: the EDNS ceiling.
+const MAX_DATAGRAM: usize = 65_535;
 
 /// One answered address and the record TTL that bounds its life in the filter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,12 +72,16 @@ pub enum GateError {
 /// with exactly one question reaches the allowlist: anything else is answered
 /// locally — `NOTIMP` for an unsupported opcode or the zero-question form,
 /// `FORMERR` for a multi-question query per RFC 9619 — so no unchecked name rides
-/// a forwarded packet. The response is released byte-verbatim so upstream `NXDOMAIN`
-/// and `SERVFAIL` pass through as themselves — except upstream `REFUSED`, which is
-/// downgraded to `SERVFAIL` so `REFUSED` keeps its policy-only meaning; when the
-/// filter refuses an installation, the answer is withheld and the guest gets
-/// `SERVFAIL`, because releasing it would let a connection race the rule that was
-/// never installed.
+/// a forwarded packet. With `withhold_aaaa`, a permitted AAAA question is answered
+/// `NoError` with no records instead of being forwarded: the host has no working
+/// IPv6 path, and spec/05 has the resolver withhold the family rather than let the
+/// guest attempt a connection that cannot complete — denial still wins, so a denied
+/// name's AAAA is `REFUSED`, not empty. The response is released byte-verbatim so
+/// upstream `NXDOMAIN` and `SERVFAIL` pass through as themselves — except upstream
+/// `REFUSED`, which is downgraded to `SERVFAIL` so `REFUSED` keeps its policy-only
+/// meaning; when the filter refuses an installation, the answer is withheld and the
+/// guest gets `SERVFAIL`, because releasing it would let a connection race the rule
+/// that was never installed.
 ///
 /// # Errors
 ///
@@ -80,6 +91,7 @@ pub enum GateError {
 pub async fn gate_query<F, Fwd, Fut>(
     query_bytes: &[u8],
     matches: impl Fn(&str) -> bool + Send,
+    withhold_aaaa: bool,
     forward: Fwd,
     programmer: &mut F,
 ) -> Result<Vec<u8>, GateError>
@@ -114,6 +126,10 @@ where
 
     if !matches(&name) {
         return Ok(reply(&query, ResponseCode::Refused)?);
+    }
+
+    if withhold_aaaa && question.query_type() == RecordType::AAAA {
+        return Ok(reply(&query, ResponseCode::NoError)?);
     }
 
     let response_bytes = forward(query_bytes.to_vec()).await?;
@@ -152,6 +168,111 @@ where
     }
 
     Ok(response_bytes)
+}
+
+/// How [`serve`] reaches upstream and shapes answers.
+#[derive(Clone, Copy, Debug)]
+pub struct ServeConfig {
+    /// The host's configured resolver, reached through the namespace's uplink.
+    pub upstream: SocketAddr,
+    /// Answer permitted AAAA questions empty because the host has no working IPv6
+    /// path (spec/05's family withholding).
+    pub withhold_aaaa: bool,
+    /// How long one upstream exchange may take before the guest gets `SERVFAIL`.
+    pub upstream_timeout: Duration,
+}
+
+/// Serve gated queries on `socket` until the socket itself fails.
+///
+/// One query at a time: the gate's filter installation is a low-milliseconds
+/// subprocess and the upstream exchange dominates, so ordering stays trivially
+/// intact without a concurrent map of in-flight installs. Each exchange uses a
+/// fresh ephemeral upstream socket, so upstream ids never cross queries. A
+/// malformed or response-shaped datagram is dropped without an answer — answering
+/// would make the socket a reflector — and an upstream failure becomes `SERVFAIL`
+/// where the query was well-formed enough to answer at all.
+///
+/// # Errors
+///
+/// Returns the socket error that ended the loop; a serve loop that returns is a
+/// resolver that can no longer hear its guest.
+pub async fn serve<F>(
+    socket: UdpSocket,
+    allowlist: Allowlist,
+    config: ServeConfig,
+    mut programmer: F,
+) -> std::io::Result<()>
+where
+    F: FilterProgrammer + Send,
+{
+    let mut buf = vec![0u8; MAX_DATAGRAM];
+    loop {
+        let (len, from) = socket.recv_from(&mut buf).await?;
+        let query_bytes = &buf[..len];
+        let outcome = gate_query(
+            query_bytes,
+            |name| allowlist.matches_name(name),
+            config.withhold_aaaa,
+            |bytes: Vec<u8>| exchange_upstream(bytes, config.upstream, config.upstream_timeout),
+            &mut programmer,
+        )
+        .await;
+        let answer = match outcome {
+            Ok(bytes) => Some(bytes),
+            Err(GateError::Upstream { .. }) => servfail_for(query_bytes),
+            Err(GateError::MalformedQuery | GateError::Encode(_)) => None,
+        };
+        if let Some(bytes) = answer {
+            // A guest that vanished mid-answer is its problem, not the loop's.
+            let _ = socket.send_to(&bytes, from).await;
+        }
+    }
+}
+
+/// One upstream exchange over a fresh ephemeral socket.
+async fn exchange_upstream(
+    bytes: Vec<u8>,
+    upstream: SocketAddr,
+    timeout: Duration,
+) -> Result<Vec<u8>, GateError> {
+    let upstream_error = |reason: String| GateError::Upstream { reason };
+    let bind_addr: SocketAddr = if upstream.is_ipv4() {
+        "0.0.0.0:0"
+            .parse()
+            .map_err(|_| upstream_error("unbindable".to_owned()))?
+    } else {
+        "[::]:0"
+            .parse()
+            .map_err(|_| upstream_error("unbindable".to_owned()))?
+    };
+    let socket = UdpSocket::bind(bind_addr)
+        .await
+        .map_err(|error| upstream_error(error.to_string()))?;
+    socket
+        .connect(upstream)
+        .await
+        .map_err(|error| upstream_error(error.to_string()))?;
+    socket
+        .send(&bytes)
+        .await
+        .map_err(|error| upstream_error(error.to_string()))?;
+    let mut buf = vec![0u8; MAX_DATAGRAM];
+    let len = tokio::time::timeout(timeout, socket.recv(&mut buf))
+        .await
+        .map_err(|_| upstream_error(format!("no answer within {} ms", timeout.as_millis())))?
+        .map_err(|error| upstream_error(error.to_string()))?;
+    buf.truncate(len);
+    Ok(buf)
+}
+
+/// A `SERVFAIL` for the guest's own query, where the query parses well enough to
+/// answer; `None` where it does not, and the datagram is dropped instead.
+fn servfail_for(query_bytes: &[u8]) -> Option<Vec<u8>> {
+    let query = Message::from_vec(query_bytes).ok()?;
+    if query.metadata.message_type != MessageType::Query {
+        return None;
+    }
+    reply(&query, ResponseCode::ServFail).ok()
 }
 
 /// A response carrying the query's own id, opcode, and question, with the given code.
@@ -201,8 +322,12 @@ mod tests {
     }
 
     fn query_bytes(name: &str, id: u16) -> Vec<u8> {
+        typed_query_bytes(name, id, RecordType::A)
+    }
+
+    fn typed_query_bytes(name: &str, id: u16, record_type: RecordType) -> Vec<u8> {
         let mut query = Message::new(id, MessageType::Query, OpCode::Query);
-        query.add_query(Query::query(Name::from_str(name).unwrap(), RecordType::A));
+        query.add_query(Query::query(Name::from_str(name).unwrap(), record_type));
         query.to_vec().unwrap()
     }
 
@@ -231,6 +356,7 @@ mod tests {
         let reply = gate_query(
             &query_bytes("blocked.example.", 7),
             |_| false,
+            false,
             move |_bytes: Vec<u8>| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 async move { Ok(Vec::new()) }
@@ -269,6 +395,7 @@ mod tests {
         let reply = gate_query(
             &query.to_vec().unwrap(),
             |name| name == "allowed.example.com.",
+            false,
             move |_bytes: Vec<u8>| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 async move { Ok(Vec::new()) }
@@ -298,6 +425,7 @@ mod tests {
         let reply = gate_query(
             &query.to_vec().unwrap(),
             |_| true,
+            false,
             move |_bytes: Vec<u8>| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 async move { Ok(Vec::new()) }
@@ -326,6 +454,7 @@ mod tests {
         let reply = gate_query(
             &query_bytes("api.example.com.", 17),
             |_| true,
+            false,
             move |_bytes: Vec<u8>| async move { Ok(upstream) },
             &mut programmer,
         )
@@ -349,6 +478,7 @@ mod tests {
         let reply = gate_query(
             &query_bytes("api.example.com.", 9),
             |name| name == "api.example.com.",
+            false,
             move |_bytes: Vec<u8>| async move { Ok(upstream) },
             &mut programmer,
         )
@@ -380,6 +510,7 @@ mod tests {
         let reply = gate_query(
             &query_bytes("api.example.com.", 11),
             |_| true,
+            false,
             move |_bytes: Vec<u8>| async move { Ok(upstream) },
             &mut programmer,
         )
@@ -403,6 +534,7 @@ mod tests {
         let reply = gate_query(
             &query_bytes("gone.example.com.", 13),
             |_| true,
+            false,
             move |_bytes: Vec<u8>| async move { Ok(upstream) },
             &mut programmer,
         )
@@ -413,6 +545,176 @@ mod tests {
             programmer.installed.is_empty(),
             "an errored answer must not program the filter"
         );
+    }
+
+    #[tokio::test]
+    async fn a_permitted_aaaa_is_withheld_empty_when_the_host_has_no_ipv6_path() {
+        // spec/05: where the host has no working IPv6 path, the resolver withholds
+        // AAAA rather than releasing addresses the guest cannot reach. Withheld
+        // means NoError with no records — never REFUSED, which means policy.
+        let forwarded = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&forwarded);
+        let mut programmer = Recording::new(false);
+        let reply = gate_query(
+            &typed_query_bytes("api.example.com.", 23, RecordType::AAAA),
+            |_| true,
+            true,
+            move |_bytes: Vec<u8>| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async move { Ok(Vec::new()) }
+            },
+            &mut programmer,
+        )
+        .await
+        .unwrap();
+        let parsed = Message::from_vec(&reply).unwrap();
+        assert_eq!(parsed.metadata.response_code, ResponseCode::NoError);
+        assert!(parsed.answers.is_empty());
+        assert_eq!(forwarded.load(Ordering::SeqCst), 0);
+        assert!(programmer.installed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_denied_aaaa_is_refused_even_while_withholding() {
+        // Denial outranks family withholding: REFUSED is the policy signal and an
+        // empty answer would hide it.
+        let mut programmer = Recording::new(false);
+        let reply = gate_query(
+            &typed_query_bytes("blocked.example.", 24, RecordType::AAAA),
+            |_| false,
+            true,
+            move |_bytes: Vec<u8>| async move { Ok(Vec::new()) },
+            &mut programmer,
+        )
+        .await
+        .unwrap();
+        let parsed = Message::from_vec(&reply).unwrap();
+        assert_eq!(parsed.metadata.response_code, ResponseCode::Refused);
+    }
+
+    #[tokio::test]
+    async fn an_aaaa_answer_installs_the_v6_family_identically() {
+        // IPv6 parity (spec/05): both families are programmed from the same
+        // answers, through the same install call.
+        let v6: IpAddr = "2001:db8::7".parse().unwrap();
+        let upstream = answer_bytes("api.example.com.", 25, &[(v6, 120)]);
+        let mut programmer = Recording::new(false);
+        gate_query(
+            &typed_query_bytes("api.example.com.", 25, RecordType::AAAA),
+            |_| true,
+            false,
+            move |_bytes: Vec<u8>| async move { Ok(upstream) },
+            &mut programmer,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            programmer.installed,
+            vec![vec![TimedAddress {
+                addr: v6,
+                ttl_seconds: 120,
+            }]]
+        );
+    }
+
+    /// A programmer the serve-loop tests can inspect from outside the loop.
+    #[derive(Clone)]
+    struct SharedRecording {
+        installed: Arc<std::sync::Mutex<Vec<Vec<TimedAddress>>>>,
+    }
+
+    impl FilterProgrammer for SharedRecording {
+        async fn install(&mut self, additions: &[TimedAddress]) -> Result<(), FilterInstallError> {
+            self.installed.lock().unwrap().push(additions.to_vec());
+            Ok(())
+        }
+    }
+
+    async fn ask(client: &tokio::net::UdpSocket, resolver: SocketAddr, query: &[u8]) -> Message {
+        client.send_to(query, resolver).await.unwrap();
+        let mut buf = [0u8; 512];
+        let len = tokio::time::timeout(Duration::from_secs(5), client.recv(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        Message::from_vec(&buf[..len]).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_serve_loop_gates_over_udp_end_to_end() {
+        let upstream_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream_socket.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                let (len, from) = upstream_socket.recv_from(&mut buf).await.unwrap();
+                let query = Message::from_vec(&buf[..len]).unwrap();
+                let answer = answer_bytes(
+                    "api.example.com.",
+                    query.metadata.id,
+                    &[(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)), 60)],
+                );
+                upstream_socket.send_to(&answer, from).await.unwrap();
+            }
+        });
+        let serve_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let resolver_addr = serve_socket.local_addr().unwrap();
+        let installed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let loop_handle = tokio::spawn(serve(
+            serve_socket,
+            Allowlist::parse(&["api.example.com".to_owned()]).unwrap(),
+            ServeConfig {
+                upstream: upstream_addr,
+                withhold_aaaa: false,
+                upstream_timeout: Duration::from_secs(2),
+            },
+            SharedRecording {
+                installed: Arc::clone(&installed),
+            },
+        ));
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let allowed = ask(&client, resolver_addr, &query_bytes("api.example.com.", 31)).await;
+        assert_eq!(allowed.metadata.response_code, ResponseCode::NoError);
+        assert_eq!(allowed.metadata.id, 31);
+        assert_eq!(installed.lock().unwrap().len(), 1);
+
+        let denied = ask(&client, resolver_addr, &query_bytes("denied.example.", 32)).await;
+        assert_eq!(denied.metadata.response_code, ResponseCode::Refused);
+        assert_eq!(
+            installed.lock().unwrap().len(),
+            1,
+            "a denied name must not program the filter"
+        );
+        loop_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn the_serve_loop_answers_servfail_when_upstream_is_unreachable() {
+        // A bound-then-dropped socket leaves a loopback port with no listener: the
+        // exchange fails fast (ICMP refusal) or times out, and either way the guest
+        // must see SERVFAIL rather than silence.
+        let dead = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dead_addr = dead.local_addr().unwrap();
+        drop(dead);
+        let serve_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let resolver_addr = serve_socket.local_addr().unwrap();
+        let loop_handle = tokio::spawn(serve(
+            serve_socket,
+            Allowlist::parse(&["api.example.com".to_owned()]).unwrap(),
+            ServeConfig {
+                upstream: dead_addr,
+                withhold_aaaa: false,
+                upstream_timeout: Duration::from_millis(400),
+            },
+            SharedRecording {
+                installed: Arc::new(std::sync::Mutex::new(Vec::new())),
+            },
+        ));
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let answer = ask(&client, resolver_addr, &query_bytes("api.example.com.", 33)).await;
+        assert_eq!(answer.metadata.response_code, ResponseCode::ServFail);
+        loop_handle.abort();
     }
 
     #[tokio::test]
@@ -436,6 +738,7 @@ mod tests {
         let reply = gate_query(
             &query_bytes("api.example.com.", 21),
             |name| name == "api.example.com.",
+            false,
             move |bytes: Vec<u8>| async move {
                 let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
                     .await

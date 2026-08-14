@@ -20,3 +20,19 @@ Working state for the active slice; exists because the work crosses context rese
 - [x] Skeletons committed: `src/net/allowlist.rs`, `src/net/nft.rs`, `src/net/resolver.rs`, `src/net/netns.rs`.
 - [x] Q-005 removed from `open-questions.md`; `Revisions` paragraph with dated evidence; explanation page `Unresolved` updated.
 - [x] Verification lanes green; `pre-push` twice (26 of 26 at 411s and 386s on 2026-08-14, after one red to the recorded readiness flake under pre-warm build pressure).
+
+## Sessions 2 and 3 — merged execution, 2026-08-14
+
+The operator directed one pass over the remaining work; checkpoints stay per former session as commits. Within former session 3, open-mode connectivity lands before the allowlist wiring, because it is what unblocks milestone 014.
+
+- [x] Netns lifecycle: `holder_program`, `await_pair` readiness watch in `src/net/netns.rs`.
+- [x] Tap configuration: `src/net/tap.rs` `ip` sequences and `ip -j` assertion; no-carrier pre-attach recorded as expected state.
+- [x] nftables apply: `NftRunner` (direct and `nsenter`-entered), `NftProgrammer`, `timed_elements` batches, literal address/CIDR interval sets `allow4net`/`allow6net`.
+- [x] Resolver: UDP serve loop with per-query upstream exchange; IPv6 parity; AAAA withholding behind `ServeConfig`; upstream failure to `SERVFAIL`, never silence.
+- [x] Manifest seam closed: `egress.allow` entries validated against the grammar at parse.
+- [x] Gated integration lane `tests/net_host.rs`: pair distinct and joinable, tap without carrier, ruleset applied and elements expiring through real `nft`, resolver installing through real `nft` before release. 4 of 4 twice on this host.
+- [ ] Launch schema 6: egress fields, network fields, new `backend_programs`.
+- [ ] `nix/launch-arguments.nix`, `nix/runner.sh`, `nix/guest.nix` NIC plumbing.
+- [ ] Supervisor spawn order: holder, tap, uplink, resolver, VMM-in-namespace.
+- [ ] Q-006 bounded experiment; record exit either way.
+- [ ] Allowlist mode wiring: resolver process in-namespace, base ruleset before boot, resolver-as-only-DNS in the guest.
