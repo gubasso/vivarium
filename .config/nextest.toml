@@ -51,6 +51,21 @@
 # `num-cpus` would be the wrong shape even where nextest accepts it. The
 # scarce resource here is host memory and store space; logical CPU count
 # tracks neither.
+#
+# `1` narrows this failure and does not close it, which is worth stating here
+# rather than leaving the paragraph above to read as a fix. Measured 2026-08-13
+# on the same host, same profile, same commit: five runs, four green at 409s to
+# 456s and one that lost `workflow_01_first_time_bind_boot` to `viv start`
+# answering `69`. The supervisor's own journal named the rung —
+# `timed out waiting for guest agent`, so the VM was up and the agent had not
+# answered inside its budget — and the host was at a load average of 5.9 with
+# 6 GiB of 30 available, after a session of guest builds. That is the pressure
+# the paragraph above says this file has no lever for, arriving from outside
+# the run rather than from the boots inside it. Widening the readiness budget
+# is not obviously the repair: it is the launcher's, it is wall clock, and a
+# guest that needs longer than 30s on an idle host would be a defect worth
+# seeing. Recorded so the next red is read as this and not as the change under
+# test.
 [test-groups]
 boot = { max-threads = 1 }
 
