@@ -2,6 +2,7 @@
   config,
   lib,
   pkgs,
+  volumeDirSentinel,
   storeCanaryExpression,
   gcInterlockCanaryExpression,
   gcInterlockControlExpression,
@@ -44,6 +45,14 @@ let
   # whose mount point is the writable store overlay — which is the same test
   # mounts.nix uses to grant it `neededForBoot`. Matching a label string here
   # would be a second, silently divergent definition of the same role.
+  #
+  # There is no per-volume image token and no per-role argument. The guest's own
+  # `image` field already spells `<sentinel>/<name>.img`, so replacing the
+  # sentinel yields the tokenized path and stripping it yields the name — which
+  # keeps the number of disks a property of this list rather than of how many
+  # flags the host remembered to pass. `name` is recovered rather than carried
+  # because upstream requires `image` to be unique across volumes anyway
+  # (microvm.nix's own `asserts.nix`), so it is the field that cannot collide.
   volumeLaunch = map (
     volume:
     let
@@ -51,9 +60,19 @@ let
     in
     {
       inherit (volume) label imageType;
+      name = lib.removeSuffix ".img" (baseNameOf volume.image);
+      imagePath = lib.replaceStrings [ volumeDirSentinel ] [ "@VOLUME_DIR@" ] volume.image;
       sizeMiB = volume.size;
-      argName = if isStore then "store-volume" else "volume";
-      imageToken = if isStore then "@STORE_VOLUME_IMAGE@" else "@VOLUME_IMAGE@";
+      # What this volume is, for a reader that must not re-derive the store
+      # predicate above. `home` is the one the first-boot ownership rules and the
+      # reserved-order assertion name; `declared` is everything a layer asked for.
+      role =
+        if isStore then
+          "store"
+        else if volume.mountPoint == sessionUser.home then
+          "home"
+        else
+          "declared";
       # ADR-0091: the store volume is the one provisioned for file count as well
       # as for size, because ADR-0089's collection trigger reads free *blocks*
       # and structurally cannot see inode exhaustion. Every other volume keeps
@@ -130,11 +149,19 @@ let
   };
 in
 {
-  # 4 since ADR-0100: `shareLaunch[workspace].mountPoint` stopped being the path a
-  # session starts in and became the share's internal one, so a new `viv` reading
-  # an older launcher's JSON would compute a guest cwd that does not exist. The
-  # version is the only thing that catches that pairing, because both halves parse.
-  schemaVersion = 4;
+  # 5 since named volumes: `volumeLaunch` no longer carries a per-role image
+  # token, and the launcher takes one `--volume-dir` from which each entry's
+  # `imagePath` is joined — so the number of disks is a property of the build
+  # rather than of the host's argv. The version pairs this JSON with the `viv`
+  # that parses the specification rendered from it, which is what it caught at 4:
+  # `shareLaunch[workspace].mountPoint` stopped being the path a session starts
+  # in and became the share's internal one (ADR-0100), and both halves parsed.
+  #
+  # It deliberately does not catch the other half of this change. The runner's
+  # own argument names moved, and a generated flake pins its own `vivarium`, so a
+  # new `viv` can drive an older runner — which then refuses at `usage()` before
+  # any schema is read. That refusal prints this number for exactly that reason.
+  schemaVersion = 5;
   inherit guestSession;
   descriptorBudget = {
     limit = 524288;
@@ -185,7 +212,7 @@ in
   ]
   ++ lib.concatMap (volume: [
     "--disk"
-    "path=${volume.imageToken},direct=off,readonly=off,image_type=${volume.imageType},sparse=on"
+    "path=${volume.imagePath},direct=off,readonly=off,image_type=${volume.imageType},sparse=on"
   ]) volumeLaunch
   ++ [
     "--fs"
@@ -227,8 +254,7 @@ in
     storeSocket = "@STORE_SOCKET@";
     uid = "@UID@";
     vcpu = "@VCPU@";
-    volumeImage = "@VOLUME_IMAGE@";
-    storeVolumeImage = "@STORE_VOLUME_IMAGE@";
+    volumeDir = "@VOLUME_DIR@";
     workspaceSocket = "@WORKSPACE_SOCKET@";
     workspaceSource = "@WORKSPACE_SOURCE@";
   };
@@ -260,7 +286,7 @@ in
       cmdline = "${kernelConsole} reboot=t panic=-1 ${toString config.microvm.kernelParams}";
     };
     disks = map (volume: {
-      path = volume.imageToken;
+      path = volume.imagePath;
       direct = false;
       readonly = false;
       image_type = if volume.imageType == "raw" then "Raw" else "Qcow2";

@@ -61,6 +61,13 @@ RECORD_COUNT=0
 # the gated call is below, before the first write.
 VOLUME_DIR=$("$SCRIPT_DIR/disk-preflight" --locate --images)/diagnostics
 
+# The launcher takes a directory and names each image from the build, so every
+# lane's home volume is `default.img` and every lane's store volume is
+# `store.img`. That is what the guest mounts and what `viv volume list` reads, so
+# a lane may not rename them — it gets its own directory instead. Lanes share
+# `$VOLUME_DIR`, and without this two of them would boot each other's disks.
+LANE_VOLUME_DIR=$VOLUME_DIR/first-microvm
+
 # DUP: before anything writes. This realises the guest closure and boots it,
 # which measures in gigabytes, and the honest moment to ask where those go is
 # while deferring is still free (AGENTS.md). A usable drive named by
@@ -147,8 +154,8 @@ LANE_RUN_PREFIX=first-microvm
 lane_artefacts() {
   local volume_dir=$1
   printf '%s\n' \
-    "$volume_dir/first-microvm.img" \
-    "$volume_dir/first-microvm-store.img" \
+    "$LANE_VOLUME_DIR/default.img" \
+    "$LANE_VOLUME_DIR/store.img" \
     "$volume_dir/console.log" \
     "$volume_dir/memfd-series.txt"
 }
@@ -244,7 +251,7 @@ else
       pass "ADR-0048 negative reference: no upstream runner/supervisor derivation was forced"
     else fail "ADR-0048 negative reference" "$bad_names"; fi
 
-    sentinel_hits=$(grep -oE 'VIVARIUM_LAUNCH_(WORKSPACE_SOURCE|VOLUME_IMAGE|STORE_VOLUME_IMAGE)' "$graph" | sort | uniq -c || true)
+    sentinel_hits=$(grep -oE 'VIVARIUM_LAUNCH_(WORKSPACE_SOURCE|VOLUME_DIR)' "$graph" | sort | uniq -c || true)
     if [[ -z $sentinel_hits ]]; then
       pass "sentinel provenance: neither launch-channel sentinel occurs in the graph (any occurrence is a defect)"
     else fail "sentinel provenance: sentinels must occur nowhere" "$sentinel_hits"; fi
@@ -342,10 +349,10 @@ else
       pass "realised closure contains cloud-hypervisor, ch-remote package, and virtiofsd"
     else fail "realised backend closure" "$closure_output"; fi
 
-    common=(--workspace "$REPO_ROOT" --runtime-dir /run/user/1000/vivarium/canary-a --volume /var/lib/vivarium/canary-a.img --store-volume /var/lib/vivarium/canary-a-store.img --uid 1000 --gid 1000 --memory-mib 2048 --vcpu 2 --print-static-arguments)
+    common=(--workspace "$REPO_ROOT" --runtime-dir /run/user/1000/vivarium/canary-a --volume-dir /var/lib/vivarium/canary-a --uid 1000 --gid 1000 --memory-mib 2048 --vcpu 2 --print-static-arguments)
     static_a=$("$launcher" "${common[@]}" 2>&1)
     static_status=$?
-    static_b=$("$launcher" --workspace /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume /srv/vivarium/canary-b.img --store-volume /srv/vivarium/canary-b-store.img --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1)
+    static_b=$("$launcher" --workspace /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume-dir /srv/vivarium/canary-b --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1)
     static_b_status=$?
     if ((static_status == 0 && static_b_status == 0)); then
       # Every runtime path in `vmCreate` is scrubbed here, and the list has to grow
@@ -371,17 +378,20 @@ else
       [[ $(jq -r .resources.memoryMiB <<<"$static_b") == 4096 && $(jq -r .vmCreate.memory.size <<<"$static_b") == 4294967296 ]] || missing_flow+="memory-mib not rendered from argv (B)"$'\n'
       [[ $(jq -r .resources.vcpus <<<"$static_a") == 2 && $(jq -r .vmCreate.cpus.boot_vcpus <<<"$static_a") == 2 ]] || missing_flow+="vcpu not rendered from argv (A)"$'\n'
       [[ $(jq -r .resources.vcpus <<<"$static_b") == 8 && $(jq -r .vmCreate.cpus.boot_vcpus <<<"$static_b") == 8 ]] || missing_flow+="vcpu not rendered from argv (B)"$'\n'
-      grep -Fq '/var/lib/vivarium/canary-a.img' <<<"$static_a" || missing_flow+="volume image not rendered from argv (A)"$'\n'
-      grep -Fq '/srv/vivarium/canary-b.img' <<<"$static_b" || missing_flow+="volume image not rendered from argv (B)"$'\n'
-      grep -Fq '/var/lib/vivarium/canary-a-store.img' <<<"$static_a" || missing_flow+="store volume image not rendered from argv (A)"$'\n'
-      grep -Fq '/srv/vivarium/canary-b-store.img' <<<"$static_b" || missing_flow+="store volume image not rendered from argv (B)"$'\n'
+      # The image basenames are build output and the directory is argv, so these
+      # assert the join rather than a path the host spelled: a launcher that
+      # ignored `--volume-dir` and hardcoded a location fails here.
+      grep -Fq '/var/lib/vivarium/canary-a/default.img' <<<"$static_a" || missing_flow+="volume image not rendered from argv (A)"$'\n'
+      grep -Fq '/srv/vivarium/canary-b/default.img' <<<"$static_b" || missing_flow+="volume image not rendered from argv (B)"$'\n'
+      grep -Fq '/var/lib/vivarium/canary-a/store.img' <<<"$static_a" || missing_flow+="store volume image not rendered from argv (A)"$'\n'
+      grep -Fq '/srv/vivarium/canary-b/store.img' <<<"$static_b" || missing_flow+="store volume image not rendered from argv (B)"$'\n'
       grep -Fq '/run/user/4242/vivarium/canary-b' <<<"$static_b" || missing_flow+="runtime dir not rendered from argv (B)"$'\n'
       # ADR-0087 makes the store volume a second --disk, and cloud-hypervisor
       # assigns drive letters in --disk order. Assert the order, not just the
       # presence: swapping the two would boot a guest whose store volume is its
       # home and whose home is its store, silently.
       disk_order=$(jq -r '.vmCreate.disks[].path' <<<"$static_a" | tr '\n' ' ')
-      [[ $disk_order == '/var/lib/vivarium/canary-a.img /var/lib/vivarium/canary-a-store.img ' ]] \
+      [[ $disk_order == '/var/lib/vivarium/canary-a/default.img /var/lib/vivarium/canary-a/store.img ' ]] \
         || missing_flow+="--disk order is not (volume, store-volume): $disk_order"$'\n'
       if [[ -z $missing_flow ]]; then
         pass "launch-channel values flow from arguments, not constants (positive counterpart to the negative scans)"
@@ -464,9 +474,9 @@ if ((${#missing[@]})); then
 else
   run_id="first-microvm-$$"
   runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
-  volume_dir=$VOLUME_DIR
-  volume=$volume_dir/first-microvm.img
-  store_volume=$volume_dir/first-microvm-store.img
+  volume_dir=$LANE_VOLUME_DIR
+  volume=$volume_dir/default.img
+  store_volume=$volume_dir/store.img
   mkdir -p "$runtime_dir" "$volume_dir"
   chmod 0700 "$runtime_dir"
   launch_log=$TEMP_ROOT/launcher.log
@@ -514,7 +524,7 @@ else
   image_allocated() { stat -c '%b*%B=%s' -- "$1" 2>/dev/null || echo unavailable; }
   store_alloc_before=$(image_allocated "$store_volume")
 
-  launch_args=(--workspace "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume "$volume" --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 --project-id first-microvm --target "$run_id")
+  launch_args=(--workspace "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 --project-id first-microvm --target "$run_id")
   unit_name="vivarium-first-microvm-$run_id.service"
 
   launch_attempt=0

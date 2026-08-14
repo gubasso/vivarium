@@ -38,12 +38,6 @@ const PING_TIMEOUT: Duration = Duration::from_millis(500);
 /// spec/12 requires a stated reason rather than a hang.
 const AGENT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The reserved name of the home volume every project has (spec/06, spec/02).
-const DEFAULT_VOLUME: &str = "default";
-
-/// The undeclared volume backing the guest store's writable layer (spec/06, ADR-0087).
-const STORE_VOLUME: &str = "store";
-
 /// The lifecycle states ADR-0030 fixes. Closed, because `status` reports against it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum State {
@@ -142,7 +136,7 @@ impl Runtime {
     /// supervisor's teardown sweep has to recognize it. The two spellings are compared by the
     /// launcher's own validation, which requires every runtime path to be an exact child of this
     /// directory.
-    fn lock(&self) -> PathBuf {
+    pub(super) fn lock(&self) -> PathBuf {
         self.directory.join("lock")
     }
 }
@@ -153,10 +147,10 @@ impl Runtime {
 /// one, then the Nix profile. It is taken after `mint_identity` has released the first two, which
 /// is that order, and it is the reason a second `viv exec` racing a cold start waits for the boot
 /// rather than starting a second one.
-struct TargetLock(File);
+pub(super) struct TargetLock(File);
 
 impl TargetLock {
-    fn acquire(runtime: &Runtime) -> Result<Self, Failure> {
+    pub(super) fn acquire(runtime: &Runtime) -> Result<Self, Failure> {
         secure_fs::private_dir_blocking(&runtime.directory).map_err(|error| {
             diagnosed(
                 Namespace::Vm,
@@ -250,7 +244,11 @@ fn build_record(roots: &config::XdgRoots, project_id: &str, target: &str, name: 
 /// The existence check is the point: a recorded path whose output has been collected is not a
 /// build a `--no-rebuild` could boot, and reporting `built` for one would be a state that cannot
 /// be acted on.
-fn last_build(roots: &config::XdgRoots, project_id: &str, target: &str) -> Option<String> {
+pub(super) fn last_build(
+    roots: &config::XdgRoots,
+    project_id: &str,
+    target: &str,
+) -> Option<String> {
     read_build_record(&last_build_path(roots, project_id, target))
 }
 
@@ -619,12 +617,27 @@ fn evaluate_and_build<E: Environment>(
     project_id: &str,
     resolved: ResolvedForLaunch,
 ) -> Result<(String, Option<config::Resources>), Failure> {
+    let composition = config::volumes::Composition::of(&resolved.manifest);
     let evaluated = super::evaluate_resolved_for_launch(context, project_id, resolved)?;
     let built = build_runner(&evaluated.flake_directory)?;
     write_build_record(
         &last_build_path(&context.roots, project_id, DEFAULT_TARGET),
         &built,
     )?;
+    // Written on this path only. `--no-rebuild` evaluates nothing, so it has no provenance to
+    // record and must leave the previous answer standing rather than publish an empty one — an
+    // empty record would orphan every piece-declared volume the moment someone skipped a rebuild.
+    // Under the per-target lock this function already runs beneath (ADR-0053).
+    config::volumes::write(
+        &context.roots.state,
+        project_id,
+        DEFAULT_TARGET,
+        &config::volumes::Record {
+            composition,
+            volumes: evaluated.volumes,
+        },
+    )
+    .map_err(|error| super::registry_failure(&error))?;
     Ok((built, evaluated.resources))
 }
 
@@ -1046,6 +1059,9 @@ fn execute_runner<E: Environment>(
     // at `projects/<project-id>/<target>/volumes/<name>.img`, under the same two components the
     // runtime root mirrors. Anywhere else and `viv volume list`, `viv volume rm`, and `viv destroy`
     // could not find the user's own data, because each of them looks under the project's subtree.
+    // The directory is all this passes: which images go in it, and under what names, is decided by
+    // the build and joined by the launcher. `--no-rebuild` is why — it evaluates nothing, so there
+    // is no path on which this function knows what a merged configuration declared.
     // Before anything is created, because this is the refusal a user meets rather than a defect
     // to survive. ADR-0100 mirrors the project at its own absolute path inside the guest, and a
     // few host paths have no mirror: the guest owns them. The launch specification checks the same
@@ -1083,10 +1099,8 @@ fn execute_runner<E: Environment>(
         .arg(&context.project)
         .arg("--runtime-dir")
         .arg(&runtime.directory)
-        .arg("--volume")
-        .arg(volumes.join(format!("{DEFAULT_VOLUME}.img")))
-        .arg("--store-volume")
-        .arg(volumes.join(format!("{STORE_VOLUME}.img")))
+        .arg("--volume-dir")
+        .arg(&volumes)
         .arg("--uid")
         .arg(config::effective_uid().to_string())
         .arg("--gid")
@@ -1408,7 +1422,11 @@ fn unconfirmed_teardown(directory: &Path, source: &std::io::Error) -> Failure {
 /// `docs/reference/implementation-status.md`; it is named here because a reader comparing this
 /// function against spec/10 would otherwise count the rungs and reach the wrong conclusion about
 /// which one this deadline bounds. What is decided here is the last one.
-fn stop_unit(runtime: &Runtime, force: bool, timeout: Option<i64>) -> Result<(), Failure> {
+pub(super) fn stop_unit(
+    runtime: &Runtime,
+    force: bool,
+    timeout: Option<i64>,
+) -> Result<(), Failure> {
     // The rungs that run are the supervisor's own: stopping the unit runs its single cancellation
     // path, which raises the guest's ACPI power button and then destroys the VM if the guest did
     // not take it. What is decided here is the rung after those — how long to wait before pulling

@@ -7,8 +7,9 @@
   storeVolumeLabel,
   workspaceSourceSentinel,
   workspaceInternalMountPoint,
-  volumeImageSentinel,
-  storeVolumeImageSentinel,
+  volumeDirSentinel,
+  homeVolumeName,
+  storeVolumeName,
   guestAgentPackage,
   # Variant scalars (ADR-0095). The defaults in `nix/default.nix` reproduce the
   # shipped image; a measurement variant scales them at build time, which is the
@@ -16,6 +17,7 @@
   # reason a scaled *image* exists rather than a runtime override.
   homeVolumeSizeMiB,
   storeVolumeSizeMiB,
+  defaultVolumeSizeMiB,
   storeMinFree,
   storeMaxFree,
   ...
@@ -47,6 +49,79 @@ let
   # the path, the name, or the group. `launch-arguments.nix` reads the same
   # attribute for the session it renders.
   sessionUser = config.users.users.vivarium;
+
+  # What the merged configuration asked for beyond the two volumes every project
+  # has. `or [ ]` rather than a plain read, because the tool's option surface
+  # lives in `nix/vivarium-options.nix`, which only a generated flake composes —
+  # the shipped diagnostic image has no `vivarium.volumes` at all, and there
+  # "declared nothing" and "cannot declare" are the same answer. Re-declaring the
+  # option here is not the fix: nixpkgs throws on two declarations that both
+  # carry a default, and one copy of the surface is what ADR-0058 buys.
+  requestedVolumes = config.vivarium.volumes or [ ];
+
+  # Layers concatenate (spec/04), so one volume declared by an image and again by
+  # the manifest arrives twice. Two entries would be two disks over one image,
+  # which upstream's own assertions refuse — and would have to, since they would
+  # also share a label and the guest resolves by label.
+  #
+  # A ceiling may be raised between boots and never lowered in place (spec/06),
+  # so the surviving size is the largest anyone asked for rather than the last.
+  volumeNames = lib.unique (map (volume: volume.name) requestedVolumes);
+  declarationsOf = name: lib.filter (volume: volume.name == name) requestedVolumes;
+  declaredVolumes = map (
+    name:
+    let
+      declarations = declarationsOf name;
+      sizes = lib.filter (size: size != null) (map (volume: volume.size_gib) declarations);
+    in
+    {
+      inherit name;
+      # The first declaration decides, and the assertion below is what makes that safe: two
+      # layers may name one volume only while they agree about where it mounts.
+      inherit (lib.head declarations) mount;
+      mounts = lib.unique (map (volume: volume.mount) declarations);
+      sizeMiB = if sizes == [ ] then defaultVolumeSizeMiB else 1024 * lib.foldl' lib.max 0 sizes;
+      # `viv-` rather than `vivarium-`, and the four characters are the point:
+      # ext4 caps a label at 16 bytes and `mkfs.ext4 -L` truncates past it with a
+      # warning rather than an error, which would leave the guest waiting on a
+      # `/dev/disk/by-label` node that never appears. The two reserved labels keep
+      # their existing spelling, because changing one orphans every image already
+      # on disk. The remaining budget is asserted below rather than assumed.
+      label = "viv-${name}";
+    }
+  ) volumeNames;
+
+  # What `vivarium-volume-prepare` owns on a volume's first boot, built from the
+  # DECLARATIONS rather than by filtering `config.microvm.volumes`. The store
+  # volume is therefore absent because it was never declared, which is spec/06's
+  # exemption held structurally rather than by a filter someone can weaken — and
+  # it mounts in the initrd anyway, before the guest has an identity to own it.
+  #
+  # Mode is a column because the two cases genuinely differ: `0700` is a home,
+  # and a declared path such as `/var/cache/project` is part of the guest's
+  # filesystem layout that other components may traverse. It is one cell to
+  # revisit if `[[volumes]]` ever grows an ownership field; spec/06 has none, so
+  # neither does this.
+  preparedVolumes = [
+    {
+      mount = sessionUser.home;
+      mode = "0700";
+      seed = "1";
+    }
+  ]
+  ++ map (volume: {
+    inherit (volume) mount;
+    mode = "0755";
+    seed = "0";
+  }) declaredVolumes;
+
+  # Whitespace-free by assertion, which is what lets a row be four fields on a
+  # line rather than a format the unit would have to parse.
+  volumePrepareTable = pkgs.writeText "vivarium-volume-prepare-table" (
+    lib.concatMapStrings (
+      row: "${row.mount} ${sessionUser.name}:${sessionUser.group} ${row.mode} ${row.seed}\n"
+    ) preparedVolumes
+  );
 in
 {
   options.vivarium.credentials.agents = lib.mkOption {
@@ -136,10 +211,12 @@ in
       # /dev/vda, /dev/vdb in `--disk` order and microvm.nix's `withDriveLetters`
       # assigns guest drive letters by this list's order. The launcher reads the
       # list rather than a flat field per volume for exactly that reason. Home
-      # stays first so it keeps the letter it already had.
+      # stays first so it keeps the letter it already had, and everything a layer
+      # declared is appended after the two reserved ones so adding a volume never
+      # moves a letter an existing image is already mounted by.
       volumes = [
         {
-          image = volumeImageSentinel;
+          image = "${volumeDirSentinel}/${homeVolumeName}.img";
           mountPoint = "/home/vivarium";
           size = homeVolumeSizeMiB;
           autoCreate = false;
@@ -152,7 +229,7 @@ in
           # mounts.nix grants `neededForBoot` to whichever volume mounts at
           # `writableStoreOverlay`, which is what settles the "can a volume be
           # attached early enough" premise at evaluation time rather than by boot.
-          image = storeVolumeImageSentinel;
+          image = "${volumeDirSentinel}/${storeVolumeName}.img";
           mountPoint = upperRoot;
           size = storeVolumeSizeMiB;
           autoCreate = false;
@@ -160,7 +237,20 @@ in
           fsType = "ext4";
           imageType = "raw";
         }
-      ];
+      ]
+      ++ map (volume: {
+        image = "${volumeDirSentinel}/${volume.name}.img";
+        mountPoint = volume.mount;
+        size = volume.sizeMiB;
+        # Like the two above: the host creates and formats the image, because it
+        # is the side that knows where the bytes go and can refuse before writing
+        # any. `autoCreate` would have the guest do it, over a device the guest
+        # cannot size.
+        autoCreate = false;
+        inherit (volume) label;
+        fsType = "ext4";
+        imageType = "raw";
+      }) declaredVolumes;
     };
 
     # spec/06:22 — a read-only share must be read-only on *both* sides: the host
@@ -402,19 +492,20 @@ in
         };
 
         vivarium-volume-prepare = {
-          description = "Give the guest user its home on the volume's first boot";
+          description = "Give the guest user its volumes on their first boot";
           wantedBy = [ "multi-user.target" ];
-          # `RequiresMountsFor` carries both halves, so the escaped unit name for
-          # the home volume no longer appears here or anywhere else.
-          unitConfig.RequiresMountsFor = [ sessionUser.home ];
+          # `RequiresMountsFor` carries both halves — `Requires=` and `After=` on
+          # each matching `.mount` unit — so no escaped unit name appears here or
+          # anywhere else. `After=` alone would order without requiring, which
+          # re-opens the failure this unit exists to avoid: a mount that did not
+          # happen leaves an empty directory, and owning that produces a mount
+          # point which looks correct and loses every write at shutdown.
+          unitConfig.RequiresMountsFor = map (row: row.mount) preparedVolumes;
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
           };
-          environment = {
-            VIVARIUM_HOME = sessionUser.home;
-            VIVARIUM_HOME_OWNER = "${sessionUser.name}:${sessionUser.group}";
-          };
+          environment.VIVARIUM_VOLUME_TABLE = volumePrepareTable;
           path = [ pkgs.coreutils ];
           # The one extracted unit body without `enableStrictShellChecks`, and the
           # exemption is deliberate rather than an oversight: this unit is in the
@@ -465,6 +556,95 @@ in
       {
         assertion = config.microvm.socket != null && !(lib.hasPrefix "/" config.microvm.socket);
         message = "the upstream Cloud Hypervisor socket default must remain relative";
+      }
+      {
+        # Read off the MERGED option rather than off the list this module builds,
+        # which is what makes it catch the case worth catching: a composed layer
+        # contributing its own `microvm.volumes` definition appends to the same
+        # list, and a guest whose home and store swapped drive letters mounts the
+        # wrong data at the right path without erroring anywhere.
+        assertion =
+          map (volume: volume.label) (lib.take 2 config.microvm.volumes) == [
+            volumeLabel
+            storeVolumeLabel
+          ];
+        message =
+          "the home and store volumes must stay first and second in microvm.volumes; "
+          + "found ${lib.concatMapStringsSep ", " (volume: volume.label) config.microvm.volumes}";
+      }
+    ]
+    ++ lib.concatMap (volume: [
+      {
+        # The name becomes a filename under the project's state and a label the
+        # guest resolves by, so it is not free text. `default` and `store` are
+        # taken by the two volumes that exist without being declared (spec/06).
+        assertion =
+          volume.name != ""
+          && volume.name != homeVolumeName
+          && volume.name != storeVolumeName
+          && builtins.match "[a-z0-9][a-z0-9-]*" volume.name != null;
+        message =
+          "volume name `${volume.name}` must be lowercase letters, digits, and dashes, "
+          + "and may not be `${homeVolumeName}` or `${storeVolumeName}`, which are reserved";
+      }
+      {
+        # ext4's own limit. `mkfs.ext4 -L` truncates past it and exits 0, so
+        # without this the failure is a guest that waits for a by-label device
+        # that will never appear, on a boot with nothing else wrong.
+        assertion = builtins.stringLength volume.label <= 16;
+        message =
+          "volume label `${volume.label}` is ${toString (builtins.stringLength volume.label)} bytes; "
+          + "ext4 allows 16, which leaves ${toString (16 - 4)} characters for a volume name";
+      }
+      {
+        # Two layers may declare one name (lists concatenate), and that is legal
+        # only while they agree about where it mounts. The Rust reader refuses the
+        # same shape with a better message; this is the backstop for a `nix build`
+        # that never went through `viv`.
+        assertion = builtins.length volume.mounts == 1;
+        message =
+          "volume `${volume.name}` is declared at more than one mountpoint: "
+          + lib.concatStringsSep ", " volume.mounts;
+      }
+      {
+        assertion =
+          lib.hasPrefix "/" volume.mount
+          && volume.mount != "/"
+          && builtins.match ".*[[:space:]].*" volume.mount == null
+          && !(lib.hasPrefix "/nix" volume.mount)
+          && volume.mount != sessionUser.home
+          && volume.mount != upperRoot
+          && volume.mount != workspaceInternalMountPoint;
+        message =
+          "volume `${volume.name}` mounts at `${volume.mount}`, which is not an absolute "
+          + "whitespace-free path the guest leaves free (`/nix`, `${sessionUser.home}`, "
+          + "`${upperRoot}`, and `${workspaceInternalMountPoint}` are the guest's own)";
+      }
+    ]) declaredVolumes
+    ++ [
+      {
+        # Mount points and labels are each a key: two volumes at one mount point
+        # is a shadowed disk, and two at one label is the wrong one mounted.
+        assertion =
+          let
+            mounts = map (volume: volume.mount) declaredVolumes;
+            labels = map (volume: volume.label) declaredVolumes ++ [
+              volumeLabel
+              storeVolumeLabel
+            ];
+          in
+          mounts == lib.unique mounts && labels == lib.unique labels;
+        message = "declared volumes must have distinct mountpoints and distinct labels";
+      }
+      {
+        # spec/06:97 exempts the store volume from first-boot ownership, and the
+        # table above holds it out by construction rather than by a filter. This
+        # is that sentence made executable: it fails the build if the table is
+        # ever rebuilt from the attached volumes instead of the declared ones.
+        assertion = !(lib.any (row: row.mount == config.microvm.writableStoreOverlay) preparedVolumes);
+        message =
+          "the store volume at `${config.microvm.writableStoreOverlay}` must not be prepared on "
+          + "first boot: it mounts in the initrd, before the guest has an identity to own it";
       }
     ]
     ++ map (share: {

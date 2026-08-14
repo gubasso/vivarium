@@ -10,11 +10,14 @@
 //! the stream facts all arrive as parameters, so the whole surface is exercisable without a
 //! process — the seam `resolve_xdg_roots` established and every module since has kept.
 
+mod destroy;
 pub mod grammar;
 pub mod lifecycle;
+mod prompt;
 mod render;
 // The two verbs the process boundary dispatches itself; see the module's own note on why.
 pub mod session;
+mod volume;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -66,6 +69,10 @@ impl Success {
 }
 
 /// What a command cost when it did not succeed.
+///
+/// `Debug` so a test can `unwrap` a `Result<_, Failure>`. It is not the user-facing rendering —
+/// that is [`Failure::render`], which spec/14 fixes the shape of.
+#[derive(Debug)]
 pub enum Failure {
     /// A malformed invocation. Carries no diagnostic id: spec/14 reserves no `cli.` namespace, and
     /// minting one would publish a second stable surface for something the usage line already says.
@@ -153,6 +160,17 @@ pub fn run<E: Environment>(
             timeout,
             ..
         } => lifecycle::stop(context, *all, *force, *timeout),
+        Invocation::VolumeList { output } => volume::list(context, *output),
+        Invocation::VolumePrune {
+            dry_run,
+            yes,
+            output,
+        } => volume::prune(context, *dry_run, *yes, *output),
+        Invocation::Destroy {
+            keep_volumes,
+            yes,
+            output,
+        } => destroy::destroy(context, *keep_volumes, *yes, *output),
         Invocation::Deferred { verb, .. } => deferred(context, *verb),
         // The caller performs all three, because they are the async half of this program and
         // nothing else here needs a runtime. A session additionally returns a code this signature
@@ -525,19 +543,12 @@ fn manifest_show<E: Environment>(
     }))
 }
 
-/// The verbs this slice parses but does not perform.
+/// The one verb this slice parses and does not perform.
 ///
-/// The fail-closed check still runs, because it is the part that is already true: a project with
-/// no binding cannot start, exec, or list volumes whatever the implementation behind those verbs
-/// turns out to be, and spec/14 commits to `78` for it today.
+/// `gc` is a whole-store sweep across every project, so it needs no binding and answers no `78` —
+/// which is why the binding check that used to guard this went away with the two verbs it guarded.
 fn deferred<E: Environment>(context: &Context<'_, E>, verb: Deferred) -> Result<Success, Failure> {
-    if verb.needs_binding() {
-        let registry = read_registry(context)?;
-        if config::resolve_binding(None, context.environment, &registry, &context.project).is_none()
-        {
-            return Err(unbound(context));
-        }
-    }
+    let _ = context;
     Err(Failure::Diagnosed {
         diagnostic: Box::new(Diagnostic::new(
             DiagnosticId::new(Namespace::Internal, "not-implemented"),
@@ -683,6 +694,11 @@ pub(super) struct LaunchInputs {
     /// piece proposing `vivarium.resources` compiles into the same option, so reading the leaf
     /// would bypass the module system's answer.
     pub(super) resources: Option<config::Resources>,
+    /// Every volume the merge declared, with the layer that declared it.
+    ///
+    /// Carried out of the one command that evaluates so the read-only volume verbs never have to.
+    /// See `config::volumes` for why that split exists rather than each verb asking Nix.
+    pub(super) volumes: Vec<config::volumes::DeclaredVolume>,
 }
 
 /// spec/10 step 1: resolve the binding and read the manifest it names.
@@ -723,7 +739,55 @@ pub(super) fn evaluate_resolved_for_launch<E: Environment>(
     Ok(LaunchInputs {
         flake_directory: evaluated.flake_directory,
         resources: merged_resources(&evaluated.analysis),
+        volumes: merged_volumes(&evaluated.analysis),
     })
+}
+
+/// The volumes the merge declared, each attributed to the layer that declared it.
+///
+/// Read from the contributors rather than from the effective list, because the effective list is
+/// the concatenation and carries no provenance — and provenance is the whole reason this is
+/// collected here, where an evaluation has already happened, instead of at `viv volume list`.
+///
+/// Two layers may declare one name, which is legal exactly while they agree about the mountpoint
+/// (`merged.rs` refuses the rest as a `65`). The first contributor in merge order is the one named,
+/// and the ceiling is the largest anyone asked for — which is what `nix/guest.nix` provisions, so
+/// this file describes the volume that exists rather than one declaration of it.
+fn merged_volumes(analysis: &config::merged::Analysis) -> Vec<config::volumes::DeclaredVolume> {
+    let Some(view) = analysis.value_of("volumes") else {
+        return Vec::new();
+    };
+    let mut declared: Vec<config::volumes::DeclaredVolume> = Vec::new();
+    for contributor in &view.contributors {
+        let Some(items) = contributor.value.as_array() else {
+            continue;
+        };
+        for item in items {
+            let Some(name) = item.get("name").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let size_gib = item
+                .get("size_gib")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|size| u32::try_from(size).ok());
+            if let Some(existing) = declared.iter_mut().find(|volume| volume.name == name) {
+                existing.size_gib = existing.size_gib.max(size_gib);
+                continue;
+            }
+            declared.push(config::volumes::DeclaredVolume {
+                name: name.to_owned(),
+                mount: item
+                    .get("mount")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                declared_by: contributor.layer.clone(),
+                kind: contributor.kind.as_str().to_owned(),
+                size_gib,
+            });
+        }
+    }
+    declared
 }
 
 /// The launch-channel `resources` the merge produced, in the shape the manifest declares them.

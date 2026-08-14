@@ -263,6 +263,17 @@ impl Supervisor {
         secure_fs::private_dir(&self.spec.runtime_paths.root).await
     }
 
+    /// Creates any volume image that does not exist yet, formatted before it is reachable.
+    ///
+    /// Existence is the whole test, so what exists has to be complete. Truncating and formatting
+    /// `volume.path` in place would break that: between the two steps the final name holds a bare
+    /// sparse file with no filesystem, and a `mkfs.ext4` that fails — or a process that dies in the
+    /// window — leaves it there. Every later boot would then find the path present, skip
+    /// provisioning, and attach a disk the guest cannot mount, turning one transient failure into a
+    /// permanent one no retry clears. Staging under a sibling name and publishing with `rename`
+    /// makes the final path appear only once it is a filesystem. The staging suffix is deliberately
+    /// not `.img`: `viv volume list` enumerates the directory by that extension, and a half-written
+    /// image visible there would be reported as an orphan and offered to `viv volume prune`.
     async fn provision_volumes(&self) -> Result<(), LaunchError> {
         for volume in &self.spec.volumes {
             if fs::try_exists(&volume.path)
@@ -271,12 +282,13 @@ impl Supervisor {
             {
                 continue;
             }
+            let staging = volume.path.with_extension("img.staging");
             run_checked(CommandSpec::new(
                 self.spec.backend_programs.truncate.clone(),
                 vec![
                     "-s".into(),
                     format!("{}M", volume.size_mib),
-                    volume.path.display().to_string(),
+                    staging.display().to_string(),
                 ],
             ))
             .await?;
@@ -284,12 +296,15 @@ impl Supervisor {
             if let Some(ratio) = volume.inode_ratio {
                 args.extend(["-i".into(), ratio.to_string()]);
             }
-            args.push(volume.path.display().to_string());
+            args.push(staging.display().to_string());
             run_checked(CommandSpec::new(
                 self.spec.backend_programs.mkfs_ext4.clone(),
                 args,
             ))
             .await?;
+            fs::rename(&staging, &volume.path)
+                .await
+                .map_err(|error| LaunchError::io("publish volume", error))?;
         }
         Ok(())
     }
@@ -685,6 +700,7 @@ async fn cleanup_runtime(spec: &LaunchSpec) -> Result<(), LaunchError> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::launch::VolumeSpec;
 
     #[test]
     fn encodes_every_byte_the_command_line_cannot_carry() {
@@ -735,5 +751,131 @@ mod tests {
             || byte == b'%'
             || byte.is_ascii_hexdigit()));
         assert!(!encoded.contains(' '));
+    }
+
+    /// A `truncate`/`mkfs.ext4` stand-in that records its argv and creates the file it is given.
+    ///
+    /// Stubs rather than the real tools, and the reason is what this test is about. What
+    /// `provision_volumes` decides is which images to create, which to leave alone, and which
+    /// arguments each one gets — none of which is a fact about ext4. Calling the real `mkfs.ext4`
+    /// would spend seconds formatting filesystems nothing mounts, in exchange for coverage the
+    /// host lanes already have from a guest that boots off the result.
+    fn recording_stub(path: &Path, log: &Path) -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::write(
+            path,
+            format!(
+                concat!(
+                    "#!/bin/sh\n",
+                    "printf '%s\\n' \"$*\" >> {}\n",
+                    // The last argument is the path in both `truncate -s N PATH` and
+                    // `mkfs.ext4 ... PATH`, so creating it is what makes the skip-if-present
+                    // branch reachable on the next volume.
+                    "for a in \"$@\"; do last=$a; done\n",
+                    ": > \"$last\"\n",
+                ),
+                log.display()
+            ),
+        )?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+    }
+
+    #[tokio::test]
+    async fn provisions_every_declared_volume_and_leaves_an_existing_image_alone() {
+        // `spec.volumes` was two fixed entries named on the command line until named volumes
+        // landed, and nothing exercised this loop at any length — `tests/launch_supervision.rs`
+        // builds its specification with `volumes: vec![]`. So "already generic over N volumes"
+        // was a reading of the code rather than an observation of it.
+        let root = std::env::temp_dir().join(format!(
+            "vivarium-provision-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("argv.log");
+        let truncate = root.join("truncate");
+        let mkfs = root.join("mkfs.ext4");
+        recording_stub(&truncate, &log).unwrap();
+        recording_stub(&mkfs, &log).unwrap();
+
+        // The warm case: an image that already exists is skipped whole, which is what makes a
+        // restart reattach the user's data instead of formatting over it.
+        let warm = root.join("default.img");
+        std::fs::write(&warm, b"existing").unwrap();
+
+        let mut spec = crate::launch::spec::tests::fixture();
+        spec.backend_programs.truncate = truncate;
+        spec.backend_programs.mkfs_ext4 = mkfs;
+        spec.volumes = vec![
+            VolumeSpec {
+                label: "vivarium-default".into(),
+                path: warm.clone(),
+                size_mib: 32768,
+                image_type: "raw".into(),
+                inode_ratio: None,
+            },
+            VolumeSpec {
+                label: "vivarium-store".into(),
+                path: root.join("store.img"),
+                size_mib: 32768,
+                image_type: "raw".into(),
+                inode_ratio: Some(8192),
+            },
+            VolumeSpec {
+                label: "viv-cache".into(),
+                path: root.join("cache.img"),
+                size_mib: 4096,
+                image_type: "raw".into(),
+                inode_ratio: None,
+            },
+        ];
+
+        Supervisor::new(spec).provision_volumes().await.unwrap();
+
+        let calls = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = calls.lines().collect();
+        // Two volumes created, four calls; the warm one contributes none and still holds its
+        // bytes, so nothing reformatted it.
+        assert_eq!(lines.len(), 4, "{calls}");
+        assert_eq!(std::fs::read(&warm).unwrap(), b"existing");
+        // Both steps address the staging name, never the final one. That is the whole guard: the
+        // path the warm branch above tests for must not exist until it holds a filesystem, or a
+        // `mkfs.ext4` that fails leaves a bare sparse file every later boot skips and attaches.
+        assert!(
+            lines[0].contains("-s 32768M") && lines[0].ends_with("store.img.staging"),
+            "{calls}"
+        );
+        // ADR-0091 gives the store volume an inode ratio and every other volume the filesystem
+        // default, so this is the one argument that may not appear twice.
+        assert!(
+            lines[1].contains("-L vivarium-store")
+                && lines[1].contains("-i 8192")
+                && lines[1].ends_with("store.img.staging"),
+            "{calls}"
+        );
+        assert!(
+            lines[2].contains("-s 4096M") && lines[2].ends_with("cache.img.staging"),
+            "{calls}"
+        );
+        assert!(
+            lines[3].contains("-L viv-cache")
+                && !lines[3].contains("-i ")
+                && lines[3].ends_with("cache.img.staging"),
+            "{calls}"
+        );
+
+        // And publication happened: each image is at its final name and no staging file survives
+        // to be enumerated by `viv volume list` or offered to `viv volume prune`.
+        for name in ["store", "cache"] {
+            assert!(root.join(format!("{name}.img")).exists(), "{name}");
+            assert!(
+                !root.join(format!("{name}.img.staging")).exists(),
+                "{name} left staging residue"
+            );
+        }
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -1,7 +1,5 @@
 # Destroy a sandbox and choose a cold or warm rebuild
 
-> Design-intent walkthrough — not yet working. This guide describes the target experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
-
 Use this flow when teardown should remove runtime history and you need to choose whether volumes survive. Read [VM lifecycle](../reference/spec/10-vm-lifecycle.md) for teardown and [workspace and volumes](../reference/spec/06-workspace-and-project-environment.md) for persistent data. Destroy is deliberately the only destructive verb, and [the decision that drew the teardown boundary](../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md) explains what it may and may not reach.
 
 ## Choose cold teardown

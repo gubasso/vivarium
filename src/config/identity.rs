@@ -104,6 +104,17 @@ impl IdentityIndex {
         self.identities.sort_by(|a, b| a.id.cmp(&b.id));
     }
 
+    /// Drops the row recording `path`, returning the id it held.
+    ///
+    /// By path and never by id, which is the whole safety of it. An index row holding this id at a
+    /// *different* path belongs to a copy that disambiguated against this project (spec/15), and
+    /// removing that would take another project's identity away for a teardown it had no part in.
+    fn forget(&mut self, path: &Path) -> Option<String> {
+        let id = self.id_at(path)?.to_owned();
+        self.identities.retain(|entry| entry.path != path);
+        Some(id)
+    }
+
     /// Whether `id` is held by a still-existing project other than `path`.
     ///
     /// Liveness is read live rather than cached, because whether the other directory still exists
@@ -373,6 +384,94 @@ pub fn mint(state_root: &Path, project: &Path) -> Result<String, RegistryError> 
     Ok(id)
 }
 
+/// What a teardown found and undid, so a second run can honestly report nothing.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Forgotten {
+    /// The id whose index row was removed, when there was one.
+    pub id: Option<String>,
+    /// Whether the marker directory itself went away.
+    pub marker_removed: bool,
+}
+
+/// Clears this project's identity: the `.vivarium/` marker and its index row (ADR-0043).
+///
+/// The inverse of [`mint`], and the only writer here that removes rather than assigns. spec/10
+/// carves the marker out of an otherwise absolute rule — `destroy` never touches the workspace —
+/// because the marker is vivarium-owned and never user-authored (N9, N21).
+///
+/// Marker first, index second, which is the reverse of `mint`'s order and is chosen rather than
+/// incidental: both crash windows recover and neither loses an identity. Marker gone with the row
+/// still present is recovered by `resolve_against` through `id_at`; row gone with the marker still
+/// present readopts the marker. The reverse pairing would leave a marker naming an id the index
+/// has re-issued to someone else.
+///
+/// # Errors
+///
+/// Returns [`RegistryError`] when the lock cannot be taken promptly (`75`), or when the marker or
+/// the index cannot be read, removed, or published (`74`, or `77` for a permission denial).
+pub fn forget(state_root: &Path, project: &Path) -> Result<Forgotten, RegistryError> {
+    let guard = Guard::acquire(state_root)?;
+    // Read under the lock and write under the same one, for the reason `mint` does: a read outside
+    // it would lose a concurrent assignment to the classic lost update.
+    let mut index = read_index(state_root)?;
+    let marker_removed = remove_marker(project)?;
+    let id = index.forget(project);
+    // Only when something actually changed. This is what makes a second `viv destroy` touch no
+    // state at all rather than rewrite the file it already agrees with.
+    if id.is_some() {
+        write_index(state_root, &index)?;
+    }
+    drop(guard);
+    Ok(Forgotten { id, marker_removed })
+}
+
+/// Removes vivarium's own two files and then the directory, and nothing else.
+///
+/// Deliberately not `remove_dir_all`: N9 and spec/10 permit removing the marker vivarium wrote and
+/// nothing beside it, so a `.vivarium/` a user has put something of their own into survives as a
+/// non-empty directory. `ENOTEMPTY` is therefore an outcome rather than a failure.
+fn remove_marker(project: &Path) -> Result<bool, RegistryError> {
+    let directory = project.join(MARKER_DIR);
+    for name in ["id", ".gitignore"] {
+        let path = directory.join(name);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(RegistryError::io(
+                    "marker-remove",
+                    path.clone(),
+                    format!("could not remove the identity marker `{}`", path.display()),
+                    source,
+                    true,
+                ));
+            }
+        }
+    }
+    match fs::remove_dir(&directory) {
+        Ok(()) => Ok(true),
+        // Absent is the idempotent path; non-empty is the user's own file, kept on purpose.
+        Err(source)
+            if matches!(
+                source.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(source) => Err(RegistryError::io(
+            "marker-remove",
+            directory.clone(),
+            format!(
+                "could not remove the identity marker `{}`",
+                directory.display()
+            ),
+            source,
+            true,
+        )),
+    }
+}
+
 /// Reads `<project>/.vivarium/id`.
 ///
 /// Absent or empty is "no marker" — the first-run row of spec/15's table. Anything else is either
@@ -637,8 +736,8 @@ pub fn sanitize_project_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        IDENTITY_FILE, IdentityIndex, MARKER_DIR, identity_path, is_project_id, mint, read_index,
-        read_marker, resolve, resolve_against, sanitize_project_name,
+        IDENTITY_FILE, IdentityIndex, MARKER_DIR, forget, identity_path, is_project_id, mint,
+        read_index, read_marker, resolve, resolve_against, sanitize_project_name,
     };
     use crate::config::test_support::ScratchDirectory;
     use std::fs;
@@ -959,6 +1058,70 @@ mod tests {
             .err()
             .map(|error| error.exit_code().code());
         assert_eq!(code, Some(78), "a traversal id must not load");
+        Ok(())
+    }
+
+    /// The teardown half of the marker lifecycle (ADR-0043).
+    #[test]
+    fn forgetting_removes_this_project_and_leaves_every_other_alone() -> Outcome {
+        let scratch = ScratchDirectory::new()?;
+        let api = project(&scratch, "api")?;
+        let copy = project(&scratch, "copy")?;
+        let state = scratch.path().join("state");
+
+        let api_id = mint(&state, &api)?;
+        let copy_id = mint(&state, &copy)?;
+        assert_ne!(api_id, copy_id, "a copy must disambiguate");
+
+        let forgotten = forget(&state, &api)?;
+        assert_eq!(forgotten.id.as_deref(), Some(api_id.as_str()));
+        assert!(forgotten.marker_removed);
+        assert!(!api.join(MARKER_DIR).exists());
+        // Removal is by path, never by id. The copy holds a different id at a different path and
+        // must survive untouched — taking a row by id would erase whichever project matched.
+        assert_eq!(read_marker(&copy)?.as_deref(), Some(copy_id.as_str()));
+        assert_eq!(read_index(&state)?.id_at(&copy), Some(copy_id.as_str()));
+        assert_eq!(read_index(&state)?.id_at(&api), None);
+        Ok(())
+    }
+
+    /// The idempotent path: a second `destroy` finds nothing and writes nothing.
+    #[test]
+    fn forgetting_what_is_already_gone_touches_no_state() -> Outcome {
+        let scratch = ScratchDirectory::new()?;
+        let api = project(&scratch, "api")?;
+        let state = scratch.path().join("state");
+        mint(&state, &api)?;
+        forget(&state, &api)?;
+
+        let before = fs::read_to_string(identity_path(&state))?;
+        let forgotten = forget(&state, &api)?;
+        assert_eq!(forgotten.id, None);
+        assert!(!forgotten.marker_removed);
+        // Byte-identical, which is the observable form of "wrote nothing": a rewrite would
+        // republish the same content and be indistinguishable from this without reading the file.
+        assert_eq!(fs::read_to_string(identity_path(&state))?, before);
+        Ok(())
+    }
+
+    /// N9 and spec/10: vivarium removes the two files it wrote, and nothing a user put beside them.
+    #[test]
+    fn a_marker_directory_holding_a_users_own_file_survives_as_a_directory() -> Outcome {
+        let scratch = ScratchDirectory::new()?;
+        let api = project(&scratch, "api")?;
+        let state = scratch.path().join("state");
+        mint(&state, &api)?;
+        let mine = api.join(MARKER_DIR).join("notes.txt");
+        fs::write(&mine, "mine\n")?;
+
+        let forgotten = forget(&state, &api)?;
+        assert!(!forgotten.marker_removed, "a non-empty directory is kept");
+        assert!(mine.exists(), "the user's own file must survive");
+        assert!(!api.join(MARKER_DIR).join("id").exists());
+        assert!(!api.join(MARKER_DIR).join(".gitignore").exists());
+        // The identity is still cleared, which is what `destroy` promises: the leftover directory
+        // is the user's, and the next `start` re-mints into it.
+        assert_eq!(read_index(&state)?.id_at(&api), None);
         Ok(())
     }
 }

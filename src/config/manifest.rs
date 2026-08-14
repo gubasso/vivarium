@@ -46,8 +46,14 @@ const DEFAULT_VOLUME_KEYS: &[&str] = &["size_gib", "persist"];
 /// The accepted values of `egress.mode`.
 const EGRESS_MODES: &[&str] = &["open", "allowlist"];
 
-/// The volume name vivarium reserves for the home volume that always exists.
-const RESERVED_VOLUME_NAME: &str = "default";
+/// The volume names vivarium reserves for the two volumes that exist without being declared.
+///
+/// `default` is the home volume and `store` backs the guest store's writable layer (spec/06). Both
+/// are reserved for the same reason and not only the first: each is one image under the project's
+/// state at `volumes/<name>.img`, so a manifest declaring either would name a file that already
+/// belongs to something else — and the guest, which resolves volumes by label, would be the place
+/// that found out.
+const RESERVED_VOLUME_NAMES: &[&str] = &["default", "store"];
 
 /// The smallest memory ceiling spec/03 admits, in MiB.
 const MINIMUM_MEM_MIB: i64 = 256;
@@ -356,11 +362,11 @@ impl Reader<'_> {
                 ));
             };
             let name = self.name(name_entry, "volumes.name")?;
-            if name == RESERVED_VOLUME_NAME {
+            if RESERVED_VOLUME_NAMES.contains(&name.as_str()) {
                 return Err(self.invalid(
                     name_entry,
                     "volumes.name",
-                    "a name other than the reserved home volume",
+                    "a name other than the reserved home and store volumes",
                     &[],
                 ));
             }
@@ -795,6 +801,13 @@ persist  = [ "/opt/state" ]
             ("image = \"x\"\n[[volumes]]\nmount = \"/v\"", "missing-key"),
             (
                 "image = \"x\"\n[[volumes]]\nname = \"default\"\nmount = \"/v\"",
+                "invalid-value",
+            ),
+            // Both reserved names, not only the home volume's. `store.img` already exists under
+            // every project's state, so a manifest naming it would have the guest resolve two
+            // volumes to one label and the loser would be whichever the boot happened to miss.
+            (
+                "image = \"x\"\n[[volumes]]\nname = \"store\"\nmount = \"/v\"",
                 "invalid-value",
             ),
             (

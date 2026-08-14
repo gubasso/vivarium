@@ -70,6 +70,11 @@ let
   imageDefaults = {
     homeVolumeSizeMiB = 32768;
     storeVolumeSizeMiB = 32768;
+    # spec/17's per-volume ceiling, for a `[[volumes]]` entry that declares no
+    # `size_gib`. Separate from the home volume's on purpose: they are the same
+    # number today, and a measurement variant that scales the home would
+    # otherwise resize every volume a manifest declared, silently.
+    defaultVolumeSizeMiB = 32768;
     storeMinFree = 4294967296; # 4 GiB — spec/17
     storeMaxFree = 8589934592; # 8 GiB — spec/17
     virtiofsdThreadPoolSize = 0; # ADR-0096, measured; was 4 under ADR-0051
@@ -93,8 +98,20 @@ let
   # which makes systemd create that directory at agent start and delete it at
   # agent stop. A live mount inside it would not survive the unit restarting.
   workspaceInternalMountPoint = "/run/vivarium-workspace";
-  volumeImageSentinel = "VIVARIUM_LAUNCH_VOLUME_IMAGE";
-  storeVolumeImageSentinel = "VIVARIUM_LAUNCH_STORE_VOLUME_IMAGE";
+  # One sentinel for the directory rather than one per volume image, because the
+  # number of volumes is a property of the merged configuration and not of the
+  # host's argv: `viv start --no-rebuild` evaluates nothing and boots the last
+  # build, so the host cannot know which named volumes that build declared. The
+  # launcher reads the build's own contract and always can, so it is the half
+  # that joins a name onto a directory. The directory itself is launch-channel
+  # and stays out of every build output (N19).
+  volumeDirSentinel = "VIVARIUM_LAUNCH_VOLUME_DIR";
+  # The two volumes that exist without ever being declared (spec/06). Named here
+  # rather than in `guest.nix` because they are also the image basenames the host
+  # sees under `projects/<id>/<target>/volumes/`, so one spelling has to serve
+  # the guest that mounts them and the state layout that holds them.
+  homeVolumeName = "default";
+  storeVolumeName = "store";
   # The persistence spike's canary, and the one artifact that must exist on
   # *both* sides of the share: the host realises it before booting, so its bytes
   # sit in the lower layer, while the guest reaches it only through a text file
@@ -170,6 +187,13 @@ let
   # input, not the launcher, so the input is what moves.
   guestModule = ./guest.nix;
 
+  # The tool's own option surface, published for the same reason `guestModule` is:
+  # a caller that wants to compose against `vivarium.*` must reach the file the
+  # generated flake embeds (`src/config/flake.rs` reads this very path), not a
+  # second copy. The shipped image does not include it — an image composes no tool
+  # options, which is why `guest.nix` reads `config.vivarium.volumes or [ ]`.
+  optionsModule = ./vivarium-options.nix;
+
   # `specialArgs` rather than module arguments because `guest.nix` takes them as
   # function arguments; the shipped values are `imageDefaults`, which is what
   # makes the manifest-built guest and the shipped image the same guest.
@@ -180,13 +204,15 @@ let
       storeVolumeLabel
       workspaceSourceSentinel
       workspaceInternalMountPoint
-      volumeImageSentinel
-      storeVolumeImageSentinel
+      volumeDirSentinel
+      homeVolumeName
+      storeVolumeName
       guestAgentPackage
       ;
     inherit (imageDefaults)
       homeVolumeSizeMiB
       storeVolumeSizeMiB
+      defaultVolumeSizeMiB
       storeMinFree
       storeMaxFree
       ;
@@ -206,6 +232,10 @@ let
         inherit
           pkgs
           config
+          # The launcher recovers each volume's tokenized image path by replacing
+          # this prefix in the guest's own `image` field, so both halves read one
+          # constant rather than agreeing on a spelling.
+          volumeDirSentinel
           storeCanaryExpression
           gcInterlockCanaryExpression
           gcInterlockControlExpression
@@ -239,6 +269,7 @@ let
           inherit (v)
             homeVolumeSizeMiB
             storeVolumeSizeMiB
+            defaultVolumeSizeMiB
             storeMinFree
             storeMaxFree
             ;
@@ -279,6 +310,7 @@ in
     shipped
     guestAgentPackage
     guestModule
+    optionsModule
     guestSpecialArgs
     mkLaunch
     ;

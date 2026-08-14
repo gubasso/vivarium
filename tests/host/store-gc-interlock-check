@@ -204,8 +204,8 @@ LANE_RUN_PREFIX=gc-interlock
 lane_artefacts() {
   local volume_dir=$1
   printf '%s\n' \
-    "$volume_dir/gc-interlock.img" \
-    "$volume_dir/gc-interlock-store.img" \
+    "$volume_dir/gc-interlock/default.img" \
+    "$volume_dir/gc-interlock/store.img" \
     "$volume_dir/gc-interlock-console.log"
 }
 clean_lane() {
@@ -456,9 +456,10 @@ if ((${#missing[@]})); then
 else
   run_id="gc-interlock-$$"
   runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
-  volume_dir=$VOLUME_DIR
-  volume=$volume_dir/gc-interlock.img
-  store_volume=$volume_dir/gc-interlock-store.img
+  # This lane's own directory: the launcher names each image from the build, so
+  # `default.img` and `store.img` are the only names available, and every lane
+  # under the shared `$VOLUME_DIR` needs a directory to itself.
+  volume_dir=$VOLUME_DIR/gc-interlock
   mkdir -p "$runtime_dir" "$volume_dir"
   chmod 0700 "$runtime_dir"
   launch_log=$TEMP_ROOT/launch.log
@@ -481,8 +482,8 @@ else
   # own `systemd-run --scope` and waiting on that pid ended the run seconds into
   # the experiment while the guest was still working. `--project-id`/`--target`
   # make the unit's name predictable so the unit can be the lifetime instead.
-  launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume "$volume"
-    --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2
+  launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir"
+    --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2
     --project-id gc-interlock --target "$$")
   unit_name="vivarium-gc-interlock-$$.service"
 

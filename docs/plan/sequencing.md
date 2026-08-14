@@ -56,19 +56,15 @@ No slice consumes these. Each cluster is a decision made in advance of the work,
 
 Phase 1 is being built in the order the acceptance trials already assert, so on a host with `/dev/kvm` part of the harness is red by construction rather than by defect. That distinction only survives if it is written down: a red nobody has mapped to work reads exactly like a regression, and the next person to see it either debugs a verb that was never written or learns to ignore the lane.
 
-Re-measured 2026-08-12 after slice 013, on the same host with `/dev/kvm`, a systemd user manager, and `$XDG_RUNTIME_DIR`: 15 of 18 acceptance trials pass, and the three that do not are each waiting on a verb a later slice implements. `viv exec` and `viv shell` no longer appear in the `Refused by` column at all, and a new interactive trial joined the set.
+Re-measured 2026-08-13 after slice 014, on the same host with `/dev/kvm`, a systemd user manager, and `$XDG_RUNTIME_DIR`: 18 of 19 acceptance trials pass, and the one that does not is waiting on the verb slice 004 implements. `viv volume list`, `viv volume prune`, and `viv destroy` no longer appear in the `Refused by` column at all.
 
-| Trial                                         | Refused by        | Turns green in    |
-| --------------------------------------------- | ----------------- | ----------------- |
-| `workflow_05_restrict_egress_allowlist`       | the allowlist     | slice 004         |
-| `workflow_07_stop_restart_preserving_volumes` | `viv volume list` | slice 014, item 6 |
-| `workflow_08_destroy_cold_rebuild`            | `viv destroy`     | slice 014, item 6 |
+| Trial                                   | Refused by    | Turns green in |
+| --------------------------------------- | ------------- | -------------- |
+| `workflow_05_restrict_egress_allowlist` | the allowlist | slice 004      |
 
-Interim, 2026-08-13, and deliberately not a replacement for the table above: slice 014 has landed items 1 to 3 and is not closed, so step 3 below is still owed. The binary now carries 19 trials — `workflow_09_workspace_round_trip` is new, and it is the first to assert the workspace contract at all — and 16 of them pass. The same three are red, for the same reasons, so the table stands unchanged.
+The remaining red is not a defect and not a partial implementation. `workflow_05` reaches the guest, runs its command, and returns that command's own status — `6`, from a `curl` that could not resolve a `.example` host — which is the session contract working and the enforcement fixture the trial's own `TODO(impl)` records as missing.
 
-One thing that measurement did change is the boot group's width. `profile.pre-push` was recorded below as running 23 tests green; run repeatedly it does not, failing intermittently on `viv start` readiness under load, and reproducing with slice 014's new trial excluded. The width the acceptance harness bounds concurrent boots at was already marked provisional pending exactly such a sweep; it is now `1`, measured green twice at no wall-clock cost, and the argument is carried in [`../../.config/nextest.toml`](../../.config/nextest.toml) rather than restated here.
-
-The two that slice 013 half-unblocked are worth naming, because "turns green in slice 014" now means something narrower than it did. `workflow_08` gets as far as `viv destroy`, and `workflow_05` gets all the way into the guest and returns the guest command's own status — `6`, from a `curl` that could not resolve a `.example` host — which is the session contract working and the enforcement fixture the trial's own `TODO(impl)` already records as missing.
+Two things this measurement replaces are worth stating, because a table that only shrinks hides them. Slice 014's own trials went green by implementing three verbs and, underneath them, the declared-volume path the trials assume: `workflow_07_stop_restart_preserving_volumes` asserts an image for a `[[volumes]]` entry, and named volumes had been declarable and inert until this slice attached them. And the binary is 19 trials rather than the 18 the previous measurement counted plus one, because `workflow_09_workspace_round_trip` arrived between the two.
 
 The execution order is the chain already in flight and is not changed by this table: slice 014, then slice 004 out of Phase 2. Nothing is added to a slice's `In scope` here; each trial is already named by the item that lands it.
 
@@ -80,7 +76,7 @@ Owed, in this order, and each step is a revision to this section:
 
 1. Taken 2026-08-12: `profile.pre-push` now selects `kind(test) - binary(user_workflows)`, so the executable form states the grading the lane table already carried, and acceptance gates the host runbooks and CI instead. The alternative — an `#[ignore]` per trial naming its slice — was refused as four knobs whose removal nothing enforces. This subtraction is the knob, it is one line, and steps 2 and 3 are what remove it.
 2. Taken 2026-08-12 by slice 013: the whole-binary exclusion is gone, and `profile.pre-push` now subtracts three named trials — `workflow_05_restrict_egress_allowlist`, `workflow_07_stop_restart_preserving_volumes`, and `workflow_08_destroy_cold_rebuild`. Measured on a capable host, the profile runs 23 tests and all 23 pass. Slice 014 removes two of the three by greening its own trials; slice 004 deletes the last clause and returns `profile.pre-push` to `kind(test)`. A slice that lands its trials and leaves the subtraction as it found it has moved a row without restoring the gate.
-3. Re-measure on a capable host once slice 014 closes, and replace the table above with the result rather than amending it. Three reds becoming one is the signal that the remainder belongs to slice 004 and to nothing in flight — and it is the check that step 2 was actually performed, since a subtraction nobody narrowed reports the same green either way. Slice 013 performed its own half of this: the table above is the re-measurement, not an amendment of the previous one.
+3. Taken 2026-08-13 by slice 014: `profile.pre-push` now subtracts exactly `- test(=workflow_05_restrict_egress_allowlist)`, and the table above is the replacement measurement rather than an amendment of the previous one. Three reds became one, which is the signal that the remainder belongs to slice 004 and to nothing in flight — and it is the check that the narrowing happened, since a subtraction nobody narrowed reports the same green either way. Measured after: `profile.pre-push` runs 26 tests and all 26 pass, twice, at 420s and 442s. Slice 004 deletes the last clause and returns the filter to plain `kind(test)`; that is the only step this section still owes.
 
 ## Known cost
 

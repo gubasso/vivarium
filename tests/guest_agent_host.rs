@@ -389,10 +389,11 @@ async fn guest_agent_and_credential_relay(runner: &Path) {
             std::env::current_dir().unwrap().to_str().unwrap(),
             "--runtime-dir",
             runtime.to_str().unwrap(),
-            "--volume",
-            root.join("home.img").to_str().unwrap(),
-            "--store-volume",
-            root.join("store.img").to_str().unwrap(),
+            // The directory, not the images: the launcher names each one from the build, so a
+            // lane that picked its own filenames would be testing a mapping the product does
+            // not have.
+            "--volume-dir",
+            root.to_str().unwrap(),
             "--uid",
             "1000",
             "--gid",

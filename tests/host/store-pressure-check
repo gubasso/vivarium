@@ -169,7 +169,7 @@ skip_remaining() {
 LANE_RUN_PREFIX=store-pressure
 clean_lane() {
   local removed=0 kept=0 entry dir pidfile pid alive
-  for entry in "$VOLUME_DIR/store-pressure.img" "$VOLUME_DIR/store-pressure-store.img" \
+  for entry in "$VOLUME_DIR/store-pressure/default.img" "$VOLUME_DIR/store-pressure/store.img" \
     "$VOLUME_DIR/store-pressure-console.log" "$VOLUME_DIR/store-pressure-image-series.txt"; do
     [[ -e $entry ]] || continue
     printf 'removing %s (%s bytes allocated)\n' "$entry" "$(($(stat -c %b "$entry") * $(stat -c %B "$entry")))"
@@ -388,9 +388,13 @@ if ((${#missing[@]})); then
 else
   run_id="store-pressure-$$"
   runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
-  volume=$VOLUME_DIR/store-pressure.img
-  store_volume=$VOLUME_DIR/store-pressure-store.img
-  mkdir -p "$runtime_dir"
+  # A directory of this lane's own: the launcher names each image from the build,
+  # so `default.img` and `store.img` are the only names, and lanes sharing
+  # `$VOLUME_DIR` would otherwise boot each other's disks.
+  volume_dir=$VOLUME_DIR/store-pressure
+  volume=$volume_dir/default.img
+  store_volume=$volume_dir/store.img
+  mkdir -p "$runtime_dir" "$volume_dir"
   chmod 0700 "$runtime_dir"
   launch_log=$TEMP_ROOT/launch.log
   console_log=$TEMP_ROOT/console.log
@@ -449,8 +453,8 @@ else
   # the run concluded the guest was gone, and every check downstream read a guest
   # that had exited 0 seconds into a leg budgeted for forty minutes. The unit is
   # the lifetime; `--project-id`/`--target` are what make its name predictable.
-  launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume "$volume"
-    --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 4096 --vcpu 2
+  launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir"
+    --uid "$(id -u)" --gid "$(id -g)" --memory-mib 4096 --vcpu 2
     --project-id store-pressure --target "$$")
   unit_name="vivarium-store-pressure-$$.service"
 

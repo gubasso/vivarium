@@ -369,9 +369,9 @@ launcher_json=
 if [[ -n $runner_out ]]; then
   launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$runner_out/bin/vivarium-first-microvm" 2>/dev/null | head -n1)
 fi
-size_mib=$(jq -r '.volumeLaunch[] | select(.argName == "store-volume") | .sizeMiB' "$launcher_json" 2>/dev/null)
-inode_ratio=$(jq -r '.volumeLaunch[] | select(.argName == "store-volume") | .inodeRatio' "$launcher_json" 2>/dev/null)
-label=$(jq -r '.volumeLaunch[] | select(.argName == "store-volume") | .label' "$launcher_json" 2>/dev/null)
+size_mib=$(jq -r '.volumeLaunch[] | select(.role == "store") | .sizeMiB' "$launcher_json" 2>/dev/null)
+inode_ratio=$(jq -r '.volumeLaunch[] | select(.role == "store") | .inodeRatio' "$launcher_json" 2>/dev/null)
+label=$(jq -r '.volumeLaunch[] | select(.role == "store") | .label' "$launcher_json" 2>/dev/null)
 
 if [[ -z $size_mib || -z $inode_ratio || $inode_ratio == null ]]; then
   skip_remaining "the store volume's mkfs arguments could not be read from the launcher JSON" store-density-mkfs-argv-matches-runner store-density-probe-image-removed

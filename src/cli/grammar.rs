@@ -104,6 +104,23 @@ pub enum Invocation {
     /// the published surface: spec/01's `start` is the manifest-driven one, and this is the private
     /// spelling the generated runner uses to hand a resolved specification back to vivarium.
     StartSpec { spec: PathBuf },
+    /// What volumes this project has, read-only (spec/01, ADR-0019).
+    VolumeList { output: Output },
+    /// Remove the volume images no current layer declares (ADR-0067).
+    VolumePrune {
+        /// Print the rows a run would remove and remove nothing.
+        dry_run: bool,
+        /// Consent, given ahead of the prompt.
+        yes: bool,
+        output: Output,
+    },
+    /// Tear the project down, at the boundary spec/10 fixes (ADR-0043, ADR-0080).
+    Destroy {
+        /// Spare the volume images; everything else still goes.
+        keep_volumes: bool,
+        yes: bool,
+        output: Output,
+    },
     /// A verb this slice parses but does not perform.
     ///
     /// Each is owned by a later slice. They are here because their grammar and their fail-closed
@@ -130,30 +147,21 @@ pub struct Session {
     pub env: Vec<(OsString, Option<OsString>)>,
 }
 
-/// The verbs whose grammar is settled here and whose work belongs to slice 014.
+/// The verbs whose grammar is settled here and whose work belongs to a later slice.
+///
+/// One left. `gc` is a whole-store sweep across every project, so it needs no binding and never
+/// answers `78` — which is why the "does this verb need a manifest" question that used to live
+/// here went away with the two verbs that answered yes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Deferred {
-    VolumeList,
-    Destroy,
-    /// The one cross-project sweep. Needs no binding, so it never answers `78`.
     Gc,
 }
 
 impl Deferred {
-    /// Whether this verb requires a manifest to be bound.
-    #[must_use]
-    pub const fn needs_binding(self) -> bool {
-        // `gc` is a whole-store sweep across every project, so demanding a binding would make an
-        // unbound directory refuse a global operation that has nothing to do with it.
-        !matches!(self, Self::Gc)
-    }
-
     /// The verb as spelled on the command line.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::VolumeList => "volume list",
-            Self::Destroy => "destroy",
             Self::Gc => "gc",
         }
     }
@@ -196,7 +204,7 @@ where
         Some("shell") => shell(rest),
         Some("exec") => exec(rest, streams),
         Some("stop") => stop(rest),
-        Some("volume") => volume(rest),
+        Some("volume") => volume(rest, streams),
         Some("destroy") => destroy(rest, streams),
         Some("gc") => deferred_flagless(Deferred::Gc, rest, GC_USAGE),
         _ => Err(UsageError::new(
@@ -219,7 +227,9 @@ const SHELL_USAGE: &str = "viv shell";
 const EXEC_USAGE: &str =
     "viv exec [-t|--tty] [-T|--no-tty] [--env KEY[=VAL]]... -- <command> [args...]";
 const STOP_USAGE: &str = "viv stop [--all] [--force] [-t|--timeout <secs>] [--json]";
-const VOLUME_USAGE: &str = "viv volume list [--json]";
+const VOLUME_USAGE: &str = "viv volume <list|prune> [options]";
+const VOLUME_LIST_USAGE: &str = "viv volume list [--json]";
+const VOLUME_PRUNE_USAGE: &str = "viv volume prune [-n|--dry-run] [-f|--yes] [--json]";
 const DESTROY_USAGE: &str = "viv destroy [-f|--yes] [--keep-volumes] [--json]";
 const GC_USAGE: &str = "viv gc [--json]";
 
@@ -551,7 +561,7 @@ fn stop(rest: &[OsString]) -> Result<Invocation, UsageError> {
     })
 }
 
-fn volume(rest: &[OsString]) -> Result<Invocation, UsageError> {
+fn volume(rest: &[OsString], streams: Streams) -> Result<Invocation, UsageError> {
     let Some(sub) = rest.first() else {
         return Err(UsageError::new(
             "`viv volume` needs a subcommand",
@@ -559,10 +569,33 @@ fn volume(rest: &[OsString]) -> Result<Invocation, UsageError> {
         ));
     };
     match sub.to_str() {
-        Some("list") => {
-            let output = flags_only(&rest[1..], VOLUME_USAGE)?;
-            Ok(Invocation::Deferred {
-                verb: Deferred::VolumeList,
+        Some("list") => Ok(Invocation::VolumeList {
+            output: flags_only(&rest[1..], VOLUME_LIST_USAGE)?,
+        }),
+        Some("prune") => {
+            let (mut dry_run, mut yes) = (false, false);
+            let mut output = Output::Human;
+            for token in &rest[1..] {
+                match token.to_str() {
+                    Some("--dry-run" | "-n") => dry_run = true,
+                    Some("--yes" | "-f") => yes = true,
+                    Some("--json") => output = Output::Json,
+                    _ => return Err(unknown(token, VOLUME_PRUNE_USAGE)),
+                }
+            }
+            // The same consent rule `destroy` follows, and for the same reason — except that a
+            // preview removes nothing, so demanding consent for one would be a gate on a read.
+            // `--dry-run --yes` would then also have to read as "yes, remove", which is the
+            // opposite of what it says.
+            if !dry_run && !yes && !streams.stdin_is_tty {
+                return Err(UsageError::new(
+                    "`viv volume prune` needs `--yes` when stdin is not a terminal",
+                    Some(VOLUME_PRUNE_USAGE),
+                ));
+            }
+            Ok(Invocation::VolumePrune {
+                dry_run,
+                yes,
                 output,
             })
         }
@@ -577,12 +610,12 @@ fn volume(rest: &[OsString]) -> Result<Invocation, UsageError> {
 }
 
 fn destroy(rest: &[OsString], streams: Streams) -> Result<Invocation, UsageError> {
-    let mut yes = false;
+    let (mut yes, mut keep_volumes) = (false, false);
     let mut output = Output::Human;
     for token in rest {
         match token.to_str() {
             Some("--yes" | "-f") => yes = true,
-            Some("--keep-volumes") => {}
+            Some("--keep-volumes") => keep_volumes = true,
             Some("--json") => output = Output::Json,
             _ => return Err(unknown(token, DESTROY_USAGE)),
         }
@@ -596,8 +629,9 @@ fn destroy(rest: &[OsString], streams: Streams) -> Result<Invocation, UsageError
             Some(DESTROY_USAGE),
         ));
     }
-    Ok(Invocation::Deferred {
-        verb: Deferred::Destroy,
+    Ok(Invocation::Destroy {
+        keep_volumes,
+        yes,
         output,
     })
 }
@@ -686,6 +720,9 @@ mod tests {
             | Invocation::Start { output, .. }
             | Invocation::Status { output, .. }
             | Invocation::Stop { output, .. }
+            | Invocation::VolumeList { output }
+            | Invocation::VolumePrune { output, .. }
+            | Invocation::Destroy { output, .. }
             | Invocation::Deferred { output, .. } => Some(*output),
             // Neither carries a `--json` slot: the private handoff predates the published surface,
             // and the two session verbs hand their streams to a guest process.
@@ -892,17 +929,85 @@ mod tests {
         assert!(parse(argv(&[]), tty()).is_err());
     }
 
-    /// Pins `gc` as the one deferred verb that needs no binding, so it cannot answer `78`.
+    /// Pins the two verbs that left `Deferred` as verbs that now parse into real work.
+    ///
+    /// The test this replaces asserted that `volume list` and `destroy` needed a binding while
+    /// `gc` did not — a distinction that existed only to gate the refusal they used to share. Both
+    /// now dispatch, so what is worth pinning is that they no longer reach the not-implemented
+    /// path at all, and that `gc` still does.
     #[test]
-    fn only_gc_is_exempt_from_needing_a_binding() {
-        assert!(!Deferred::Gc.needs_binding());
-        for verb in [Deferred::VolumeList, Deferred::Destroy] {
-            assert!(
-                verb.needs_binding(),
-                "{} should need a binding",
-                verb.as_str()
-            );
+    fn only_gc_is_still_deferred() {
+        assert!(matches!(
+            parsed(&["gc"]),
+            Ok(Invocation::Deferred {
+                verb: Deferred::Gc,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parsed(&["volume", "list"]),
+            Ok(Invocation::VolumeList { .. })
+        ));
+        assert!(matches!(
+            parsed(&["volume", "prune", "--yes"]),
+            Ok(Invocation::VolumePrune { .. })
+        ));
+        assert!(matches!(
+            parsed(&["destroy", "--yes"]),
+            Ok(Invocation::Destroy { .. })
+        ));
+    }
+
+    /// `--keep-volumes` was parsed and discarded, which is the shape of bug a flag test catches
+    /// and a usage line does not: the invocation accepted it and nothing carried it anywhere.
+    #[test]
+    fn every_destroy_flag_reaches_the_invocation() {
+        assert!(matches!(
+            parsed(&["destroy", "--yes", "--keep-volumes"]),
+            Ok(Invocation::Destroy {
+                keep_volumes: true,
+                yes: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parsed(&["destroy", "-f"]),
+            Ok(Invocation::Destroy {
+                keep_volumes: false,
+                yes: true,
+                ..
+            })
+        ));
+    }
+
+    /// `prune` shares `destroy`'s consent rail, except that a preview removes nothing and so is
+    /// not gated on consent at all — including off a terminal, where the gate would otherwise make
+    /// `--dry-run` impossible to run from a script.
+    #[test]
+    fn a_prune_preview_needs_no_consent_and_a_prune_does() {
+        assert!(parse(argv(&["volume", "prune"]), piped()).is_err());
+        for preview in [
+            vec!["volume", "prune", "-n"],
+            vec!["volume", "prune", "--dry-run"],
+        ] {
+            assert!(matches!(
+                parse(argv(&preview), piped()),
+                Ok(Invocation::VolumePrune { dry_run: true, .. })
+            ));
         }
+        assert!(matches!(
+            parse(argv(&["volume", "prune", "--yes"]), piped()),
+            Ok(Invocation::VolumePrune {
+                dry_run: false,
+                yes: true,
+                ..
+            })
+        ));
+        // On a terminal the prompt is what asks, so the flag is optional there.
+        assert!(matches!(
+            parse(argv(&["volume", "prune"]), tty()),
+            Ok(Invocation::VolumePrune { yes: false, .. })
+        ));
     }
 
     /// Pins `--json` as recognized on every verb that carries a specified JSON shape.

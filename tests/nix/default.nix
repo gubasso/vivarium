@@ -43,6 +43,11 @@ let
         ;
       inherit (image) guest runner;
       expect = {
+        # Read off the built guest rather than off what the fixture asked for, so
+        # the assertion compares the launcher's JSON and the guest's fstab against
+        # a third reading of the same evaluation instead of against the request.
+        # Everything past the two reserved volumes is what a layer declared.
+        declaredVolumes = lib.drop 2 image.guest.config.microvm.volumes;
         # Read off the image's own resolved settings. Re-deriving them from the
         # defaults is what `nix/default.nix` used to do to itself, and it is how the
         # leg-to-unit map came to exist twice.
@@ -74,7 +79,13 @@ let
         "legs"
         "storeFreeSpaceHook"
       ];
-      image = product.mkImage (productOverrides // { extraModules = measurement.modules; });
+      # Appended, not replaced. A variant that names `extraModules` used to have it
+      # silently discarded here, which made the key look available and do nothing —
+      # the inert-versus-absent failure AGENTS.md names. The measurement legs stay
+      # first so a fixture module can override what they set.
+      image = product.mkImage (
+        productOverrides // { extraModules = measurement.modules ++ (settings.extraModules or [ ]); }
+      );
     in
     lib.throwIf (unknownKeys != [ ])
       "vivarium verification: unknown key(s) ${lib.concatStringsSep ", " unknownKeys} (known: ${
@@ -166,6 +177,18 @@ let
       in
       image // { contract = contractFor image [ ]; };
 
+    # The one image with a volume nothing reserved. Without it every claim about
+    # declared volumes — the appended `microvm.volumes` entry, the drive-letter
+    # order, the `viv-` label under ext4's cap, the guest fstab row, and the
+    # first-boot ownership table — is asserted over an empty list and passes for
+    # that reason. It selects no probe leg, so what it varies from the shipped
+    # image is exactly one declaration.
+    declared-volume = mkVerification {
+      extraModules = [
+        (import ./fixtures/declared-volume.nix { inherit (product) optionsModule; })
+      ];
+    };
+
     # The pool constant, under test. ADR-0051 pinned 4 on mechanism alone; the
     # concurrent sweep these variants run is what moved it to the daemon's own 0
     # (ADR-0096). They stay because the constant is only ever as good as its last
@@ -206,6 +229,11 @@ let
   checks = {
     first-microvm = images.shipped.contract;
     first-microvm-measurement = images.measurement.contract;
+    # Three, because this one covers a topology the other two cannot: their volume
+    # assertions run over the two reserved volumes and would hold with the declared
+    # path deleted. It is a guest build like the others, and it is the only place
+    # the declared half is checked without spending a boot.
+    first-microvm-declared-volume = images.declared-volume.contract;
   };
 in
 {

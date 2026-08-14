@@ -24,6 +24,9 @@ pub mod merged;
 pub mod registry;
 mod resolve;
 mod roots;
+// Public as a module for the reason `registry` is: `read`, `parse`, and `write` say what they mean
+// only next to the noun they act on, and `volumes::read` reads better than `read_volume_record`.
+pub mod volumes;
 
 #[cfg(test)]
 mod test_support;
@@ -38,9 +41,9 @@ pub use flake::{
     target_paths,
 };
 pub use identity::{
-    IDENTITY_FILE, Identity, IdentityIndex, MARKER_DIR, identity_path, mint as mint_identity,
-    project_basename, read_index as read_identity_index, resolve as resolve_identity,
-    sanitize_project_name,
+    Forgotten, IDENTITY_FILE, Identity, IdentityIndex, MARKER_DIR, forget as forget_identity,
+    identity_path, mint as mint_identity, project_basename, read_index as read_identity_index,
+    resolve as resolve_identity, sanitize_project_name,
 };
 pub use manifest::{
     DefaultVolume, Egress, EgressMode, Manifest, ManifestOrigin, Mount, Resources, Volume,

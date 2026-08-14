@@ -3,8 +3,7 @@ set -euo pipefail
 contract=@launchArgumentsPath@
 workspace=""
 runtime_dir=""
-volume=""
-store_volume=""
+volume_dir=""
 uid=""
 gid=""
 memory_mib=""
@@ -16,12 +15,18 @@ gpg_agent_socket=""
 console_log=true
 print_only=false
 usage() {
-  echo "usage: $0 --workspace ABS --runtime-dir ABS --volume ABS --store-volume ABS --uid N --gid N --memory-mib N --vcpu N [--project-id ID] [--target NAME] [--ssh-agent-socket ABS] [--gpg-agent-socket ABS] [--no-console-log] [--print-static-arguments]" >&2
+  echo "usage: $0 --workspace ABS --runtime-dir ABS --volume-dir ABS --uid N --gid N --memory-mib N --vcpu N [--project-id ID] [--target NAME] [--ssh-agent-socket ABS] [--gpg-agent-socket ABS] [--no-console-log] [--print-static-arguments]" >&2
+  # The one pairing `schemaVersion` cannot catch. A generated flake pins its own
+  # `vivarium`, so a newer `viv` may drive an older runner, whose argument names
+  # differ — and this refusal happens before any schema is read. `viv start`
+  # surfaces this stderr verbatim, so naming the contract's version here is what
+  # turns "usage error" into "you are holding two halves of different versions".
+  echo "this launcher speaks launch contract schema $(jq -r '.schemaVersion' "$contract")" >&2
   exit 64
 }
 while (($#)); do
   case $1 in
-    --workspace | --runtime-dir | --volume | --store-volume | --uid | --gid | --memory-mib | --vcpu | --project-id | --target | --ssh-agent-socket | --gpg-agent-socket)
+    --workspace | --runtime-dir | --volume-dir | --uid | --gid | --memory-mib | --vcpu | --project-id | --target | --ssh-agent-socket | --gpg-agent-socket)
       (($# >= 2)) || usage
       name=${1#--}
       name=${name//-/_}
@@ -39,7 +44,7 @@ while (($#)); do
     *) usage ;;
   esac
 done
-for value in workspace runtime_dir volume store_volume; do
+for value in workspace runtime_dir volume_dir; do
   candidate=${!value:-}
   [[ $candidate = /* ]] || usage
 done
@@ -66,8 +71,10 @@ else
 fi
 workspace=$(realpath -m -- "$workspace")
 runtime_dir=$(realpath -m -- "$runtime_dir")
-volume=$(realpath -m -- "$volume")
-store_volume=$(realpath -m -- "$store_volume")
+# `-m`, so a directory that does not exist yet still resolves: the images are
+# created by the supervisor, and `--print-static-arguments` renders a contract
+# against paths no host has ever had. A `-d` test here would refuse that.
+volume_dir=$(realpath -m -- "$volume_dir")
 spec=$runtime_dir/launch.json
 api=$runtime_dir/api.sock
 console=$runtime_dir/console.sock
@@ -88,7 +95,7 @@ else
 fi
 jq \
   --arg project "$project_id" --arg target "$target" --arg runtime "$runtime_dir" \
-  --arg workspace "$workspace" --arg volume "$volume" --arg storeVolume "$store_volume" \
+  --arg workspace "$workspace" --arg volumeDir "$volume_dir" \
   --arg api "$api" --arg console "$console" --arg control "$control" --arg ready "$ready" \
   --arg storeSocket "$store_socket" --arg workspaceSocket "$workspace_socket" \
   --arg sshAgent "$ssh_agent_socket" --arg gpgAgent "$gpg_agent_socket" --argjson uid "$uid" --argjson gid "$gid" \
@@ -97,8 +104,7 @@ jq \
   def token:
     if type != "string" then . else
       gsub("@WORKSPACE_SOURCE@"; $workspace)
-      | gsub("@VOLUME_IMAGE@"; $volume)
-      | gsub("@STORE_VOLUME_IMAGE@"; $storeVolume)
+      | gsub("@VOLUME_DIR@"; $volumeDir)
       | gsub("@STORE_SOCKET@"; $storeSocket)
       | gsub("@WORKSPACE_SOCKET@"; $workspaceSocket)
       | gsub("@API_SOCKET@"; $api)
@@ -126,8 +132,7 @@ jq \
     shares: [.shareLaunch[] | { tag, source: (.sourceToken | token), mountPoint,
       socket: (.socketToken | token), cache,
       readOnly, extraArgs: [.extraArgs[]? | select(. != "@UID_TRANSLATION@" and . != "@GID_TRANSLATION@") | token] }],
-    volumes: [.volumeLaunch[] | { label, path: (if .argName == "store-volume" then $storeVolume else $volume end),
-      sizeMiB, imageType, inodeRatio }],
+    volumes: [.volumeLaunch[] | { label, path: (.imagePath | token), sizeMiB, imageType, inodeRatio }],
     vmCreate: (.vmCreate | walk(token)
       | .cpus.boot_vcpus = $vcpu | .cpus.max_vcpus = $vcpu
       | .memory.size = ($memoryMiB * 1048576)

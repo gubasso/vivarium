@@ -382,6 +382,47 @@ pub fn manifest_list_human(rows: &[(String, ResolvedArtifact, Manifest)]) -> Str
     rendered
 }
 
+/// `viv volume list --json` — one row per volume, wrapped for the reason `manifests` is.
+///
+/// The rows arrive already shaped: which columns a volume has is spec/01's business and the
+/// command's, and duplicating the key names here would put the published half in two places.
+pub fn volume_list_json(rows: &[Value]) -> String {
+    line(&json!({ "volumes": rows }))
+}
+
+/// `viv volume list` — one row per line, and nothing at all when there is nothing to say.
+pub fn volume_list_human(rows: &[Vec<String>]) -> String {
+    let mut rendered = String::new();
+    for row in rows {
+        rendered.push_str(&row.join("\t"));
+        rendered.push('\n');
+    }
+    rendered
+}
+
+/// `viv volume prune --json` — the rows removed, and what that reclaimed.
+///
+/// `reclaimed_bytes` sits beside the list rather than inside it because it is a property of the
+/// run: spec/01 fixes `{"volumes": [], "reclaimed_bytes": 0}` as the nothing-to-do record, and a
+/// per-row total could not express that.
+pub fn volume_prune_json(rows: &[Value], reclaimed_bytes: u64) -> String {
+    line(&json!({ "volumes": rows, "reclaimed_bytes": reclaimed_bytes }))
+}
+
+/// `viv volume prune` — the same rows the prompt showed, then the measurement.
+///
+/// The measurement always prints, including the zero: spec/01 lists `prune` among the commands
+/// that print their measurement on stdout, and "nothing to prune" is a result rather than silence.
+pub fn volume_prune_human(rows: &[String], reclaimed_bytes: u64) -> String {
+    let mut rendered = String::new();
+    for row in rows {
+        rendered.push_str(row);
+        rendered.push('\n');
+    }
+    let _ = writeln!(rendered, "reclaimed\t{reclaimed_bytes}");
+    rendered
+}
+
 /// `viv manifest show --json` — one manifest as authored.
 pub fn manifest_show_json(name: &str, selected: &ResolvedArtifact, manifest: &Manifest) -> String {
     line(&json!({

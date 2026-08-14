@@ -8,7 +8,7 @@ set -eu
 launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' \
   "$VIVARIUM_RUNNER/bin/vivarium-first-microvm" | head -n1)
 test -n "$launcher_json"
-test "$(jq -r .schemaVersion "$launcher_json")" = 4
+test "$(jq -r .schemaVersion "$launcher_json")" = 5
 test "$(jq -r .descriptorBudget.limit "$launcher_json")" = 524288
 test "$(jq -r .descriptorBudget.workerPoolSize "$launcher_json")" = "$VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE"
 test "$(jq -r .socketLegs.api "$launcher_json")" = '@API_SOCKET@'
@@ -134,11 +134,72 @@ done
 # Order is a contract between cloud-hypervisor's `--disk` sequence and
 # microvm.nix's drive-letter assignment, so assert the sequence itself rather
 # than only that both rows exist.
-test "$(jq -r '[.volumeLaunch[].label] | join(",")' "$launcher_json")" = "$VIVARIUM_VOLUME_LABEL,$VIVARIUM_STORE_VOLUME_LABEL"
+test "$(jq -r '[.volumeLaunch[].label] | join(",")' "$launcher_json" | cut -d, -f1,2)" = "$VIVARIUM_VOLUME_LABEL,$VIVARIUM_STORE_VOLUME_LABEL"
+# The two reserved volumes lead, in that order, whatever a layer declared after
+# them. Asserted on `role` as well as on labels because the labels above are this
+# image's; the roles are every image's, so a variant that declares volumes still
+# has to keep the home volume's drive letter.
+test "$(jq -r '[.volumeLaunch[].role] | join(",")' "$launcher_json" | cut -d, -f1,2)" = home,store
+# Each image path is the launch-channel directory token joined to a name the
+# build owns, and no two volumes may resolve to one file — upstream requires the
+# `image` field to be unique, and a collision here is two disks over one image.
+test "$(jq -r '[.volumeLaunch[] | select(.imagePath | startswith("@VOLUME_DIR@/") | not)] | length' "$launcher_json")" = 0
+test "$(jq -r '[.volumeLaunch[].imagePath] | length' "$launcher_json")" \
+  = "$(jq -r '[.volumeLaunch[].imagePath] | unique | length' "$launcher_json")"
+test "$(jq -r '[.volumeLaunch[] | select(.imagePath != "@VOLUME_DIR@/" + .name + ".img")] | length' "$launcher_json")" = 0
+
+# --- what a layer declared, end to end ----------------------------------
+# The first-boot ownership half, read out of the built unit and the file it
+# names rather than out of the module that wrote them. The table's path is taken
+# from the unit's own `Environment=` line, so a unit that stopped passing it — or
+# passed a different one — fails here instead of at a boot.
+prepare_unit=$VIVARIUM_GUEST_SYSTEM/etc/systemd/system/vivarium-volume-prepare.service
+prepare_table=$(sed -n 's/^Environment="VIVARIUM_VOLUME_TABLE=\(.*\)"$/\1/p' "$prepare_unit")
+test -r "$prepare_table"
+
+# Total rather than sampled, the way the share loop above is: every declared
+# volume is checked, and the count of checked rows is compared against both the
+# expectation and the launcher's own list. Without the count a loop over an empty
+# list asserts nothing, and every image that declares no volume would report this
+# whole section green — which is what "the assertion passed vacuously" looks like
+# when it is not caught.
+declared_seen=0
+while read -r name mount label size_mib; do
+  [ -n "$name" ] || continue
+  # The launcher's JSON: the entry exists, is not one of the two reserved roles,
+  # carries the label the guest will resolve by, and takes its ceiling from the
+  # declaration (or from the per-volume default when it declared none).
+  test "$(jq -r --arg n "$name" '.volumeLaunch[] | select(.name == $n) | .role' "$launcher_json")" = declared
+  test "$(jq -r --arg n "$name" '.volumeLaunch[] | select(.name == $n) | .label' "$launcher_json")" = "$label"
+  test "$(jq -r --arg n "$name" '.volumeLaunch[] | select(.name == $n) | .sizeMiB' "$launcher_json")" = "$size_mib"
+  # ext4 truncates a longer label and still exits 0, which would leave the guest
+  # waiting on a by-label device that never appears.
+  test "${#label}" -le 16
+  # The guest's own fstab, realised independently of the JSON above: this is the
+  # half that proves the volume is actually mounted where the declaration asked,
+  # rather than merely attached as a disk.
+  awk -v m="$mount" '$2 == m' "$fstab" | grep -qF "/dev/disk/by-label/$label"
+  # spec/06's first-boot ownership: the mount point has a row in the table the
+  # prepare unit reads, and the unit waits for that mount before running.
+  grep -qE "^$mount [^ ]+ [0-7]{4} 0$" "$prepare_table"
+  grep -qF "$mount" <<<"$(sed -n 's/^RequiresMountsFor=//p' "$prepare_unit")"
+  declared_seen=$((declared_seen + 1))
+done <<<"$VIVARIUM_DECLARED_VOLUMES"
+test "$declared_seen" = "$(grep -c . <<<"${VIVARIUM_DECLARED_VOLUMES:-}" || true)"
+test "$((declared_seen + 2))" = "$(jq -r '.volumeLaunch | length' "$launcher_json")"
+# The store volume is exempt from first-boot ownership (spec/06) and the home
+# volume is not, whatever any image declares. Both halves, because a table built
+# by filtering the attached volumes instead of the declared ones would still
+# satisfy the first.
+grep -qE "^$(jq -r .guestSession.home "$launcher_json") [^ ]+ 0700 1$" "$prepare_table"
+# `/nix/.rw-store` is the writable store overlay, spelled the same way the fstab
+# assertion below spells it. A row here would mean the table was rebuilt from the
+# attached volumes rather than from the declared ones.
+test "$(awk '$1 == "/nix/.rw-store"' "$prepare_table" | wc -l)" = 0
 # ADR-0091: exactly one volume is provisioned for inodes, and it is the one
 # whose mount point is the writable store overlay.
-test "$(jq -r '[.volumeLaunch[] | select(.inodeRatio != null) | .argName] | join(",")' "$launcher_json")" = store-volume
-test "$(jq -r '.volumeLaunch[] | select(.argName == "store-volume") | .inodeRatio' "$launcher_json")" = 8192
+test "$(jq -r '[.volumeLaunch[] | select(.inodeRatio != null) | .role] | join(",")' "$launcher_json")" = store
+test "$(jq -r '.volumeLaunch[] | select(.role == "store") | .inodeRatio' "$launcher_json")" = 8192
 # ADR-0087: the store volume backs the writable layer, so the guest must
 # resolve it at $VIVARIUM_STORE_VOLUME_LABEL and mount it before /nix/store exists.
 awk '$2 == "/nix/.rw-store"' "$fstab" | grep -qF "/dev/disk/by-label/$VIVARIUM_STORE_VOLUME_LABEL"
@@ -202,7 +263,7 @@ grep -F 'DefaultDependencies=false' "$VIVARIUM_GUEST_SYSTEM/etc/systemd/system/n
 # threshold. This turns that failure into a build error.
 grep -qE "^min-free = $VIVARIUM_STORE_MIN_FREE$" "$VIVARIUM_GUEST_SYSTEM/etc/nix/nix.conf"
 grep -qE "^max-free = $VIVARIUM_STORE_MAX_FREE$" "$VIVARIUM_GUEST_SYSTEM/etc/nix/nix.conf"
-test "$(jq -r '.volumeLaunch[] | select(.argName == "store-volume") | .sizeMiB' "$launcher_json")" = "$VIVARIUM_STORE_VOLUME_SIZE_MIB"
+test "$(jq -r '.volumeLaunch[] | select(.role == "store") | .sizeMiB' "$launcher_json")" = "$VIVARIUM_STORE_VOLUME_SIZE_MIB"
 test "$(jq -r '.virtiofsdThreadPoolSize' "$launcher_json")" = "$VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE"
 
 # --- what this image is allowed to boot ---------------------------------

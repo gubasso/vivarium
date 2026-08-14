@@ -8,13 +8,18 @@ use std::collections::HashSet;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Component, Path, PathBuf};
 
-/// The launch handoff's own version, bumped to 4 by ADR-0100.
+/// The launch handoff's own version, bumped to 5 by named volumes.
 ///
-/// `ShareSpec::mount_point` for the workspace stopped being the path a session starts in and became
-/// the share's internal one, so a `viv` of this version reading an older launcher's JSON would
-/// compute a guest cwd that does not exist. Both shapes parse, so the version is the only thing
-/// that separates them.
-pub const LAUNCH_SCHEMA_VERSION: u32 = 4;
+/// The launcher takes one `--volume-dir` and joins each image path from a name the build owns, so
+/// `volumes` is as long as the merged configuration declares rather than the fixed two a host used
+/// to name on the command line. It caught the same class at 4 (ADR-0100): `ShareSpec::mount_point`
+/// for the workspace stopped being the path a session starts in and became the share's internal
+/// one, and both shapes parse, so the version is the only thing that separates them.
+///
+/// It does not separate every pairing. The runner's own argument names moved with this bump, and a
+/// generated flake pins its own `vivarium` — so a newer `viv` may meet an older runner, which
+/// refuses at its usage line before rendering any JSON for this constant to check.
+pub const LAUNCH_SCHEMA_VERSION: u32 = 5;
 pub const VIRTIOFSD_RLIMIT_NOFILE: u64 = 524_288;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -420,6 +425,27 @@ impl LaunchSpec {
                 ));
             }
         }
+        // Volumes were unchecked while there were exactly two of them and the host named both
+        // paths on the command line. Since the launcher joins each one from `--volume-dir` and a
+        // build decides how many there are, a defect in that join reaches here instead of a
+        // developer. The duplicate-label check is the load-bearing one: the guest mounts by
+        // `/dev/disk/by-label`, so two volumes sharing a label is not an error at boot but the
+        // wrong data at the right path, which is what the disk-ordering contract in
+        // `nix/guest.nix` exists to prevent.
+        let mut labels = HashSet::new();
+        let mut images = HashSet::new();
+        for volume in &self.volumes {
+            require_absolute_resolved(&volume.path)?;
+            if volume.label.is_empty() {
+                return Err(LaunchError::InvalidSpec("volume label is empty"));
+            }
+            if !labels.insert(&volume.label) {
+                return Err(LaunchError::InvalidSpec("duplicate volume label"));
+            }
+            if !images.insert(&volume.path) {
+                return Err(LaunchError::InvalidSpec("duplicate volume image path"));
+            }
+        }
         Ok(())
     }
 }
@@ -655,6 +681,31 @@ pub mod tests {
         }
     }
 
+    /// One volume as the launcher renders it, for the mutations below.
+    fn volume(label: &str, path: &str) -> VolumeSpec {
+        VolumeSpec {
+            label: label.into(),
+            path: path.into(),
+            size_mib: 32768,
+            image_type: "raw".into(),
+            inode_ratio: None,
+        }
+    }
+
+    #[test]
+    fn accepts_the_volume_list_a_build_declares() {
+        // The shape `--volume-dir` produces: distinct names joined onto one directory, in the
+        // order `nix/guest.nix` fixes. A positive case, because every other volume assertion here
+        // is a refusal and a validator that refused everything would pass all of them.
+        let mut spec = fixture();
+        spec.volumes = vec![
+            volume("vivarium-default", "/s/projects/p/t/volumes/default.img"),
+            volume("vivarium-store", "/s/projects/p/t/volumes/store.img"),
+            volume("viv-cache", "/s/projects/p/t/volumes/cache.img"),
+        ];
+        spec.validate().unwrap();
+    }
+
     #[test]
     fn validates_positive_absent_and_exact_credential_cases() {
         let mut spec = fixture();
@@ -693,6 +744,23 @@ pub mod tests {
             // owns is now a refusal here and not only in the CLI that usually gets there first.
             Box::new(|s| s.shares[0].source = PathBuf::from("/home/vivarium/work")),
             Box::new(|s| s.shares[0].source = PathBuf::from("/home")),
+            // The volume half. Every one of these is a way the `--volume-dir` join can go wrong,
+            // and none of them was reachable while the host named two image paths itself.
+            Box::new(|s| {
+                s.volumes.push(volume("vivarium-default", "/v/default.img"));
+                s.volumes.push(volume("vivarium-default", "/v/other.img"));
+            }),
+            Box::new(|s| {
+                s.volumes.push(volume("vivarium-default", "/v/default.img"));
+                s.volumes.push(volume("viv-cache", "/v/default.img"));
+            }),
+            Box::new(|s| s.volumes.push(volume("", "/v/default.img"))),
+            Box::new(|s| {
+                s.volumes
+                    .push(volume("viv-cache", "@VOLUME_DIR@/cache.img"));
+            }),
+            Box::new(|s| s.volumes.push(volume("viv-cache", "v/cache.img"))),
+            Box::new(|s| s.volumes.push(volume("viv-cache", "/v/../cache.img"))),
         ];
         for mutate in mutations {
             let mut spec = fixture();
@@ -750,7 +818,10 @@ pub mod tests {
     fn unresolved_token_matches_the_sentinel_shape_only() {
         for leftover in [
             "/x/@WORKSPACE_SOURCE@",
-            "@VOLUME_IMAGE@",
+            "@VOLUME_DIR@",
+            // The joined shape, which is what a volume path looks like when the launcher failed
+            // to substitute: the sentinel is no longer the whole string, only its head.
+            "@VOLUME_DIR@/cache.img",
             "/a/@GID@/b",
             "/@A@",
         ] {

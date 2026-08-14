@@ -42,4 +42,13 @@ pkgs.runCommand "vivarium-first-microvm-contract" {
     )
   );
   VIVARIUM_EXPECT_NO_UNITS = if expect.units == [ ] then "1" else "";
+  # `<name> <mount> <label> <sizeMiB>` per declared volume, in `microvm.volumes`
+  # order — empty for every image that declares none. The launcher's JSON and the
+  # guest's fstab are then each compared against this third reading rather than
+  # against each other alone, and the row count is what turns the loop below into
+  # a total check instead of one that passes over an empty list.
+  VIVARIUM_DECLARED_VOLUMES = pkgs.lib.concatMapStrings (
+    volume:
+    "${pkgs.lib.removeSuffix ".img" (baseNameOf volume.image)} ${volume.mountPoint} ${volume.label} ${toString volume.size}\n"
+  ) expect.declaredVolumes;
 } (builtins.readFile ./contract.sh)

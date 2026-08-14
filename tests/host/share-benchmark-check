@@ -137,8 +137,8 @@ LANE_RUN_PREFIX=share-bench
 clean_lane() {
   local removed=0 kept=0 entry dir pidfile pid alive n
   for n in "${POOL_SIZES[@]}" 0 1 2 4; do
-    for entry in "$VOLUME_DIR/share-bench-threads-$n.img" \
-      "$VOLUME_DIR/share-bench-threads-$n-store.img" \
+    for entry in "$VOLUME_DIR/share-bench-threads-$n/default.img" \
+      "$VOLUME_DIR/share-bench-threads-$n/store.img" \
       "$VOLUME_DIR/share-bench-threads-$n-console.log"; do
       [[ -e $entry ]] || continue
       printf 'removing %s (%s bytes allocated)\n' "$entry" "$(($(stat -c %b "$entry") * $(stat -c %B "$entry")))"
@@ -359,9 +359,13 @@ else
       printf -- '\n  --- pool size %s ---\n' "$n"
       run_id="share-bench-$$-$n"
       runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
-      volume=$VOLUME_DIR/share-bench-threads-$n.img
-      store_volume=$VOLUME_DIR/share-bench-threads-$n-store.img
-      mkdir -p "$runtime_dir"
+      # One directory per pool size, because the launcher names each image from
+      # the build and every variant would otherwise write `default.img` over the
+      # last one's — which is exactly the warm volume this sweep must not have.
+      volume_dir=$VOLUME_DIR/share-bench-threads-$n
+      volume=$volume_dir/default.img
+      store_volume=$volume_dir/store.img
+      mkdir -p "$runtime_dir" "$volume_dir"
       chmod 0700 "$runtime_dir"
       launch_log=$TEMP_ROOT/launch-$n.log
       console_log=$TEMP_ROOT/console-$n.log
@@ -383,8 +387,8 @@ else
       # started while pool 0 did": nothing about the pool size, just whichever
       # boot lost the race. `--project-id`/`--target` make the unit's name
       # predictable so the unit can be the lifetime instead.
-      launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume "$volume"
-        --store-volume "$store_volume" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 4096 --vcpu 4
+      launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir"
+        --uid "$(id -u)" --gid "$(id -g)" --memory-mib 4096 --vcpu 4
         --project-id share-bench --target "$$-$n")
       unit_name="vivarium-share-bench-$$-$n.service"
 

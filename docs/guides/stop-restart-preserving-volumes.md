@@ -1,7 +1,5 @@
 # Stop and restart while preserving volumes
 
-> Design-intent walkthrough — not yet working. This guide describes the target experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
-
 Use this flow when ending a VM session without discarding the project’s persistent working state. The [workspace and volume model](../reference/spec/06-workspace-and-project-environment.md) owns persistence, and [VM lifecycle](../reference/spec/10-vm-lifecycle.md) owns stop and restart behavior. Stopping removes nothing by design — [the decision separating `stop` from `destroy`](../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md) is what makes a warm restart the default outcome rather than a lucky one.
 
 ## Inspect and stop

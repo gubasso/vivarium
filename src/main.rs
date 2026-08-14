@@ -126,6 +126,9 @@ const fn requested_output(invocation: &Invocation) -> Output {
         | Invocation::Start { output, .. }
         | Invocation::Status { output, .. }
         | Invocation::Stop { output, .. }
+        | Invocation::VolumeList { output }
+        | Invocation::VolumePrune { output, .. }
+        | Invocation::Destroy { output, .. }
         | Invocation::Deferred { output, .. } => *output,
         // Neither the private handoff nor a session carries `--json`, and a session's own failures
         // are vivarium's own: spec/12 puts them on stderr beside the guest's, in the human form.
