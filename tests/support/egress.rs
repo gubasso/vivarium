@@ -58,6 +58,7 @@ pub fn run_mode() -> Option<std::process::ExitCode> {
         "egress-fixture-dns" => serve_stub_dns(),
         "egress-fixture-endpoint" => serve_endpoints(),
         "egress-fixture-probe" => probe_mode(&args.next()?, &args.next()?),
+        "egress-fixture-claim" => claim_resolver_socket(),
         _ => return None,
     };
     Some(code)
@@ -183,6 +184,56 @@ fn probe_mode(server: &str, name: &str) -> std::process::ExitCode {
     };
     println!("rcode={:?}", answer.metadata.response_code);
     std::process::ExitCode::SUCCESS
+}
+
+/// Try to bind the gating resolver's own socket; a clean exit means nothing holds it.
+///
+/// Run inside the pair, this is open mode's absence probe: a resolver that was
+/// wrongly spawned would hold the address and the bind would fail `EADDRINUSE`, so
+/// success is positive proof of an empty socket rather than a timeout read as one.
+fn claim_resolver_socket() -> std::process::ExitCode {
+    match UdpSocket::bind(RESOLVER_ADDR) {
+        Ok(_) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("egress-fixture-claim: cannot bind {RESOLVER_ADDR}: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// Assert open mode ships no filter and no resolver — absent, not inert (spec/05).
+///
+/// Two observations inside the pair, each made where the artifact would exist: the
+/// kernel lists no vivarium table, and the resolver's socket is claimable. A
+/// supervisor that grew an unconditional ruleset apply or resolver spawn fails
+/// here instead of passing on a neutralized knob.
+///
+/// # Errors
+///
+/// Returns the observation that contradicted absence.
+pub fn expect_open_mode_absence(vm_pid: u32) -> Result<(), String> {
+    let tables = enter_pair(vm_pid, &[tool("nft")?, "list".into(), "tables".into()])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("listing tables in the pair: {error}"))?;
+    if !tables.status.success() {
+        return Err(format!(
+            "`nft list tables` in the pair failed: {}",
+            String::from_utf8_lossy(&tables.stderr).trim()
+        ));
+    }
+    if String::from_utf8_lossy(&tables.stdout).contains(vivarium::net::nft::TABLE) {
+        return Err(format!(
+            "open mode must install no ruleset, but the kernel lists table `{}`",
+            vivarium::net::nft::TABLE
+        ));
+    }
+    let exe = std::env::current_exe().map_err(|error| format!("current_exe: {error}"))?;
+    run_in_pair(
+        vm_pid,
+        &[exe.display().to_string(), "egress-fixture-claim".into()],
+    )
+    .map_err(|error| format!("open mode must spawn no resolver, but its socket is held: {error}"))
 }
 
 /// The installed fixture; dropping it kills the stub processes. The veth and the

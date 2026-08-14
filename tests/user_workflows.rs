@@ -510,7 +510,14 @@ fn workflow_01_boot() -> Result<(), Failed> {
     // `starting`, but not one that returns early and happens to settle before this
     // separate `status` runs. Proving the return boundary itself needs a fixture that
     // can hold the readiness handshake open, which arrives with the agent (section E).
-    check(expect_json_string(&status, "state", "running"))
+    check(expect_json_string(&status, "state", "running"))?;
+
+    // This manifest declares no egress, so this guest runs open mode, which spec/05
+    // ships with no filter and no resolver — absent, not inert. The absence is
+    // asserted on the guest this trial already booted rather than paying a second
+    // boot for it elsewhere.
+    let vm_pid = support::egress::read_vm_pid(tp.runtime()).map_err(Failed::from)?;
+    check(support::egress::expect_open_mode_absence(vm_pid))
 }
 
 // Guide: docs/guides/clean-repo-global-registry.md
