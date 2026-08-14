@@ -37,6 +37,20 @@
         };
         # Reads channel + components + targets straight from rust-toolchain.toml.
         toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        # `viv`, built from the working tree on every invocation. This is a shell
+        # package and not a flake output: `packages` at this level would be a
+        # build output, which is the boundary `scripts/check-flake-boundary`
+        # enforces, and the whole point of the shim is that it builds nothing
+        # ahead of time. `scripts/viv-shim.sh` carries the rest of the rationale.
+        devWrapper = pkgs.writeShellApplication {
+          name = "viv";
+          runtimeInputs = [
+            toolchain
+            pkgs.nix
+            pkgs.jq
+          ];
+          text = builtins.readFile ./scripts/viv-shim.sh;
+        };
       in
       {
         # `nix fmt` uses the RFC 166 formatter (also on PATH for the pre-commit hook).
@@ -81,6 +95,13 @@
             # `language: system`, resolved off PATH, and a cargo-installed
             # dprint is a prebuilt glibc ELF that cannot exec without FHS.
             pkgs.dprint
+            # `scripts/baseline-pins` reads `nix flake archive --json` with it,
+            # and `scripts/install-dev` reaches that script through this shell.
+            pkgs.jq
+            # `viv` itself, so entering the shell (or `direnv allow`) needs no
+            # separate install step. The shim, not a built package, so what PATH
+            # resolves is the working tree rather than the last evaluation of it.
+            devWrapper
           ];
           # native deps for -sys crates, uncomment as needed:
           # buildInputs = [ pkgs.openssl ];
@@ -94,7 +115,12 @@
           # store on every evaluation. Out of the tree, it costs nothing.
           shellHook = ''
             export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-''${XDG_CACHE_HOME:-$HOME/.cache}/vivarium/target}"
-            echo "rust dev shell ready (toolchain from rust-toolchain.toml; CARGO_TARGET_DIR=$CARGO_TARGET_DIR)"
+            # Both greetings go to standard error. `nix develop --command` shares
+            # the command's stdout, so on stdout these lines are prepended to
+            # whatever it emits — and `scripts/baseline-pins` exists to have its
+            # stdout `eval`ed, which would then execute this text.
+            echo "rust dev shell ready (toolchain from rust-toolchain.toml; CARGO_TARGET_DIR=$CARGO_TARGET_DIR)" >&2
+            echo "\`viv\` on PATH builds from this tree and shadows any installed one; \`just install\` for elsewhere" >&2
           '';
         };
       }

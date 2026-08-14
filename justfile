@@ -49,6 +49,23 @@ fmt-check:
 # Format, lint, then test.
 check: fmt lint test
 
+# --- Developer install ----------------------------------------------------
+# Install logic lives in scripts/install-dev, never in this file. The devShell
+# already puts a `viv` built from the working tree on PATH inside this
+# repository; these recipes are for using it anywhere else.
+
+# Install `viv` and `vivarium-supervisor` into cargo's bin directory.
+install:
+    nix develop --command scripts/install-dev
+
+# Same, plus a `viv-dev` that resolves its baseline inputs against this tree.
+install-pinned:
+    nix develop --command scripts/install-dev --pinned
+
+# Remove `viv`, `vivarium-supervisor` and `viv-dev` again.
+uninstall:
+    nix develop --command scripts/install-dev --uninstall
+
 # --- Publishing -----------------------------------------------------------
 # These wrap the auth-gated helper scripts under scripts/; publish logic and
 # the crates.io auth gate live there, never in this file.

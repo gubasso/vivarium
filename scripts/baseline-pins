@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# The three baseline flake inputs a hand-run `viv` should evaluate against,
+# pinned to this working tree, as `export` lines for `eval`.
+#
+# This is the shell twin of `baseline_inputs()` in `tests/support/mod.rs`, and
+# that function carries the full reasoning: vivarium ships branch references so
+# a released tool resolves today's upstream, which is correct for a user and a
+# trap for development, because every fresh evaluation queries the forge again.
+# What differs here is only the caller — a person at a terminal rather than a
+# trial — so the pins are emitted rather than applied, and one reader can see
+# what its `viv` is about to build against.
+#
+# Fails open, deliberately and the same way the suite does: a host that cannot
+# produce the pins emits nothing and exits 0, so the caller resolves live
+# exactly as a user would. The reason goes to standard error, because the
+# stdout of this program is `eval`ed and anything else on it would be executed.
+set -uo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+
+# `?dir=nix` and not `/nix`: the reference fixes the flake's source tree, and the
+# product build reads the Rust crate at the repository root through it. See the
+# header of `scripts/check-flake-boundary` for the whole of that argument.
+product_flake="path:$repo_root?dir=nix"
+
+note() { printf 'baseline-pins: %s\n' "$*" >&2; }
+
+if ! command -v nix >/dev/null 2>&1; then
+  note "nix is absent; emitting no pins, so the caller resolves live"
+  exit 0
+fi
+
+if ! archived=$(nix flake archive --json \
+  --extra-experimental-features 'nix-command flakes' \
+  "$product_flake" 2>/dev/null) || [[ -z $archived ]]; then
+  note "could not archive $product_flake; emitting no pins, so the caller resolves live"
+  exit 0
+fi
+
+# Both come from the product flake's own lock, which already pins them; `archive`
+# reports where each input landed in the store. A `path:` reference needs no
+# network and no forge API, and names the same revision vivarium is developed
+# against.
+emit_store_pin() {
+  local input=$1 variable=$2 path
+  if ! path=$(jq -er --arg i "$input" '.inputs[$i].path' <<<"$archived" 2>/dev/null); then
+    note "the archive reported no path for input \`$input\`; leaving $variable unset"
+    return 0
+  fi
+  printf 'export %s=%s\n' "$variable" "path:$path"
+}
+
+if ! command -v jq >/dev/null 2>&1; then
+  note "jq is absent; emitting no pins, so the caller resolves live"
+  exit 0
+fi
+
+emit_store_pin nixpkgs VIVARIUM_BASELINE_NIXPKGS
+emit_store_pin microvm VIVARIUM_BASELINE_MICROVM
+
+# The third input is this repository's own product flake, and it is pinned to the
+# working tree rather than to the archived store path: the point of a development
+# pin is to exercise the tree under test, and a store snapshot would silently
+# measure an older product.
+printf 'export %s=%s\n' VIVARIUM_BASELINE_VIVARIUM "$product_flake"
