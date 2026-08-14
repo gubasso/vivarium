@@ -31,8 +31,9 @@ The operator directed one pass over the remaining work; checkpoints stay per for
 - [x] Resolver: UDP serve loop with per-query upstream exchange; IPv6 parity; AAAA withholding behind `ServeConfig`; upstream failure to `SERVFAIL`, never silence.
 - [x] Manifest seam closed: `egress.allow` entries validated against the grammar at parse.
 - [x] Gated integration lane `tests/net_host.rs`: pair distinct and joinable, tap without carrier, ruleset applied and elements expiring through real `nft`, resolver installing through real `nft` before release. 4 of 4 twice on this host.
-- [ ] Launch schema 6: egress fields, network fields, new `backend_programs`.
-- [ ] `nix/launch-arguments.nix`, `nix/runner.sh`, `nix/guest.nix` NIC plumbing.
-- [ ] Supervisor spawn order: holder, tap, uplink, resolver, VMM-in-namespace.
-- [ ] Q-006 bounded experiment; record exit either way.
-- [ ] Allowlist mode wiring: resolver process in-namespace, base ruleset before boot, resolver-as-only-DNS in the guest.
+- [x] Launch schema 6: egress fields, network fields, new `backend_programs`.
+- [x] `nix/launch-arguments.nix`, `nix/runner.sh`, `nix/guest.nix` NIC plumbing.
+- [x] Supervisor spawn order: holder, tap, uplink, resolver, VMM-in-namespace.
+- [x] Open-mode connectivity measured live: `ens3` with the launcher's MAC, default route via the tap gateway, DNS through `pasta`'s forward, HTTPS 200 from `cache.nixos.org`. `tests/host/exec-and-shell-check` green twice on the new path.
+- [x] Q-006 bounded experiment run and recorded in `Revisions`: vhost-user drives the pinned VMM, tap-plus-uplink adopted anyway because enforcement needs the in-namespace hook.
+- [ ] Allowlist mode verified live: allowed name connects, denied name `REFUSED` fast, denied TCP reset.

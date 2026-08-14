@@ -2,10 +2,6 @@
 
 This is triage, not a queue. Every question blocks named work and leaves through exactly one recorded exit.
 
-## Q-006 — Can a user-space vhost-user uplink drive the pinned Cloud Hypervisor directly?
-
-Blocks: slice 004 topology choice, not its egress contract. Raised: ADR-0064. Exit: a recorded experiment; failure uses the pre-authorized tap-plus-uplink fallback.
-
 ## Q-007 — Is the pinned Nix derivation JSON stable enough for the purity lane?
 
 Blocks: slice 007 purity acceptance. Raised: ADR-0077's experimental-interface caveat. Exit: a slice 007 `Revisions` line after revalidation, either retaining the interface or naming the replacement.
