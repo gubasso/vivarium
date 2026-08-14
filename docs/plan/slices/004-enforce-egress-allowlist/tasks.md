@@ -36,4 +36,11 @@ The operator directed one pass over the remaining work; checkpoints stay per for
 - [x] Supervisor spawn order: holder, tap, uplink, resolver, VMM-in-namespace.
 - [x] Open-mode connectivity measured live: `ens3` with the launcher's MAC, default route via the tap gateway, DNS through `pasta`'s forward, HTTPS 200 from `cache.nixos.org`. `tests/host/exec-and-shell-check` green twice on the new path.
 - [x] Q-006 bounded experiment run and recorded in `Revisions`: vhost-user drives the pinned VMM, tap-plus-uplink adopted anyway because enforcement needs the in-namespace hook.
-- [ ] Allowlist mode verified live: allowed name connects, denied name `REFUSED` fast, denied TCP reset.
+- [x] Allowlist mode verified live: `resolv.conf` holds the gateway resolver alone, the allowed name returned A records (AAAA withheld) and fetched HTTPS 200, the denied name failed in 9 ms, and a denied literal TCP connect was refused in 15 ms.
+
+## Session 4 — acceptance
+
+- [ ] Q-022 two-legged fixture: in-namespace listener, two `.test` names on different addresses, only the first allowed; `REFUSED` distinguished from `NXDOMAIN`.
+- [ ] `workflow_05_restrict_egress_allowlist` unskipped and green on this host.
+- [ ] `profile.pre-push` returned to plain `kind(test)`; `pre-push` twice.
+- [ ] Implementation status rewritten; Q-022 exit recorded; row to `done`; this file deleted.
