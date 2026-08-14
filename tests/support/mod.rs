@@ -1,3 +1,5 @@
+pub mod egress;
+
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io;

@@ -135,6 +135,11 @@ const GUEST_FETCH: &str = concat!(
 const DENIAL_BUDGET: Duration = Duration::from_secs(20);
 
 fn main() -> std::process::ExitCode {
+    // The egress fixture re-executes this binary inside the VM's namespaces; a
+    // fixture-mode invocation never reaches the trial harness.
+    if let Some(code) = support::egress::run_mode() {
+        return code;
+    }
     let args = Arguments::from_args();
     let mut trials = vec![Trial::test("harness_self_check", harness_self_check)];
     for (name, level, runner) in WORKFLOWS {
@@ -882,8 +887,14 @@ fn workflow_05_config() -> Result<(), Failed> {
     check(expect_stdout_lacks(&evaluated, "\"open\""))?;
     // Allowlist entries concatenate across layers rather than replacing one another,
     // so both the manifest's and the piece's host must survive the merge.
-    check(expect_stdout_mentions(&evaluated, "manifest.example"))?;
-    check(expect_stdout_mentions(&evaluated, "piece.example"))?;
+    check(expect_stdout_mentions(
+        &evaluated,
+        support::egress::ALLOWED_NAME,
+    ))?;
+    check(expect_stdout_mentions(
+        &evaluated,
+        support::egress::GHOST_NAME,
+    ))?;
 
     let sources = viv(&tp, &["config", "sources", "--json"])?;
     check(expect_code(&sources, 0))?;
@@ -894,13 +905,43 @@ fn workflow_05_config() -> Result<(), Failed> {
 
 // Guide: docs/guides/restrict-egress-allowlist.md
 fn workflow_05_enforcement() -> Result<(), Failed> {
+    use support::egress;
+
     let tp = arrange_egress_fixture()?;
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
 
-    // Both arms travel the same reserved documentation space, which RFC 6761 leaves to
-    // ordinary resolution, so the only difference between them is allowlist membership.
-    // The allowed host must be one the fixture actually permits; a host absent from the
-    // allowlist could not exit `0` against a conforming default-deny implementation.
+    // spec/05's proving fixture: a stub upstream and an endpoint listener inside
+    // the VM's own network namespace, two `.test` names on two different
+    // addresses, only the first in `egress.allow`. The VMM's recorded pid is the
+    // handle into the pair.
+    let vm_pid = egress::read_vm_pid(tp.runtime()).map_err(Failed::from)?;
+    let fixture = egress::EgressFixture::install(vm_pid).map_err(Failed::from)?;
+
+    // The denial code, read at the resolver itself: `REFUSED` means policy and
+    // nothing else may wear it, while an allowlisted name whose upstream answer
+    // is `NXDOMAIN` passes that through verbatim. This pair of observations is
+    // Q-022's exit — a guest exit code cannot carry the distinction.
+    let denied_rcode = fixture
+        .resolver_rcode(egress::DENIED_NAME)
+        .map_err(Failed::from)?;
+    if denied_rcode != "Refused" {
+        return fail(format!(
+            "a denied name must be REFUSED at the resolver; got {denied_rcode}"
+        ));
+    }
+    let ghost_rcode = fixture
+        .resolver_rcode(egress::GHOST_NAME)
+        .map_err(Failed::from)?;
+    if ghost_rcode != "NXDomain" {
+        return fail(format!(
+            "an allowlisted name whose upstream says NXDOMAIN must pass it \
+            through verbatim; got {ghost_rcode}"
+        ));
+    }
+
+    // The positive leg an absent uplink cannot fake: the allowed name resolves,
+    // its address is installed before release, and the connection crosses the
+    // filter's forward chain into the endpoint namespace and returns bytes.
     let allowed = viv(
         &tp,
         &[
@@ -910,14 +951,17 @@ fn workflow_05_enforcement() -> Result<(), Failed> {
             "-lc",
             GUEST_FETCH,
             "fetch",
-            "https://manifest.example",
+            &format!("http://{}/", egress::ALLOWED_NAME),
         ],
     )?;
     check(expect_code(&allowed, 0))?;
+    check(expect_stdout_mentions(&allowed, egress::ALLOWED_BODY))?;
 
-    // Deliberately omitted from both layers' `allow` lists. A `.invalid` host would not
-    // work here: RFC 6761 guarantees an immediate negative response for that space, so
-    // the denial arm would pass on an ordinary resolution error with no filter present.
+    // The denied name: non-zero, promptly. No exit code describes a denial —
+    // enforcement is host-side but the failure is observed by a guest process,
+    // and after guest-process start `exec` returns that process's status
+    // verbatim — so the status assertion stays at "non-zero", and reject-not-drop
+    // is held by timing rather than by whichever fetch tool the image ships.
     let started = Instant::now();
     let denied = viv(
         &tp,
@@ -928,34 +972,45 @@ fn workflow_05_enforcement() -> Result<(), Failed> {
             "-lc",
             GUEST_FETCH,
             "fetch",
-            "https://blocked.example",
+            &format!("http://{}/", egress::DENIED_NAME),
         ],
     )?;
     let elapsed = started.elapsed();
-    // No exit code describes a denial: enforcement is host-side but the failure is
-    // observed by a guest process, and after guest-process start `exec` returns that
-    // process's status verbatim. So the status assertion stays at "non-zero" rather
-    // than inventing a vivarium code.
     check(expect_nonzero(&denied))?;
-    // What spec/05 *does* fix is reject-not-drop: the attempt must fail promptly, never
-    // be silently discarded. Timing is the honest way to check that. Asserting on stderr
-    // content instead would test whichever fetch tool the image ships, not vivarium.
-    //
-    // TODO(impl): the fixture this trial needs is now specified — spec/05, "What a
-    // conforming implementation must be able to prove": two `.test` names on two
-    // different addresses, served by a listener inside the VM's own network namespace,
-    // with only the first in `egress.allow`. Building it is implementation work and
-    // waits on the enforcement crates. Until then both arms travel `.example`, reserved
-    // documentation space with no delegation in the root zone, so neither host
-    // resolves: the allowed arm cannot reach a real endpoint, and the denied arm fails
-    // fast on NXDOMAIN whether or not a filter is in force. The budget below therefore
-    // pins the contract's shape, not yet its enforcement.
     if elapsed >= DENIAL_BUDGET {
         return fail(format!(
             "denied fetch took {elapsed:?}; a rejection must fail fast rather \
             than hang on connect retries (spec/05, ADR-0044)"
         ));
     }
+
+    // The address-level half: the second endpoint is reachable in the fixture and
+    // admitted by nothing, so a connect by literal address must be rejected on
+    // the forward chain — fast, as a reset rather than a drop. Two names on two
+    // addresses is what separates this name-level decision from an address-level
+    // one, which is why the addresses must differ (spec/05).
+    let started = Instant::now();
+    let denied_addr = viv(
+        &tp,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-lc",
+            GUEST_FETCH,
+            "fetch",
+            &format!("http://{}/", egress::DENIED_ADDR),
+        ],
+    )?;
+    let elapsed = started.elapsed();
+    check(expect_nonzero(&denied_addr))?;
+    if elapsed >= DENIAL_BUDGET {
+        return fail(format!(
+            "denied literal connect took {elapsed:?}; the reject rules must \
+            answer with a reset rather than a drop (spec/05, ADR-0044)"
+        ));
+    }
+    drop(fixture);
     Ok(())
 }
 
@@ -963,22 +1018,27 @@ fn arrange_egress_fixture() -> Result<TempProject, Failed> {
     let tp = TempProject::new().map_err(io_failed)?;
     // The image supplies the shadowed default; only the piece forces the allowlist, so
     // the precedence under test is genuinely arranged rather than pre-decided by the
-    // manifest. Each layer contributes a distinct host to make concatenation observable.
+    // manifest. Each layer contributes a distinct host to make concatenation
+    // observable — the manifest the reachable endpoint's name, the piece the name
+    // whose upstream answer is NXDOMAIN.
     arrange_manifest_with_image(
         &tp,
         "restricted",
         "pieces = [ \"egress-restriction\" ]\n",
-        "\n[egress]\nallow = [ \"manifest.example\" ]\n",
+        &format!(
+            "\n[egress]\nallow = [ \"{}\" ]\n",
+            support::egress::ALLOWED_NAME
+        ),
         "{ lib, ... }: { sandbox.egress.mode = lib.mkDefault \"open\"; }\n",
     )?;
     write_piece(
         &tp,
         "egress-restriction",
-        r#"{ lib, ... }: {
-    sandbox.egress.mode = lib.mkForce "allowlist";
-    sandbox.egress.allow = [ "piece.example" ];
-}
-"#,
+        &format!(
+            "{{ lib, ... }}: {{\n    sandbox.egress.mode = lib.mkForce \"allowlist\";\n    \
+            sandbox.egress.allow = [ \"{}\" ];\n}}\n",
+            support::egress::GHOST_NAME
+        ),
     )?;
     bind(&tp, "restricted")?;
     Ok(tp)

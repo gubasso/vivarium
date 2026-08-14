@@ -133,23 +133,14 @@ failure-output = "immediate-final"
 # faked. `kind(test)` matches every separate test binary Cargo compiles
 # from tests/*.rs.
 #
-# One named acceptance trial is subtracted, and nothing else. It waits on a verb
-# a later slice implements, so on a capable host it fails by construction rather
-# than by defect: `workflow_05` needs the egress allowlist (slice 004).
-#
-# This began as `- binary(user_workflows)`, which was the same statement made
-# bluntly: acceptance is informational, and it gates the host runbooks and CI
-# rather than a developer's push. The cost of subtracting the whole binary was
-# never the reds — it was the trials passing beside them going unread. Slice 013
-# narrowed it to three named trials by landing `viv exec` and `viv shell`, and
-# slice 014 narrowed it to this one by landing `viv volume list`, `viv volume
-# prune`, and `viv destroy`. That is the step `docs/plan/sequencing.md` requires
-# of every slice that greens a trial: moving a row without restoring the gate
-# would leave the gate off, and the gate reports the same green either way.
-#
-# Subtracted rather than ignored per-trial, because an `#[ignore]` is a knob
-# whose removal nothing enforces. Slice 004 removes the last clause and returns
-# this to plain `kind(test)`.
+# Plain `kind(test)`, with history worth keeping: this began as
+# `- binary(user_workflows)` while the acceptance harness held trials against
+# unimplemented verbs, was narrowed to named subtractions by slices 013 and
+# 014 as their verbs landed, and slice 004 deleted the last clause
+# (`workflow_05_restrict_egress_allowlist`) when the egress allowlist became
+# enforceable — the step `docs/plan/sequencing.md` requires of every slice
+# that greens a trial. The stage is a real gate again; any future subtraction
+# should carry the same obligation to name the slice that removes it.
 #
 # `profile.ci` deliberately does not inherit this: CI runs everything.
 #
@@ -160,7 +151,7 @@ failure-output = "immediate-final"
 #
 # `fail-fast` is off so a single failure does not hide other regressions.
 [profile.pre-push]
-default-filter = "kind(test) - test(=workflow_05_restrict_egress_allowlist)"
+default-filter = "kind(test)"
 fail-fast = false
 slow-timeout = { period = "120s", terminate-after = 2 }
 status-level = "fail"

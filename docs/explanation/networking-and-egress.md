@@ -1,6 +1,6 @@
 # Networking and egress
 
-This page describes the accepted design rather than implemented behavior; see [implementation status](../reference/implementation-status.md) for what runs today.
+This page describes the subsystem as it runs; [implementation status](../reference/implementation-status.md) carries the measured record and the two gaps it still names.
 
 Each VM receives isolated networking. Egress is open by default and this does not weaken the separate-kernel boundary. A manifest may switch to an allowlist mode, which places default-deny enforcement on the host and rejects denied traffic promptly rather than letting it time out.
 
@@ -16,8 +16,4 @@ Exact matching, DNS behavior, update rules, and proof fixtures live in [networki
 
 - [ADR-0007](../decisions/ADR-0007-default-open-egress.md) — fixes open egress as the default and the allowlist as opt-in.
 - [ADR-0044](../decisions/ADR-0044-host-side-egress-and-reject-not-drop.md) — puts enforcement on the host and rejects denied traffic rather than dropping it.
-- [ADR-0064](../decisions/ADR-0064-egress-allowlist-enforcement-model.md) — fixes the gating resolver inside a per-VM network namespace, and leaves the uplink experiment open.
-
-## Unresolved
-
-- [Q-022](../plan/open-questions.md#q-022--what-makes-workflow_05-separate-a-denial-from-an-absent-uplink) owns the acceptance fixture that separates a denial from an absent uplink. [Slice 004](../plan/slices/004-enforce-egress-allowlist/README.md) closes it.
+- [ADR-0064](../decisions/ADR-0064-egress-allowlist-enforcement-model.md) — fixes the gating resolver inside a per-VM network namespace; its deliberately open uplink question closed through the recorded experiment in the [slice 004 revisions](../plan/slices/004-enforce-egress-allowlist/README.md).

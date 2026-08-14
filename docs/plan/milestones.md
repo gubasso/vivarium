@@ -4,8 +4,7 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 014 workspace-and-persistence — active — 2 sessions — implementation complete; the coding-agent clause needs the guest connectivity slice 004 builds, so this row closes after it. See the slice `Revisions`
-- 004 enforce-egress-allowlist — active — 4 sessions
+- 014 workspace-and-persistence — active — 2 sessions — implementation complete; slice 004 delivered the guest connectivity its coding-agent clause was waiting on, so what remains is the run itself, against the operator's own agent credentials. See the slice `Revisions`
 
 ## later
 
@@ -24,3 +23,4 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 011 resolve-and-evaluate — done — 3 sessions — appetite exceeded; see the slice `Revisions`
 - 012 first-boot — done — 3 sessions — the guest module had to be composed into the generated flake; see the slice `Revisions`
 - 013 exec-and-shell — done — 3 sessions — the launch specification had to carry the guest cwd, the startup lock, and the guest process environment; see the slice `Revisions`
+- 004 enforce-egress-allowlist — done — 4 sessions — sessions 2 through 4 ran as one merged pass under the appetite; see the slice `Revisions`
