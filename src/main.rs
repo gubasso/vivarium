@@ -24,6 +24,8 @@ use vivarium::launch::{
     LaunchError, LaunchSpec, ReadinessError, ReadinessReport, ReadinessStatus, TransientUnitSpec,
 };
 use vivarium::protocol::SessionMode;
+use vivarium::ui::Ui;
+use vivarium::ui::style::Palette;
 
 /// How long the launcher waits for the supervisor to report on the handoff socket.
 ///
@@ -50,11 +52,40 @@ impl Environment for ProcessEnvironment {
 async fn main() -> ExitCode {
     let streams = Streams {
         stdin_is_tty: std::io::stdin().is_terminal(),
+        stdout_is_tty: std::io::stdout().is_terminal(),
+        stderr_is_tty: std::io::stderr().is_terminal(),
     };
-    let invocation = match grammar::parse(std::env::args_os(), streams) {
-        Ok(invocation) => invocation,
-        Err(error) => return fail(&Failure::Usage(error), Output::Human),
+    // The stderr palette exists before the grammar runs, because a usage failure predates
+    // everything else and still deserves the chain's answer.
+    let stderr_colors =
+        vivarium::ui::chain::colors_enabled(streams.stderr_is_tty, &ProcessEnvironment);
+    let stderr_palette = Palette::resolve(stderr_colors);
+    let grammar::Parsed {
+        invocation,
+        verbosity,
+    } = match grammar::parse(std::env::args_os(), streams) {
+        Ok(parsed) => parsed,
+        Err(error) => return fail(&Failure::Usage(error), Output::Human, &stderr_palette),
     };
+
+    // Help and version answer before anything can fail: both must work on a host where `HOME` is
+    // unset and every root is unresolvable, because "what is this" is exactly the question such a
+    // host asks. Rendered here rather than through `cli::run` for the same reason the handoff
+    // below is: they precede the `Context` every other verb needs.
+    if let Invocation::Help { verb } = &invocation {
+        let palette = Palette::resolve(vivarium::ui::chain::colors_enabled(
+            streams.stdout_is_tty,
+            &ProcessEnvironment,
+        ));
+        print!("{}", vivarium::cli::help_text(verb.as_deref(), &palette));
+        let _ = std::io::stdout().flush();
+        return ExitCode::from(ExitKind::Success);
+    }
+    if matches!(invocation, Invocation::Version) {
+        println!("viv {}", env!("CARGO_PKG_VERSION"));
+        let _ = std::io::stdout().flush();
+        return ExitCode::from(ExitKind::Success);
+    }
 
     // The handoff is the one invocation that needs the async runtime, and it predates the published
     // surface: after the built runner renders the specification, the invoking `viv` re-executes
@@ -72,10 +103,47 @@ async fn main() -> ExitCode {
     }
 
     let output = requested_output(&invocation);
-    let context = match context() {
+    // The face, resolved once from the same injected inputs everything else reads. `cli::run`
+    // stays a function of its arguments; the face travels inside the context it already takes.
+    // The theme and console's color globals are the crate's only global state, and the process
+    // boundary is the only place that sets them — pinned to the chain so no borrowed renderer
+    // falls back to its own detection.
+    vivarium::ui::theme::install(
+        vivarium::ui::chain::colors_enabled(streams.stdout_is_tty, &ProcessEnvironment),
+        stderr_colors,
+    );
+    let ui = Ui::resolve(
+        streams.stdout_is_tty,
+        streams.stderr_is_tty,
+        &ProcessEnvironment,
+        verbosity,
+        output.is_json(),
+    );
+    let context = match context(&ui) {
         Ok(context) => context,
-        Err(failure) => return fail(&failure, output),
+        Err(failure) => return fail(&failure, output, &stderr_palette),
     };
+
+    // Doctor is dispatched here because its result and its code are independent: a report at
+    // `69` is still a report on stdout, and `cli::run`'s signature makes success exit `0`.
+    if let Invocation::Doctor {
+        strict,
+        list,
+        online,
+        output,
+    } = &invocation
+    {
+        return match vivarium::cli::doctor::command(&context, *strict, *list, *online, *output) {
+            Ok((success, code)) => {
+                print!("{}", success.stdout);
+                let _ = std::io::stdout().flush();
+                ui.note(&success.notes);
+                let _ = std::io::stderr().flush();
+                ExitCode::from(code)
+            }
+            Err(failure) => fail(&failure, *output, &stderr_palette),
+        };
+    }
 
     // The two session verbs, dispatched here for the same reason the handoff above is: they are
     // async, and they return a code the synchronous surface cannot express — the guest command's
@@ -90,7 +158,7 @@ async fn main() -> ExitCode {
         let host: Vec<(OsString, OsString)> = std::env::vars_os().collect();
         return match vivarium::cli::session::run(requested, mode, &context, &host).await {
             Ok(kind) => ExitCode::from(kind),
-            Err(failure) => fail(&failure, output),
+            Err(failure) => fail(&failure, output, &stderr_palette),
         };
     }
 
@@ -99,14 +167,17 @@ async fn main() -> ExitCode {
             print!("{}", success.stdout);
             let _ = std::io::stdout().flush();
             // A note is not the result, so it never joins stdout: `config sources` marks a tie
-            // and still succeeds, and a consumer piping stdout to `jq` must not receive it.
-            if !success.notes.is_empty() {
-                eprint!("{}", success.notes);
-                let _ = std::io::stderr().flush();
-            }
+            // and still succeeds, and a consumer piping stdout to `jq` must not receive it. The
+            // face decides whether it prints at all — `-q` is its only suppressor.
+            ui.note(&success.notes);
+            let _ = std::io::stderr().flush();
             ExitCode::from(ExitKind::Success)
         }
-        Err(failure) => fail(&failure, output),
+        Err(failure) => {
+            // An open gutter ends before the skeleton speaks.
+            ui.cancel();
+            fail(&failure, output, &stderr_palette)
+        }
     }
 }
 
@@ -114,8 +185,8 @@ async fn main() -> ExitCode {
 ///
 /// stderr rather than stdout because stdout carries the result and a failure has none — the rule
 /// that keeps `… --json 2>/dev/null | jq` clean on success and empty on failure.
-fn fail(failure: &Failure, output: Output) -> ExitCode {
-    eprint!("{}", failure.render(output));
+fn fail(failure: &Failure, output: Output, palette: &Palette) -> ExitCode {
+    eprint!("{}", failure.render(output, palette));
     let _ = std::io::stderr().flush();
     ExitCode::from(failure.code())
 }
@@ -138,15 +209,21 @@ const fn requested_output(invocation: &Invocation) -> Output {
         | Invocation::VolumeList { output }
         | Invocation::VolumePrune { output, .. }
         | Invocation::Destroy { output, .. }
-        | Invocation::Deferred { output, .. } => *output,
+        | Invocation::Deferred { output, .. }
+        | Invocation::Doctor { output, .. } => *output,
         // Neither the private handoff nor a session carries `--json`, and a session's own failures
         // are vivarium's own: spec/12 puts them on stderr beside the guest's, in the human form.
-        Invocation::StartSpec { .. } | Invocation::Exec(_) | Invocation::Shell(_) => Output::Human,
+        // Help and version are human by definition.
+        Invocation::StartSpec { .. }
+        | Invocation::Exec(_)
+        | Invocation::Shell(_)
+        | Invocation::Help { .. }
+        | Invocation::Version => Output::Human,
     }
 }
 
 /// Gathers what the host can say about itself, before any command runs.
-fn context() -> Result<Context<'static, ProcessEnvironment>, Failure> {
+fn context(ui: &Ui) -> Result<Context<'_, ProcessEnvironment>, Failure> {
     let roots = config::resolve_xdg_roots(&ProcessEnvironment).map_err(|error| {
         Failure::Usage(UsageError {
             message: error.to_string(),
@@ -165,6 +242,7 @@ fn context() -> Result<Context<'static, ProcessEnvironment>, Failure> {
         roots,
         project: config::canonical_project(&project),
         environment: &ProcessEnvironment,
+        ui,
     })
 }
 

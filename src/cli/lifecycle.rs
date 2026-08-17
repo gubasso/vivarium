@@ -24,6 +24,7 @@ use crate::launch::{
     BootMetadata, GuestSession, LAUNCH_SCHEMA_VERSION, LaunchSpec, VersionEnvelope, secure_fs,
     unmirrorable,
 };
+use crate::ui::{Ui, watch};
 
 /// The only target a project has today (spec/15).
 pub(super) const DEFAULT_TARGET: &str = "default";
@@ -454,24 +455,35 @@ pub(super) fn classify(
 /// a VM never pays for one. Admission control — spec/10 step 3, owned by spec/17 and slice 005 —
 /// is not implemented, and the slice `Revisions` records that gap rather than leaving it implied.
 fn preflight<E: Environment>(context: &Context<'_, E>) -> Result<PathBuf, Failure> {
-    let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
-        .map_err(|error| super::resolution_failure(&error))?;
-
-    if !Path::new("/dev/kvm").exists() {
-        return Err(diagnosed(
+    // The hard subset of the shared probe catalog, in catalog order — the same probes, the same
+    // messages, the same codes `viv doctor` reports, so the guard and the report cannot drift
+    // (spec/13, ADR-0023). The probe id is the diagnostic id (spec/01).
+    let inputs = crate::doctor::Inputs {
+        environment: context.environment,
+        roots: &context.roots,
+        project: None,
+        online: false,
+        runtime_root: None,
+    };
+    if let Some(finding) = crate::doctor::first_hard_failure(&inputs) {
+        let mut failure = diagnosed(
             Namespace::Host,
-            "no-kvm",
-            "this host has no /dev/kvm",
+            finding.probe.id,
+            finding.message,
             Locus::Named("host preflight"),
-            "vivarium boots a guest kernel behind hardware virtualization, which needs KVM",
-            ExitKind::Unavailable,
-        )
-        .with_hint(
-            "load the kvm module for your processor and check group membership on /dev/kvm",
-        ));
+            "a launch needs every hard check in the doctor catalog, and this one refused \
+            before any side effect",
+            finding.probe.code.unwrap_or(ExitKind::Software),
+        );
+        if let Some(hint) = finding.hint {
+            failure = failure.with_hint(hint);
+        }
+        return Err(failure);
     }
 
-    Ok(runtime_root)
+    // The value the caller needs from the fact `runtime-dir-usable` just proved.
+    config::resolve_runtime_root(context.environment, config::effective_uid())
+        .map_err(|error| super::resolution_failure(&error))
 }
 
 /// Bring the project's VM up and return once it is running (spec/10).
@@ -536,6 +548,10 @@ pub fn start<E: Environment>(
     // same routine and a lock only one of them respects would guard nothing. Held to the end of
     // this function, which is the end of the boot.
     let _lock = TargetLock::acquire(&runtime)?;
+    // The gutter opens once the boot is really this project's to run: identity minted, lock held.
+    // Every return below either reaches the outro or carries a note, and a note closes an open
+    // gutter itself — so the frame never ends mid-air.
+    context.ui.intro(&project_id);
     let running = matches!(
         discriminate(
             &runtime,
@@ -604,18 +620,17 @@ pub fn start<E: Environment>(
     // alive, and continuing would overwrite its freshness record with a build it was not launched
     // from — making a still-stale VM report fresh.
     if rebuild {
-        stop_unit(&runtime, false, None)?;
+        stop_unit(&runtime, false, None, context.ui)?;
     }
 
     // Step 5, ensure running. The identity minted above is the one every artifact below names.
-    launch(
-        context,
-        &project_id,
-        &runtime,
-        &store_path,
-        effective_resources(merged.or(leaf_resources).as_ref()),
-    )?;
+    let resources = effective_resources(merged.or(leaf_resources).as_ref());
+    launch(context, &project_id, &runtime, &store_path, resources)?;
 
+    context.ui.outro(&format!(
+        "running · {} MiB · {} vcpu",
+        resources.mem_mib, resources.vcpu
+    ));
     Ok(Success::plain(String::new()))
 }
 
@@ -630,7 +645,7 @@ fn evaluate_and_build<E: Environment>(
 ) -> Result<(String, Option<config::Resources>), Failure> {
     let composition = config::volumes::Composition::of(&resolved.manifest);
     let evaluated = super::evaluate_resolved_for_launch(context, project_id, resolved)?;
-    let built = build_runner(&evaluated.flake_directory)?;
+    let built = build_runner(&evaluated.flake_directory, context.ui)?;
     write_build_record(
         &last_build_path(&context.roots, project_id, DEFAULT_TARGET),
         &built,
@@ -762,7 +777,9 @@ pub(super) async fn ensure_running<E: Environment + Sync>(
 
     // Steps 2 and 3: when the socket is there, the agent answered for this boot, and the record
     // names this project, nothing is preflighted, evaluated, built, or booted.
-    let boot = if let Some(boot) = reusable(&runtime, &project_id, &context.project).await? {
+    let boot = if let Some(boot) =
+        reusable(&runtime, &project_id, &context.project, context.ui).await?
+    {
         boot
     } else {
         // Step 5, which is `viv start`'s own steps 2, 4, and 5 — the same preflight subset, the
@@ -811,6 +828,7 @@ async fn reusable(
     runtime: &Runtime,
     project_id: &str,
     workspace: &Path,
+    ui: &Ui,
 ) -> Result<Option<BootMetadata>, Failure> {
     // Step 2. A socket that is not there at all is the ordinary cold case — but only once step 4's
     // question has been asked, because "no socket" and "no VM" are not the same fact. A live VM
@@ -833,7 +851,7 @@ async fn reusable(
         // because acting on a generation this binary does not speak is not a repair.
         BootRecord::Skewed(theirs) => {
             return match vm_presence(runtime) {
-                Presence::Dead => stale(runtime).map(|()| None),
+                Presence::Dead => stale(runtime, ui).map(|()| None),
                 Presence::Live => Err(boot_record_skew(runtime, theirs)),
                 Presence::Indeterminate => Err(undecided(
                     runtime,
@@ -848,7 +866,7 @@ async fn reusable(
         // a stale record and tearing it down is not a repair.
         BootRecord::Absent | BootRecord::Unreadable => {
             return match vm_presence(runtime) {
-                Presence::Dead => stale(runtime).map(|()| None),
+                Presence::Dead => stale(runtime, ui).map(|()| None),
                 Presence::Live => Err(unreachable(
                     runtime,
                     "the VM's own process is alive under its unit and its boot record cannot be \
@@ -884,7 +902,7 @@ async fn reusable(
     };
     if let Some(why) = mismatch {
         return match vm_presence(runtime) {
-            Presence::Dead => stale(runtime).map(|()| None),
+            Presence::Dead => stale(runtime, ui).map(|()| None),
             Presence::Live => Err(foreign(runtime, why)),
             Presence::Indeterminate => Err(undecided(runtime, why)),
         };
@@ -898,7 +916,7 @@ async fn reusable(
     // Step 4. The records are diagnostic evidence only — they say whether anything is still there
     // to wait for, and never by themselves that a VM is reusable.
     match vm_presence(runtime) {
-        Presence::Dead => return stale(runtime).map(|()| None),
+        Presence::Dead => return stale(runtime, ui).map(|()| None),
         Presence::Indeterminate => {
             return Err(undecided(runtime, "its guest agent did not answer a ping"));
         }
@@ -906,9 +924,12 @@ async fn reusable(
     }
     // A live VM whose agent has not answered yet is a boot in flight, so this waits rather than
     // booting a second VM into the same runtime directory.
+    let step = ui.step("waiting for the guest agent");
     if ping(runtime, &boot, AGENT_TIMEOUT).await {
+        step.done("the guest agent answered");
         return Ok(Some(boot));
     }
+    drop(step);
     Err(unreachable(
         runtime,
         &format!(
@@ -978,10 +999,10 @@ fn unreachable(runtime: &Runtime, why: &str) -> Failure {
 }
 
 /// Step 4's repair: a dead VM's records are removed so the state model stops reading them as live.
-fn stale(runtime: &Runtime) -> Result<(), Failure> {
+fn stale(runtime: &Runtime, ui: &Ui) -> Result<(), Failure> {
     // The unit first, because a failed unit that is never reset keeps the name the next boot needs.
     // Its own teardown removes the runtime artifacts when its supervisor is still alive to do it.
-    stop_unit(runtime, true, None)?;
+    stop_unit(runtime, true, None, ui)?;
     // What remains is what a supervisor that died could not sweep. Only the two records
     // `discriminate` reads are removed: they are what make a dead VM look present, and removing
     // more would be inventing a sweep the supervisor already owns.
@@ -1116,10 +1137,13 @@ fn prepared(runtime: &Runtime, boot: BootMetadata) -> Result<Prepared, Failure> 
 }
 
 /// Builds the runner the generated flake publishes.
-fn build_runner(flake_directory: &Path) -> Result<String, Failure> {
+fn build_runner(flake_directory: &Path, ui: &Ui) -> Result<String, Failure> {
     let attribute = format!("{}#runner.{}", flake_directory.display(), nix_system());
-    let output = Command::new("nix")
-        .args([
+    // The longest silent wait on the surface — a cold build runs for minutes — so this is the
+    // step that earns the streaming watcher most.
+    let step = ui.step("building the guest");
+    let output = watch::output(
+        Command::new("nix").args([
             "build",
             "--no-link",
             "--print-out-paths",
@@ -1129,28 +1153,30 @@ fn build_runner(flake_directory: &Path) -> Result<String, Failure> {
             // `nix` update it here would be an unannounced input jump (N3).
             "--no-update-lock-file",
             &attribute,
-        ])
-        .output()
-        .map_err(|source| {
-            diagnosed(
-                Namespace::Store,
-                "nix-unavailable",
-                "could not run `nix`",
-                Locus::Named("guest build"),
-                source.to_string(),
-                ExitKind::Software,
-            )
-        })?;
+        ]),
+        &step,
+    )
+    .map_err(|source| {
+        diagnosed(
+            Namespace::Store,
+            "nix-unavailable",
+            "could not run `nix`",
+            Locus::Named("guest build"),
+            source.to_string(),
+            ExitKind::Software,
+        )
+    })?;
     if !output.status.success() {
         return Err(diagnosed(
             Namespace::Store,
             "build-failed",
             "the guest could not be built",
             Locus::Named("guest build"),
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            output.stderr.trim().to_owned(),
             ExitKind::Software,
         ));
     }
+    step.done("built the guest");
     let path = String::from_utf8_lossy(&output.stdout)
         .lines()
         .last()
@@ -1255,38 +1281,42 @@ fn execute_runner<E: Environment>(
     let program = Path::new(store_path)
         .join("bin")
         .join("vivarium-first-microvm");
-    let output = Command::new(&program)
-        .arg("--workspace")
-        .arg(&context.project)
-        .arg("--runtime-dir")
-        .arg(&runtime.directory)
-        .arg("--volume-dir")
-        .arg(&volumes)
-        .arg("--supervisor")
-        .arg(&supervisor)
-        .arg("--uid")
-        .arg(config::effective_uid().to_string())
-        .arg("--gid")
-        .arg(config::effective_gid().to_string())
-        .arg("--memory-mib")
-        .arg(resources.mem_mib.to_string())
-        .arg("--vcpu")
-        .arg(resources.vcpu.to_string())
-        .arg("--project-id")
-        .arg(project_id)
-        .arg("--target")
-        .arg(DEFAULT_TARGET)
-        .output()
-        .map_err(|source| {
-            diagnosed(
-                Namespace::Vm,
-                "launcher-unavailable",
-                "could not run the guest launcher",
-                Locus::File(program.clone()),
-                source.to_string(),
-                ExitKind::Software,
-            )
-        })?;
+    let step = context.ui.step("rendering the launch specification");
+    let output = watch::output(
+        Command::new(&program)
+            .arg("--workspace")
+            .arg(&context.project)
+            .arg("--runtime-dir")
+            .arg(&runtime.directory)
+            .arg("--volume-dir")
+            .arg(&volumes)
+            .arg("--supervisor")
+            .arg(&supervisor)
+            .arg("--uid")
+            .arg(config::effective_uid().to_string())
+            .arg("--gid")
+            .arg(config::effective_gid().to_string())
+            .arg("--memory-mib")
+            .arg(resources.mem_mib.to_string())
+            .arg("--vcpu")
+            .arg(resources.vcpu.to_string())
+            .arg("--project-id")
+            .arg(project_id)
+            .arg("--target")
+            .arg(DEFAULT_TARGET),
+        &step,
+    )
+    .map_err(|source| {
+        diagnosed(
+            Namespace::Vm,
+            "launcher-unavailable",
+            "could not run the guest launcher",
+            Locus::File(program.clone()),
+            source.to_string(),
+            ExitKind::Software,
+        )
+    })?;
+    drop(step);
 
     if !output.status.success() {
         // The runner's own stderr names what it refused — including its usage guard, which is
@@ -1296,27 +1326,42 @@ fn execute_runner<E: Environment>(
             "spec-render-failed",
             "the launch specification could not be rendered",
             Locus::File(program),
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            output.stderr.trim().to_owned(),
             ExitKind::Software,
         ));
     }
 
+    boot_rendered_spec(context, &viv, runtime)
+}
+
+/// The second half of the launch: hand the rendered specification to the async handoff and wait
+/// for the supervisor's readiness answer.
+fn boot_rendered_spec<E: Environment>(
+    context: &Context<'_, E>,
+    viv: &Path,
+    runtime: &Runtime,
+) -> Result<(), Failure> {
     let spec = runtime.directory.join("launch.json");
-    let output = Command::new(&viv)
-        .arg("start")
-        .arg("--spec")
-        .arg(&spec)
-        .output()
-        .map_err(|source| {
-            diagnosed(
-                Namespace::Vm,
-                "launcher-unavailable",
-                "could not re-invoke this binary for the launch handoff",
-                Locus::File(viv.clone()),
-                source.to_string(),
-                ExitKind::Software,
-            )
-        })?;
+    let step = context.ui.step("booting the VM");
+    let output = watch::output(
+        Command::new(viv).arg("start").arg("--spec").arg(&spec),
+        &step,
+    )
+    .map_err(|source| {
+        diagnosed(
+            Namespace::Vm,
+            "launcher-unavailable",
+            "could not re-invoke this binary for the launch handoff",
+            Locus::File(viv.to_path_buf()),
+            source.to_string(),
+            ExitKind::Software,
+        )
+    })?;
+    if output.status.success() {
+        step.done("booted the VM");
+    } else {
+        drop(step);
+    }
 
     if !output.status.success() {
         // The handoff's own stderr is the account of which child died; the readiness socket
@@ -1326,7 +1371,7 @@ fn execute_runner<E: Environment>(
             "start-failed",
             "the VM did not come up",
             Locus::Named("guest launch"),
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            output.stderr.trim().to_owned(),
             ExitKind::Unavailable,
         )
         .with_hint(format!(
@@ -1581,7 +1626,7 @@ pub fn stop<E: Environment>(
         return Ok(Success::plain(String::new()));
     }
 
-    stop_unit(&runtime, force, timeout)?;
+    stop_unit(&runtime, force, timeout, context.ui)?;
 
     // The post-condition, asserted in the product rather than only in a trial: after a completed
     // stop the runtime directory holds no entry the allowlisted cleanup is required to remove. The
@@ -1657,6 +1702,7 @@ pub(super) fn stop_unit(
     runtime: &Runtime,
     force: bool,
     timeout: Option<i64>,
+    ui: &Ui,
 ) -> Result<(), Failure> {
     // The rungs that run are the supervisor's own: stopping the unit runs its single cancellation
     // path, which raises the guest's ACPI power button and then destroys the VM if the guest did
@@ -1694,20 +1740,31 @@ pub(super) fn stop_unit(
     child.stderr.clear();
 
     // Poll rather than block, because the deadline is the point. `None` waits indefinitely, which
-    // is what `--timeout -1` asks for.
+    // is what `--timeout -1` asks for. The ticking message is the whole feedback for that
+    // indefinite wait — without it, `--timeout -1` is indistinguishable from a hang.
+    let step = ui.step("stopping the VM");
+    let started = std::time::Instant::now();
     let deadline =
         grace.map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds));
     loop {
         match unit_active_state(&runtime.unit).as_deref() {
             // Gone, or never loaded: the unit's lifetime is over and with it the VM's.
-            None | Some("inactive" | "failed") => return Ok(()),
+            None | Some("inactive" | "failed") => {
+                step.done("stopped the VM");
+                return Ok(());
+            }
             _ => {}
         }
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             break;
         }
+        step.update(&format!(
+            "stopping the VM · {}s",
+            started.elapsed().as_secs()
+        ));
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    step.update("stopping the VM · hard poweroff");
 
     // The last rung, and it is whole-group regardless of `KillMode`: `systemctl kill` defaults to
     // `--kill-whom=all`, so the VMM, every per-share daemon, and any launch helper go away together
@@ -1720,11 +1777,15 @@ pub(super) fn stop_unit(
         // Give the group the moment it takes to reap before reporting.
         for _ in 0..50 {
             match unit_active_state(&runtime.unit).as_deref() {
-                None | Some("inactive" | "failed") => return Ok(()),
+                None | Some("inactive" | "failed") => {
+                    step.done("stopped the VM · hard poweroff");
+                    return Ok(());
+                }
                 _ => std::thread::sleep(std::time::Duration::from_millis(100)),
             }
         }
     }
+    drop(step);
 
     // spec/10: a stop that cannot be confirmed even by hard poweroff reports the actual state and
     // exits with the unavailable code rather than pretending success.

@@ -95,7 +95,7 @@ pub(super) fn list<E: Environment>(
     Ok(Success::plain(if output.is_json() {
         render::volume_list_json(&rows_json(&rows))
     } else {
-        render::volume_list_human(&rows_human(&rows))
+        render::volume_list_human(&rows_human(&rows), context.ui.palette_out())
     }))
 }
 
@@ -327,6 +327,7 @@ fn confirm_prune<E: Environment>(
     };
     super::prompt::confirm(
         &question,
+        context.ui.palette(),
         &mut std::io::stdin().lock(),
         &mut std::io::stderr().lock(),
     )

@@ -8,6 +8,8 @@ Failures map to a program-wide exit taxonomy. Human errors use a fixed rendering
 
 File logging is active by default, structured, bounded by size and count, and separate from user-facing stdout and stderr. Redaction is by construction: sensitive values do not enter diagnostic types or formatted command lines, rather than being scrubbed after formatting. Guest console capture is a distinct stream with its own lifetime and rotation boundary.
 
+The presentation layer lives in `src/ui/`, a leaf module beside `diagnostic` and `exit` so `config` and `diagnostic` can use it without reaching into `cli`. One `Ui` value is resolved at the process boundary from the stream facts, the environment, the verbosity, and the output mode, and travels inside the command `Context`; the whole suppression table — animation needs a stderr terminal, a `Normal`-or-higher level, and a human caller; child-stderr passthrough needs `-v`; notes and warnings need `Normal` — lives in that one resolver, so no command asks whether it is quiet. The color decision is first-party (`NO_COLOR` over `FORCE_COLOR` over the stream's own terminal fact, per stream), realized as a `Palette` of named roles whose colored form always forces styling so no crate's own detection can override the chain; the diagnostic skeleton is one renderer parameterized by that palette, so its colored and plain forms are one text. The stderr face borrows the clack gutter through `cliclack` with the animation on `indicatif`, whose `suspend` seam is what lets a streamed child line print above a live spinner; long child processes run under a watcher that drains both pipes concurrently and captures stderr complete, so every diagnostic `why` slot carries the same text a buffered run produced. `ADR-0103` owns the dependency split and what stays first-party.
+
 Exact commands, fields, codes, checks, and logging values live in the [command surface](../reference/spec/01-command-surface.md), [doctor](../reference/spec/13-doctor-and-health-checks.md), [exit codes](../reference/spec/14-exit-codes.md), and [logging and diagnostics](../reference/spec/16-logging-and-diagnostics.md) specifications.
 
 ## Governing decisions
@@ -25,6 +27,7 @@ Exact commands, fields, codes, checks, and logging values live in the [command s
 - [ADR-0068](../decisions/ADR-0068-human-error-presentation-and-diagnostic-ids.md) — fixes the human error skeleton and the diagnostic identifiers in it.
 - [ADR-0070](../decisions/ADR-0070-guest-console-capture-and-rotation.md) — fixes guest console capture as a stream distinct from the log file.
 - [ADR-0075](../decisions/ADR-0075-pre-1.0-cli-stability-and-deprecation-policy.md) — fixes what the command table promises before 1.0.
+- [ADR-0103](../decisions/ADR-0103-presentation-layer-and-terminal-face.md) — fixes the presentation layer's dependency split and what stays first-party.
 
 ## Unresolved
 

@@ -12,6 +12,8 @@
 use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 
+use crate::ui::style::Palette;
+
 /// The namespace half of a diagnostic id.
 ///
 /// Closed on purpose: spec/14 reserves exactly these, and a category that cannot be spelled is one
@@ -299,26 +301,65 @@ fn json_string(value: &str) -> String {
     quoted
 }
 
-impl fmt::Display for Diagnostic {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(formatter, "error[{}]: {}", self.id, self.what)?;
-        writeln!(formatter, "  --> {}", self.locus)?;
-        write!(formatter, "  why: {}", self.why)?;
+impl Diagnostic {
+    /// The skeleton spec/14 fixes, decorated by `palette`.
+    ///
+    /// One renderer for both faces on purpose: the text is identical for every palette and only
+    /// escape sequences differ, which is the sentence spec/14 makes a promise and
+    /// `color_changes_no_text` makes an assertion. A second, colored rendering would be a second
+    /// promise, exactly what this module's header forbids.
+    #[must_use]
+    pub fn render(&self, palette: &Palette) -> String {
+        let mut rendered = String::new();
+        let _ = writeln!(
+            rendered,
+            "{}{}: {}",
+            palette.error.apply_to("error"),
+            palette.id.apply_to(format!("[{}]", self.id)),
+            palette.what.apply_to(&self.what),
+        );
+        let _ = writeln!(
+            rendered,
+            "  {}",
+            palette.locus.apply_to(format!("--> {}", self.locus)),
+        );
+        let _ = write!(
+            rendered,
+            "  {} {}",
+            palette.label.apply_to("why:"),
+            self.why
+        );
         if !self.accepted.is_empty() {
-            write!(formatter, "\n  accepted here: {}", self.accepted.join(", "))?;
+            let _ = write!(
+                rendered,
+                "\n  {} {}",
+                palette.label.apply_to("accepted here:"),
+                self.accepted.join(", "),
+            );
         }
         if let Some(hint) = &self.hint {
             // Eight spaces is the width of "  hint: ", so a wrapped hint stays under its own text
             // rather than under the slot label.
             let mut lines = hint.lines();
             if let Some(first) = lines.next() {
-                write!(formatter, "\n  hint: {first}")?;
+                let _ = write!(
+                    rendered,
+                    "\n  {} {}",
+                    palette.label.apply_to("hint:"),
+                    palette.hint.apply_to(first),
+                );
             }
             for line in lines {
-                write!(formatter, "\n        {line}")?;
+                let _ = write!(rendered, "\n        {}", palette.hint.apply_to(line));
             }
         }
-        Ok(())
+        rendered
+    }
+}
+
+impl fmt::Display for Diagnostic {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.render(&Palette::plain()))
     }
 }
 
@@ -375,6 +416,39 @@ mod tests {
                 "  --> state registry\n",
                 "  why: the file exists but its contents are not TOML",
             )
+        );
+    }
+
+    /// Discharges spec/14's identity sentence: color is escape sequences and nothing else.
+    ///
+    /// Asserted against the full worked example so every slot — id, what, locus, why, accepted,
+    /// a wrapped hint — is covered, not one sample span.
+    #[test]
+    fn color_changes_no_text() {
+        let diagnostic = Diagnostic::new(
+            DiagnosticId::new(Namespace::Manifest, "unknown-key"),
+            "unknown key `schema_version` in manifest `rust-web`",
+            Locus::Position {
+                path: "manifests/rust-web.toml".into(),
+                line: 7,
+                column: 1,
+            },
+            "not part of the manifest grammar viv 0.4.1 understands",
+        )
+        .with_accepted(["image", "pieces", "extends", "env"])
+        .with_hint(concat!(
+            "remove the key, or upgrade vivarium — a manifest written for a newer\n",
+            "vivarium reports its new keys exactly this way",
+        ));
+
+        let colored = diagnostic.render(&crate::ui::style::Palette::colored());
+        // The colored form really is colored — this test runs off a TTY, which is exactly where
+        // an unforced style would silently collapse the assertion into plain == plain.
+        assert!(colored.contains('\u{1b}'), "{colored:?}");
+        assert_eq!(
+            console::strip_ansi_codes(&colored),
+            diagnostic.to_string(),
+            "the palette may add escape sequences and nothing else"
         );
     }
 

@@ -11,6 +11,7 @@
 //! process — the seam `resolve_xdg_roots` established and every module since has kept.
 
 mod destroy;
+pub mod doctor;
 pub mod grammar;
 pub mod lifecycle;
 mod prompt;
@@ -28,12 +29,17 @@ use crate::config::{
 };
 use crate::diagnostic::{Diagnostic, DiagnosticId, Locus, Namespace};
 use crate::exit::ExitKind;
+use crate::ui::Ui;
+use crate::ui::style::Palette;
 use grammar::{Deferred, Invocation, Output, UsageError};
 
 /// The only target a project has today (spec/15).
 const DEFAULT_TARGET: &str = "default";
 
-/// Everything a command reads about the host it was invoked on.
+/// Everything a command reads about the host it was invoked on, plus the face it speaks through.
+///
+/// The face is itself resolved purely from the same injected inputs ([`Ui::resolve`]), so the
+/// whole surface stays exercisable without a process.
 pub struct Context<'a, E: Environment> {
     /// The four durable roots, each already including vivarium's subtree.
     pub roots: XdgRoots,
@@ -41,6 +47,8 @@ pub struct Context<'a, E: Environment> {
     pub project: PathBuf,
     /// The injected environment.
     pub environment: &'a E,
+    /// The stderr face for this invocation. Silent unless the host said otherwise.
+    pub ui: &'a Ui,
 }
 
 /// What a command produced.
@@ -95,13 +103,17 @@ impl Failure {
     }
 
     /// Everything this failure writes to stderr, in the form the requested output selects.
+    ///
+    /// The palette reaches only the human arms. The JSON arm never receives it structurally,
+    /// which is how "never color JSON" (spec/01) holds without discipline.
     #[must_use]
-    pub fn render(&self, output: Output) -> String {
+    pub fn render(&self, output: Output, palette: &Palette) -> String {
         match self {
             Self::Usage(error) => {
-                let mut rendered = format!("viv: {}\n", error.message);
+                let mut rendered =
+                    format!("{} {}\n", palette.error.apply_to("viv:"), error.message);
                 if let Some(usage) = error.usage {
-                    let _ = writeln!(rendered, "usage: {usage}");
+                    let _ = writeln!(rendered, "{} {usage}", palette.label.apply_to("usage:"));
                 }
                 rendered
             }
@@ -109,11 +121,18 @@ impl Failure {
                 if output.is_json() {
                     format!("{}\n", diagnostic.to_json(code.code()))
                 } else {
-                    format!("{diagnostic}\n")
+                    format!("{}\n", diagnostic.render(palette))
                 }
             }
         }
     }
+}
+
+/// `viv --help`'s text, for `main` to render ahead of any context: help must answer on a host
+/// where nothing else — a missing `HOME`, an unreadable registry — does.
+#[must_use]
+pub fn help_text(verb: Option<&str>, palette: &crate::ui::style::Palette) -> String {
+    render::help_human(palette, verb)
 }
 
 /// Runs one already-parsed invocation.
@@ -151,7 +170,7 @@ pub fn run<E: Environment>(
             Ok(Success::plain(if output.is_json() {
                 render::status_json(&report)
             } else {
-                render::status_human(&report)
+                render::status_human(&report, context.ui.palette_out())
             }))
         }
         Invocation::Stop {
@@ -172,12 +191,19 @@ pub fn run<E: Environment>(
             output,
         } => destroy::destroy(context, *keep_volumes, *yes, *output),
         Invocation::Deferred { verb, .. } => deferred(context, *verb),
-        // The caller performs all three, because they are the async half of this program and
-        // nothing else here needs a runtime. A session additionally returns a code this signature
+        // The caller performs all five. The first three are the async half of this program and
+        // nothing else here needs a runtime; a session additionally returns a code this signature
         // cannot express — the guest's own — and streams bytes rather than accumulating a string.
-        Invocation::StartSpec { .. } | Invocation::Exec(_) | Invocation::Shell(_) => {
-            Ok(Success::plain(String::new()))
-        }
+        // Help and version are the opposite edge: they must answer on a host where nothing else
+        // does, so `main` renders them before this module's `Context` can fail to build. Doctor
+        // returns a code this signature cannot express — a report at `69` is still a report — so
+        // `main` dispatches it through [`doctor::command`].
+        Invocation::StartSpec { .. }
+        | Invocation::Exec(_)
+        | Invocation::Shell(_)
+        | Invocation::Help { .. }
+        | Invocation::Version
+        | Invocation::Doctor { .. } => Ok(Success::plain(String::new())),
     }
 }
 
@@ -314,6 +340,7 @@ fn config_binding<E: Environment>(
         &context.roots,
         &paths.directory,
         lock.path(),
+        context.ui.palette_out(),
     )))
 }
 
@@ -418,12 +445,13 @@ fn evaluate_resolved<E: Environment>(
     // notes channel (a session's cold start), and the rewrite is already durable by this line —
     // so the announcement comes before evaluation or any other fallible step can suppress it.
     if prepared.shed_vivarium {
-        eprintln!(
+        context.ui.warn(&format!(
             "shed the dead `vivarium` node from this target's lock: {} (no other pin moved)",
             prepared.effective_lock.path().display()
-        );
+        ));
     }
-    let report = config::evaluate::report(&prepared).map_err(|error| evaluation_failure(&error))?;
+    let report = config::evaluate::report(&prepared, context.ui)
+        .map_err(|error| evaluation_failure(&error))?;
     // Only now, and only when this target had no pin: the lock is created by the first successful
     // evaluation and thereafter moves only under `viv update` (spec/04, ADR-0059).
     let created = prepared.effective_lock.may_persist_created();
@@ -536,7 +564,7 @@ fn manifest_list<E: Environment>(
     Ok(Success::plain(if output.is_json() {
         render::manifest_list_json(&rows)
     } else {
-        render::manifest_list_human(&rows)
+        render::manifest_list_human(&rows, context.ui.palette_out())
     }))
 }
 

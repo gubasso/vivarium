@@ -21,8 +21,60 @@ use crate::config::merged::{Analysis, ConflictKind};
 use crate::config::{
     Egress, EgressMode, Manifest, ResolvedArtifact, ResolvedBinding, Resources, XdgRoots,
 };
+use crate::ui::style::Palette;
+use crate::ui::table;
 
+use super::grammar::COMMANDS;
 use super::lifecycle::Report;
+
+/// `viv --help` and `viv <verb> --help` — the summary, or one verb's usage.
+///
+/// An unknown verb falls back to the summary rather than failing: help never fails, and the
+/// summary is the answer to "what is there" whatever prompted the question. Padded spans are
+/// padded before styling, because format width counts escape bytes.
+pub fn help_human(palette: &Palette, verb: Option<&str>) -> String {
+    if let Some((name, usage, blurb)) =
+        verb.and_then(|requested| COMMANDS.iter().find(|(name, ..)| *name == requested))
+    {
+        return format!(
+            "{} — {blurb}\n\n{} {usage}\n",
+            palette.accent.apply_to(*name),
+            palette.label.apply_to("usage:"),
+        );
+    }
+    let mut rendered = format!(
+        "{} — each project in its own microVM\n\n{} viv <command> [options]\n\n",
+        palette.accent.apply_to("viv"),
+        palette.label.apply_to("usage:"),
+    );
+    let _ = writeln!(rendered, "{}", palette.label.apply_to("commands:"));
+    for (name, _, blurb) in COMMANDS {
+        let _ = writeln!(
+            rendered,
+            "  {} {blurb}",
+            palette.accent.apply_to(format!("{name:<9}")),
+        );
+    }
+    let _ = writeln!(rendered, "\n{}", palette.label.apply_to("global flags:"));
+    for (flag, blurb) in [
+        ("-v, --verbose", "more stderr detail; stackable"),
+        ("-q, --quiet", "suppress progress; errors still print"),
+        ("-h, --help", "this summary, or one command's usage"),
+        ("--version", "the version"),
+    ] {
+        let _ = writeln!(
+            rendered,
+            "  {} {blurb}",
+            palette.accent.apply_to(format!("{flag:<14}")),
+        );
+    }
+    let _ = writeln!(
+        rendered,
+        "\nrun `viv <command> --help` for one command's flags; \
+        `--json` on a data command emits one machine record on stdout",
+    );
+    rendered
+}
 
 /// `viv config --json` — the binding record.
 pub fn binding_json(
@@ -45,18 +97,21 @@ pub fn binding_json(
     }))
 }
 
-/// `viv config` — the same record, one fact per line.
+/// `viv config` — the same record, one fact per line: dim labels, the manifest accented.
 pub fn binding_human(
     binding: &ResolvedBinding,
     roots: &XdgRoots,
     flake: &Path,
     lock: &Path,
+    palette: &Palette,
 ) -> String {
-    let mut rendered = format!(
-        "manifest: {}\nsource:   {}\n",
-        binding.manifest,
-        binding.source.as_str()
-    );
+    let mut rows: Vec<(&str, String)> = vec![
+        (
+            "manifest",
+            palette.accent.apply_to(&binding.manifest).to_string(),
+        ),
+        ("source", binding.source.as_str().to_owned()),
+    ];
     for (label, path) in [
         ("config", roots.config.as_path()),
         ("state", roots.state.as_path()),
@@ -65,9 +120,9 @@ pub fn binding_human(
         ("flake", flake),
         ("lock", lock),
     ] {
-        let _ = writeln!(rendered, "{label:<9} {}", path.display());
+        rows.push((label, path.display().to_string()));
     }
-    rendered
+    table::record(palette, &rows)
 }
 
 /// `viv config eval --json` — the merged configuration, nested under the identity that produced it.
@@ -370,16 +425,29 @@ pub fn manifest_list_json(rows: &[(String, ResolvedArtifact, Manifest)]) -> Stri
 }
 
 /// `viv manifest list` — one row per line, and nothing at all when the library is empty.
-pub fn manifest_list_human(rows: &[(String, ResolvedArtifact, Manifest)]) -> String {
-    let mut rendered = String::new();
-    for (name, _, manifest) in rows {
-        let _ = write!(rendered, "{name}\t{}", manifest.image);
-        if !manifest.pieces.is_empty() {
-            let _ = write!(rendered, "\t{}", manifest.pieces.join(", "));
-        }
-        rendered.push('\n');
-    }
-    rendered
+pub fn manifest_list_human(
+    rows: &[(String, ResolvedArtifact, Manifest)],
+    palette: &Palette,
+) -> String {
+    let table_rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|(name, _, manifest)| {
+            let mut row = vec![
+                palette.accent.apply_to(name).to_string(),
+                manifest.image.clone(),
+            ];
+            if !manifest.pieces.is_empty() {
+                row.push(
+                    palette
+                        .label
+                        .apply_to(manifest.pieces.join(", "))
+                        .to_string(),
+                );
+            }
+            row
+        })
+        .collect();
+    table::columns(&table_rows)
 }
 
 /// `viv volume list --json` — one row per volume, wrapped for the reason `manifests` is.
@@ -391,13 +459,23 @@ pub fn volume_list_json(rows: &[Value]) -> String {
 }
 
 /// `viv volume list` — one row per line, and nothing at all when there is nothing to say.
-pub fn volume_list_human(rows: &[Vec<String>]) -> String {
-    let mut rendered = String::new();
-    for row in rows {
-        rendered.push_str(&row.join("\t"));
-        rendered.push('\n');
-    }
-    rendered
+pub fn volume_list_human(rows: &[Vec<String>], palette: &Palette) -> String {
+    let styled: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .map(|(index, cell)| {
+                    if index == 0 {
+                        palette.accent.apply_to(cell).to_string()
+                    } else {
+                        cell.clone()
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    table::columns(&styled)
 }
 
 /// `viv volume prune --json` — the rows removed, and what that reclaimed.
@@ -557,46 +635,262 @@ pub fn status_json(report: &Report) -> String {
     }))
 }
 
-/// `viv status` — the human reading of the same record.
-pub fn status_human(report: &Report) -> String {
-    let mut rendered = String::new();
+/// `viv status` — the human reading of the same record: dim labels, the state carrying the one
+/// colored glyph, durations humanized. spec/01 fixes what it names, not how it lays out.
+pub fn status_human(report: &Report, palette: &Palette) -> String {
+    let mut rows: Vec<(&str, String)> = Vec::new();
     if let Some(manifest) = &report.manifest {
-        let _ = writeln!(rendered, "manifest  {manifest}");
+        rows.push(("manifest", palette.accent.apply_to(manifest).to_string()));
     }
-    let _ = writeln!(rendered, "state     {}", report.state.as_str());
+    rows.push(("state", state_view(report.state.as_str(), palette)));
     if let Some(reason) = report.reason {
-        let _ = writeln!(rendered, "reason    {reason}");
+        rows.push(("reason", reason.to_owned()));
     }
     if let Some(theirs) = report.record_skew {
-        let _ = writeln!(
-            rendered,
-            "record    launch schema {theirs}; this viv speaks {}. `viv stop`, then `viv start`, \
-            reboots it under this version",
-            crate::launch::LAUNCH_SCHEMA_VERSION
-        );
+        rows.push((
+            "record",
+            format!(
+                "launch schema {theirs}; this viv speaks {}. `viv stop`, then `viv start`, \
+                reboots it under this version",
+                crate::launch::LAUNCH_SCHEMA_VERSION
+            ),
+        ));
     }
     if let Some(store_path) = &report.store_path {
-        let _ = writeln!(rendered, "build     {store_path}");
+        rows.push(("build", store_path.clone()));
     }
     if let Some(uptime) = report.uptime_seconds {
-        let _ = writeln!(rendered, "uptime    {uptime}s");
+        rows.push(("uptime", duration(uptime)));
     }
     if let Some(resources) = &report.resources {
-        let _ = writeln!(
-            rendered,
-            "resources {} MiB, {} vcpu",
-            resources.mem_mib, resources.vcpu
-        );
+        rows.push((
+            "resources",
+            format!("{} MiB · {} vcpu", resources.mem_mib, resources.vcpu),
+        ));
     }
+    let mut rendered = table::record(palette, &rows);
     if report.stale {
         // The remedy beside the fact, because a stale VM is a state a user acts on rather than one
         // they only read (spec/01).
         let _ = writeln!(
             rendered,
-            "\nthis VM is stale: a newer build exists. `viv start --rebuild` replaces it"
+            "\n{} this VM is stale: a newer build exists. `viv start --rebuild` replaces it",
+            palette.warn.apply_to("!"),
         );
     }
     rendered
+}
+
+/// The state cell: one glyph, colored by what the state means, beside the word itself.
+fn state_view(state: &str, palette: &Palette) -> String {
+    let style = match state {
+        "running" => &palette.good,
+        "failed" => &palette.error,
+        "starting" | "stopping" => &palette.warn,
+        "built" => &palette.accent,
+        _ => &palette.label,
+    };
+    format!("{} {state}", style.apply_to("●"))
+}
+
+/// Seconds, humanized: `13s`, `2m 14s`, `3h 21m`. The JSON face keeps the raw number.
+fn duration(seconds: u64) -> String {
+    let (hours, minutes, rest) = (seconds / 3600, (seconds % 3600) / 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {rest}s")
+    } else {
+        format!("{rest}s")
+    }
+}
+
+/// `viv doctor` — the category-grouped report with bracketed word markers, never glyphs
+/// (spec/13), and the closing summary line naming the exit.
+pub fn doctor_human(
+    findings: &[crate::doctor::Finding],
+    code: crate::exit::ExitKind,
+    palette: &Palette,
+) -> String {
+    use crate::doctor::Status;
+    let id_width = findings
+        .iter()
+        .map(|finding| finding.probe.id.len())
+        .max()
+        .unwrap_or(0);
+    // Grouped by category — each category once, in first-appearance order, holding every one of
+    // its findings in catalog order — because the catalog interleaves categories and a header per
+    // run of consecutive rows would print `permissions` four times.
+    let mut categories = Vec::new();
+    for finding in findings {
+        if !categories.contains(&finding.probe.category) {
+            categories.push(finding.probe.category);
+        }
+    }
+    let mut rendered = String::new();
+    for (index, category) in categories.iter().enumerate() {
+        if index > 0 {
+            rendered.push('\n');
+        }
+        let _ = writeln!(rendered, "{}", palette.label.apply_to(category.as_str()));
+        for finding in findings
+            .iter()
+            .filter(|finding| finding.probe.category == *category)
+        {
+            let marker = format!("[{}]", finding.status.as_str());
+            let style = match finding.status {
+                Status::Pass => &palette.good,
+                Status::Warn => &palette.warn,
+                Status::Fail => &palette.error,
+                Status::Skipped => &palette.label,
+            };
+            let message = doctor_message(finding);
+            let _ = writeln!(
+                rendered,
+                "  {}  {:<id_width$}  {message}",
+                style.apply_to(format!("{marker:<9}")),
+                finding.probe.id,
+            );
+            if let Some(hint) = &finding.hint {
+                let _ = writeln!(
+                    rendered,
+                    "{}{} {hint}",
+                    " ".repeat(13 + 4),
+                    palette.label.apply_to("hint:"),
+                );
+            }
+        }
+    }
+    let (mut passed, mut warned, mut failed, mut skipped) = (0u32, 0u32, 0u32, 0u32);
+    for finding in findings {
+        match finding.status {
+            Status::Pass => passed += 1,
+            Status::Warn => warned += 1,
+            Status::Fail => failed += 1,
+            Status::Skipped => skipped += 1,
+        }
+    }
+    let _ = writeln!(
+        rendered,
+        "\n{passed} pass - {warned} warn - {failed} fail - {skipped} skipped -> exit {}",
+        code.code(),
+    );
+    rendered
+}
+
+/// What a report row says: the finding's message, or a skip reason's fixed wording.
+fn doctor_message(finding: &crate::doctor::Finding) -> String {
+    if finding.status == crate::doctor::Status::Skipped && finding.message.is_empty() {
+        return match finding.reason {
+            Some("no-manifest-bound") => "no manifest bound - run `viv init`".to_owned(),
+            Some("offline-mode") => "offline - run with `--online`".to_owned(),
+            Some(reason) => reason.to_owned(),
+            None => String::new(),
+        };
+    }
+    finding.message.clone()
+}
+
+/// `viv doctor --json` — the enveloped record spec/13 fixes, with `summary.hard_failures` so a
+/// script gates without re-deriving severity, and `schema_version` because the envelope carries
+/// one (unlike the reader records).
+pub fn doctor_json(findings: &[crate::doctor::Finding]) -> String {
+    use crate::doctor::{Severity, Status};
+    let checks: Vec<Value> = findings
+        .iter()
+        .map(|finding| {
+            let mut check = Map::new();
+            check.insert("id".to_owned(), finding.probe.id.into());
+            check.insert(
+                "category".to_owned(),
+                finding.probe.category.as_str().into(),
+            );
+            check.insert("scope".to_owned(), finding.probe.scope.as_str().into());
+            check.insert(
+                "severity".to_owned(),
+                finding.probe.severity.as_str().into(),
+            );
+            check.insert("status".to_owned(), finding.status.as_str().into());
+            if !finding.message.is_empty() {
+                check.insert("message".to_owned(), finding.message.clone().into());
+            }
+            if let Some(hint) = &finding.hint {
+                check.insert("hint".to_owned(), hint.clone().into());
+            }
+            if let Some(reason) = finding.reason {
+                check.insert("reason".to_owned(), reason.into());
+            }
+            // `doc_url` is omitted, never null: the path scheme is fixed but no site exists yet,
+            // and consumers test key presence (spec/13).
+            Value::Object(check)
+        })
+        .collect();
+    let hard_failures = findings
+        .iter()
+        .filter(|finding| {
+            finding.status == Status::Fail && finding.probe.severity == Severity::Hard
+        })
+        .count();
+    let count = |status: Status| {
+        findings
+            .iter()
+            .filter(|finding| finding.status == status)
+            .count()
+    };
+    let overall = if hard_failures > 0 {
+        "fail"
+    } else if count(Status::Warn) > 0 {
+        "warn"
+    } else {
+        "pass"
+    };
+    line(&json!({
+        "status": overall,
+        "checks": checks,
+        "summary": {
+            "total": findings.len(),
+            "passed": count(Status::Pass),
+            "warned": count(Status::Warn),
+            "failed": count(Status::Fail),
+            "skipped": count(Status::Skipped),
+            "hard_failures": hard_failures,
+        },
+        "schema_version": "1",
+    }))
+}
+
+/// `viv doctor --list` — the catalog enumerated, nothing probed.
+pub fn doctor_list_human(palette: &Palette) -> String {
+    let rows: Vec<Vec<String>> = crate::doctor::CATALOG
+        .iter()
+        .map(|probe| {
+            vec![
+                palette.accent.apply_to(probe.id).to_string(),
+                probe.category.as_str().to_owned(),
+                probe.scope.as_str().to_owned(),
+                probe.severity.as_str().to_owned(),
+                probe.title.to_owned(),
+            ]
+        })
+        .collect();
+    table::columns(&rows)
+}
+
+/// `viv doctor --list --json` — the same enumeration, one keyed object.
+pub fn doctor_list_json() -> String {
+    let checks: Vec<Value> = crate::doctor::CATALOG
+        .iter()
+        .map(|probe| {
+            json!({
+                "id": probe.id,
+                "category": probe.category.as_str(),
+                "scope": probe.scope.as_str(),
+                "severity": probe.severity.as_str(),
+                "title": probe.title,
+            })
+        })
+        .collect();
+    line(&json!({ "checks": checks }))
 }
 
 fn display(path: &Path) -> String {

@@ -35,7 +35,15 @@ members = ["crates/vivarium-guest-agent"]
 
 [features]
 default = ["host"]
-host = ["dep:tokio-util", "dep:hickory-proto", "dep:nftables", "dep:ipnet"]
+host = [
+  "dep:tokio-util",
+  "dep:hickory-proto",
+  "dep:nftables",
+  "dep:ipnet",
+  "dep:cliclack",
+  "dep:console",
+  "dep:indicatif",
+]
 
 # The published crate is `vivarium`; the installed command is `viv`.
 [[bin]]
@@ -69,12 +77,23 @@ path = "tests/net_host.rs"
 harness = false
 
 [dependencies]
+# The stderr face ADR-0103 selects: the step/log/note house style over `indicatif` and `console`,
+# writing to stderr, restyled through its `Theme` trait. The only module that knows its shape is
+# `src/ui/theme.rs`.
+cliclack = { version = "0.5.6", optional = true }
+# Styling for the stdout result face and the diagnostic palette. Always applied through
+# `force_styling` so the first-party `NO_COLOR > FORCE_COLOR > isatty` chain in `src/ui/chain.rs`
+# is the one deciding — never this crate's own global detection.
+console = { version = "0.16.4", optional = true }
 # The three networking seams Q-005 selected; the slice 004 `Revisions` line carries the evidence.
 # `hickory-proto` is wire parsing and serialization only — the gating resolver's serve loop is
 # vivarium's own, because the release-after-programming ordering is the contract and a server
 # framework owns answer release exactly where the gate must sit. No `hickory-resolver`: its cache
 # would release answers no filter rule was programmed for.
 hickory-proto = { version = "0.26.1", optional = true }
+# The animation under the stderr face: `cliclack` builds on it but does not re-export the
+# `suspend` seam `src/ui/watch.rs` needs to interleave streamed child stderr with a live spinner.
+indicatif = { version = "0.18.6", optional = true }
 # CIDR entries in `egress.allow` (spec/03 grammar); matching a literal address against a block.
 ipnet = { version = "2.12.1", optional = true }
 # Typed model of the libnftables JSON schema. Rulesets are rendered as JSON and applied through

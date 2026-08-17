@@ -12,10 +12,12 @@
 //! `persist_created_lock`, which is where ADR-0059 puts it.
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Command;
 
 use serde::Deserialize;
 use serde_json::Value;
+
+use crate::ui::{Ui, watch};
 
 use super::error::EvaluationError;
 use super::{EffectiveLock, PreparedFlake, flake, materialize};
@@ -138,7 +140,7 @@ impl Definition {
 ///
 /// Returns [`EvaluationError`] when Nix is absent or unusable, when evaluation fails, when the lock
 /// in force has no node for a declared input, or when the report cannot be decoded.
-pub fn report(prepared: &PreparedFlake) -> Result<Report, EvaluationError> {
+pub fn report(prepared: &PreparedFlake, ui: &Ui) -> Result<Report, EvaluationError> {
     let attribute = format!("{}.{}", flake::REPORT_ATTR, host_system());
     let output = run(
         prepared,
@@ -147,6 +149,7 @@ pub fn report(prepared: &PreparedFlake) -> Result<Report, EvaluationError> {
             &format!("{}#{attribute}", display(&prepared.directory)),
             "--json",
         ],
+        ui,
     )?;
     serde_json::from_slice(&output.stdout).map_err(|error| EvaluationError::Undecodable {
         detail: error.to_string(),
@@ -176,7 +179,8 @@ fn run(
     prepared: &PreparedFlake,
     verb: &'static str,
     arguments: &[&str],
-) -> Result<Output, EvaluationError> {
+    ui: &Ui,
+) -> Result<watch::Captured, EvaluationError> {
     let mut command = Command::new("nix");
     command.arg(verb);
     command.args(FEATURE_FLAGS);
@@ -189,15 +193,18 @@ fn run(
     // Three answers, not two: absent is `69`, forbidden is `77`, and anything else stays the
     // unclassified `69`. Spec/14's `config` rows admit both codes for the Nix preflight, and
     // collapsing the middle case into "unavailable" would tell a user to install what they have.
-    let output = command.output().map_err(|source| match source.kind() {
+    let step = ui.step("evaluating the merged configuration");
+    let output = watch::output(&mut command, &step).map_err(|source| match source.kind() {
         std::io::ErrorKind::NotFound => EvaluationError::NixMissing { source },
         std::io::ErrorKind::PermissionDenied => EvaluationError::NixNotPermitted { source },
         _ => EvaluationError::NixUnusable { source },
     })?;
     if output.status.success() {
+        step.done("evaluated the merged configuration");
         return Ok(output);
     }
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    drop(step);
+    let stderr = output.stderr;
     if names_a_missing_lock_node(&stderr) {
         return Err(EvaluationError::LockMissingNode { stderr });
     }

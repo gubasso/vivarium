@@ -64,7 +64,7 @@ pub(super) fn destroy<E: Environment>(
         // The same ladder `viv stop` walks, at the default grace. Not `--force`: a destroy that
         // killed the guest where it stood would lose the writes spec/10's shutdown transaction
         // exists to commit, and the volumes are usually about to be removed but not always.
-        lifecycle::stop_unit(&runtime, false, None)?;
+        lifecycle::stop_unit(&runtime, false, None, context.ui)?;
     }
 
     // Under the lock, which is what the module header promises and what a `viv start` racing this
@@ -250,6 +250,7 @@ fn confirm<E: Environment>(
     };
     super::prompt::confirm(
         &question,
+        context.ui.palette(),
         &mut std::io::stdin().lock(),
         &mut std::io::stderr().lock(),
     )

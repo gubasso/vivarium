@@ -14,6 +14,11 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::PathBuf;
 
+// Verbosity lives in `ui` because it is what the stderr face reads, and `ui` is a leaf the
+// grammar may import while the reverse would invert the layering. Re-exported here because it is
+// this grammar's output: `Parsed` carries it, and a caller should not need to know where it lives.
+pub use crate::ui::Verbosity;
+
 /// Why an invocation is not well-formed. Every one of these is `64`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UsageError {
@@ -129,6 +134,34 @@ pub enum Invocation {
     /// invocation and `78` for an unbound project — and those two answers do not depend on the
     /// work behind them existing yet.
     Deferred { verb: Deferred, output: Output },
+    /// Diagnose the host and project setup from the shared probe catalog (spec/13).
+    Doctor {
+        /// Any warn fails the run at exit `1` — the one sanctioned use of `1` (ADR-0023).
+        strict: bool,
+        /// Enumerate the catalog without running any probe.
+        list: bool,
+        /// Admit the network-scope probes; offline is the default and there is no `--offline`.
+        online: bool,
+        output: Output,
+    },
+    /// `--help` anywhere before the first `--`: the summary, or one verb's usage.
+    ///
+    /// Parsed globally like the verbosity flags, and it wins over whatever else the invocation
+    /// says — `viv start --bogus --help` is a user asking what `start` takes, not a usage error.
+    Help {
+        /// The verb the help was asked beside, unresolved: an unknown name falls back to the
+        /// summary rather than failing, because help never fails.
+        verb: Option<String>,
+    },
+    /// `--version` anywhere before the first `--`: the version string and nothing else.
+    Version,
+}
+
+/// One parsed command line: the invocation, plus the globals that ride beside any verb.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Parsed {
+    pub invocation: Invocation,
+    pub verbosity: Verbosity,
 }
 
 /// Everything one guest session is asked for, in the form the wire's `Start` needs it.
@@ -176,27 +209,55 @@ impl Deferred {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Streams {
     pub stdin_is_tty: bool,
+    /// Whether the result stream may carry color; the chain in `ui::chain` reads it.
+    pub stdout_is_tty: bool,
+    /// Whether the human face exists at all: progress animates only here (spec/01).
+    pub stderr_is_tty: bool,
 }
 
 /// Parses one invocation.
 ///
 /// `argv` includes the program name, as `std::env::args_os` yields it.
 ///
+/// The global flags — `-v`/`-q`, `--help`, `--version` — are lifted out first, so placement is
+/// free per ADR-0026: `viv -v start` and `viv start -v` are one invocation. The lift stops at the
+/// first `--` because everything after it is the guest's (spec/12), and it is verb-keyed for
+/// value-taking flags because `-t` is a boolean on `exec` and takes seconds on `stop` — a lift
+/// that read past one would silently change that parse.
+///
 /// # Errors
 ///
 /// Returns [`UsageError`] for an unknown verb, an unknown flag, wrong arity, or two flags that
 /// contradict each other. Every one of them is `64`.
-pub fn parse<I>(argv: I, streams: Streams) -> Result<Invocation, UsageError>
+pub fn parse<I>(argv: I, streams: Streams) -> Result<Parsed, UsageError>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let tokens: Vec<OsString> = argv.into_iter().skip(1).collect();
+    let globals = lift_globals(argv.into_iter().skip(1));
+    let verbosity = globals.verbosity;
+    // Help wins over everything, version over everything but help: both are the user asking about
+    // the tool rather than asking the tool for anything, so neither needs the rest to be
+    // well-formed.
+    if globals.help {
+        return Ok(Parsed {
+            invocation: Invocation::Help { verb: globals.verb },
+            verbosity,
+        });
+    }
+    if globals.version {
+        return Ok(Parsed {
+            invocation: Invocation::Version,
+            verbosity,
+        });
+    }
+
+    let tokens = globals.tokens;
     let Some(verb) = tokens.first() else {
         return Err(UsageError::new("no command given", Some(TOP_USAGE)));
     };
     let rest = &tokens[1..];
 
-    match verb.to_str() {
+    let invocation = match verb.to_str() {
         Some("init") => init(rest),
         Some("config") => config(rest),
         Some("manifest") => manifest(rest),
@@ -208,15 +269,99 @@ where
         Some("volume") => volume(rest, streams),
         Some("destroy") => destroy(rest, streams),
         Some("gc") => deferred_flagless(Deferred::Gc, rest, GC_USAGE),
+        Some("doctor") => doctor(rest),
         _ => Err(UsageError::new(
             format!("unknown command `{}`", verb.to_string_lossy()),
             Some(TOP_USAGE),
         )),
+    }?;
+    Ok(Parsed {
+        invocation,
+        verbosity,
+    })
+}
+
+/// What the global pre-pass produced: the verb-local tokens, and the globals lifted from them.
+struct Globals {
+    tokens: Vec<OsString>,
+    verbosity: Verbosity,
+    help: bool,
+    version: bool,
+    /// The first verb-local token, for `--help`'s "which verb" answer. Never validated here.
+    verb: Option<String>,
+}
+
+/// Which flags take a value, per verb: the tokens the lift must never read past.
+fn takes_value(verb: Option<&str>, flag: &str) -> bool {
+    match verb {
+        Some("init" | "config") => flag == "--manifest",
+        Some("start") => flag == "--spec",
+        Some("exec") => flag == "--env",
+        Some("stop") => matches!(flag, "-t" | "--timeout"),
+        _ => false,
     }
 }
 
+fn lift_globals(argv: impl Iterator<Item = OsString>) -> Globals {
+    let mut globals = Globals {
+        tokens: Vec::new(),
+        verbosity: Verbosity::Normal,
+        help: false,
+        version: false,
+        verb: None,
+    };
+    // `-q` and `-v` are mutually exclusive with the last one winning (ADR-0026), and `-v` stacks;
+    // an integer carries both rules: `-q` sets it below zero, each `v` adds one from zero up.
+    let mut level: i8 = 0;
+    let bump = |level: i8, added: i8| {
+        if level < 0 {
+            added
+        } else {
+            (level + added).min(3)
+        }
+    };
+    let mut argv = argv.peekable();
+    while let Some(token) = argv.next() {
+        match token.to_str() {
+            // Everything after the first `--` is the guest's, verbatim (spec/12).
+            Some("--") => {
+                globals.tokens.push(token);
+                globals.tokens.extend(argv);
+                break;
+            }
+            Some("-q" | "--quiet") => level = -1,
+            Some("-v" | "--verbose") => level = bump(level, 1),
+            Some("-vv") => level = bump(level, 2),
+            Some("-vvv") => level = bump(level, 3),
+            Some("-h" | "--help") => globals.help = true,
+            Some("--version") => globals.version = true,
+            other => {
+                if globals.verb.is_none() {
+                    // The verb candidate is simply the first token the lift keeps, dashes and
+                    // all: a `viv --json` stays an unknown command downstream, exactly as before.
+                    globals.verb = other.map(str::to_owned);
+                }
+                let value_next =
+                    other.is_some_and(|flag| takes_value(globals.verb.as_deref(), flag));
+                globals.tokens.push(token);
+                if value_next && let Some(value) = argv.next() {
+                    globals.tokens.push(value);
+                }
+            }
+        }
+    }
+    globals.verbosity = match level {
+        i8::MIN..=-1 => Verbosity::Quiet,
+        0 => Verbosity::Normal,
+        1 => Verbosity::Verbose,
+        2 => Verbosity::Debug,
+        _ => Verbosity::Trace,
+    };
+    globals
+}
+
 const TOP_USAGE: &str =
-    "viv <init|config|manifest|start|status|shell|exec|stop|volume|destroy|gc> [options]";
+    "viv <init|config|manifest|start|status|shell|exec|stop|volume|destroy|gc|doctor> [options]";
 const INIT_USAGE: &str = "viv init [--manifest <name>] [--write] [--yes] [--json] [--no-input]";
 const CONFIG_USAGE: &str = "viv config [--manifest <name>] [--json]";
 const CONFIG_EVAL_USAGE: &str = "viv config eval [--json]";
@@ -233,6 +378,72 @@ const VOLUME_LIST_USAGE: &str = "viv volume list [--json]";
 const VOLUME_PRUNE_USAGE: &str = "viv volume prune [-n|--dry-run] [-f|--yes] [--json]";
 const DESTROY_USAGE: &str = "viv destroy [-f|--yes] [--keep-volumes] [--json]";
 const GC_USAGE: &str = "viv gc [--json]";
+const DOCTOR_USAGE: &str = "viv doctor [--json] [--strict] [--list] [--online]";
+
+fn doctor(rest: &[OsString]) -> Result<Invocation, UsageError> {
+    let (mut strict, mut list, mut online) = (false, false, false);
+    let mut output = Output::Human;
+    for token in rest {
+        match token.to_str() {
+            Some("--strict") => strict = true,
+            Some("--list") => list = true,
+            Some("--online") => online = true,
+            Some("--json") => output = Output::Json,
+            _ => return Err(unknown(token, DOCTOR_USAGE)),
+        }
+    }
+    Ok(Invocation::Doctor {
+        strict,
+        list,
+        online,
+        output,
+    })
+}
+
+/// The one-line usage of the whole surface, for the errors that predate a verb.
+#[must_use]
+pub const fn top_usage() -> &'static str {
+    TOP_USAGE
+}
+
+/// The published verbs, one row each: name, usage, and what it does.
+///
+/// `--help` renders from this table, beside the dispatch in [`parse`] rather than inside it, so
+/// the summary and the dispatch can only drift through a diff that touches this file.
+pub const COMMANDS: &[(&str, &str, &str)] = &[
+    ("init", INIT_USAGE, "bind this project to a manifest"),
+    (
+        "config",
+        CONFIG_USAGE,
+        "show the binding, its paths, and the merged configuration",
+    ),
+    (
+        "manifest",
+        MANIFEST_USAGE,
+        "list and show the manifest library",
+    ),
+    (
+        "start",
+        START_USAGE,
+        "evaluate, build, and boot this project's VM",
+    ),
+    ("status", STATUS_USAGE, "report what the VM is doing"),
+    ("shell", SHELL_USAGE, "open a shell inside the guest"),
+    ("exec", EXEC_USAGE, "run one command inside the guest"),
+    ("stop", STOP_USAGE, "bring the VM down"),
+    (
+        "volume",
+        VOLUME_USAGE,
+        "list and prune this project's volumes",
+    ),
+    ("destroy", DESTROY_USAGE, "remove the VM and its state"),
+    ("gc", GC_USAGE, "collect unreferenced build outputs"),
+    (
+        "doctor",
+        DOCTOR_USAGE,
+        "diagnose the host and project setup",
+    ),
+];
 
 fn init(rest: &[OsString]) -> Result<Invocation, UsageError> {
     let mut manifest = None;
@@ -696,17 +907,25 @@ mod tests {
     }
 
     fn tty() -> Streams {
-        Streams { stdin_is_tty: true }
+        Streams {
+            stdin_is_tty: true,
+            stdout_is_tty: true,
+            stderr_is_tty: true,
+        }
     }
 
     fn piped() -> Streams {
         Streams {
             stdin_is_tty: false,
+            stdout_is_tty: false,
+            stderr_is_tty: false,
         }
     }
 
     fn parsed(rest: &[&str]) -> Result<Invocation, String> {
-        parse(argv(rest), piped()).map_err(|error| error.message)
+        parse(argv(rest), piped())
+            .map(|parsed| parsed.invocation)
+            .map_err(|error| error.message)
     }
 
     /// The `--json` slot of whichever invocation carries one.
@@ -724,10 +943,16 @@ mod tests {
             | Invocation::VolumeList { output }
             | Invocation::VolumePrune { output, .. }
             | Invocation::Destroy { output, .. }
-            | Invocation::Deferred { output, .. } => Some(*output),
-            // Neither carries a `--json` slot: the private handoff predates the published surface,
-            // and the two session verbs hand their streams to a guest process.
-            Invocation::StartSpec { .. } | Invocation::Exec(_) | Invocation::Shell(_) => None,
+            | Invocation::Deferred { output, .. }
+            | Invocation::Doctor { output, .. } => Some(*output),
+            // None carries a `--json` slot: the private handoff predates the published surface,
+            // the two session verbs hand their streams to a guest process, and help and version
+            // are human by definition.
+            Invocation::StartSpec { .. }
+            | Invocation::Exec(_)
+            | Invocation::Shell(_)
+            | Invocation::Help { .. }
+            | Invocation::Version => None,
         }
     }
 
@@ -834,7 +1059,10 @@ mod tests {
     /// Pins the terminal-allocation tri-state onto the one boolean the wire carries.
     #[test]
     fn terminal_allocation_resolves_to_what_the_wire_asks_for() -> Result<(), String> {
-        let pty_of = |rest: &[&str]| match parse(argv(rest), tty()).map_err(|error| error.message) {
+        let pty_of = |rest: &[&str]| match parse(argv(rest), tty())
+            .map(|parsed| parsed.invocation)
+            .map_err(|error| error.message)
+        {
             Ok(Invocation::Exec(session)) => Ok(session.pty),
             Ok(other) => Err(format!("parsed as {other:?}")),
             Err(message) => Err(message),
@@ -992,12 +1220,12 @@ mod tests {
             vec!["volume", "prune", "--dry-run"],
         ] {
             assert!(matches!(
-                parse(argv(&preview), piped()),
+                parsed(&preview),
                 Ok(Invocation::VolumePrune { dry_run: true, .. })
             ));
         }
         assert!(matches!(
-            parse(argv(&["volume", "prune", "--yes"]), piped()),
+            parsed(&["volume", "prune", "--yes"]),
             Ok(Invocation::VolumePrune {
                 dry_run: false,
                 yes: true,
@@ -1006,7 +1234,7 @@ mod tests {
         ));
         // On a terminal the prompt is what asks, so the flag is optional there.
         assert!(matches!(
-            parse(argv(&["volume", "prune"]), tty()),
+            parse(argv(&["volume", "prune"]), tty()).map(|parsed| parsed.invocation),
             Ok(Invocation::VolumePrune { yes: false, .. })
         ));
     }
@@ -1021,11 +1249,108 @@ mod tests {
             vec!["volume", "list", "--json"],
             vec!["stop", "--json"],
         ] {
-            let invocation = parse(argv(&rest), tty()).map_err(|error| error.message)?;
+            let invocation = parse(argv(&rest), tty())
+                .map(|parsed| parsed.invocation)
+                .map_err(|error| error.message)?;
             let output = output_of(&invocation)
                 .ok_or_else(|| format!("{rest:?} parsed as the private handoff"))?;
             assert!(output.is_json(), "--json was dropped by {rest:?}");
         }
         Ok(())
+    }
+
+    /// Pins ADR-0026's placement rule: a global flag reads the same before and after the verb.
+    #[test]
+    fn a_global_flag_is_positionless() -> Result<(), String> {
+        let before = parse(argv(&["-v", "status"]), piped()).map_err(|error| error.message)?;
+        let after = parse(argv(&["status", "-v"]), piped()).map_err(|error| error.message)?;
+        assert_eq!(before, after);
+        assert_eq!(before.verbosity, super::Verbosity::Verbose);
+        assert!(matches!(before.invocation, Invocation::Status { .. }));
+        Ok(())
+    }
+
+    /// Pins stacking, the `-vv` spellings, and last-one-wins between `-q` and `-v` (ADR-0026).
+    #[test]
+    fn verbosity_stacks_and_the_last_side_wins() -> Result<(), String> {
+        use super::Verbosity;
+        for (rest, expected) in [
+            (vec!["status"], Verbosity::Normal),
+            (vec!["status", "-q"], Verbosity::Quiet),
+            (vec!["status", "-v", "-v"], Verbosity::Debug),
+            (vec!["status", "-vv"], Verbosity::Debug),
+            (vec!["status", "-vvv"], Verbosity::Trace),
+            (vec!["status", "-v", "-v", "-v", "-v"], Verbosity::Trace),
+            (vec!["-v", "status", "-q"], Verbosity::Quiet),
+            (vec!["-q", "status", "-v"], Verbosity::Verbose),
+        ] {
+            let parsed = parse(argv(&rest), piped()).map_err(|error| error.message)?;
+            assert_eq!(parsed.verbosity, expected, "{rest:?}");
+        }
+        Ok(())
+    }
+
+    /// Pins the `--` boundary: a guest `-v` is the guest's, byte for byte (spec/12).
+    #[test]
+    fn the_lift_stops_at_the_guest_boundary() -> Result<(), String> {
+        let parsed = parse(argv(&["exec", "-v", "--", "cargo", "build", "-v"]), piped())
+            .map_err(|error| error.message)?;
+        assert_eq!(parsed.verbosity, super::Verbosity::Verbose);
+        let Invocation::Exec(session) = parsed.invocation else {
+            return Err("did not parse as exec".to_owned());
+        };
+        assert_eq!(session.argv, ["cargo", "build", "-v"].map(OsString::from));
+        // And help past the boundary is the guest's too.
+        let parsed = parse(argv(&["exec", "--", "cargo", "--help"]), piped())
+            .map_err(|error| error.message)?;
+        assert!(matches!(parsed.invocation, Invocation::Exec(_)));
+        Ok(())
+    }
+
+    /// Pins the verb-keyed value table: `stop -t` takes seconds, so the lift must not read the
+    /// token after it — `viv stop -t -v` stays the arity-shaped error it is, never a quiet parse.
+    #[test]
+    fn the_lift_never_reads_past_a_value_flag() {
+        assert!(parse(argv(&["stop", "-t", "-v"]), tty()).is_err());
+        // The same spelling on `exec` is a boolean, so the `-v` beside it really is global.
+        let parsed = parse(argv(&["exec", "-t", "-v", "--", "true"]), tty());
+        assert!(matches!(
+            parsed.map(|parsed| parsed.verbosity),
+            Ok(super::Verbosity::Verbose)
+        ));
+        // And a global between `--manifest` and its value would break the pair; the lift keeps it.
+        assert!(matches!(
+            parsed_with(&["config", "--manifest", "-v"], piped()),
+            Ok(Invocation::Config { manifest: Some(name), .. }) if name == "-v"
+        ));
+    }
+
+    fn parsed_with(rest: &[&str], streams: Streams) -> Result<Invocation, String> {
+        parse(argv(rest), streams)
+            .map(|parsed| parsed.invocation)
+            .map_err(|error| error.message)
+    }
+
+    /// Pins `--help` and `--version` as global, verb-aware, and winning over malformed rests.
+    #[test]
+    fn help_and_version_answer_before_anything_can_fail() {
+        assert!(matches!(
+            parsed(&["--help"]),
+            Ok(Invocation::Help { verb: None })
+        ));
+        assert!(matches!(
+            parsed(&["start", "--help"]),
+            Ok(Invocation::Help { verb: Some(ref name) }) if name == "start"
+        ));
+        // A malformed rest does not matter: the user asked about the tool, not for it.
+        assert!(matches!(
+            parsed(&["start", "--bogus", "-h"]),
+            Ok(Invocation::Help { verb: Some(ref name) }) if name == "start"
+        ));
+        assert!(matches!(parsed(&["--version"]), Ok(Invocation::Version)));
+        assert!(matches!(
+            parsed(&["status", "--version"]),
+            Ok(Invocation::Version)
+        ));
     }
 }

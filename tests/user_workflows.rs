@@ -24,7 +24,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 20] = [
+const WORKFLOWS: [WorkflowSpec; 21] = [
     (
         "workflow_01_first_time_bind_usage",
         GateLevel::Cli,
@@ -114,6 +114,11 @@ const WORKFLOWS: [WorkflowSpec; 20] = [
         "workflow_09_workspace_round_trip",
         GateLevel::Virtualization,
         workflow_09_round_trip,
+    ),
+    (
+        "workflow_16_doctor_report",
+        GateLevel::Cli,
+        workflow_16_doctor,
     ),
     (
         "workflow_15_contract_skew_refusal",
@@ -1412,6 +1417,57 @@ const SHELL_BUDGET: Duration = Duration::from_mins(1);
 
 /// How long the guest shell must stay silent before it counts as ready for input.
 const SHELL_QUIET: Duration = Duration::from_millis(750);
+
+// Spec: docs/reference/spec/13-doctor-and-health-checks.md
+//
+// Gate-safe on purpose: the report's exit code reflects this host's health, which the Cli gate
+// does not constrain, so the trial asserts the published shapes — the enumerated catalog, the
+// envelope, the skip reasons, the stderr note, bracketed word markers — and never the health.
+fn workflow_16_doctor() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("doctor-project").map_err(io_failed)?;
+
+    // `--list` probes nothing, so its exit is `0` on any host, and the descriptor fields are the
+    // whole row (spec/13).
+    let list = viv(&tp, &["doctor", "--list", "--json"])?;
+    check(expect_code(&list, 0))?;
+    check(expect_json_array_nonempty(
+        &list,
+        "checks",
+        &["id", "category", "scope", "severity", "title"],
+    ))?;
+    check(expect_stdout_mentions(&list, "kvm-device-present"))?;
+
+    // Unbound: host probes still report, project probes skip with the fixed reason, network
+    // probes skip offline, the one stderr note names the way in — and stdout stays one JSON
+    // object so `--json 2>/dev/null | jq` is clean.
+    let report = viv(&tp, &["doctor", "--json"])?;
+    check(expect_json_keys(
+        &report,
+        &["status", "checks", "summary", "schema_version"],
+    ))?;
+    check(expect_json_fields_at(
+        &report,
+        "summary",
+        &[
+            "total",
+            "passed",
+            "warned",
+            "failed",
+            "skipped",
+            "hard_failures",
+        ],
+    ))?;
+    check(expect_stdout_mentions(&report, "no-manifest-bound"))?;
+    check(expect_stdout_mentions(&report, "offline-mode"))?;
+    check(expect_stderr_mentions(&report, "no manifest bound"))?;
+
+    // The human report wears bracketed word markers — never glyphs — and closes with the summary
+    // line naming the exit (spec/13).
+    let human = viv(&tp, &["doctor"])?;
+    check(expect_stdout_mentions(&human, "[skipped]"))?;
+    check(expect_stdout_mentions(&human, "-> exit "))?;
+    Ok(())
+}
 
 // Guide: docs/guides/stop-restart-preserving-volumes.md
 fn workflow_07_usage() -> Result<(), Failed> {

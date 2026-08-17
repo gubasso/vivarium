@@ -12,6 +12,8 @@
 
 use std::io::{self, BufRead, Write};
 
+use crate::ui::style::Palette;
+
 /// What a destructive verb asks before it acts.
 pub struct Question<'a> {
     /// The one-line question, without the `[y/N]` suffix this renders.
@@ -41,6 +43,7 @@ pub struct Question<'a> {
 /// be read. A prompt that could not be shown is never treated as approval.
 pub fn confirm(
     question: &Question<'_>,
+    palette: &Palette,
     input: &mut impl BufRead,
     output: &mut impl Write,
 ) -> io::Result<bool> {
@@ -48,10 +51,15 @@ pub fn confirm(
         writeln!(output, "  {line}")?;
     }
     for line in &question.spared {
-        writeln!(output, "  kept: {line}")?;
+        writeln!(output, "  {} {line}", palette.label.apply_to("kept:"))?;
     }
     // Capitalised `N`, which is the promise the empty answer below keeps.
-    write!(output, "{} [y/N] ", question.headline)?;
+    write!(
+        output,
+        "{} {} ",
+        palette.what.apply_to(question.headline),
+        palette.label.apply_to("[y/N]"),
+    )?;
     output.flush()?;
 
     let mut answer = String::new();
@@ -81,7 +89,7 @@ mod tests {
         };
         let mut input = answer.as_bytes();
         let mut output: Vec<u8> = Vec::new();
-        let confirmed = confirm(&question, &mut input, &mut output).unwrap();
+        let confirmed = confirm(&question, &Palette::plain(), &mut input, &mut output).unwrap();
         (confirmed, String::from_utf8(output).unwrap())
     }
 
@@ -126,6 +134,14 @@ mod tests {
         };
         // The error propagates rather than becoming `false`, so the caller reports why it could
         // not ask instead of reporting a refusal the user never gave.
-        assert!(confirm(&question, &mut b"y\n".as_slice(), &mut Broken).is_err());
+        assert!(
+            confirm(
+                &question,
+                &Palette::plain(),
+                &mut b"y\n".as_slice(),
+                &mut Broken
+            )
+            .is_err()
+        );
     }
 }
