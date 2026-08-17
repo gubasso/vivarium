@@ -4,7 +4,7 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-Nothing. The next slice to start is 005.
+- 015 the-binary-supplies-itself — shaped — 3 sessions — next to start, ahead of 005: it removes the self-dependency behind `Q-027` before more slices build on it
 
 ## later
 
