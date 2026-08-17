@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+
+# Prove slice 015's pre-boot refusal on a real host: build, doctor a copy of the
+# built tree so its contract schema changes, and show the next start refuses
+# before boot with both numbers named — and that `viv start --rebuild` clears it.
+#
+# The lane is a thin driver: the trial itself is `workflow_15_contract_skew_live`
+# in tests/user_workflows.rs (plus its cheap sibling, which needs no build), run
+# through the same acceptance harness every other host lane uses, so isolation,
+# baseline pinning, and gating have one implementation. What this script adds is
+# the host-lane contract: a disk preflight before anything writes, the tier gate
+# stated out loud, and a double run — one clean run is evidence of possibility,
+# not reliability, and this refusal must hold on the second Tuesday too.
+#
+# The harness pins the generated flake's two baseline inputs from this
+# repository's own lock before it runs anything (`baseline_inputs` in
+# tests/support/mod.rs), so the lane reaches the network only for what the store
+# does not already hold.
+#
+# See docs/reference/testing-lanes.md for the lanes.
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
+DEV_FLAKE_REF="path:$REPO_ROOT"
+# Named exactly rather than by pattern: a pattern fails open, and a trial it
+# missed would simply not run rather than error.
+TRIALS='test(=workflow_15_contract_skew_refusal) + test(=workflow_15_contract_skew_live)'
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+RECORD_COUNT=0
+
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+  GREEN=$'\033[32m'
+  RED=$'\033[31m'
+  YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'
+  RESET=$'\033[0m'
+else
+  GREEN=
+  RED=
+  YELLOW=
+  BLUE=
+  RESET=
+fi
+
+pass() {
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"
+}
+fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"
+  # sed prefixes every line of multiline evidence.
+  # shellcheck disable=SC2001
+  [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"
+}
+skip() {
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+  printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"
+}
+record() {
+  RECORD_COUNT=$((RECORD_COUNT + 1))
+  printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"
+}
+
+# `--clean` removes what the acceptance fixtures leave behind when a trial fails
+# before its own teardown, in the two places the fixture is split across on
+# purpose: the durable roots under the configured drive, and the runtime
+# directories under $XDG_RUNTIME_DIR where the 108-byte socket limit is
+# reachable.
+if [[ ${1:-} == --clean ]]; then
+  removed=0
+  for dir in "$("$SCRIPT_DIR/disk-preflight" --locate --images)"/vivarium-user-workflows-* \
+    "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/viv-t*; do
+    [[ -d $dir ]] || continue
+    rm -rf -- "$dir" && removed=$((removed + 1))
+  done
+  printf 'removed %d retained fixture root(s)\n' "$removed"
+  exit 0
+fi
+
+# DUP: before anything writes. The live trial builds a guest closure and boots a
+# microVM twice over, and the honest moment to ask where those gigabytes go is
+# while deferring is still free (AGENTS.md).
+if ! "$SCRIPT_DIR/disk-preflight" --need 10 --images --label "the contract-skew lane" >/dev/null; then
+  printf '\n0 passed, 0 failed, 0 skipped (nothing ran: disk preflight refused)\n'
+  exit 1
+fi
+
+printf 'Host tier\n'
+missing=()
+[[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
+command -v nix >/dev/null 2>&1 || missing+=("nix")
+[[ -r /dev/kvm && -w /dev/kvm ]] || missing+=("/dev/kvm openable read/write")
+systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
+[[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
+
+if ((${#missing[@]})); then
+  reason=$(
+    IFS=', '
+    echo "${missing[*]}"
+  )
+  skip "contract-skew lane (run 1): missing prerequisites: $reason"
+  skip "contract-skew lane (run 2): missing prerequisites: $reason"
+else
+  for attempt in 1 2; do
+    # `--success-output=immediate` because nextest replays output only on failure
+    # by default, and the refusal's stderr is this lane's evidence either way.
+    started=$SECONDS
+    lane_log=$(
+      cd -- "$REPO_ROOT" \
+        && nix develop "$DEV_FLAKE_REF" --command \
+          cargo nextest run --test user_workflows --run-ignored=all \
+          --success-output=immediate -E "$TRIALS" 2>&1
+    )
+    lane_status=$?
+    if ((lane_status == 0)); then
+      pass "contract-skew lane (run $attempt)"
+    else
+      fail "contract-skew lane (run $attempt) (exit $lane_status)" "$lane_log"
+    fi
+    record "run $attempt wall clock: $((SECONDS - started))s"
+  done
+fi
+
+printf '\nSummary\n'
+printf 'PASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+if ((FAIL_COUNT == 0)); then
+  printf 'VERDICT: PASS (RECORD findings are measurements; SKIPs require a capable host)\n'
+  exit 0
+else
+  printf 'VERDICT: FAIL (%d hard check(s) failed)\n' "$FAIL_COUNT"
+  exit 1
+fi

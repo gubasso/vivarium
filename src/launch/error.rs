@@ -6,6 +6,17 @@ use std::path::PathBuf;
 pub enum LaunchError {
     #[error("invalid launch specification: {0}")]
     InvalidSpec(&'static str),
+    /// A record another vivarium version wrote: skew, not corruption (spec/10, spec/14).
+    ///
+    /// Its own variant rather than an `InvalidSpec` string because the two exit differently — a
+    /// record this binary cannot accept is `78`, a record nothing could read is corruption — and
+    /// the diagnostic must name both numbers and the remedy.
+    #[error(
+        "the launch record carries schema version {record} and this vivarium speaks {current}; \
+        `viv start --rebuild` relaunches with this version, or run the vivarium generation that \
+        wrote the record"
+    )]
+    SchemaSkew { record: u32, current: u32 },
     #[error("runtime path is invalid: {0}")]
     InvalidRuntimePath(&'static str),
     #[error("failed to construct launch policy: {0}")]

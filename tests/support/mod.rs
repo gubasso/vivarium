@@ -587,7 +587,7 @@ fn baseline_inputs() -> &'static Vec<(OsString, OsString)> {
         let Ok(archived) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
             return Vec::new();
         };
-        let mut pins: Vec<(OsString, OsString)> = [
+        [
             ("nixpkgs", "VIVARIUM_BASELINE_NIXPKGS"),
             ("microvm", "VIVARIUM_BASELINE_MICROVM"),
         ]
@@ -599,19 +599,7 @@ fn baseline_inputs() -> &'static Vec<(OsString, OsString)> {
                 OsString::from(format!("path:{path}")),
             ))
         })
-        .collect();
-        // The third baseline input is this repository's own product flake, which carries the guest
-        // module and the launch seam a generated flake composes. Pinned to the working tree rather
-        // than to the archived store path, because a trial must exercise the tree under test — a
-        // store snapshot would silently measure an older product. Its shipped default names a
-        // branch, so
-        // leaving it unset here would resolve upstream on every evaluation, which is the network
-        // dependence the other two pins exist to avoid.
-        pins.push((
-            OsString::from("VIVARIUM_BASELINE_VIVARIUM"),
-            OsString::from(flake),
-        ));
-        pins
+        .collect()
     })
 }
 

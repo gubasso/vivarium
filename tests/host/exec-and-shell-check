@@ -28,7 +28,7 @@
 # async runtime open; that is the class of defect a second run guards.
 #
 # Unlike the guest-agent lane, this one does not pin the generated flake's
-# baseline inputs itself. The acceptance harness pins all three from this
+# baseline inputs itself. The acceptance harness pins both from this
 # repository's own lock before it runs anything (`baseline_inputs` in
 # tests/support/mod.rs), which is the same convention reached from the other
 # side. The runtime directory and its sockets are the harness's too: it places
@@ -154,7 +154,7 @@ else
     if [[ -x $runner ]]; then
       spec_root=$(mktemp -d "${TMPDIR:-/tmp}/viv-exec-spec-XXXXXX")
       spec_log=$("$runner" --workspace "$REPO_ROOT" --runtime-dir "$spec_root/rt" \
-        --volume-dir "$spec_root/volumes" \
+        --volume-dir "$spec_root/volumes" --supervisor "$(command -v env)" \
         --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 \
         --project-id p --target default --print-static-arguments 2>&1)
       spec_status=$?

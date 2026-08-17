@@ -98,11 +98,12 @@ pub enum Invocation {
     Exec(Session),
     /// Open an interactive login shell inside the project's sandbox (spec/12).
     Shell(Session),
-    /// The slice-002 supervisor handoff, which `nix/runner.sh` invokes directly.
+    /// The slice-002 supervisor handoff, which the tool re-invokes itself with after the built
+    /// runner renders the specification (ADR-0102).
     ///
     /// Kept as a sub-form of `start` rather than promoted to its own verb because it is not part of
     /// the published surface: spec/01's `start` is the manifest-driven one, and this is the private
-    /// spelling the generated runner uses to hand a resolved specification back to vivarium.
+    /// spelling that hands a resolved specification to the async launch half.
     StartSpec { spec: PathBuf },
     /// What volumes this project has, read-only (spec/01, ADR-0019).
     VolumeList { output: Output },

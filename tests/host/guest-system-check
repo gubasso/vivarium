@@ -120,14 +120,6 @@ pin_baseline() {
     "path:$REPO_ROOT?dir=nix" 2>/dev/null) || return 1
   BASELINE_NIXPKGS=$(python3 -c 'import json,sys; print("path:" + json.load(sys.stdin)["inputs"]["nixpkgs"]["path"])' <<<"$archived") || return 1
   BASELINE_MICROVM=$(python3 -c 'import json,sys; print("path:" + json.load(sys.stdin)["inputs"]["microvm"]["path"])' <<<"$archived") || return 1
-  # The third baseline input is this repository's own product flake, which slice 012
-  # made the generated flake carry for the guest module and the launch seam. Its
-  # shipped default names a branch (Q-014), so leaving it unset resolves
-  # `github:gubasso/vivarium` on every evaluation from a clean root — which is what
-  # this whole function exists to avoid, and which failed here as an anonymous-API
-  # 403 reported as `store.evaluation-failed`. Pinned to the working tree rather than
-  # to an archived store path, because the lane must evaluate the product under test.
-  BASELINE_VIVARIUM="path:$REPO_ROOT/nix"
 }
 
 printf 'Evaluation tier\n'
@@ -153,7 +145,6 @@ trap 'rm -rf -- "$ROOT"' EXIT
 
 BASELINE_NIXPKGS=
 BASELINE_MICROVM=
-BASELINE_VIVARIUM=
 if pin_baseline; then
   pass "baseline inputs pinned to the product flake's own revisions"
 else
@@ -182,7 +173,6 @@ viv() {
     ${NIX_SSL_CERT_FILE:+NIX_SSL_CERT_FILE="$NIX_SSL_CERT_FILE"} \
     ${BASELINE_NIXPKGS:+VIVARIUM_BASELINE_NIXPKGS="$BASELINE_NIXPKGS"} \
     ${BASELINE_MICROVM:+VIVARIUM_BASELINE_MICROVM="$BASELINE_MICROVM"} \
-    ${BASELINE_VIVARIUM:+VIVARIUM_BASELINE_VIVARIUM="$BASELINE_VIVARIUM"} \
     sh -c 'cd "$1" && shift && exec "$@"' _ "$ROOT/project" "$VIV" "$@"
 }
 

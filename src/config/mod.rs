@@ -16,6 +16,7 @@ pub mod evaluate;
 mod flake;
 mod identity;
 mod input;
+mod lock;
 mod manifest;
 mod materialize;
 pub mod merged;
@@ -35,6 +36,8 @@ pub use artifact::{ArtifactForm, ArtifactKind, ResolvedArtifact, resolve_artifac
 pub use error::{
     EvaluationError, GeneratedFlakeError, InputError, ManifestError, RegistryError, ResolutionError,
 };
+#[cfg(test)]
+pub use flake::embedded_file;
 pub use flake::{
     BASELINE_MICROVM_VARIABLE, BASELINE_NIXPKGS_VARIABLE, BaselineInputs, EffectiveLock,
     FlakeInput, GeneratedFlakePaths, GeneratedFlakePlan, PreparedFlake, ResolvedComposition,

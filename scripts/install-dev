@@ -7,10 +7,10 @@
 # concurrent build.
 #
 # What it installs is what a user would get — a `viv` whose baseline inputs
-# resolve live, per `src/config/flake.rs`. That is right for checking the
-# command surface and wrong for checking a guest, because the guest would be
-# built from the published branch rather than from this tree. `--pinned` is the
-# second entry point for that case; see `docs/guides/develop-and-install.md`.
+# resolve live, per `src/config/flake.rs`. The guest itself always comes from
+# the tree the binary embeds (ADR-0102); what `--pinned` adds is the upstream
+# pins, so an evaluation from a clean root reaches the network for nothing.
+# See `docs/guides/develop-and-install.md`.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

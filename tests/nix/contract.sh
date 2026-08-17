@@ -8,7 +8,7 @@ set -eu
 launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' \
   "$VIVARIUM_RUNNER/bin/vivarium-first-microvm" | head -n1)
 test -n "$launcher_json"
-test "$(jq -r .schemaVersion "$launcher_json")" = 6
+test "$(jq -r .schemaVersion "$launcher_json")" = 7
 test "$(jq -r .descriptorBudget.limit "$launcher_json")" = 524288
 test "$(jq -r .descriptorBudget.workerPoolSize "$launcher_json")" = "$VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE"
 test "$(jq -r .socketLegs.api "$launcher_json")" = '@API_SOCKET@'
@@ -31,17 +31,17 @@ test "$(jq -r '.egress.allow | length' "$launcher_json")" = 0
 # The uplink's DNS forward must sit outside the guest link's subnet, or the guest
 # resolves it on the local link where nothing answers.
 test "$(jq -r .network.dnsForwardAddress "$launcher_json")" != "$(jq -r .network.gatewayAddress "$launcher_json")"
-grep -qF 'exec ' "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"
+# ADR-0102: no host-side vivarium program comes from this build. The runner's job
+# ends at writing the launch specification — it execs nothing and names no built
+# `viv` — and the supervisor enters the specification from the running
+# installation at launch time, so the build JSON carries no `.supervisor`.
+if grep -qE '(^|[^a-z])exec |@vivPath@' "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"; then exit 1; fi
+test "$(jq -r '.supervisor // "absent"' "$launcher_json")" = absent
 if grep -qF -- '--no-landlock' "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"; then exit 1; fi
 if grep -Eq 'pids=|trap .*EXIT|wait .*pid|ulimit -n' "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"; then exit 1; fi
-supervisor=$(jq -r .supervisor "$launcher_json")
-test -x "$supervisor"
-strings "$supervisor" >supervisor.strings
-grep -qF -- '--bounding-set=-all' supervisor.strings
-grep -qF -- '--ambient-caps=-all' supervisor.strings
-grep -qF -- '--inh-caps=-all' supervisor.strings
-grep -qF -- '--no-new-privs' supervisor.strings
-grep -qF -- '--rlimit-nofile=' supervisor.strings
+# The stable path spec/10's pre-boot refusal reads, agreeing with the launcher's
+# own JSON — two artifacts of one build.
+test "$(cat "$VIVARIUM_RUNNER/share/vivarium/launch-contract-schema")" = "$(jq -r .schemaVersion "$launcher_json")"
 agent_unit=$VIVARIUM_GUEST_SYSTEM/etc/systemd/system/vivarium-agent.service
 grep -qF 'User=vivarium' "$agent_unit"
 grep -qF 'Group=vivarium' "$agent_unit"
@@ -111,13 +111,11 @@ grep -qF 'vivarium-volume-prepare.service' <<<"$(sed -n 's/^After=//p' "$agent_u
 # Not under `/run/vivarium`, which `RuntimeDirectory=vivarium` on the agent has
 # systemd delete whenever that unit restarts.
 case $VIVARIUM_WORKSPACE_INTERNAL in /run/vivarium | /run/vivarium/*) exit 1 ;; esac
-# The host refuses to mirror a project onto this path, and it has to name it as a
-# literal because Nix cannot reach across into the Rust. That literal is here
-# rather than assumed: the supervisor is the binary that carries the host's copy,
-# so the Nix constant is compared against the built program instead of against a
-# second spelling in this file. Two independently realised artifacts, which is the
-# rule this whole check exists to keep.
-grep -qF -- "$VIVARIUM_WORKSPACE_INTERNAL" supervisor.strings
+# The host refuses to mirror a project onto this path, and its copy of the
+# literal lives in the installed binary, which this build no longer carries
+# (ADR-0102). The cross-language pairing moved with it: a unit test in
+# `src/launch/spec.rs` compares the crate constant against the embedded
+# `nix/default.nix` text the binary ships.
 
 # The guest process environment (spec/12). The agent clears the environment before
 # every spawn, so a session gets exactly what the launcher carries here — and a

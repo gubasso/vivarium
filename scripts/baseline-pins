@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The three baseline flake inputs a hand-run `viv` should evaluate against,
+# The two baseline flake inputs a hand-run `viv` should evaluate against,
 # pinned to this working tree, as `export` lines for `eval`.
 #
 # This is the shell twin of `baseline_inputs()` in `tests/support/mod.rs`, and
@@ -58,9 +58,3 @@ fi
 
 emit_store_pin nixpkgs VIVARIUM_BASELINE_NIXPKGS
 emit_store_pin microvm VIVARIUM_BASELINE_MICROVM
-
-# The third input is this repository's own product flake, and it is pinned to the
-# working tree rather than to the archived store path: the point of a development
-# pin is to exercise the tree under test, and a store snapshot would silently
-# measure an older product.
-printf 'export %s=%s\n' VIVARIUM_BASELINE_VIVARIUM "$product_flake"

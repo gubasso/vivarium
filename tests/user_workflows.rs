@@ -24,7 +24,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 18] = [
+const WORKFLOWS: [WorkflowSpec; 20] = [
     (
         "workflow_01_first_time_bind_usage",
         GateLevel::Cli,
@@ -114,6 +114,16 @@ const WORKFLOWS: [WorkflowSpec; 18] = [
         "workflow_09_workspace_round_trip",
         GateLevel::Virtualization,
         workflow_09_round_trip,
+    ),
+    (
+        "workflow_15_contract_skew_refusal",
+        GateLevel::Virtualization,
+        workflow_15_contract_skew,
+    ),
+    (
+        "workflow_15_contract_skew_live",
+        GateLevel::Virtualization,
+        workflow_15_contract_skew_live,
     ),
 ];
 
@@ -1588,6 +1598,140 @@ fn workflow_08_rebuild() -> Result<(), Failed> {
     ))
 }
 
+/// Slice 015 item 4: a selected build whose launch contract differs from the running binary is
+/// refused before boot, with both numbers and the remedy named.
+///
+/// The refusal reads the built output — never a compile-time constant — which is why the trial
+/// can seed a plain directory as the "build": `--no-rebuild` selects whatever `last-build`
+/// records, the check reads only `share/vivarium/launch-contract-schema`, and the refusal must
+/// land before anything in the tree is executed. Behind the virtualization gate because `start`
+/// preflights the host before selecting a build, not because anything boots — no case here
+/// reaches a launcher.
+fn workflow_15_contract_skew() -> Result<(), Failed> {
+    let ours = vivarium::launch::LAUNCH_SCHEMA_VERSION;
+    let theirs = ours - 1;
+    let tp = TempProject::with_project_name("skew-project").map_err(io_failed)?;
+    arrange_manifest(&tp, "skew-demo", "", "")?;
+    bind(&tp, "skew-demo")?;
+
+    // A stand-in for an old generation: a tree that publishes an older contract number at the
+    // stable path. `last-build` is a store path as text, and `--no-rebuild` trusts it.
+    let build = tp.root().join("stale-build");
+    let schema = build
+        .join("share")
+        .join("vivarium")
+        .join("launch-contract-schema");
+    std::fs::create_dir_all(schema.parent().unwrap_or(&build)).map_err(io_failed)?;
+    write_file(&schema, &format!("{theirs}\n")).map_err(io_failed)?;
+    let record = tp
+        .data()
+        .join("vivarium")
+        .join("projects")
+        .join(tp.project_id())
+        .join("default")
+        .join("last-build");
+    std::fs::create_dir_all(record.parent().unwrap_or(&build)).map_err(io_failed)?;
+    write_file(&record, &format!("{}\n", build.display())).map_err(io_failed)?;
+
+    let refused = viv(&tp, &["start", "--no-rebuild"])?;
+    check(expect_code(&refused, 78))?;
+    check(expect_stderr_mentions(&refused, "launch-contract-skew"))?;
+    // Both numbers named, and the remedy — the acceptance's own wording.
+    check(expect_stderr_mentions(
+        &refused,
+        &format!("launch contract schema {theirs}"),
+    ))?;
+    check(expect_stderr_mentions(&refused, &format!("speaks {ours}")))?;
+    check(expect_stderr_mentions(&refused, "--rebuild"))?;
+
+    // Every build made before the schema's publication meets the missing-file case, and it is
+    // the same refusal with the migration named rather than a bare parse error.
+    std::fs::remove_file(&schema).map_err(io_failed)?;
+    let predates = viv(&tp, &["start", "--no-rebuild"])?;
+    check(expect_code(&predates, 78))?;
+    check(expect_stderr_mentions(
+        &predates,
+        "predates the launch-contract publication",
+    ))
+}
+
+/// Slice 015 item 7, the live half: build, doctor a copy of the built tree so its contract
+/// schema changes, and show the next start refuses before boot and `--rebuild` clears it.
+///
+/// The doctored copy stands in for a real old generation, which no test can mint without a
+/// second vivarium version on hand: the store is immutable, so "move the tree so the contract
+/// schema changes" is a copy whose published number is bumped, selected the way any old build
+/// is selected — through `last-build` and `--no-rebuild`.
+fn workflow_15_contract_skew_live() -> Result<(), Failed> {
+    let ours = vivarium::launch::LAUNCH_SCHEMA_VERSION;
+    let foreign = ours + 1;
+    let tp = TempProject::with_project_name("skew-live").map_err(io_failed)?;
+    arrange_manifest(&tp, "skew-live", "", "")?;
+    bind(&tp, "skew-live")?;
+
+    // A real build and boot of the current shape, then a clean stop so the refusal below is
+    // about the selected build rather than about a running VM.
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+    check(expect_code(&viv(&tp, &["stop"])?, 0))?;
+
+    let record = tp
+        .data()
+        .join("vivarium")
+        .join("projects")
+        .join(tp.project_id())
+        .join("default")
+        .join("last-build");
+    let built = std::fs::read_to_string(&record).map_err(io_failed)?;
+    let built = built.trim();
+
+    // The copy: the runner output is a small symlink forest, so copying it moves kilobytes;
+    // the schema symlink is replaced by a plain file carrying a number this binary does not
+    // speak. Everything else still points into the store the real build populated.
+    let doctored = tp.root().join("doctored-build");
+    // `--no-preserve=mode`, because a store tree's read-only modes would survive the copy and
+    // refuse the doctoring below.
+    let copy = std::process::Command::new("cp")
+        .args([
+            "-r",
+            "--no-preserve=mode",
+            built,
+            doctored.to_str().unwrap_or_default(),
+        ])
+        .output()
+        .map_err(io_failed)?;
+    if !copy.status.success() {
+        return fail(format!(
+            "could not copy the built tree: {}",
+            String::from_utf8_lossy(&copy.stderr)
+        ));
+    }
+    let schema = doctored
+        .join("share")
+        .join("vivarium")
+        .join("launch-contract-schema");
+    std::fs::remove_file(&schema).map_err(io_failed)?;
+    write_file(&schema, &format!("{foreign}\n")).map_err(io_failed)?;
+    write_file(&record, &format!("{}\n", doctored.display())).map_err(io_failed)?;
+
+    let refused = viv(&tp, &["start", "--no-rebuild"])?;
+    check(expect_code(&refused, 78))?;
+    check(expect_stderr_mentions(&refused, "launch-contract-skew"))?;
+    check(expect_stderr_mentions(
+        &refused,
+        &format!("launch contract schema {foreign}"),
+    ))?;
+    check(expect_stderr_mentions(&refused, &format!("speaks {ours}")))?;
+    check(expect_stderr_mentions(&refused, "--rebuild"))?;
+
+    // The named remedy clears it: `--rebuild` re-evaluates, records the current build, and
+    // boots it.
+    check(expect_code(&viv(&tp, &["start", "--rebuild"])?, 0))?;
+    let status = viv(&tp, &["status", "--json"])?;
+    check(expect_code(&status, 0))?;
+    check(expect_json_string(&status, "state", "running"))?;
+    check(expect_code(&viv(&tp, &["stop"])?, 0))
+}
+
 /// The workspace is the product's central promise, and until this trial nothing asserted it.
 ///
 /// Three claims, and the third is the one that has no other home. The project is reachable inside
@@ -1762,15 +1906,10 @@ fn viv_at(tp: &TempProject, cwd: &Path, args: &[&str]) -> Result<VivOutput, Fail
 
 /// The `VIVARIUM_` variables a child is allowed to see, and why each one is there.
 ///
-/// `VIVARIUM_BASELINE_*` pin the generated flake's three baseline inputs — `nixpkgs` and `microvm`
-/// to local store paths, and the product flake to this working tree — which is what keeps this
-/// suite off the GitHub API. None of the three participates in manifest resolution, so none can
-/// turn an expected `78` into a success.
-const INJECTED_VARIABLES: [&str; 3] = [
-    "VIVARIUM_BASELINE_NIXPKGS",
-    "VIVARIUM_BASELINE_MICROVM",
-    "VIVARIUM_BASELINE_VIVARIUM",
-];
+/// `VIVARIUM_BASELINE_*` pin the generated flake's two baseline inputs — `nixpkgs` and `microvm`
+/// — to local store paths, which is what keeps this suite off the GitHub API. Neither
+/// participates in manifest resolution, so neither can turn an expected `78` into a success.
+const INJECTED_VARIABLES: [&str; 2] = ["VIVARIUM_BASELINE_NIXPKGS", "VIVARIUM_BASELINE_MICROVM"];
 
 fn expect_injected_vivarium_variables_only(out: &VivOutput) -> Result<(), String> {
     let stdout = String::from_utf8_lossy(&out.stdout);

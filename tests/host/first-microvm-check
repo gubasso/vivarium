@@ -349,10 +349,10 @@ else
       pass "realised closure contains cloud-hypervisor, ch-remote package, and virtiofsd"
     else fail "realised backend closure" "$closure_output"; fi
 
-    common=(--workspace "$REPO_ROOT" --runtime-dir /run/user/1000/vivarium/canary-a --volume-dir /var/lib/vivarium/canary-a --uid 1000 --gid 1000 --memory-mib 2048 --vcpu 2 --print-static-arguments)
+    common=(--workspace "$REPO_ROOT" --runtime-dir /run/user/1000/vivarium/canary-a --volume-dir /var/lib/vivarium/canary-a --supervisor "$(command -v env)" --uid 1000 --gid 1000 --memory-mib 2048 --vcpu 2 --print-static-arguments)
     static_a=$("$launcher" "${common[@]}" 2>&1)
     static_status=$?
-    static_b=$("$launcher" --workspace /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume-dir /srv/vivarium/canary-b --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1)
+    static_b=$("$launcher" --workspace /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume-dir /srv/vivarium/canary-b --supervisor "$(command -v env)" --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1)
     static_b_status=$?
     if ((static_status == 0 && static_b_status == 0)); then
       # Every runtime path in `vmCreate` is scrubbed here, and the list has to grow
@@ -412,11 +412,14 @@ else
         elif [[ -z $missing_tokens ]]; then
           pass "every declared launch-channel token is retained in the build-channel arguments"
         else fail "a launch-channel token was replaced by a concrete value" "$missing_tokens"; fi
-        supervisor=$(jq -r .supervisor "$launcher_json")
+        # ADR-0102: no host-side vivarium program comes from the build. The supervisor
+        # enters the rendered specification from the running installation, so the build
+        # JSON must not name one and the closure must not carry one.
+        supervisor=$(jq -r '.supervisor // "absent"' "$launcher_json")
         supervisor_count=$(nix path-info -r "$(dirname "$(dirname "$launcher")")" | grep -c 'vivarium-launch-supervisor' || true)
-        if [[ $supervisor_count == 1 && -x $supervisor ]]; then
-          pass "exactly one Rust vivarium supervisor is present in the realised closure"
-        else fail "Rust supervisor closure membership" "count=$supervisor_count path=$supervisor"; fi
+        if [[ $supervisor_count == 0 && $supervisor == absent ]]; then
+          pass "no Nix-built vivarium supervisor in the build JSON or the realised closure"
+        else fail "the build still supplies a vivarium supervisor" "count=$supervisor_count path=$supervisor"; fi
         if grep -Eq 'pids=|trap .*EXIT|wait .*pid|ulimit -n' "$launcher"; then
           fail "runner contains shell supervision constructs" "$launcher"
         else pass "runner is a thin launch-contract adapter with no shell supervision constructs"; fi

@@ -6,7 +6,6 @@
   storeCanaryExpression,
   gcInterlockCanaryExpression,
   gcInterlockControlExpression,
-  supervisorPackage,
   networkLayout,
   # ADR-0096 takes the daemon's own default, uniform across shares — measured, on
   # a concurrent sweep in which no non-zero pool won a cell. The *value* lives
@@ -150,19 +149,20 @@ let
   };
 in
 {
-  # 6 since guest networking: the `egress` and `network` objects and six backend
-  # programs joined, and the supervisor that parses this creates a namespace
-  # pair, a tap, and — under allowlist mode — a ruleset and a resolver that an
-  # older handoff never described. 5 was named volumes: `volumeLaunch` stopped
-  # carrying a per-role image token and the launcher took one `--volume-dir`
-  # from which each entry's `imagePath` is joined. The version pairs this JSON
-  # with the `viv` that parses the specification rendered from it.
+  # 7 since the installation supplies vivarium (ADR-0102): the supervisor left
+  # this JSON — it enters the rendered specification from the running
+  # installation, named by the runner's `--supervisor` — and the runner stopped
+  # exec-ing a built `viv`, so its job now ends at writing the specification.
+  # 6 was guest networking: the `egress` and `network` objects and six backend
+  # programs joined. The version pairs this JSON with the `viv` that parses the
+  # specification rendered from it, and `viv` reads it from the built output's
+  # `share/vivarium/launch-contract-schema` before boot (spec/10), refusing a
+  # build that speaks another number.
   #
-  # It deliberately does not catch the other half of a bump. The runner's own
-  # argument names can move, and a generated flake pins its own `vivarium`, so a
-  # new `viv` can drive an older runner — which then refuses at `usage()` before
-  # any schema is read. That refusal prints this number for exactly that reason.
-  schemaVersion = 6;
+  # It deliberately does not catch a hand-invoked runner from another
+  # generation, whose argument names can differ before any schema is read —
+  # `usage()` prints this number for exactly that reason.
+  schemaVersion = 7;
   inherit guestSession;
   # The launch half of `sandbox.egress` (spec/05): carried across so host-side
   # enforcement needs no evaluation at start. `or`-defaulted because the shipped
@@ -206,7 +206,6 @@ in
   virtiofsd = lib.getExe config.microvm.virtiofsd.package;
   setpriv = lib.getExe' pkgs.util-linux "setpriv";
   systemdRun = lib.getExe' pkgs.systemd "systemd-run";
-  supervisor = lib.getExe' supervisorPackage "vivarium-supervisor";
   truncate = lib.getExe' pkgs.coreutils "truncate";
   mkfsExt4 = lib.getExe' pkgs.e2fsprogs "mkfs.ext4";
   # The six programs guest networking added (spec/05, schema 6): the pinned

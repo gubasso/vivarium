@@ -8,24 +8,28 @@ let
   pkgs = import nixpkgs { inherit system; };
   inherit (nixpkgs) lib;
 
-  # The crate in its default Cargo layout at the repository root — read directly,
-  # with no snapshot to keep in sync. This resolves under pure evaluation because
-  # every lane enters the product flake as `path:$REPO_ROOT?dir=nix`, which makes
-  # the repository root the flake's source tree; `nix/` is merely where the flake
-  # file sits. Entering it as `path:$REPO_ROOT/nix` pins the tree root one level
-  # too deep and `../` becomes unreachable.
+  # The crate in its default Cargo layout at the tree root — read directly, with
+  # no snapshot to keep in sync. Two trees satisfy this: the repository, entered
+  # as `path:$REPO_ROOT?dir=nix` (the `/nix` form pins the tree root one level
+  # too deep and `../` becomes unreachable), and the `vivarium/` subtree the
+  # installed binary writes into every generated flake (ADR-0102), which mirrors
+  # the repository layout for exactly this reason.
   crateRoot = ../.;
 
-  supervisorPackage = pkgs.rustPlatform.buildRustPackage {
-    pname = "vivarium-launch-supervisor";
+  guestAgentPackage = pkgs.rustPlatform.buildRustPackage {
+    pname = "vivarium-guest-agent";
     version = "0.1.0";
     src = lib.cleanSourceWith {
       name = "vivarium-crate-source";
       src = crateRoot;
-      # Admits the crate and nothing else. The tree root is now the repository,
-      # so a blanket `type == "directory"` would descend into `docs/`, `.git/`
-      # and a Cargo build directory; every admitted path is named instead. `tests/`
-      # is deliberately not admitted, so verification cannot affect the product derivation.
+      # Admits the crate and nothing else. The tree root is the repository or the
+      # embedded subtree, so a blanket `type == "directory"` would descend into
+      # `docs/` and a Cargo build directory; every admitted path is named instead.
+      # `tests/` is deliberately not admitted, so verification cannot affect the
+      # product derivation. The agent depends on the `vivarium` library for its
+      # protocol types, and that library's `build.rs` embeds `nix/` and the crate
+      # source, so everything `build.rs` walks is admitted here — the same set the
+      # binary embeds, which is what keeps the two trees one tree.
       filter =
         path: _type:
         let
@@ -33,32 +37,14 @@ let
         in
         rel == "Cargo.toml"
         || rel == "Cargo.lock"
+        || rel == "build.rs"
         || rel == "src"
         || lib.hasPrefix "src/" rel
         || rel == "crates"
         || lib.hasPrefix "crates/vivarium-guest-agent" rel
-        # The two product Nix files the crate itself carries: the tool embeds the
-        # option surface and the report expression and renders both into every
-        # generated flake, so they are crate source under `include_str!` rather
-        # than build inputs here. `nix` names the directory only so the filter
-        # can descend into it.
         || rel == "nix"
-        || rel == "nix/vivarium-options.nix"
-        || rel == "nix/vivarium-report.nix";
+        || (lib.hasPrefix "nix/" rel && rel != "nix/flake.nix" && rel != "nix/flake.lock");
     };
-    cargoLock.lockFile = crateRoot + "/Cargo.lock";
-    cargoBuildFlags = [
-      "--package"
-      "vivarium"
-      "--bins"
-    ];
-    doCheck = false;
-  };
-
-  guestAgentPackage = pkgs.rustPlatform.buildRustPackage {
-    pname = "vivarium-guest-agent";
-    version = "0.1.0";
-    inherit (supervisorPackage) src;
     cargoLock.lockFile = crateRoot + "/Cargo.lock";
     cargoBuildFlags = [
       "--package"
@@ -261,7 +247,6 @@ let
           storeCanaryExpression
           gcInterlockCanaryExpression
           gcInterlockControlExpression
-          supervisorPackage
           networkLayout
           # Launch-channel, so it must not reach the guest: this is what keeps the
           # four pool-size variants on one guest closure and makes the sweep four
@@ -270,7 +255,7 @@ let
           ;
         inherit (nixpkgs) lib;
       };
-      runner = import ./runner.nix { inherit pkgs launchArguments supervisorPackage; };
+      runner = import ./runner.nix { inherit pkgs launchArguments; };
     };
 
   mkImage =

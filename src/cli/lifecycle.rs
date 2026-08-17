@@ -3,7 +3,8 @@
 //! What is new here is small on purpose. The supervisor, the confinement policy, and the transient
 //! unit already exist and are host-proven; the generated flake already publishes the same runner
 //! the diagnostic path executes. So `start` resolves, builds, mints an identity, and executes that
-//! runner, which execs `viv start --spec` back into the handoff slice 002 built. Nothing here
+//! runner to render the specification, then re-invokes this binary as `start --spec` — the
+//! handoff slice 002 built, now driven from the running installation (ADR-0102). Nothing here
 //! supervises anything.
 //!
 //! The division of labour with `mod.rs` is that this file owns the lifecycle and that one owns the
@@ -19,7 +20,10 @@ use super::{Context, Failure, ResolvedForLaunch, Success, diagnosed};
 use crate::config::{self, Environment};
 use crate::diagnostic::{Locus, Namespace};
 use crate::exit::ExitKind;
-use crate::launch::{BootMetadata, GuestSession, LaunchSpec, secure_fs, unmirrorable};
+use crate::launch::{
+    BootMetadata, GuestSession, LAUNCH_SCHEMA_VERSION, LaunchSpec, VersionEnvelope, secure_fs,
+    unmirrorable,
+};
 
 /// The only target a project has today (spec/15).
 pub(super) const DEFAULT_TARGET: &str = "default";
@@ -88,6 +92,13 @@ pub struct Report {
     pub store_path: Option<String>,
     pub uptime_seconds: Option<u64>,
     pub resources: Option<Resources>,
+    /// The launch schema a running VM's boot record carries when it is not this binary's own.
+    ///
+    /// Reported beside `running` rather than folded into a refusal, because `status` is the one
+    /// verb that must keep answering when half the tool cannot act: a VM booted by another
+    /// vivarium version is running, and saying only `running` would hand the user a truth every
+    /// session verb then refuses with `78`.
+    pub record_skew: Option<u32>,
 }
 
 /// The declared ceiling, never the measured use. spec/01 keeps the two in separate objects so a
@@ -652,11 +663,63 @@ fn launch<E: Environment>(
     store_path: &str,
     resources: Resources,
 ) -> Result<(), Failure> {
+    // Before the record: a refused boot must not leave `running-build` naming a build that never
+    // ran, which `status` would then read as this VM's provenance.
+    require_current_contract(store_path)?;
     write_build_record(
         &running_build_path(&context.roots, project_id, DEFAULT_TARGET),
         store_path,
     )?;
     execute_runner(context, store_path, runtime, project_id, resources)
+}
+
+/// spec/10's pre-boot refusal: the selected build must speak this binary's launch contract.
+///
+/// A read of the built output, never a compile-time constant: a freshly built tree matches by
+/// construction — this binary wrote the tree its build came from — but `--no-rebuild` and an old
+/// generation keep old artifacts reachable on purpose, and a rolled-back `viv` can meet a newer
+/// build. This is the check that still earns its place with the `vivarium` input gone
+/// (ADR-0102), and the runner's own argv guard stays behind it as the belt for a hand-invoked
+/// launcher.
+fn require_current_contract(store_path: &str) -> Result<(), Failure> {
+    let path = Path::new(store_path)
+        .join("share")
+        .join("vivarium")
+        .join("launch-contract-schema");
+    let refuse = |why: String| {
+        diagnosed(
+            Namespace::Vm,
+            "launch-contract-skew",
+            "the selected build does not speak this binary's launch contract",
+            Locus::File(path.clone()),
+            why,
+            ExitKind::Config,
+        )
+        .with_hint(
+            "`viv start --rebuild` rebuilds with this version, or run the vivarium \
+            generation this build was made by",
+        )
+    };
+    match fs::read_to_string(&path) {
+        Ok(raw) => match raw.trim().parse::<u32>() {
+            Ok(theirs) if theirs == LAUNCH_SCHEMA_VERSION => Ok(()),
+            Ok(theirs) => Err(refuse(format!(
+                "the build speaks launch contract schema {theirs} and this viv speaks \
+                {LAUNCH_SCHEMA_VERSION}"
+            ))),
+            Err(_) => Err(refuse(format!(
+                "the published contract schema is not a number, so it cannot be compared \
+                against the {LAUNCH_SCHEMA_VERSION} this viv speaks"
+            ))),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(refuse(format!(
+            "the build predates the launch-contract publication and cannot name its schema; \
+            this viv speaks {LAUNCH_SCHEMA_VERSION}"
+        ))),
+        Err(error) => Err(refuse(format!(
+            "the build's contract schema could not be read: {error}"
+        ))),
+    }
 }
 
 /// What a session needs to reach into a VM that is now known to be running.
@@ -716,17 +779,23 @@ pub(super) async fn ensure_running<E: Environment + Sync>(
         )?;
         // The launcher returns only once the supervisor has awaited the guest agent's own readiness
         // handshake, so spec/12 step 5's "wait for readiness before releasing the lock" holds by
-        // construction rather than by a second wait here.
-        read_boot_metadata(&runtime).ok_or_else(|| {
-            diagnosed(
-                Namespace::Vm,
-                "boot-record-unreadable",
-                "the VM started but left no readable boot record",
-                Locus::File(runtime.boot_json()),
-                "a session is authorized by comparing the agent's answer against this record",
-                ExitKind::Unavailable,
-            )
-        })?
+        // construction rather than by a second wait here. A skew here would mean the supervisor
+        // this installation just ran wrote another version's record, which is the same broken
+        // outcome as no record at all — the boot is unusable either way.
+        match read_boot_record(&runtime) {
+            BootRecord::Ready(boot) => boot,
+            BootRecord::Skewed(theirs) => return Err(boot_record_skew(&runtime, theirs)),
+            BootRecord::Absent | BootRecord::Unreadable => {
+                return Err(diagnosed(
+                    Namespace::Vm,
+                    "boot-record-unreadable",
+                    "the VM started but left no readable boot record",
+                    Locus::File(runtime.boot_json()),
+                    "a session is authorized by comparing the agent's answer against this record",
+                    ExitKind::Unavailable,
+                ));
+            }
+        }
     };
     prepared(&runtime, boot)
     // `_lock` falls out of scope here, which is what puts the release before the session's own
@@ -757,21 +826,39 @@ async fn reusable(
             Presence::Indeterminate => Err(undecided(runtime, "its control socket is missing")),
         };
     }
-    let Some(boot) = read_boot_metadata(runtime) else {
+    let boot = match read_boot_record(runtime) {
+        BootRecord::Ready(boot) => boot,
+        // A record another version wrote is stale by construction (ADR-0102): shed for a dead
+        // process like any stale record, and refused with both numbers named for a live one,
+        // because acting on a generation this binary does not speak is not a repair.
+        BootRecord::Skewed(theirs) => {
+            return match vm_presence(runtime) {
+                Presence::Dead => stale(runtime).map(|()| None),
+                Presence::Live => Err(boot_record_skew(runtime, theirs)),
+                Presence::Indeterminate => Err(undecided(
+                    runtime,
+                    "its boot record was written by another vivarium version",
+                )),
+            };
+        }
         // A socket with no readable record behind it cannot authorize anything: the agent's answer
         // is checked against this file, so without it there is no way to know whose agent replied.
         // Step 4 still decides what to do about it — records are removed for a dead process, and a
         // live one is reported unavailable rather than stopped, because a VM that is running is not
         // a stale record and tearing it down is not a repair.
-        return match vm_presence(runtime) {
-            Presence::Dead => stale(runtime).map(|()| None),
-            Presence::Live => Err(unreachable(
-                runtime,
-                "the VM's own process is alive under its unit and its boot record cannot be \
-                read, so no connection to it can be authorized",
-            )),
-            Presence::Indeterminate => Err(undecided(runtime, "its boot record cannot be read")),
-        };
+        BootRecord::Absent | BootRecord::Unreadable => {
+            return match vm_presence(runtime) {
+                Presence::Dead => stale(runtime).map(|()| None),
+                Presence::Live => Err(unreachable(
+                    runtime,
+                    "the VM's own process is alive under its unit and its boot record cannot be \
+                    read, so no connection to it can be authorized",
+                )),
+                Presence::Indeterminate => {
+                    Err(undecided(runtime, "its boot record cannot be read"))
+                }
+            };
+        }
     };
     // Step 3, the half `Ping` cannot answer. The identity comparison in the handshake proves which
     // *boot* replied; this proves the boot is the one this invocation meant.
@@ -924,9 +1011,55 @@ async fn ping(runtime: &Runtime, boot: &BootMetadata, timeout: Duration) -> bool
         .is_ok()
 }
 
-fn read_boot_metadata(runtime: &Runtime) -> Option<BootMetadata> {
-    let bytes = fs::read(runtime.boot_json()).ok()?;
-    serde_json::from_slice(&bytes).ok()
+/// What one read of `boot.json` can find, with skew separated from corruption (spec/14).
+enum BootRecord {
+    /// No record — the ordinary cold case.
+    Absent,
+    /// A record this binary cannot make sense of at all: the corruption case.
+    Unreadable,
+    /// A record whose envelope reads but names another version's launch schema.
+    Skewed(u32),
+    /// This version's own record.
+    Ready(BootMetadata),
+}
+
+/// Reads the boot record through the permissive envelope before the strict schema.
+///
+/// The envelope parses forever, so a record another vivarium version wrote yields its number
+/// here instead of collapsing into `Unreadable` — which is the collapse that let a launch
+/// report success against a record the running tool could not read.
+fn read_boot_record(runtime: &Runtime) -> BootRecord {
+    let bytes = match fs::read(runtime.boot_json()) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return BootRecord::Absent,
+        Err(_) => return BootRecord::Unreadable,
+    };
+    let Ok(envelope) = serde_json::from_slice::<VersionEnvelope>(&bytes) else {
+        return BootRecord::Unreadable;
+    };
+    if !envelope.current() {
+        return BootRecord::Skewed(envelope.schema_version);
+    }
+    serde_json::from_slice(&bytes).map_or(BootRecord::Unreadable, BootRecord::Ready)
+}
+
+/// Item 3's boot-half refusal: a live VM whose record another version wrote.
+///
+/// `78` and not `69`: the channel worked and the record was read — what this binary holds is a
+/// generation it must not act on, which is a configuration fact with a remedy, not an outage.
+fn boot_record_skew(runtime: &Runtime, theirs: u32) -> Failure {
+    diagnosed(
+        Namespace::Vm,
+        "boot-record-skew",
+        "the VM's boot record was written by another vivarium version",
+        Locus::File(runtime.boot_json()),
+        format!(
+            "the record carries launch schema {theirs} and this viv speaks \
+            {LAUNCH_SCHEMA_VERSION}, so it cannot authorize a session against the running VM"
+        ),
+        ExitKind::Config,
+    )
+    .with_hint("run `viv stop`, then `viv start`, so this version boots and records the VM")
 }
 
 /// Reads out of the launch specification what a session needs and the boot record does not carry.
@@ -943,6 +1076,25 @@ fn prepared(runtime: &Runtime, boot: BootMetadata) -> Result<Prepared, Failure> 
         )
     };
     let bytes = fs::read(&path).map_err(|error| unreadable(&format!("{error}")))?;
+    // The envelope before the strict schema (spec/14): a record another version wrote is skew
+    // with both numbers named and a remedy, distinct from the corruption `unreadable` reports.
+    if let Ok(envelope) = serde_json::from_slice::<VersionEnvelope>(&bytes)
+        && !envelope.current()
+    {
+        return Err(diagnosed(
+            Namespace::Vm,
+            "launch-record-skew",
+            "the running VM's launch record was written by another vivarium version",
+            Locus::File(path.clone()),
+            format!(
+                "the record carries launch schema {} and this viv speaks \
+                {LAUNCH_SCHEMA_VERSION}, so a session cannot read what it needs from it",
+                envelope.schema_version
+            ),
+            ExitKind::Config,
+        )
+        .with_hint("run `viv stop`, then `viv start`, so this version boots and records the VM"));
+    }
     // Deserialized rather than validated: `LaunchSpec::from_json` also checks the host facts that
     // were true when the VM was launched, and a session has no business re-litigating them.
     let spec: LaunchSpec = serde_json::from_slice(&bytes)
@@ -1047,7 +1199,14 @@ fn write_build_record(path: &Path, store_path: &str) -> Result<(), Failure> {
     std::fs::write(path, format!("{store_path}\n")).map_err(fault)
 }
 
-/// Runs the built runner, which resolves the host-side tokens and execs `viv start --spec`.
+/// Runs the built runner to render the launch specification, then launches from the running
+/// installation.
+///
+/// Two children, in order (ADR-0102): the built runner resolves the host-side tokens and writes
+/// `launch.json` — its job ends there — and then this binary re-invokes itself as
+/// `start --spec`, the async handoff that spawns the supervisor. The supervisor is resolved
+/// beside the running executable and named to the runner, because no host-side vivarium program
+/// may come from the project's build.
 fn execute_runner<E: Environment>(
     context: &Context<'_, E>,
     store_path: &str,
@@ -1091,6 +1250,8 @@ fn execute_runner<E: Environment>(
         )
     })?;
 
+    let (viv, supervisor) = installation_programs()?;
+
     let program = Path::new(store_path)
         .join("bin")
         .join("vivarium-first-microvm");
@@ -1101,6 +1262,8 @@ fn execute_runner<E: Environment>(
         .arg(&runtime.directory)
         .arg("--volume-dir")
         .arg(&volumes)
+        .arg("--supervisor")
+        .arg(&supervisor)
         .arg("--uid")
         .arg(config::effective_uid().to_string())
         .arg("--gid")
@@ -1126,7 +1289,37 @@ fn execute_runner<E: Environment>(
         })?;
 
     if !output.status.success() {
-        // The launcher's own stderr is the account of which child died; the readiness socket
+        // The runner's own stderr names what it refused — including its usage guard, which is
+        // the belt for a launcher whose argument names this binary does not speak.
+        return Err(diagnosed(
+            Namespace::Vm,
+            "spec-render-failed",
+            "the launch specification could not be rendered",
+            Locus::File(program),
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ExitKind::Software,
+        ));
+    }
+
+    let spec = runtime.directory.join("launch.json");
+    let output = Command::new(&viv)
+        .arg("start")
+        .arg("--spec")
+        .arg(&spec)
+        .output()
+        .map_err(|source| {
+            diagnosed(
+                Namespace::Vm,
+                "launcher-unavailable",
+                "could not re-invoke this binary for the launch handoff",
+                Locus::File(viv.clone()),
+                source.to_string(),
+                ExitKind::Software,
+            )
+        })?;
+
+    if !output.status.success() {
+        // The handoff's own stderr is the account of which child died; the readiness socket
         // carries a status and nothing more (see docs/explanation/launch-and-supervision.md).
         return Err(diagnosed(
             Namespace::Vm,
@@ -1142,6 +1335,38 @@ fn execute_runner<E: Environment>(
         )));
     }
     Ok(())
+}
+
+/// The two host-side programs a launch runs, both from the running installation (ADR-0102).
+///
+/// `viv` and `vivarium-supervisor` install side by side — `cargo install` puts both in one
+/// binary directory, and the development shim builds both into one target directory — so the
+/// supervisor is resolved beside the running executable rather than searched for on `PATH`,
+/// where a second installation could shadow the one actually running.
+fn installation_programs() -> Result<(PathBuf, PathBuf), Failure> {
+    let viv = std::env::current_exe().map_err(|source| {
+        diagnosed(
+            Namespace::Host,
+            "supervisor-missing",
+            "could not resolve the running executable",
+            Locus::Named("installation"),
+            source.to_string(),
+            ExitKind::Unavailable,
+        )
+    })?;
+    let supervisor = viv.with_file_name("vivarium-supervisor");
+    if !supervisor.is_file() {
+        return Err(diagnosed(
+            Namespace::Host,
+            "supervisor-missing",
+            "the launch supervisor is not installed beside this binary",
+            Locus::File(supervisor),
+            "`viv` and `vivarium-supervisor` install together, and a launch runs both",
+            ExitKind::Unavailable,
+        )
+        .with_hint("reinstall vivarium; `just install` places both binaries side by side"));
+    }
+    Ok((viv, supervisor))
 }
 
 /// Where one project's persistent volumes live (spec/02, ADR-0019).
@@ -1297,6 +1522,12 @@ pub fn status<E: Environment>(context: &Context<'_, E>, global: bool) -> Result<
         store_path: recorded,
         uptime_seconds: running.then(|| uptime_seconds(&runtime)).flatten(),
         resources: running.then(|| declared_resources(&runtime)),
+        record_skew: running
+            .then(|| match read_boot_record(&runtime) {
+                BootRecord::Skewed(theirs) => Some(theirs),
+                BootRecord::Absent | BootRecord::Unreadable | BootRecord::Ready(_) => None,
+            })
+            .flatten(),
     })
 }
 
@@ -1531,8 +1762,9 @@ pub(super) const fn grace_seconds(force: bool, timeout: Option<i64>) -> Option<u
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
-        Runtime, State, classify, config, discriminate, effective_resources, grace_seconds,
-        host_mem_mib, host_vcpu, ownership_of, vm_is_alive, volume_directory,
+        BootMetadata, BootRecord, LAUNCH_SCHEMA_VERSION, Runtime, State, classify, config,
+        discriminate, effective_resources, grace_seconds, host_mem_mib, host_vcpu, ownership_of,
+        read_boot_record, require_current_contract, vm_is_alive, volume_directory,
     };
     use crate::test_support::ScratchDirectory;
     use std::fs;
@@ -1695,6 +1927,85 @@ mod tests {
         assert_eq!(discriminate(&runtime, true), State::Built);
         fs::write(runtime.directory.join("boot.json"), "{}\n").ok();
         assert_eq!(discriminate(&runtime, true), State::Failed);
+    }
+
+    /// Item 4 of slice 015: the selected build's contract is read from the built output, and a
+    /// build that speaks another number — or none — is refused before boot with `78`.
+    #[test]
+    fn a_build_speaking_another_contract_is_refused_before_boot() {
+        let scratch = ScratchDirectory::new().unwrap();
+        let build = scratch.path().join("fake-build");
+        let schema_dir = build.join("share").join("vivarium");
+        fs::create_dir_all(&schema_dir).unwrap();
+        let store_path = build.to_string_lossy().into_owned();
+        let schema = schema_dir.join("launch-contract-schema");
+
+        fs::write(&schema, format!("{LAUNCH_SCHEMA_VERSION}\n")).unwrap();
+        assert!(require_current_contract(&store_path).is_ok());
+
+        fs::write(&schema, format!("{}\n", LAUNCH_SCHEMA_VERSION - 1)).unwrap();
+        let refusal = require_current_contract(&store_path).unwrap_err();
+        let rendered = format!("{refusal:?}");
+        assert!(rendered.contains("launch-contract-skew"));
+        assert!(rendered.contains(&format!("schema {}", LAUNCH_SCHEMA_VERSION - 1)));
+        assert!(rendered.contains(&LAUNCH_SCHEMA_VERSION.to_string()));
+        assert!(rendered.contains("--rebuild"));
+
+        // A pre-publication build has no schema file at all, and is the same refusal with the
+        // migration named: every build made before this slice meets exactly this case.
+        fs::remove_file(&schema).unwrap();
+        let refusal = require_current_contract(&store_path).unwrap_err();
+        assert!(format!("{refusal:?}").contains("predates the launch-contract publication"));
+    }
+
+    /// Item 3 of slice 015: skew is told apart from corruption, and both from absence.
+    #[test]
+    fn a_record_from_another_version_reads_as_skew_not_corruption() {
+        let scratch = ScratchDirectory::new().unwrap();
+        let runtime = Runtime::locate(scratch.path(), "envelope", "default");
+        fs::create_dir_all(&runtime.directory).ok();
+
+        assert!(matches!(read_boot_record(&runtime), BootRecord::Absent));
+
+        fs::write(runtime.directory.join("boot.json"), "not json").ok();
+        assert!(matches!(read_boot_record(&runtime), BootRecord::Unreadable));
+
+        // A record from a hypothetical future version: fields this binary has never heard of,
+        // and a version it does not speak. The envelope must still yield the number.
+        fs::write(
+            runtime.directory.join("boot.json"),
+            format!(
+                "{{\"schemaVersion\":{},\"bootIdentity\":\"x\",\"fieldFromTheFuture\":true}}",
+                LAUNCH_SCHEMA_VERSION + 1
+            ),
+        )
+        .ok();
+        assert!(
+            matches!(
+                read_boot_record(&runtime),
+                BootRecord::Skewed(theirs) if theirs == LAUNCH_SCHEMA_VERSION + 1
+            ),
+            "a foreign version must read as skew"
+        );
+
+        // This version's own record parses strictly.
+        let own = BootMetadata {
+            schema_version: LAUNCH_SCHEMA_VERSION,
+            boot_identity: "b".into(),
+            project_id: "envelope".into(),
+            target: "default".into(),
+            backend: crate::launch::BACKEND.into(),
+            workspace_host_path: PathBuf::from("/w"),
+        };
+        fs::write(
+            runtime.directory.join("boot.json"),
+            serde_json::to_vec(&own).unwrap(),
+        )
+        .ok();
+        assert!(
+            matches!(read_boot_record(&runtime), BootRecord::Ready(read) if read == own),
+            "this version's record must parse strictly"
+        );
     }
 
     /// Every state has a spelling, and they are the ones spec/01 publishes.

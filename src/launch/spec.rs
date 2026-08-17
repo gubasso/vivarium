@@ -20,9 +20,15 @@ use std::path::{Component, Path, PathBuf};
 /// thing that separates them.
 ///
 /// It does not separate every pairing. The runner's own argument names moved with the bump to 5,
-/// and a generated flake pins its own `vivarium` — so a newer `viv` may meet an older runner,
-/// which refuses at its usage line before rendering any JSON for this constant to check.
-pub const LAUNCH_SCHEMA_VERSION: u32 = 6;
+/// and an old build kept reachable on purpose — an old generation, `--no-rebuild` — may still be
+/// hand-invoked, refusing at its usage line before rendering any JSON for this constant to check.
+/// `viv` itself reads the built output's `share/vivarium/launch-contract-schema` against this
+/// constant before boot (spec/10), so the ordinary path refuses with both numbers named.
+///
+/// 7 since the installation supplies vivarium (ADR-0102): the supervisor left the build-side
+/// JSON and enters the rendered specification from the running installation, and the runner
+/// stopped exec-ing a built `viv`.
+pub const LAUNCH_SCHEMA_VERSION: u32 = 7;
 pub const VIRTIOFSD_RLIMIT_NOFILE: u64 = 524_288;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -201,6 +207,28 @@ pub struct SocketLegs {
 /// would let the writer and the comparison drift into a reuse check that can never fail.
 pub const BACKEND: &str = "cloud-hypervisor";
 
+/// The permissive pre-read every record parser runs first.
+///
+/// Only the version, with unknown fields tolerated, so a launch or boot record written by any
+/// vivarium version yields its `schemaVersion` to every other version forever — which is what
+/// lets a mismatch be diagnosed as skew, with both numbers named, instead of collapsing into
+/// the corruption case (spec/14: a channel that fails is `74`/`69`; a record read whose
+/// generation this binary cannot accept is `78`). The strict `deny_unknown_fields` types below
+/// are reached only when the number matches.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionEnvelope {
+    pub schema_version: u32,
+}
+
+impl VersionEnvelope {
+    /// Whether the record's generation is this binary's own.
+    #[must_use]
+    pub const fn current(self) -> bool {
+        self.schema_version == LAUNCH_SCHEMA_VERSION
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct BootMetadata {
@@ -343,10 +371,23 @@ impl LaunchSpec {
 
     /// Deserialize and validate the strict internal launch schema.
     ///
+    /// The permissive [`VersionEnvelope`] read comes first, so a record another vivarium version
+    /// wrote is reported as [`LaunchError::SchemaSkew`] with both numbers named rather than
+    /// collapsing into the strict parser's corruption case (spec/10). A record that yields no
+    /// envelope at all was written by nothing this tool ever shipped, and stays corruption.
+    ///
     /// # Errors
     ///
     /// Returns an error when JSON decoding or any launch invariant fails.
     pub fn from_json(bytes: &[u8]) -> Result<Self, LaunchError> {
+        if let Ok(envelope) = serde_json::from_slice::<VersionEnvelope>(bytes)
+            && !envelope.current()
+        {
+            return Err(LaunchError::SchemaSkew {
+                record: envelope.schema_version,
+                current: LAUNCH_SCHEMA_VERSION,
+            });
+        }
         let spec: Self = serde_json::from_slice(bytes)
             .map_err(|_| LaunchError::InvalidSpec("JSON does not match launch schema"))?;
         spec.validate()?;
@@ -361,7 +402,11 @@ impl LaunchSpec {
     #[allow(clippy::too_many_lines)]
     pub fn validate(&self) -> Result<(), LaunchError> {
         if self.schema_version != LAUNCH_SCHEMA_VERSION {
-            return Err(LaunchError::InvalidSpec("unsupported schema version"));
+            // The belt behind `from_json`'s envelope pre-read, for a spec built in memory.
+            return Err(LaunchError::SchemaSkew {
+                record: self.schema_version,
+                current: LAUNCH_SCHEMA_VERSION,
+            });
         }
         if self.project_id.is_empty() || self.target.is_empty() || self.shares.is_empty() {
             return Err(LaunchError::InvalidSpec(
@@ -377,7 +422,6 @@ impl LaunchSpec {
             &self.backend_programs.truncate,
             &self.backend_programs.mkfs_ext4,
             &self.backend_programs.systemd_run,
-            &self.backend_programs.supervisor,
             &self.backend_programs.unshare,
             &self.backend_programs.nsenter,
             &self.backend_programs.ip,
@@ -392,6 +436,10 @@ impl LaunchSpec {
                 ));
             }
         }
+        // The supervisor is the one program the build does not supply: it comes from the running
+        // installation (ADR-0102), named by the invoking `viv`, so it is held to absolute and
+        // resolved but not to the store.
+        require_absolute_resolved(&self.backend_programs.supervisor)?;
         // The grammar backstop for a hand-written or stale handoff: the manifest
         // refused malformed entries first and with a diagnostic, and under allowlist
         // mode the resolver and the filter both parse this list again to enforce it.
@@ -831,6 +879,40 @@ pub mod tests {
         }
     }
 
+    /// A record another version wrote reads as skew with both numbers named, not corruption.
+    ///
+    /// Through `from_json` itself rather than a caller's wrapper, because every parser of the
+    /// launch record — the private handoff, the supervisor's entrypoints — funnels through it,
+    /// and spec/10 requires the skew diagnostic at each of them.
+    #[test]
+    fn a_foreign_version_record_reads_as_skew_with_both_numbers_named() {
+        let mut record = serde_json::to_value(fixture()).unwrap();
+        record["schemaVersion"] = serde_json::json!(LAUNCH_SCHEMA_VERSION - 1);
+        let error = LaunchSpec::from_json(record.to_string().as_bytes())
+            .expect_err("a foreign schema version must refuse");
+        let message = error.to_string();
+        assert!(
+            matches!(
+                error,
+                LaunchError::SchemaSkew { record, current }
+                    if record == LAUNCH_SCHEMA_VERSION - 1 && current == LAUNCH_SCHEMA_VERSION
+            ),
+            "skew collapsed into another case: {message}"
+        );
+        assert!(
+            message.contains(&(LAUNCH_SCHEMA_VERSION - 1).to_string())
+                && message.contains(&LAUNCH_SCHEMA_VERSION.to_string()),
+            "the diagnostic does not name both schema versions: {message}"
+        );
+
+        // Bytes that yield no envelope at all were written by nothing vivarium shipped: still
+        // the corruption case, so skew has not widened what counts as readable.
+        assert!(matches!(
+            LaunchSpec::from_json(b"{\"not\":\"a record\"}"),
+            Err(LaunchError::InvalidSpec(_))
+        ));
+    }
+
     /// One volume as the launcher renders it, for the mutations below.
     fn volume(label: &str, path: &str) -> VolumeSpec {
         VolumeSpec {
@@ -840,6 +922,42 @@ pub mod tests {
             image_type: "raw".into(),
             inode_ratio: None,
         }
+    }
+
+    /// The cross-language pairings, asserted against the embedded product tree.
+    ///
+    /// With no Nix-built host binary left to inspect (ADR-0102), a constant shared by the crate
+    /// and the Nix half is compared against the embedded copy the binary actually ships — still
+    /// two independently realised artifacts: the Rust constant and the Nix source the guest
+    /// evaluates.
+    #[test]
+    fn the_crate_and_the_embedded_nix_tree_agree_on_shared_constants() {
+        let launch_arguments = std::str::from_utf8(
+            crate::config::embedded_file("nix/launch-arguments.nix")
+                .expect("the binary embeds the launch contract"),
+        )
+        .expect("the launch contract is UTF-8");
+        assert!(
+            launch_arguments.contains(&format!("schemaVersion = {LAUNCH_SCHEMA_VERSION};")),
+            "nix/launch-arguments.nix does not declare schemaVersion = {LAUNCH_SCHEMA_VERSION}"
+        );
+
+        let product = std::str::from_utf8(
+            crate::config::embedded_file("nix/default.nix")
+                .expect("the binary embeds the composition root"),
+        )
+        .expect("the composition root is UTF-8");
+        let workspace_internal = "/run/vivarium-workspace";
+        assert!(
+            GUEST_OWNED_PATHS.contains(&workspace_internal),
+            "the host no longer refuses to mirror onto the share's internal mount point"
+        );
+        assert!(
+            product.contains(&format!(
+                "workspaceInternalMountPoint = \"{workspace_internal}\";"
+            )),
+            "nix/default.nix does not declare the internal mount point the host refuses"
+        );
     }
 
     #[test]

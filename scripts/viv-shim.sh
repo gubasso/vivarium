@@ -11,7 +11,11 @@
 # Inside this repository it shadows an installed `viv`, which is the intent.
 
 root="$(dirname "$(cargo locate-project --workspace --message-format plain)")"
-cargo build --quiet --manifest-path "$root/Cargo.toml" --bin viv
+# All binary targets, not `--bin viv`: a launch runs `vivarium-supervisor` from
+# beside the running `viv` (ADR-0102), so a shim that built only the CLI would
+# hand a clean target directory a launcher with no supervisor — or worse, a
+# stale one left by an earlier build.
+cargo build --quiet --manifest-path "$root/Cargo.toml" --bins
 
 # Pinned, because a `viv` run from this tree that built its guest from the
 # published branch would be measuring something other than the change under

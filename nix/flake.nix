@@ -64,17 +64,12 @@
         verification = import ../tests/nix { inherit product; };
       in
       {
+        # The publication surface is verification only. A generated project flake
+        # no longer enters this one at all: the binary carries the product tree
+        # and writes it into every generated tree (ADR-0102), so the seam slice
+        # 012 published here — `lib` with the guest module and the launch half —
+        # is gone rather than dead.
         inherit (verification) packages checks;
-        # The seam a generated project flake enters this one through (slice 012).
-        # It composes the same guest module with the same build inputs and hands
-        # the resolved config back to `mkLaunch`, so a manifest-built guest and
-        # the shipped image are the same guest reached by two routes rather than
-        # two guests that happen to agree. `lib` and not `packages` because none
-        # of the three is a derivation: two are a module and an attrset of build
-        # inputs, and the third is a function.
-        lib = {
-          inherit (product) guestModule guestSpecialArgs mkLaunch;
-        };
       }
     );
 }

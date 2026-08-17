@@ -582,7 +582,10 @@ impl Supervisor {
         }
         self.spec.vm_create["payload"]["cmdline"] = serde_json::Value::String(cmdline);
         Ok(BootMetadata {
-            schema_version: crate::protocol::SCHEMA_VERSION,
+            // The launch contract's number, not the guest-handshake protocol's: `launch.json`
+            // and `boot.json` are one launch's record family, written and read by the host
+            // side, and this is the version the reader's envelope compares against its own.
+            schema_version: crate::launch::LAUNCH_SCHEMA_VERSION,
             boot_identity: boot_identity.to_owned(),
             project_id: self.spec.project_id.clone(),
             target: self.spec.target.clone(),

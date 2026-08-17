@@ -68,6 +68,9 @@ impl SupervisorError {
     /// Exhaustive by construction: a new variant will not compile until it is classified here.
     const fn exit_code(&self) -> ExitKind {
         match self {
+            // A specification another vivarium version wrote is skew, `78`, with both numbers
+            // named by the variant's own message (spec/10) — not a bad invocation.
+            Self::InvalidSpec(LaunchError::SchemaSkew { .. }) => ExitKind::Config,
             Self::Usage
             | Self::UntrustedSpecFile
             | Self::SpecPathMismatch
@@ -414,6 +417,15 @@ mod tests {
             (
                 SupervisorError::InvalidSpec(LaunchError::InvalidSpec("schema")),
                 ExitKind::Usage,
+            ),
+            // Skew is the one invalid-spec shape that is not a usage error: a specification
+            // another vivarium version wrote exits `78` with both numbers named (spec/10).
+            (
+                SupervisorError::InvalidSpec(LaunchError::SchemaSkew {
+                    record: 6,
+                    current: 7,
+                }),
+                ExitKind::Config,
             ),
             (SupervisorError::ReadSpec(io()), ExitKind::IoErr),
             (

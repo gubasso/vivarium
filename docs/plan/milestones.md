@@ -4,11 +4,10 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 015 the-binary-supplies-itself — shaped — 3 sessions — next to start, ahead of 005: it enacts `ADR-0102`, removing a self-dependency before more slices build on it
+- 005 cli-runtime-plumbing — shaped — 2 sessions — next to start
 
 ## later
 
-- 005 cli-runtime-plumbing — later — 2 sessions
 - 006 generate-config-contract — later — 2 sessions
 - 007 build-test-lanes — later — 4 sessions
 - 008 enforce-implementation-status — later — 2 sessions
@@ -25,3 +24,4 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 013 exec-and-shell — done — 3 sessions — the launch specification had to carry the guest cwd, the startup lock, and the guest process environment; see the slice `Revisions`
 - 004 enforce-egress-allowlist — done — 4 sessions — sessions 2 through 4 ran as one merged pass under the appetite; see the slice `Revisions`
 - 014 workspace-and-persistence — done — 2 sessions — closed out of order: the coding-agent clause needed the guest connectivity slice 004 delivers, so the run that closed it was made after 004; see the slice `Revisions`
+- 015 the-binary-supplies-itself — done — 3 sessions — enacted `ADR-0102` in one merged pass under the appetite; the host sweep and its measurement are in the slice `Revisions`

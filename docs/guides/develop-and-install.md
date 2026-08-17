@@ -26,15 +26,13 @@ $ just install
 
 This runs `cargo install --path . --locked --force`, which puts `viv` and `vivarium-supervisor` into cargo's binary directory — `~/.cargo/bin` unless `CARGO_HOME` says otherwise. The recipe prints where they landed and warns on standard error if that directory is not on your `PATH`, which is the only way this step fails quietly.
 
-What you get is what a user gets: a `viv` whose baseline flake inputs resolve live. That is the right thing to run when you are checking the command surface, diagnostics, or state handling. It is the wrong thing to run when you are checking a guest.
+What you get is what a user gets: a `viv` whose baseline flake inputs resolve live. The guest itself always comes from the tree the binary embeds — the installation supplies vivarium ([`../decisions/ADR-0102-the-installation-supplies-vivarium.md`](../decisions/ADR-0102-the-installation-supplies-vivarium.md)) — so an installed `viv` built from your tree boots your guest module. What still resolves live is upstream.
 
 ## Why the pin matters
 
-`viv` ships branch references for the three flake inputs a generated project flake carries, so a released tool resolves today's upstream and pins it in the lock the first evaluation writes. The default for the third of them is `github:gubasso/vivarium?dir=nix`; see `BASELINE_VIVARIUM_VARIABLE` and its neighbours in [`../../src/config/flake.rs`](../../src/config/flake.rs) for the shipped values and the environment variables that override them.
+`viv` ships branch references for the two baseline flake inputs a generated project flake carries, `nixpkgs` and `microvm`, so a released tool resolves today's upstream and pins it in the lock the first evaluation writes; see `BASELINE_NIXPKGS_VARIABLE` and its neighbour in [`../../src/config/flake.rs`](../../src/config/flake.rs) for the shipped values and the environment variables that override them.
 
-For a developer that default is a trap. A `viv` you built from your own tree still builds its guest from the published branch, so a change to the guest module or the launch seam does not appear in the sandbox you just booted, and the run reports on upstream rather than on your work. Nothing announces this. The evaluation succeeds.
-
-So development pins and the shipped product resolves live, which is the rule [`../../AGENTS.md`](../../AGENTS.md) states and the test lanes already follow.
+For a developer that default costs the network. Every evaluation from a fresh data root resolves the branches against the upstream forge again, and a lane that does so trial after trial exhausts an anonymous rate limit and fails for a reason that is about GitHub. So development pins and the shipped product resolves live, which is the rule [`../../AGENTS.md`](../../AGENTS.md) states and the test lanes already follow.
 
 ## The pinned entry point: `viv-dev`
 
@@ -42,7 +40,7 @@ So development pins and the shipped product resolves live, which is the rule [`.
 $ just install-pinned
 ```
 
-This installs everything `just install` does, and adds a `viv-dev` beside it. `viv-dev` sets the three baseline variables to this repository — the two upstream inputs as local store paths, this tree as itself — and then executes the installed `viv`. Use it from any project directory:
+This installs everything `just install` does, and adds a `viv-dev` beside it. `viv-dev` sets the two baseline variables to the local store paths this repository's own product lock already resolved to, and then executes the installed `viv`. Use it from any project directory:
 
 ```console
 $ cd ~/src/some-project
@@ -57,20 +55,15 @@ The store paths are recomputed at each invocation rather than baked in at instal
 $ scripts/baseline-pins
 export VIVARIUM_BASELINE_NIXPKGS=path:/nix/store/…-source
 export VIVARIUM_BASELINE_MICROVM=path:/nix/store/…-source
-export VIVARIUM_BASELINE_VIVARIUM=path:/…/vivarium?dir=nix
 ```
 
 It fails open: on a host that cannot produce the pins it prints the reason on standard error, emits nothing, and exits `0`, so the caller resolves live exactly as a user would. That is deliberate, and it means an empty output is a state to notice rather than an error to debug.
 
 ## The same pins, ambient in this repository
 
-[`../../.envrc`](../../.envrc) evaluates the same script, so a shell entered here carries the three variables whether or not you went through `viv-dev`. That covers what neither entry point above does: an installed `viv` run from this directory, a hand-run `nix build`, a lane invoked outside its usual harness.
+[`../../.envrc`](../../.envrc) evaluates the same script, so a shell entered here carries the two variables whether or not you went through `viv-dev`. That covers what neither entry point above does: an installed `viv` run from this directory, a hand-run `nix build`, a lane invoked outside its usual harness.
 
 It lives in `.envrc` and not in the untracked `.envrc.local` for two reasons. The store paths move whenever [`../../nix/flake.lock`](../../nix/flake.lock) does, so a literal copy would go stale without announcing it, and `.envrc.local` is restricted to plain `export` lines because [`../../tests/host/disk-preflight`](../../tests/host/disk-preflight) sources it directly, with no direnv to evaluate anything. `.envrc.local` keeps its one job, which is the drive a disk-heavy run should absorb.
-
-## A project bound to this tree goes stale when the tree changes
-
-A development-pinned project locks the `vivarium` input to this working tree by content hash, so any source edit after its first evaluation makes the next `viv start` fail at evaluation with a NAR hash mismatch naming this repository's path. The lock is doing its job — a build never re-resolves inputs — but during development the pinned input is the thing being edited, so the mismatch is the normal state rather than a defect. The remedy is removing that project's retained lock under the data root (`.local/share/vivarium/projects/<project>/<target>/flake.lock`); the next evaluation is then lock-creation eligible and re-pins against the current tree, with the upstream inputs still supplied by the baseline store paths. The acceptance harness never meets this because every trial binds a fresh project. Observed 2026-08-14 while hand-running `viv start` in this repository after the slice 004 session-1 edits.
 
 ## Removing it
 

@@ -4,6 +4,7 @@ contract=@launchArgumentsPath@
 workspace=""
 runtime_dir=""
 volume_dir=""
+supervisor=""
 uid=""
 gid=""
 memory_mib=""
@@ -15,18 +16,19 @@ gpg_agent_socket=""
 console_log=true
 print_only=false
 usage() {
-  echo "usage: $0 --workspace ABS --runtime-dir ABS --volume-dir ABS --uid N --gid N --memory-mib N --vcpu N [--project-id ID] [--target NAME] [--ssh-agent-socket ABS] [--gpg-agent-socket ABS] [--no-console-log] [--print-static-arguments]" >&2
-  # The one pairing `schemaVersion` cannot catch. A generated flake pins its own
-  # `vivarium`, so a newer `viv` may drive an older runner, whose argument names
-  # differ — and this refusal happens before any schema is read. `viv start`
-  # surfaces this stderr verbatim, so naming the contract's version here is what
-  # turns "usage error" into "you are holding two halves of different versions".
+  echo "usage: $0 --workspace ABS --runtime-dir ABS --volume-dir ABS --supervisor ABS --uid N --gid N --memory-mib N --vcpu N [--project-id ID] [--target NAME] [--ssh-agent-socket ABS] [--gpg-agent-socket ABS] [--no-console-log] [--print-static-arguments]" >&2
+  # The belt for a hand-invoked runner. `viv` refuses a build whose contract
+  # schema differs from its own before executing this script, but a runner from
+  # an old generation can still be run by hand, and its argument names differ —
+  # this refusal happens before any schema is read. Naming the contract's version
+  # here is what turns "usage error" into "you are holding two halves of
+  # different versions".
   echo "this launcher speaks launch contract schema $(jq -r '.schemaVersion' "$contract")" >&2
   exit 64
 }
 while (($#)); do
   case $1 in
-    --workspace | --runtime-dir | --volume-dir | --uid | --gid | --memory-mib | --vcpu | --project-id | --target | --ssh-agent-socket | --gpg-agent-socket)
+    --workspace | --runtime-dir | --volume-dir | --supervisor | --uid | --gid | --memory-mib | --vcpu | --project-id | --target | --ssh-agent-socket | --gpg-agent-socket)
       (($# >= 2)) || usage
       name=${1#--}
       name=${name//-/_}
@@ -44,10 +46,14 @@ while (($#)); do
     *) usage ;;
   esac
 done
-for value in workspace runtime_dir volume_dir; do
+for value in workspace runtime_dir volume_dir supervisor; do
   candidate=${!value:-}
   [[ $candidate = /* ]] || usage
 done
+# The one program the contract does not build: the supervisor comes from the
+# running installation (ADR-0102), so the invoking `viv` names it and this guard
+# only holds it to the shape every other program already has.
+[[ -x $supervisor ]] || usage
 for value in uid gid memory_mib vcpu; do [[ ${!value:-} =~ ^[0-9]+$ ]] || usage; done
 [[ -n $project_id && -n $target ]] || usage
 for value in ssh_agent_socket gpg_agent_socket; do
@@ -98,6 +104,7 @@ jq \
   --arg workspace "$workspace" --arg volumeDir "$volume_dir" \
   --arg api "$api" --arg console "$console" --arg control "$control" --arg ready "$ready" \
   --arg storeSocket "$store_socket" --arg workspaceSocket "$workspace_socket" \
+  --arg supervisor "$supervisor" \
   --arg sshAgent "$ssh_agent_socket" --arg gpgAgent "$gpg_agent_socket" --argjson uid "$uid" --argjson gid "$gid" \
   --argjson memoryMiB "$memory_mib" --argjson vcpu "$vcpu" \
   --argjson landlock "$landlock" --argjson consoleLog "$console_log" '
@@ -122,7 +129,7 @@ jq \
       vmPid: ($runtime + "/vm.pid"), bootJson: ($runtime + "/boot.json"), vmCreateJson: ($runtime + "/vm-create.json") },
     backendPrograms: { cloudHypervisor: .cloudHypervisor, chRemote: .chRemote,
       virtiofsd: .virtiofsd, setpriv: .setpriv, truncate: .truncate,
-      mkfsExt4: .mkfsExt4, systemdRun: .systemdRun, supervisor: .supervisor,
+      mkfsExt4: .mkfsExt4, systemdRun: .systemdRun, supervisor: $supervisor,
       unshare: .unshare, nsenter: .nsenter, ip: .ip, nft: .nft,
       pasta: .pasta, sleep: .sleep },
     egress: .egress,
@@ -145,5 +152,6 @@ jq \
     consoleLogEnabled: $consoleLog
   }' "$contract" >"$output"
 $print_only && exit 0
+# The runner's job ends here (ADR-0102): the invoking `viv` reads the rendered
+# specification back and launches from the running installation.
 chmod 0600 "$spec"
-exec @vivPath@ start --spec "$spec"

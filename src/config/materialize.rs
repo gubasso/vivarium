@@ -198,15 +198,69 @@ fn publish(plan: &GeneratedFlakePlan) -> Result<PreparedFlake, GeneratedFlakeErr
         }
         sync_tree(&temporary)?;
         publish_directory(&temporary, &plan.directory)?;
+        // After the tree, so a publication that fails sheds nothing durable: the migration
+        // rewrite (ADR-0102) replaces the owned lock with bytes that differ only by the removed
+        // subtree, and a concurrent preparation computes the identical bytes, so replacement is
+        // race-benign in a way a first pin is not.
+        if let Some(bytes) = &plan.migrated_lock {
+            rewrite_owned_lock(plan.effective_lock.path(), bytes)?;
+        }
         Ok(PreparedFlake {
             directory: plan.directory.clone(),
             effective_lock: plan.effective_lock.clone(),
+            shed_vivarium: plan.migrated_lock.is_some(),
         })
     })();
     if prepared.is_err() && temporary.exists() {
         let _ = fs::remove_dir_all(&temporary);
     }
     prepared
+}
+
+/// Atomically replaces the owned lock with its migrated bytes.
+fn rewrite_owned_lock(owned_path: &Path, bytes: &[u8]) -> Result<(), GeneratedFlakeError> {
+    let parent = owned_path.parent().ok_or_else(|| {
+        GeneratedFlakeError::plain(
+            GeneratedFlakeErrorKind::Internal,
+            Namespace::Internal,
+            "lock-parent",
+            Locus::File(owned_path.to_path_buf()),
+            "owned lock has no parent directory",
+            "the lock path escaped its fixed data-root layout",
+        )
+    })?;
+    let (temporary, mut file) = create_temp_file(parent, "flake.lock")?;
+    let result = (|| {
+        file.write_all(bytes).map_err(|source| {
+            lock_io(
+                "migrate-write",
+                &temporary,
+                "could not write the migrated lock",
+                source,
+            )
+        })?;
+        file.sync_all().map_err(|source| {
+            lock_io(
+                "migrate-sync",
+                &temporary,
+                "could not flush the migrated lock",
+                source,
+            )
+        })?;
+        drop(file);
+        fs::rename(&temporary, owned_path).map_err(|source| {
+            lock_io(
+                "migrate-install",
+                owned_path,
+                "could not install the migrated lock",
+                source,
+            )
+        })
+    })();
+    if result.is_err() && temporary.exists() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn apply_entry(root: &Path, entry: &GeneratedEntry) -> Result<(), GeneratedFlakeError> {

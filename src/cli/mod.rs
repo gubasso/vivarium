@@ -411,6 +411,18 @@ fn evaluate_resolved<E: Environment>(
         &config::BaselineInputs::from_environment(context.environment),
     )
     .map_err(|error| flake_failure(&error))?;
+    // The one sanctioned lock rewrite, announced for the same reason the created pin below is: no
+    // ordinary build moves a pin (ADR-0059), so the migration ADR-0102 sanctions must never
+    // happen silently. Directly on stderr rather than through `notes`, deliberately: the shed
+    // happens exactly once per retained lock, this seam is shared by verbs whose surface has no
+    // notes channel (a session's cold start), and the rewrite is already durable by this line —
+    // so the announcement comes before evaluation or any other fallible step can suppress it.
+    if prepared.shed_vivarium {
+        eprintln!(
+            "shed the dead `vivarium` node from this target's lock: {} (no other pin moved)",
+            prepared.effective_lock.path().display()
+        );
+    }
     let report = config::evaluate::report(&prepared).map_err(|error| evaluation_failure(&error))?;
     // Only now, and only when this target had no pin: the lock is created by the first successful
     // evaluation and thereafter moves only under `viv update` (spec/04, ADR-0059).

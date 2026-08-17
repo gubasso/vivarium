@@ -144,6 +144,14 @@ It then copies [`../../examples/`](../../examples/README.md) into a temporary co
 
 The build tier is opt-in because it realises a complete NixOS closure and no faster check proves the same thing. Both tiers name what they skipped and why, so a run that only did the cheap half cannot read as having done both.
 
+## The sibling script: `tests/host/contract-skew-check`
+
+Slice 015's pre-boot refusal, proved on a real host. Like `exec-and-shell-check`, its substance is acceptance trials rather than shell probes: `workflow_15_contract_skew_refusal` seeds a stand-in build whose published contract schema is not this binary's and shows `viv start --no-rebuild` refuses with `78`, both numbers, and the remedy; `workflow_15_contract_skew_live` builds and boots for real, doctors a copy of the built tree so its `share/vivarium/launch-contract-schema` changes, shows the same refusal against a genuinely built selection, and then shows `viv start --rebuild` clears it and boots. The lane runs the pair twice, because a refusal that must hold whenever an old artifact is selected is exactly the kind of claim one clean run cannot carry.
+
+```console
+$ tests/host/contract-skew-check
+```
+
 ## Findings register
 
 Verified on a real host. Each entry names the version it applies to; nothing here is inferred from an agent's execution environment.

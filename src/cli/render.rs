@@ -545,6 +545,13 @@ pub fn status_json(report: &Report) -> String {
             "mem_mib": resources.mem_mib,
             "vcpu": resources.vcpu,
         })),
+        // The running VM's record generation when another vivarium version wrote it, and `null`
+        // for a VM this version booted. Beside `running` on purpose: `status` keeps answering
+        // where the session verbs refuse with `78`.
+        "record_schema_skew": report.record_skew.map(|theirs| json!({
+            "record": theirs,
+            "binary": crate::launch::LAUNCH_SCHEMA_VERSION,
+        })),
         // Measured use, which nothing in this slice measures. Slice 005 owns spec/17's readings.
         "runtime": Value::Null,
     }))
@@ -559,6 +566,14 @@ pub fn status_human(report: &Report) -> String {
     let _ = writeln!(rendered, "state     {}", report.state.as_str());
     if let Some(reason) = report.reason {
         let _ = writeln!(rendered, "reason    {reason}");
+    }
+    if let Some(theirs) = report.record_skew {
+        let _ = writeln!(
+            rendered,
+            "record    launch schema {theirs}; this viv speaks {}. `viv stop`, then `viv start`, \
+            reboots it under this version",
+            crate::launch::LAUNCH_SCHEMA_VERSION
+        );
     }
     if let Some(store_path) = &report.store_path {
         let _ = writeln!(rendered, "build     {store_path}");

@@ -57,10 +57,10 @@ async fn main() -> ExitCode {
     };
 
     // The handoff is the one invocation that needs the async runtime, and it predates the published
-    // surface: `nix/runner.sh` executes it to hand a resolved specification back to vivarium. It is
-    // dispatched here rather than through `cli::run` because nothing else in that module is async,
-    // and threading a runtime through the synchronous surface to serve one private form would make
-    // every other verb pay for it.
+    // surface: after the built runner renders the specification, the invoking `viv` re-executes
+    // itself in this form to launch it (ADR-0102). It is dispatched here rather than through
+    // `cli::run` because nothing else in that module is async, and threading a runtime through the
+    // synchronous surface to serve one private form would make every other verb pay for it.
     if let Invocation::StartSpec { spec } = &invocation {
         return match handoff(spec).await {
             Ok(()) => ExitCode::from(ExitKind::Success),
@@ -222,6 +222,9 @@ impl StartError {
     /// a code to a row that had none.
     const fn exit_code(&self) -> ExitKind {
         match self {
+            // A record another vivarium version wrote is skew, `78`, with both numbers named by
+            // the variant's own message (spec/10) — distinct from the corruption and usage cases.
+            Self::InvalidSpec(LaunchError::SchemaSkew { .. }) => ExitKind::Config,
             Self::InvalidSpec(_) | Self::ReadinessPathOccupied => ExitKind::Usage,
             Self::ReadInputSpec(_)
             | Self::PrepareRuntime(_)
@@ -338,6 +341,15 @@ mod tests {
             (
                 StartError::InvalidSpec(LaunchError::InvalidSpec("schema")),
                 ExitKind::Usage,
+            ),
+            // Skew is the one invalid-spec shape that is not a usage error: a record another
+            // vivarium version wrote exits `78` with both numbers named (spec/10).
+            (
+                StartError::InvalidSpec(LaunchError::SchemaSkew {
+                    record: 6,
+                    current: 7,
+                }),
+                ExitKind::Config,
             ),
             (StartError::ReadinessPathOccupied, ExitKind::Usage),
             (StartError::ReadInputSpec(io()), ExitKind::IoErr),
