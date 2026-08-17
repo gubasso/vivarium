@@ -65,6 +65,24 @@ hooks:
     nix develop --command pre-commit run --all-files --hook-stage pre-commit
     SKIP=cargo-nextest-unit,cargo-nextest-integration,clippy-strict nix develop --command pre-commit run --all-files --hook-stage pre-push
 
+# --- Slides ---------------------------------------------------------------
+# The Slidev deck under slides/. Nix supplies node through the devShell; npm
+# supplies Slidev, pinned by slides/package-lock.json (ADR-0103).
+
+# Install the deck's pinned dependencies.
+slides-install:
+    nix develop --command bash -c 'cd slides && npm ci'
+
+# Serve the deck with hot reload at http://localhost:3030.
+slides-dev:
+    nix develop --command bash -c 'cd slides && npm run dev'
+
+# Build the deck into slides/dist under the deployed base path.
+# Twin of the build step in .github/workflows/pages.yml: that workflow derives
+# the base from the repository name, so keep this literal equal to it.
+slides-build:
+    nix develop --command bash -c 'cd slides && npm run build -- --base /vivarium/'
+
 # --- Developer install ----------------------------------------------------
 # Install logic lives in scripts/install-dev, never in this file. The devShell
 # already puts a `viv` built from the working tree on PATH inside this

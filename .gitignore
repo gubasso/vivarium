@@ -3,6 +3,13 @@
 # Per-machine environment answers; see .envrc.
 /.envrc.local
 
+# Slidev deck build state. `package-lock.json` is tracked on purpose — it is
+# the pin, and the deploy workflow installs from it with `npm ci`.
+/slides/node_modules/
+/slides/dist/
+/slides/.slidev/
+/slides/components.d.ts
+
 # --- cog gitignore (rust) ---
 # Rust
 /target/

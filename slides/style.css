@@ -1,0 +1,164 @@
+/* ─────────────────────────────────────────────────────────────────────────
+ * vivarium deck theme.
+ *
+ * Both light and dark modes are first-class (`colorSchema: all` in the deck
+ * front matter), so every color is a token defined twice rather than a literal
+ * written once. Hero surfaces — the cover slide and any `layout: center`
+ * section divider — intentionally stay dark in both modes: they are posters,
+ * not page content, and a poster that inverts with the reader's OS setting
+ * stops being a poster. That is what `--deep-fixed` and `--deep-ink` are for.
+ *
+ *   --deep         flips with mode  (use as text or border)
+ *   --deep-fixed   always dark      (use as hero background)
+ *   --deep-ink     always deepest   (use as hero gradient anchor)
+ * ───────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --bg-base: #fbfcfb;
+  --text-base: #16211f;
+
+  --accent: #2f9e6e;
+  --accent-soft: #24805a;
+  --accent-bright: #5fd39b;
+  --deep: #123b38;
+  --deep-fixed: #123b38;
+  --deep-ink: #08201f;
+  --surface: #eef3f1;
+  --mute: #5b6f6b;
+
+  --slidev-theme-primary: var(--accent);
+  --slidev-code-background: var(--surface);
+  --slidev-code-foreground: var(--deep);
+}
+
+html.dark {
+  --bg-base: #08201f;
+  --text-base: #e4eeeb;
+
+  --accent: #5fd39b;
+  --accent-soft: #2f9e6e;
+  --accent-bright: #9aeac4;
+  --deep: #cfe6e0;
+  --deep-fixed: #123b38;
+  --deep-ink: #08201f;
+  --surface: #0d2b29;
+  --mute: #9fb2ae;
+
+  --slidev-code-foreground: var(--accent-bright);
+}
+
+/* Page surface for ordinary slides. Hero layouts override this below. */
+.slidev-layout {
+  background: var(--bg-base);
+  color: var(--text-base);
+}
+
+.slidev-layout h1 {
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.slidev-layout a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-bright);
+}
+
+.slidev-layout :not(pre) > code {
+  color: var(--deep);
+  background: var(--surface);
+  padding: 0.1em 0.35em;
+  border-radius: 0.25em;
+}
+
+html.dark .slidev-layout :not(pre) > code {
+  color: var(--accent-bright);
+}
+
+/* ─── Cover — the same dark gradient in both modes. ───────────────────── */
+
+.slidev-layout.cover {
+  background: linear-gradient(
+    135deg,
+    var(--deep-ink) 0%,
+    var(--deep-fixed) 55%,
+    #1d5c3c 100%
+  );
+  color: #ffffff;
+}
+
+.slidev-layout.cover h1 {
+  color: #ffffff;
+  font-size: 4.5rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin-bottom: 0;
+}
+
+/* The rule under the wordmark, drawn rather than typed so it tracks the
+ * heading's own box instead of a hand-guessed width. */
+.slidev-layout.cover h1::after {
+  content: "";
+  display: block;
+  width: 5rem;
+  height: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--accent-soft) 0%,
+    var(--accent-bright) 100%
+  );
+  border-radius: 2px;
+  margin: 0.5em auto 0;
+}
+
+.slidev-layout.cover .tagline {
+  margin-top: 1.4rem;
+  font-size: 1.75rem;
+  font-weight: 300;
+  letter-spacing: 0.02em;
+  color: var(--accent-bright);
+}
+
+.slidev-layout.cover .subtitle {
+  margin-top: 0.9rem;
+  font-size: 1.05rem;
+  font-weight: 300;
+  line-height: 1.6;
+  opacity: 0.85;
+  max-width: 34rem;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.slidev-layout.cover .footnote {
+  margin-top: 4rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+
+.slidev-layout.cover .footnote code {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--accent-bright);
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 0.1em 0.35em;
+  border-radius: 0.25em;
+}
+
+/* ─── Section dividers — posters too, so also fixed dark. ─────────────── */
+
+.slidev-layout.center {
+  background: linear-gradient(
+    180deg,
+    var(--deep-fixed) 0%,
+    var(--deep-ink) 100%
+  );
+  color: #e4eeeb;
+}
+
+.slidev-layout.center h1 {
+  color: #ffffff;
+}

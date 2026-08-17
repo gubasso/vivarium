@@ -63,6 +63,26 @@ jobs:
       - name: Build
         run: nix develop --command just build
 
+  # The deck's only gate. Every Markdown hook is excluded from `slides/`
+  # (ADR-0103), so whether it still builds is the whole check — and it belongs
+  # here rather than in the deploy lane, because a broken deck should fail the
+  # pull request, not the publish. Runs through the devShell like every other
+  # job so the node that builds the deck is the node the repository pins.
+  slides:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Cache Nix store
+        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
+      - name: Install deck dependencies
+        run: nix develop --command just slides-install
+      - name: Build deck
+        run: nix develop --command just slides-build
+
   hooks:
     runs-on: ubuntu-latest
     steps:
