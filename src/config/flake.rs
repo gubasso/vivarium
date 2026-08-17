@@ -1222,7 +1222,7 @@ mod tests {
                 }
                 _ => None,
             })
-            .expect("a retained lock is staged as migrated bytes, not copied");
+            .ok_or("a retained lock is staged as migrated bytes, not copied")?;
         assert_eq!(migrated.migrated_lock.as_deref(), Some(staged.as_slice()));
         let text = String::from_utf8(staged)?;
         assert!(!text.contains("vivarium"));
@@ -1289,7 +1289,7 @@ mod tests {
                 }
                 _ => None,
             })
-            .expect("the plan renders a flake")?;
+            .ok_or("the plan renders a flake")??;
         assert!(!flake.contains("vivarium.url"));
         assert!(!flake.contains("vivarium.inputs"));
         assert!(flake.contains("import ./vivarium/nix { inherit nixpkgs microvm system; }"));
@@ -1375,15 +1375,16 @@ mod tests {
                 r#""vivarium":{"locked":{}}},"root":"root","version":7}"#
             ),
         )?;
-        let refused = GeneratedFlakePlan::build(
+        let Err(refused) = GeneratedFlakePlan::build(
             &roots,
             &selected,
             "image = 'base'\nextends = 'extra.nix'",
             &manifest,
             &composition,
             &BaselineInputs::default(),
-        )
-        .expect_err("an override lock pinning `vivarium` must refuse");
+        ) else {
+            return Err("an override lock pinning `vivarium` must refuse".into());
+        };
         assert!(format!("{refused:?}").contains("override-carries-vivarium"));
         Ok(())
     }

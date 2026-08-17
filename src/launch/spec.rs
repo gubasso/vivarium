@@ -888,8 +888,7 @@ pub mod tests {
     fn a_foreign_version_record_reads_as_skew_with_both_numbers_named() {
         let mut record = serde_json::to_value(fixture()).unwrap();
         record["schemaVersion"] = serde_json::json!(LAUNCH_SCHEMA_VERSION - 1);
-        let error = LaunchSpec::from_json(record.to_string().as_bytes())
-            .expect_err("a foreign schema version must refuse");
+        let error = LaunchSpec::from_json(record.to_string().as_bytes()).unwrap_err();
         let message = error.to_string();
         assert!(
             matches!(
@@ -932,21 +931,16 @@ pub mod tests {
     /// evaluates.
     #[test]
     fn the_crate_and_the_embedded_nix_tree_agree_on_shared_constants() {
-        let launch_arguments = std::str::from_utf8(
-            crate::config::embedded_file("nix/launch-arguments.nix")
-                .expect("the binary embeds the launch contract"),
-        )
-        .expect("the launch contract is UTF-8");
+        let launch_arguments =
+            std::str::from_utf8(crate::config::embedded_file("nix/launch-arguments.nix").unwrap())
+                .unwrap();
         assert!(
             launch_arguments.contains(&format!("schemaVersion = {LAUNCH_SCHEMA_VERSION};")),
             "nix/launch-arguments.nix does not declare schemaVersion = {LAUNCH_SCHEMA_VERSION}"
         );
 
-        let product = std::str::from_utf8(
-            crate::config::embedded_file("nix/default.nix")
-                .expect("the binary embeds the composition root"),
-        )
-        .expect("the composition root is UTF-8");
+        let product =
+            std::str::from_utf8(crate::config::embedded_file("nix/default.nix").unwrap()).unwrap();
         let workspace_internal = "/run/vivarium-workspace";
         assert!(
             GUEST_OWNED_PATHS.contains(&workspace_internal),

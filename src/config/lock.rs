@@ -104,6 +104,7 @@ fn resolve_follows(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{carries_vivarium, shed_vivarium};
     use serde_json::{Value, json};
@@ -151,7 +152,7 @@ mod tests {
 
     #[test]
     fn sheds_the_node_its_edge_and_its_private_subtree_only() {
-        let migrated = shed_vivarium(&retained_lock()).expect("the retained shape must migrate");
+        let migrated = shed_vivarium(&retained_lock()).unwrap();
         let lock: Value = serde_json::from_slice(&migrated).unwrap();
         let names: Vec<&str> = lock["nodes"]
             .as_object()
