@@ -59,7 +59,7 @@ check: fmt lint test
 # CI without them. Skips at the push stage: the nextest hooks because
 # `just test-ci` already runs profile `ci`, a superset of `pre-push`, and
 # clippy-strict because `just lint` is its byte-identical twin in CI's lint
-# job. `slidev-build` joins them for the same reason: CI's `slides` job runs
+# job. `slidev-build` joins them for the same reason: the slides.yml lane runs
 # `just slides-install` then `just slides-build`, and this recipe's job never
 # installs slides/node_modules, so the hook would fail here on a missing
 # dependency tree rather than on a broken deck. `cargo-doc-tests` is NOT

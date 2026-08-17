@@ -26,7 +26,7 @@ npx serve slides/dist      # preview the built bundle
 
 The base path matters only for the deployed bundle. `just slides-dev` serves from the root and needs no base; `just slides-build` carries `/vivarium/` as a literal, and the workflow derives the same value from the repository name so a rename cannot desynchronise them.
 
-The build is also the deck's only automated gate. Every Markdown hook is excluded from `slides/`, so a `slidev-build` hook runs at the pre-push stage for pushes that touch the directory, and the `slides` job in [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml) repeats it for every pull request.
+The build is also the deck's only automated gate. Every Markdown hook is excluded from `slides/`, so a `slidev-build` hook runs at the pre-push stage for pushes that touch the directory, and [`../../.github/workflows/slides.yml`](../../.github/workflows/slides.yml) repeats it for every pull request and every push to `develop`. That lane is separate from [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml), which carries lint, test, build, and hooks and triggers on `master`, so a deck change never installs a Rust toolchain to prove nothing.
 
 ## Publish
 

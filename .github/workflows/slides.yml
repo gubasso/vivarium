@@ -1,0 +1,49 @@
+# slides — the deck's check lane.
+#
+# Every Markdown hook is excluded from `slides/` (ADR-0103), so whether the
+# deck still builds is the whole check. A deck fails at the Slidev layer — an
+# unknown layout, an icon from a set that is not installed, a component that
+# no longer resolves — and none of that is visible to a linter reading the
+# file as prose.
+#
+# Split out of ci.yml so the two lanes trigger independently: this one runs on
+# `develop` and on pull requests, ci.yml runs on `master`. A change to the
+# presentation tree therefore no longer installs a Rust toolchain to prove
+# nothing, and a change to the crate no longer waits on a deck build.
+#
+# Runs through the devShell rather than actions/setup-node, unlike the deploy
+# lane in pages.yml. This is the check lane, so the node that builds the deck
+# here should be the node the repository pins — that is the whole reason every
+# other check job goes through `nix develop`.
+#
+# Overlap worth knowing: a push to `develop` that touches `slides/` also runs
+# pages.yml, whose build job compiles the same deck before deploying it. The
+# duplicate costs about two minutes and buys a named check that fails on the
+# deck rather than on the publish. Drop the `push` trigger here if that stops
+# being worth it; the pull-request trigger is the one that gates.
+name: slides
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Cache Nix store
+        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
+      - name: Install deck dependencies
+        run: nix develop --command just slides-install
+      - name: Build deck
+        run: nix develop --command just slides-build

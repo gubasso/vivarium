@@ -11,12 +11,21 @@
 # "files were modified by this hook", which is exactly the failure such a
 # contributor should see. Its `fetch-depth: 0` is load-bearing for gitleaks —
 # a shallow clone would let it pass over history it never fetched.
+#
+# Trigger: `master` only. The deck has its own lane in slides.yml, which runs
+# on `develop` and on pull requests, so a change to the presentation tree no
+# longer drags the Rust toolchain through a two-minute install to prove
+# nothing. What this costs is real and deliberate: nothing between a merge to
+# `develop` and a release tag runs lint, test, build, or hooks, so the first
+# CI a change meets is after promote-to-master.yml has already advanced
+# `master` onto its tag. Restoring pre-merge gating is adding `pull_request:`
+# back below.
 name: ci
 
 on:
   push:
-    branches: [develop]
-  pull_request:
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -63,26 +72,6 @@ jobs:
       - name: Build
         run: nix develop --command just build
 
-  # The deck's only gate. Every Markdown hook is excluded from `slides/`
-  # (ADR-0103), so whether it still builds is the whole check — and it belongs
-  # here rather than in the deploy lane, because a broken deck should fail the
-  # pull request, not the publish. Runs through the devShell like every other
-  # job so the node that builds the deck is the node the repository pins.
-  slides:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
-      - name: Cache Nix store
-        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
-      - name: Install deck dependencies
-        run: nix develop --command just slides-install
-      - name: Build deck
-        run: nix develop --command just slides-build
-
   hooks:
     runs-on: ubuntu-latest
     steps:
@@ -109,14 +98,19 @@ jobs:
         # pull request anchors at its base branch; a push anchors at the
         # ref's previous tip (`github.event.before`), which is all zeros only
         # while the ref is being created — that one push has no anchor and is
-        # skipped by name rather than guessed at. The anchor crosses as an
-        # environment variable rather than by interpolation so a ref name is
-        # data, not script.
+        # skipped by name rather than guessed at. A manual run carries no
+        # previous tip at all and is skipped the same way. The anchor crosses
+        # as an environment variable rather than by interpolation so a ref
+        # name is data, not script.
+        #
+        # The pull-request arm this expression used to carry is gone with the
+        # `pull_request` trigger: an unreachable branch that still reads as
+        # coverage is worse than no branch.
         env:
-          RANGE_START: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+          RANGE_START: ${{ github.event.before }}
         run: |
-          if [ "$RANGE_START" = "0000000000000000000000000000000000000000" ]; then
-            echo "ref creation carries no previous tip to anchor a message range; skipping"
+          if [ -z "$RANGE_START" ] || [ "$RANGE_START" = "0000000000000000000000000000000000000000" ]; then
+            echo "no previous tip to anchor a message range; skipping"
             exit 0
           fi
           nix develop --command committed --fixup --wip "${RANGE_START}..HEAD"
