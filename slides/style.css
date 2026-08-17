@@ -29,6 +29,14 @@
   --slidev-theme-primary: var(--accent);
   --slidev-code-background: var(--surface);
   --slidev-code-foreground: var(--deep);
+
+  /* Slidev ships 12px/18px, which is sized for a code block that shares a slide
+   * with prose. Here a block is one of two columns and carries the artifact the
+   * slide is about, so it is read rather than glanced at. The walkthrough slides
+   * are the widest and longest blocks in the deck and still clear the frame at
+   * this size — raising it further is what starts costing a line. */
+  --slidev-code-font-size: 15px;
+  --slidev-code-line-height: 23px;
 }
 
 html.dark {
@@ -573,6 +581,182 @@ html.dark .slidev-layout :not(pre) > code {
   color: var(--deep);
 }
 
+/* ─── The tool in use — Ana's week, one step per slide. ────────────────── */
+
+/* The step label above each title, in the same voice as the architecture
+ * figure's lane tags: quiet, uppercase, structural. It is what makes seven
+ * slides read as one simulation rather than seven features. */
+.story-tag {
+  margin-bottom: 0.6rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+
+/* Every step keeps one shape: explanation on the left, the artifact itself —
+ * a file, a transcript — on the right, so the reader always knows where the
+ * thing being talked about lives. */
+.story-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 2rem;
+  align-items: start;
+  margin-top: 1rem;
+}
+
+.code-label {
+  margin: 0.3rem 0 0.15rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+
+/* Definition rows — the artifact kinds, and each step's points.
+ *
+ * The type on this family of slides is set from the tallest slide in it, not
+ * from each slide on its own: they are read as one sequence, so a step that
+ * jumped a size would read as emphasis nobody meant. `The co-workers` is the
+ * binding one — three points and a closing band — and every size below leaves
+ * it inside the frame. A step that grows a point wants a pass over these. */
+.kind + .kind {
+  margin-top: 1rem;
+}
+
+.kind-name {
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: var(--deep);
+}
+
+.kind-name svg {
+  vertical-align: -0.15em;
+  margin-right: 0.35rem;
+  color: var(--accent);
+}
+
+.kind-note {
+  margin-top: 0.15rem;
+  font-size: 1.05rem;
+  line-height: 1.5;
+  color: var(--mute);
+}
+
+/* Numbered commands — the bind-and-boot sequence. */
+.cmd-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+}
+
+.cmd-step + .cmd-step {
+  margin-top: 1rem;
+}
+
+.cmd-num {
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.cmd-name {
+  font-size: 1.15rem;
+}
+
+.cmd-note {
+  margin-top: 0.15rem;
+  font-size: 1.05rem;
+  line-height: 1.5;
+  color: var(--mute);
+}
+
+/* One command per task — a verb table: the command left, what it buys right. */
+.day {
+  margin-top: 1.2rem;
+}
+
+/* The command column is fixed rather than sized to content, so every verb
+ * starts on one axis and the eye reads the list as a column of commands. It is
+ * wide enough for the longest of them — `viv exec -t -- claude`, plus its icon
+ * and the inline-code padding — because a command that wraps stops being one. */
+.day-row {
+  display: grid;
+  grid-template-columns: 18rem 1fr;
+  gap: 0 1rem;
+  align-items: baseline;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--surface);
+}
+
+.day-cmd {
+  font-size: 1.2rem;
+}
+
+.day-cmd svg {
+  vertical-align: -0.15em;
+  margin-right: 0.35rem;
+  color: var(--accent);
+}
+
+.day-note {
+  font-size: 1.1rem;
+  line-height: 1.45;
+  color: var(--mute);
+}
+
+/* What vivarium quietly handles — the accent twin of the costs grid: costs
+ * carry a gray edge, defaults carried for you carry a green one. */
+.quiet-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem 1.1rem;
+  margin-top: 1.2rem;
+}
+
+.quiet-item {
+  padding-left: 0.85rem;
+  border-left: 2px solid var(--accent);
+}
+
+.quiet-head {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--deep);
+}
+
+.quiet-head svg {
+  vertical-align: -0.15em;
+  margin-right: 0.35rem;
+  color: var(--accent);
+}
+
+.quiet-text {
+  margin-top: 0.2rem;
+  font-size: 1.05rem;
+  line-height: 1.45;
+  color: var(--mute);
+}
+
+/* The step slides' closing line. Same form as the costs slide's note; defined
+ * apart because the two slides' jobs differ and may drift apart. */
+.story-note {
+  margin-top: 1.1rem;
+  padding-left: 0.9rem;
+  border-left: 3px solid var(--accent);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--deep);
+}
+
 /* ─── Why Nix — a side-by-side, because the claim is comparative. ─────── */
 
 /* A table rather than a row of cards. Cards put each claim first and the thing
@@ -789,6 +973,67 @@ html.dark .slidev-layout :not(pre) > code {
   color: var(--mute);
 }
 
+/* ─── Three beats and nothing else — the turn, and the close. ─────────── */
+
+/* Two slides share this shape, and the sharing is the point: `So I built one`
+ * opens the first-person account and `Closing thoughts` shuts it, so they are
+ * meant to be recognised as the same slide twice. Both are talk-track slides —
+ * the speaker carries them — so the type is set large and the row count is
+ * fixed at three on both. A third slide reaching for this family is a sign the
+ * bracket is being diluted rather than reused.
+ *
+ * The label column is what keeps a beat from reading as a bullet: each one is a
+ * stage of one story, and the labels are the only thing that says so. */
+.journey {
+  display: grid;
+  gap: 2rem;
+  margin-top: 2.4rem;
+}
+
+.journey-step {
+  display: grid;
+  grid-template-columns: 9rem 1fr;
+  gap: 0 1.6rem;
+  align-items: baseline;
+}
+
+/* Same quiet uppercase voice as the walkthrough's step tags, so the two
+ * narrative devices in the deck read as one hand. */
+.journey-when {
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mute);
+  white-space: nowrap;
+}
+
+.journey-when svg {
+  vertical-align: -0.15em;
+  color: var(--accent);
+}
+
+/* Each beat is one line, and the size is set from that: at this column width a
+ * beat has room for about fifty characters, which is the real constraint on
+ * what a beat may say. A beat that wraps wants fewer words, not a smaller size. */
+.journey-what {
+  font-size: 1.7rem;
+  line-height: 1.35;
+  color: var(--deep);
+}
+
+/* The closing line, in the same form as the walkthrough steps' — defined apart
+ * because this one is an aside in the speaker's own voice, not a summary of the
+ * rows above it. */
+.journey-note {
+  margin-top: 2.2rem;
+  padding-left: 0.9rem;
+  border-left: 3px solid var(--accent);
+  font-size: 1.05rem;
+  line-height: 1.5;
+  color: var(--mute);
+  max-width: 44rem;
+}
+
 /* ─── Cover — the same dark gradient in both modes. ───────────────────── */
 
 .slidev-layout.cover {
@@ -887,6 +1132,17 @@ html.dark .slidev-layout :not(pre) > code {
   text-transform: uppercase;
   color: var(--accent-bright);
   opacity: 0.8;
+}
+
+/* The closing address, on the last poster only. Set larger than the lead above
+ * it and in the accent rather than the muted body colour, because it is the one
+ * thing on any slide in this deck a person in the back row may want to write
+ * down, and it stays on screen through the questions. */
+.slidev-layout.center .closing-link {
+  margin-top: 2.2rem;
+  font-size: 1.3rem;
+  letter-spacing: 0.01em;
+  color: var(--accent-bright);
 }
 
 .slidev-layout.center .section-lead {
