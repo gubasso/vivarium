@@ -59,11 +59,19 @@ check: fmt lint test
 # CI without them. Skips at the push stage: the nextest hooks because
 # `just test-ci` already runs profile `ci`, a superset of `pre-push`, and
 # clippy-strict because `just lint` is its byte-identical twin in CI's lint
-# job. `cargo-doc-tests` is NOT skipped — nextest cannot run doctests, so
-# this is CI's only doctest coverage.
+# job. `slidev-build` joins them for the same reason: CI's `slides` job runs
+# `just slides-install` then `just slides-build`, and this recipe's job never
+# installs slides/node_modules, so the hook would fail here on a missing
+# dependency tree rather than on a broken deck. `cargo-doc-tests` is NOT
+# skipped — nextest cannot run doctests, so this is CI's only doctest
+# coverage.
+#
+# Skipping it here does not weaken the local gate: `git push` runs the
+# pre-push stage without this SKIP list, so a developer still cannot push a
+# deck that fails to build.
 hooks:
     nix develop --command pre-commit run --all-files --hook-stage pre-commit
-    SKIP=cargo-nextest-unit,cargo-nextest-integration,clippy-strict nix develop --command pre-commit run --all-files --hook-stage pre-push
+    SKIP=cargo-nextest-unit,cargo-nextest-integration,clippy-strict,slidev-build nix develop --command pre-commit run --all-files --hook-stage pre-push
 
 # --- Slides ---------------------------------------------------------------
 # The Slidev deck under slides/. Nix supplies node through the devShell; npm
