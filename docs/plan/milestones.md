@@ -4,7 +4,7 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 014 workspace-and-persistence — active — 2 sessions — implementation complete; slice 004 delivered the guest connectivity its coding-agent clause was waiting on, so what remains is the run itself, against the operator's own agent credentials. See the slice `Revisions`
+Nothing. The next slice to start is 005.
 
 ## later
 
@@ -24,3 +24,4 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 012 first-boot — done — 3 sessions — the guest module had to be composed into the generated flake; see the slice `Revisions`
 - 013 exec-and-shell — done — 3 sessions — the launch specification had to carry the guest cwd, the startup lock, and the guest process environment; see the slice `Revisions`
 - 004 enforce-egress-allowlist — done — 4 sessions — sessions 2 through 4 ran as one merged pass under the appetite; see the slice `Revisions`
+- 014 workspace-and-persistence — done — 2 sessions — closed out of order: the coding-agent clause needed the guest connectivity slice 004 delivers, so the run that closed it was made after 004; see the slice `Revisions`
