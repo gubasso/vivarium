@@ -4,9 +4,11 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
+- 022 a-file-mount-serves-only-its-file — shaped — 2 sessions — next to start; closes the file-mount confinement residual slice 019 recorded (Q-031)
+
 ## later
 
-- 020 many-workspaces-in-one-sandbox — later — 3 sessions — needs 019
+- 020 many-workspaces-in-one-sandbox — later — 3 sessions — needs 019 (done); sequenced behind 022
 - 021 the-manifest-is-the-sandbox — later — 4 sessions — needs 020; item 1 blocked on Q-029
 - 005 cli-runtime-plumbing — later — 2 sessions
 - 006 generate-config-contract — later — 2 sessions
