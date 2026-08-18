@@ -20,6 +20,12 @@ indent_size = 2
 [Makefile]
 indent_style = tab
 
+# editorconfig-checker defaults to indent_size = 4 when a type is unset, so the
+# 2-space deck stylesheet needs the width stated rather than inferred.
+[*.{css,vue}]
+indent_style = space
+indent_size = 2
+
 [*.md]
 trim_trailing_whitespace = false
 max_line_length = off

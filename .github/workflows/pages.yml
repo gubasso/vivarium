@@ -1,0 +1,91 @@
+# pages — build the Slidev deck and publish it to GitHub Pages.
+#
+# Branch model: `develop` is the trunk and `master` holds only released commits
+# (promote-to-master.yml fast-forwards it onto each release tag). The deck is
+# documentation of the current shape rather than of the last release, so it
+# deploys from `develop`. Publishing from `master` would leave the site frozen
+# between releases and say nothing about it.
+#
+# One-time repository setting: Settings -> Pages -> Build and deployment ->
+# Source must be "GitHub Actions". Nothing here can set it, and the first
+# deploy fails without it.
+#
+# The build job installs node through actions/setup-node rather than through
+# the devShell every other workflow uses. That is deliberate: this is a deploy
+# lane, and the check that the deck compiles under the repository's own
+# toolchain is ci.yml's `slides` job. Paying for a Nix install here would buy
+# nothing the check lane does not already own.
+name: pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [develop]
+    paths:
+      - 'slides/**'
+      - '.github/workflows/pages.yml'
+
+permissions:
+  contents: read
+
+# Pages serialises deploys, and a cancelled one leaves the site mid-swap.
+# Queue instead.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: slides
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 'lts/*'
+          cache: npm
+          cache-dependency-path: slides/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The base path is derived from the repository name, not written down.
+      # A project page serves from /<repo>/, and a hardcoded literal turns a
+      # rename into every asset 404ing with nothing in the log to say why.
+      # `just slides-build` carries the same value as a literal for local use.
+      #
+      # The name crosses as an environment variable rather than by template
+      # interpolation, so it is data rather than script — the same reason the
+      # commit-message range in ci.yml is passed this way.
+      - name: Build
+        env:
+          PAGES_BASE: ${{ github.event.repository.name }}
+        run: npm run build -- --base "/$PAGES_BASE/"
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: slides/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # Scoped to this job so the build job above runs with contents: read only.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

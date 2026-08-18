@@ -65,7 +65,10 @@
             pkgs.just
             pkgs.pre-commit
             # Nix owns runtimes; pre-commit owns hooks. markdownlint-cli2 uses
-            # this Node via language_version: system instead of nodeenv.
+            # this Node via language_version: system instead of nodeenv. The
+            # `slides/` deck is the second consumer: Nix supplies the runtime
+            # and npm supplies Slidev, pinned by slides/package-lock.json, the
+            # same division of labour (ADR-0104).
             pkgs.nodejs
             # Interpreter for the language:system check-table-pipes and
             # check-markdown-emphasis hooks.

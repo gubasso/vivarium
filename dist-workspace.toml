@@ -23,3 +23,14 @@ cargo-dist-version = "0.32.0"
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+# `.github/workflows/release.yml` is hand-maintained and dist must not compare
+# against or regenerate it. The generated form leaves `$RUNNER_TEMP/notes.txt`
+# unquoted and word-splits `$PRERELEASE_FLAG`; the committed form quotes the
+# path and expands the flag as an array. Without this key dist's `plan` job
+# fails on every run, and the only other exit is to accept the unquoted form
+# back — which is a shell-injection shape, not a formatting preference.
+#
+# The cost is that dist no longer ports its own upgrades into that file, so a
+# change to `cargo-dist-version` above means diffing the generated workflow by
+# hand. `docs/reference/tracking.yaml` carries that obligation with a cadence.
+allow-dirty = ["ci"]

@@ -12,6 +12,7 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 007 build-test-lanes — later — 4 sessions
 - 008 enforce-implementation-status — later — 2 sessions
 - 009 automate-backend-advisories — later — 2 sessions
+- 018 the-user-owns-the-image — later — 4 sessions
 
 ## closed
 

@@ -83,6 +83,13 @@
   "customRules": ["markdownlint-rule-relative-links"],
   "ignores": [
     "node_modules/",
-    "draft*"
+    "draft*",
+    // The Slidev deck is presentation source, not documentation prose: its
+    // per-slide `---` front matter, repeated H1s, and `@/`-rooted imports are
+    // deck syntax that this profile has no way to read as valid. The hook in
+    // .pre-commit-config.yaml excludes `^slides/` as well; this entry is what
+    // makes a direct `markdownlint-cli2` invocation agree with the hook.
+    // ADR-0104 owns the reasoning.
+    "slides/"
   ]
 }

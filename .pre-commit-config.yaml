@@ -413,6 +413,14 @@ repos:
         entry: scripts/check-markdown-emphasis
         language: system
         types: [markdown]
+        # `slides/` is presentation, not shipped prose, and a slide carries a
+        # beat with weight the way a paragraph carries it with a sentence. The
+        # per-line `<!-- allow-emphasis: -->` escape cannot express this: the
+        # checker rejects file-level scope by design and demands the comment
+        # immediately precede each violating line. So the exemption is
+        # directory-scoped and named in ADR-0104 rather than smeared across a
+        # deck as hundreds of individually-justified escapes.
+        exclude: ^slides/
         stages: [pre-commit]
 
   # --- Table pipe integrity (MUST run before dprint) ---
@@ -437,6 +445,12 @@ repos:
         entry: scripts/check-table-pipes
         language: system
         types: [markdown]
+        # This guard exists because dprint re-pads a table down to the header's
+        # column count and discards the overflow. dprint does not run on
+        # `slides/` (see the dprint-markdown hook below), so there is nothing
+        # here for the guard to protect against, and leaving it on would make
+        # the deck answer for a formatter it never meets.
+        exclude: ^slides/
         stages: [pre-commit]
 
   - repo: local
@@ -446,6 +460,15 @@ repos:
         entry: dprint fmt --config dprint.markdown.json
         language: system
         files: '\.(md|markdown)$'
+        # The one exclusion in this file that is load-bearing rather than
+        # tidy. A Slidev deck separates slides with `---` and opens each one
+        # with its own YAML front matter; `textWrap: "never"` unwraps the line
+        # above such a `---` onto it, and CommonMark then reads the pair as a
+        # setext H2. The deck does not fail to build — it builds wrong, with
+        # slides silently fused and their layout keys turned into prose. There
+        # is no formatter-visible signal afterwards, which is why the deck is
+        # kept out rather than taught to survive the pass. ADR-0104.
+        exclude: '^slides/.*\.(md|markdown)$'
         pass_filenames: true
         stages: [pre-commit]
 
@@ -496,6 +519,13 @@ repos:
     rev: v0.23.2
     hooks:
       - id: markdownlint-cli2
+        # `default: true` gives this hook MD025 (one top-level H1 per document)
+        # and the relative-links rule, and a deck breaks both by construction:
+        # every slide opens with an H1, and Slidev's `@/` and `<<<` references
+        # are resolved by Vite, not by the filesystem walk the rule performs.
+        # The same exclusion is repeated in .markdownlint-cli2.jsonc's
+        # `ignores` so a direct invocation agrees with this hook.
+        exclude: ^slides/
         language_version: system
         additional_dependencies: ['markdownlint-rule-relative-links']
       - id: markdownlint-cli2
@@ -519,3 +549,26 @@ repos:
         args: ['--config', '.markdownlint/adr.markdownlint-cli2.jsonc']
         language_version: system
         additional_dependencies: ['markdownlint-rule-relative-links']
+
+  # --- Slides (Slidev deck) -------------------------------------------------
+  #
+  # Every Markdown gate above is excluded from `slides/`, so the deck's only
+  # local check is whether it still builds. That is the check that matters: a
+  # deck breaks at the Slidev layer — an unknown layout, a missing icon set, a
+  # component that no longer resolves — and none of those are visible to a
+  # linter reading the file as prose.
+  #
+  # Push-only, and scoped by `files:` so a push touching nothing under
+  # `slides/` never pays for it. Same Nix-owns-the-runtime model as the cargo
+  # and nix hooks at this stage: node comes from the devShell, Slidev comes
+  # from `slides/node_modules`. The guard names the missing install rather
+  # than letting npm report it as a missing script.
+  - repo: local
+    hooks:
+      - id: slidev-build
+        name: slidev build (deck still compiles)
+        entry: bash -c 'cd slides && { [ -d node_modules ] || { echo "slides/node_modules is missing; run \`just slides-install\`" >&2; exit 1; }; } && npm run build'
+        language: system
+        files: ^slides/
+        pass_filenames: false
+        stages: [pre-push]

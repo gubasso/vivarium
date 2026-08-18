@@ -59,11 +59,37 @@ check: fmt lint test
 # CI without them. Skips at the push stage: the nextest hooks because
 # `just test-ci` already runs profile `ci`, a superset of `pre-push`, and
 # clippy-strict because `just lint` is its byte-identical twin in CI's lint
-# job. `cargo-doc-tests` is NOT skipped — nextest cannot run doctests, so
-# this is CI's only doctest coverage.
+# job. `slidev-build` joins them for the same reason: the slides.yml lane runs
+# `just slides-install` then `just slides-build`, and this recipe's job never
+# installs slides/node_modules, so the hook would fail here on a missing
+# dependency tree rather than on a broken deck. `cargo-doc-tests` is NOT
+# skipped — nextest cannot run doctests, so this is CI's only doctest
+# coverage.
+#
+# Skipping it here does not weaken the local gate: `git push` runs the
+# pre-push stage without this SKIP list, so a developer still cannot push a
+# deck that fails to build.
 hooks:
     nix develop --command pre-commit run --all-files --hook-stage pre-commit
-    SKIP=cargo-nextest-unit,cargo-nextest-integration,clippy-strict nix develop --command pre-commit run --all-files --hook-stage pre-push
+    SKIP=cargo-nextest-unit,cargo-nextest-integration,clippy-strict,slidev-build nix develop --command pre-commit run --all-files --hook-stage pre-push
+
+# --- Slides ---------------------------------------------------------------
+# The Slidev deck under slides/. Nix supplies node through the devShell; npm
+# supplies Slidev, pinned by slides/package-lock.json (ADR-0104).
+
+# Install the deck's pinned dependencies.
+slides-install:
+    nix develop --command bash -c 'cd slides && npm ci'
+
+# Serve the deck with hot reload at http://localhost:3030.
+slides-dev:
+    nix develop --command bash -c 'cd slides && npm run dev'
+
+# Build the deck into slides/dist under the deployed base path.
+# Twin of the build step in .github/workflows/pages.yml: that workflow derives
+# the base from the repository name, so keep this literal equal to it.
+slides-build:
+    nix develop --command bash -c 'cd slides && npm run build -- --base /vivarium/'
 
 # --- Developer install ----------------------------------------------------
 # Install logic lives in scripts/install-dev, never in this file. The devShell
