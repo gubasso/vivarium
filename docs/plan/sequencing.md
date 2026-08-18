@@ -16,41 +16,42 @@ A decision consumed by a closed slice is already realized; [`../reference/implem
 
 The chain in flight. These clusters are consumed by slices 011 through 014, and each slice's `Governed by` section carries the individual links.
 
-- Manifest, composition, and artifact model — `ADR-0002`, `ADR-0003`, `ADR-0004`, `ADR-0061`. Consumed by [slice 011](slices/011-resolve-and-evaluate/README.md).
+- Manifest, composition, and artifact model — `ADR-0002`, `ADR-0003`, `ADR-0004`, `ADR-0061`. Consumed by [slice 011](./slices/011-resolve-and-evaluate/README.md).
 - Config roots, binding, and precedence — `ADR-0005`, `ADR-0006`, `ADR-0011`, `ADR-0026`, `ADR-0029`, `ADR-0045`. Consumed by slice 011.
 - State layout and durability — `ADR-0052`, `ADR-0053`, `ADR-0058`, `ADR-0059`. Consumed by slice 011.
-- CLI output and failure contract — `ADR-0015`, `ADR-0028`, `ADR-0033`. Consumed by slice 011, with the `start` boundary settled in [slice 012](slices/012-first-boot/README.md) through Q-008.
-- Lifecycle and runtime ownership — `ADR-0013`, `ADR-0018`, `ADR-0030`, `ADR-0055`, `ADR-0056`, `ADR-0097`. Consumed by slice 012 for the boot itself, and again by [slice 013](slices/013-exec-and-shell/README.md) for the reuse-or-boot routine a command needing a VM runs.
+- CLI output and failure contract — `ADR-0015`, `ADR-0028`, `ADR-0033`. Consumed by slice 011, with the `start` boundary settled in [slice 012](./slices/012-first-boot/README.md) through Q-008.
+- Lifecycle and runtime ownership — `ADR-0013`, `ADR-0018`, `ADR-0030`, `ADR-0055`, `ADR-0056`, `ADR-0097`. Consumed by slice 012 for the boot itself, and again by [slice 013](./slices/013-exec-and-shell/README.md) for the reuse-or-boot routine a command needing a VM runs.
 - Guest store provisioning — `ADR-0038`, `ADR-0084`, `ADR-0087`, `ADR-0088`. Consumed by slice 012.
 - Open egress by default — `ADR-0007`. Consumed by slice 012 as the reason a first boot needs no network work.
-- Guest control transport — `ADR-0016`, `ADR-0065`, `ADR-0071`. Guest half realized in slice 003; host half realized in [slice 013](slices/013-exec-and-shell/README.md).
-- Workspace, volumes, and disposability — `ADR-0009`, `ADR-0017`, `ADR-0019`, `ADR-0037`, `ADR-0043`, `ADR-0066`, `ADR-0067`, `ADR-0080`, `ADR-0092`, `ADR-0100`. Consumed by slice 012 for the mount launch constructs and [slice 014](slices/014-workspace-and-persistence/README.md) for what persists; slice 014 item 2 settled `ADR-0066` and `ADR-0092` as first-boot correctness, so slice 012's `Governed by` now carries both. `ADR-0100` was raised by slice 014 item 1 rather than shaped ahead of it, and supersedes `ADR-0017` in the same slice that consumes it.
+- Guest control transport — `ADR-0016`, `ADR-0065`, `ADR-0071`. Guest half realized in slice 003; host half realized in [slice 013](./slices/013-exec-and-shell/README.md).
+- Workspace, volumes, and disposability — `ADR-0009`, `ADR-0017`, `ADR-0019`, `ADR-0037`, `ADR-0043`, `ADR-0066`, `ADR-0067`, `ADR-0080`, `ADR-0092`, `ADR-0100`. Consumed by slice 012 for the mount launch constructs and [slice 014](./slices/014-workspace-and-persistence/README.md) for what persists; slice 014 item 2 settled `ADR-0066` and `ADR-0092` as first-boot correctness, so slice 012's `Governed by` now carries both. `ADR-0100` was raised by slice 014 item 1 rather than shaped ahead of it, and supersedes `ADR-0017` in the same slice that consumes it.
 
 ## Phase 2 — funded and sequenced behind it
 
 Shaped slices carrying the `later` status. They are not deferred indefinitely; they are sequenced behind a product that runs.
 
-- Egress enforcement — `ADR-0007`, `ADR-0044`, `ADR-0064`. Consumed by [slice 004](slices/004-enforce-egress-allowlist/README.md).
-- Self-supply and lock scope — `ADR-0102`, with `ADR-0058` and `ADR-0059` bounding the seam it rides and the pins it leaves alone. Consumed by [slice 015](slices/015-the-binary-supplies-itself/README.md), sequenced ahead of slice 005: the flawed shape `ADR-0102` removes — a generated flake pinning a Nix-built `viv` against the installed one — sits under every later slice's verification, it produced a launch that reported success against a record the running tool could not read, and removing a self-dependency gets more expensive with each slice built on top of it.
-- CLI runtime plumbing — `ADR-0031`, `ADR-0032`, `ADR-0033`, `ADR-0034`, `ADR-0069`. Consumed by [slice 005](slices/005-cli-runtime-plumbing/README.md).
-- Generated config contract — `ADR-0012`, `ADR-0047`, `ADR-0057`. Consumed by [slice 006](slices/006-generate-config-contract/README.md).
-- Build and test lanes — `ADR-0076`, `ADR-0077`. Consumed by [slice 007](slices/007-build-test-lanes/README.md).
-- Status enforcement and stability policy — `ADR-0012`, `ADR-0075`. Consumed by [slice 008](slices/008-enforce-implementation-status/README.md).
-- Backend advisories — `ADR-0049`, `ADR-0078`, `ADR-0079`. Consumed by [slice 009](slices/009-automate-backend-advisories/README.md).
+- Egress enforcement — `ADR-0007`, `ADR-0044`, `ADR-0064`. Consumed by [slice 004](./slices/004-enforce-egress-allowlist/README.md).
+- Self-supply and lock scope — `ADR-0102`, with `ADR-0058` and `ADR-0059` bounding the seam it rides and the pins it leaves alone. Consumed by [slice 015](./slices/015-the-binary-supplies-itself/README.md), sequenced ahead of slice 005: the flawed shape `ADR-0102` removes — a generated flake pinning a Nix-built `viv` against the installed one — sits under every later slice's verification, it produced a launch that reported success against a record the running tool could not read, and removing a self-dependency gets more expensive with each slice built on top of it.
+- CLI runtime plumbing — `ADR-0031`, `ADR-0032`, `ADR-0033`, `ADR-0034`, `ADR-0069`. Consumed by [slice 005](./slices/005-cli-runtime-plumbing/README.md).
+- Generated config contract — `ADR-0012`, `ADR-0047`, `ADR-0057`. Consumed by [slice 006](./slices/006-generate-config-contract/README.md).
+- Build and test lanes — `ADR-0076`, `ADR-0077`. Consumed by [slice 007](./slices/007-build-test-lanes/README.md).
+- Status enforcement and stability policy — `ADR-0012`, `ADR-0075`. Consumed by [slice 008](./slices/008-enforce-implementation-status/README.md).
+- Backend advisories — `ADR-0049`, `ADR-0078`, `ADR-0079`. Consumed by [slice 009](./slices/009-automate-backend-advisories/README.md).
+- Declared mounts — `ADR-0020`, `ADR-0021`, `ADR-0071`, with `ADR-0027` bounding the confinement each new share's daemon inherits. Consumed by [slice 019](./slices/019-declared-mounts-reach-the-guest/README.md), which was sequenced ahead of slice 005 because the declaration surface was specified, typed, emitted, merged, and consumed by nothing; the slice is `done` and the share list the two slices after it grow now exists.
+- Many workspaces per sandbox — `ADR-0100` read a second time, for the scope N16 gains when more than one tree is mirrored, with `ADR-0009` fixing why the path is injected at launch. Consumed by [slice 020](./slices/020-many-workspaces-in-one-sandbox/README.md), which is where several projects first share one VM.
+- Sandbox identity and binding — `ADR-0011`, `ADR-0029`, `ADR-0043`, `ADR-0054` as the records superseded, with `ADR-0040`, `ADR-0052`, and `ADR-0053` bounding what replaces them. Consumed by [slice 021](./slices/021-the-manifest-is-the-sandbox/README.md), whose own first item is the decision set and is blocked on [`Q-029`](./open-questions.md).
 
 ## Phase 3 — decided, not yet funded
 
 No slice consumes these. Each cluster is a decision made in advance of the work, which is why it is written down rather than remembered. Funding one means shaping a slice for it, at which point its cluster moves to Phase 2.
 
 - Store robustness under pressure — `ADR-0039`, `ADR-0050`, `ADR-0083`, `ADR-0085`, `ADR-0086`, `ADR-0090`, `ADR-0091`.
-- Composition extensions beyond one manifest — `ADR-0020`, `ADR-0021`, `ADR-0041`, `ADR-0060`, `ADR-0062`, `ADR-0063`, `ADR-0073`, `ADR-0074`.
+- Composition extensions beyond one manifest — `ADR-0041`, `ADR-0060`, `ADR-0062`, `ADR-0063`, `ADR-0073`, `ADR-0074`. `ADR-0020` and `ADR-0021` left this cluster for Phase 2 when slice 019 took them.
 - Generations and build history — `ADR-0014`.
 - Memory elasticity and capacity — `ADR-0035`, `ADR-0082`, `ADR-0094`.
 - Doctor — `ADR-0023`.
 - Diagnostic presentation — `ADR-0068`.
 - Config inspection and global precedence — `ADR-0022`, `ADR-0042`, `ADR-0046`.
-- Sharing and secrets policy — `ADR-0040`.
-- Binding hygiene — `ADR-0054`.
 - Repository boundaries and best-effort confinement — `ADR-0098`, `ADR-0099`.
 
 ## What the acceptance harness is still owed

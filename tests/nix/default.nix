@@ -48,6 +48,9 @@ let
         # a third reading of the same evaluation instead of against the request.
         # Everything past the two reserved volumes is what a layer declared.
         declaredVolumes = lib.drop 2 image.guest.config.microvm.volumes;
+        # Same shape for shares: the two reserved entries lead, and everything
+        # after them is a declared mount's share (slice 019).
+        declaredMounts = lib.drop 2 image.guest.config.microvm.shares;
         # Read off the image's own resolved settings. Re-deriving them from the
         # defaults is what `nix/default.nix` used to do to itself, and it is how the
         # leg-to-unit map came to exist twice.
@@ -189,6 +192,17 @@ let
       ];
     };
 
+    # The `[[mounts]]` twin of `declared-volume`, and for the same reason: the
+    # shipped image declares no mount, so every claim about derived shares —
+    # the appended `microvm.shares` entries, the one socket-token shape, the
+    # unexpanded source, the read-only guest flags, and the bind unit's table —
+    # would otherwise be asserted over an empty list (slice 019).
+    declared-mount = mkVerification {
+      extraModules = [
+        (import ./fixtures/declared-mount.nix { inherit (product) optionsModule; })
+      ];
+    };
+
     # The pool constant, under test. ADR-0051 pinned 4 on mechanism alone; the
     # concurrent sweep these variants run is what moved it to the daemon's own 0
     # (ADR-0096). They stay because the constant is only ever as good as its last
@@ -234,6 +248,10 @@ let
     # path deleted. It is a guest build like the others, and it is the only place
     # the declared half is checked without spending a boot.
     first-microvm-declared-volume = images.declared-volume.contract;
+    # And four, for exactly the declared-volume reason applied to `[[mounts]]`:
+    # every other image's share list is the two reserved entries, so the derived
+    # half would pass vacuously without this build.
+    first-microvm-declared-mount = images.declared-mount.contract;
   };
 in
 {

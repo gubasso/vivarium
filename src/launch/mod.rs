@@ -7,6 +7,7 @@ mod console;
 pub mod control;
 mod credentials;
 mod error;
+pub mod mounts;
 mod policy;
 mod readiness;
 pub mod secure_fs;
@@ -22,8 +23,8 @@ pub use readiness::{ReadinessError, ReadinessReport, ReadinessStatus};
 pub use spec::{
     BACKEND, BackendPrograms, BootMetadata, CredentialSpec, DescriptorBudget, EgressSpec,
     GuestSession, IdentityTranslation, LAUNCH_SCHEMA_VERSION, LaunchEgressMode, LaunchSpec,
-    NetworkSpec, ResourceSpec, RuntimePaths, ShareSpec, SocketLegs, VIRTIOFSD_RLIMIT_NOFILE,
-    VersionEnvelope, VolumeSpec, WORKSPACE_SHARE_TAG, unmirrorable,
+    MountPlan, MountPlanKind, NetworkSpec, ResourceSpec, RuntimePaths, ShareSpec, SocketLegs,
+    VIRTIOFSD_RLIMIT_NOFILE, VersionEnvelope, VolumeSpec, WORKSPACE_SHARE_TAG, unmirrorable,
 };
 pub use supervisor::{
     ChildExit, ChildKind, GuestReadiness, LaunchReady, ShutdownReason, Supervisor,

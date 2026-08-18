@@ -5,10 +5,13 @@ set -eu
 # volume through /dev/disk/by-label/<label>. Compare the two independently
 # realised artifacts — the launcher's own JSON and the guest's own fstab —
 # rather than two copies of one Nix constant, which cannot disagree.
-launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' \
-  "$VIVARIUM_RUNNER/bin/vivarium-first-microvm" | head -n1)
-test -n "$launcher_json"
-test "$(jq -r .schemaVersion "$launcher_json")" = 7
+# The published copy `viv` reads pre-boot (slice 019); the runner script inlines
+# the same store file, and the readlink comparison is what proves there is ONE
+# copy rather than a published one and a divergent inlined one.
+launcher_json=$VIVARIUM_RUNNER/share/vivarium/launch-arguments.json
+test -r "$launcher_json"
+grep -qF "$(readlink -f "$launcher_json")" "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"
+test "$(jq -r .schemaVersion "$launcher_json")" = 8
 test "$(jq -r .descriptorBudget.limit "$launcher_json")" = 524288
 test "$(jq -r .descriptorBudget.workerPoolSize "$launcher_json")" = "$VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE"
 test "$(jq -r .socketLegs.api "$launcher_json")" = '@API_SOCKET@'
@@ -20,6 +23,14 @@ test "$(jq -r .vmCreate.serial.mode "$launcher_json")" = Socket
 test "$(jq -r .vmCreate.console.mode "$launcher_json")" = Off
 test "$(jq -r .vmCreate.landlock_enable "$launcher_json")" = true
 test "$(jq -r '.vmCreate.fs | length' "$launcher_json")" = "$(jq -r '.shareLaunch | length' "$launcher_json")"
+# Schema 8: the share list is no longer a fixed pair. Exactly one store and one
+# workspace origin whatever a layer declared, and every share's socket token in
+# the one shape the runner substitutes generically — a tag whose token diverged
+# would survive substitution and be refused far from here, as an unresolved
+# token.
+test "$(jq -r '[.shareLaunch[] | select(.origin == "store")] | length' "$launcher_json")" = 1
+test "$(jq -r '[.shareLaunch[] | select(.origin == "workspace")] | length' "$launcher_json")" = 1
+test "$(jq -r '[.shareLaunch[] | select(.socketToken != ("@SHARE_SOCKET_" + (.tag | ascii_upcase) + "@"))] | length' "$launcher_json")" = 0
 # Guest networking (schema 6): the two renderings of the one NIC agree with the
 # network object the supervisor reads, and the shipped image defaults to spec/05's
 # open egress with no allowlist entries.
@@ -196,6 +207,47 @@ while read -r name mount label size_mib; do
 done <<<"$VIVARIUM_DECLARED_VOLUMES"
 test "$declared_seen" = "$(grep -c . <<<"${VIVARIUM_DECLARED_VOLUMES:-}" || true)"
 test "$((declared_seen + 2))" = "$(jq -r '.volumeLaunch | length' "$launcher_json")"
+
+# --- declared mounts, end to end (slice 019) ----------------------------
+# The same total shape as the volumes above: every declared mount's share is
+# checked against the launcher's JSON and the guest's own bind unit, and the
+# counts keep an image that declares none from reporting this section green
+# for the wrong reason.
+declared_mounts_expected=$(jq -r '[.shareLaunch[] | select(.origin == "declared")] | length' "$launcher_json")
+mounts_table=""
+if [ "$declared_mounts_expected" -gt 0 ]; then
+  mounts_unit=$VIVARIUM_GUEST_SYSTEM/etc/systemd/system/vivarium-mounts.service
+  test -f "$mounts_unit"
+  mounts_table=$(sed -n 's/^Environment="VIVARIUM_MOUNT_TABLE=\(.*\)"$/\1/p' "$mounts_unit")
+  test -r "$mounts_table"
+  test "$(grep -c . "$mounts_table")" = "$declared_mounts_expected"
+  # The same mount-namespace denial as the workspace mirror, for the same
+  # silent-success reason.
+  if grep -qE '^(PrivateMounts|ProtectSystem|ProtectHome|PrivateTmp|PrivateDevices|ReadOnlyPaths|ProtectKernelTunables|RootDirectory|MountAPIVFS)=' "$mounts_unit"; then exit 1; fi
+  # A session must not start before its declared mounts are in place, exactly
+  # as it must not start before the workspace mirror.
+  grep -qF 'vivarium-mounts.service' <<<"$(sed -n 's/^Requires=//p' "$agent_unit")"
+  grep -qF 'vivarium-mounts.service' <<<"$(sed -n 's/^After=//p' "$agent_unit")"
+fi
+mounts_seen=0
+while read -r tag internal ro source; do
+  [ -n "$tag" ] || continue
+  # The launcher's JSON: a declared origin, the internal mount point the fstab
+  # loop above already proved mounted, and the declared source carried VERBATIM
+  # — unexpanded — which is N19's half of ADR-0020 made observable.
+  test "$(jq -r --arg t "$tag" '.shareLaunch[] | select(.tag == $t) | .origin' "$launcher_json")" = declared
+  test "$(jq -r --arg t "$tag" '.shareLaunch[] | select(.tag == $t) | .mountPoint' "$launcher_json")" = "$internal"
+  test "$(jq -r --arg t "$tag" '.shareLaunch[] | select(.tag == $t) | .sourceToken' "$launcher_json")" = "$source"
+  test "$(jq -r --arg t "$tag" '.shareLaunch[] | select(.tag == $t) | .readOnly' "$launcher_json")" = "$([ "$ro" = 1 ] && echo true || echo false)"
+  # The guest's own bind unit: one table row per tag with the same read-only
+  # flag and a whitespace-free absolute target, and the unit waits for the
+  # share's internal mount before binding from it.
+  grep -qE "^$tag $ro /[^ ]*$" "$mounts_table"
+  grep -qF "$internal" <<<"$(sed -n 's/^RequiresMountsFor=//p' "$mounts_unit")"
+  mounts_seen=$((mounts_seen + 1))
+done <<<"${VIVARIUM_DECLARED_MOUNTS:-}"
+test "$mounts_seen" = "$declared_mounts_expected"
+test "$mounts_seen" = "$(grep -c . <<<"${VIVARIUM_DECLARED_MOUNTS:-}" || true)"
 # The store volume is exempt from first-boot ownership (spec/06) and the home
 # volume is not, whatever any image declares. Both halves, because a table built
 # by filtering the attached volumes instead of the declared ones would still
@@ -241,18 +293,28 @@ done
 grep -F '"cache":"always"' "$launcher_json"
 grep -F '"cache":"auto"' "$launcher_json"
 grep -E '^overlay[[:space:]]+/nix/store[[:space:]]+overlay' "$fstab"
-# spec/06:22 — the read-only share must be read-only inside the guest too,
-# which upstream's generated `defaults` does not give us.
-ro_store_options=$(awk '$2 == "/nix/.ro-store" { print $4 }' "$fstab")
-for flag in ro nodev nosuid noexec; do
-  case ",$ro_store_options," in
-    *",$flag,"*) ;;
-    *)
-      echo "read-only store mount is missing $flag: $ro_store_options" >&2
-      exit 1
-      ;;
-  esac
-done
+# spec/06:22 — a read-only share must be read-only inside the guest too, which
+# upstream's generated `defaults` does not give us. Total over every `readOnly`
+# share rather than only the store, with the count guard keeping it a check
+# that reads the field: a declared read-only mount (slice 019) is exactly the
+# entry a store-only spot check would have missed.
+checked_ro=0
+while read -r tag mount_point; do
+  [ -n "$tag" ] || continue
+  ro_options=$(awk -v m="$mount_point" '$2 == m { print $4 }' "$fstab")
+  for flag in ro nodev nosuid noexec; do
+    case ",$ro_options," in
+      *",$flag,"*) ;;
+      *)
+        echo "read-only share $tag at $mount_point is missing $flag: $ro_options" >&2
+        exit 1
+        ;;
+    esac
+  done
+  checked_ro=$((checked_ro + 1))
+done < <(jq -r '.shareLaunch[] | select(.readOnly) | "\(.tag) \(.mountPoint)"' "$launcher_json")
+test "$checked_ro" = "$(jq -r '[.shareLaunch[] | select(.readOnly)] | length' "$launcher_json")"
+test "$checked_ro" -ge 1
 # ADR-0085: the three canary expressions must stay three. A copy-paste that
 # re-collided any pair would silently make the store spike and the GC-interlock
 # experiment operate on one path — each deleting the other's subject — and

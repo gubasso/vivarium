@@ -367,7 +367,8 @@ printf -- '\n--- inode table tier ----------------------------------------------
 # harness scripts read their canary expressions, so the two cannot drift.
 launcher_json=
 if [[ -n $runner_out ]]; then
-  launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$runner_out/bin/vivarium-first-microvm" 2>/dev/null | head -n1)
+  # The published path (slice 019): one copy, read by the runner and `viv` alike.
+  launcher_json=$runner_out/share/vivarium/launch-arguments.json
 fi
 size_mib=$(jq -r '.volumeLaunch[] | select(.role == "store") | .sizeMiB' "$launcher_json" 2>/dev/null)
 inode_ratio=$(jq -r '.volumeLaunch[] | select(.role == "store") | .inodeRatio' "$launcher_json" 2>/dev/null)

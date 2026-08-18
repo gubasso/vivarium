@@ -346,7 +346,8 @@ if [[ -n ${launcher:-} ]]; then
   # a key was added, and refused a perfectly good image — the same
   # two-copies-of-one-constant defect `tests/nix/contract.nix` exists to avoid.
   # cloud-hypervisor's own `--cmdline` names the system it boots.
-  launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$launcher" | head -n1)
+  # The published path (slice 019): one copy, read by the runner and `viv` alike.
+  launcher_json=$(dirname "$(dirname "$launcher")")/share/vivarium/launch-arguments.json
   guest_toplevel=$(jq -r '.staticArguments[]' "$launcher_json" 2>/dev/null \
     | grep -oE 'init=/nix/store/[^ ]*-nixos-system-[^ /]*' | head -n1 | sed 's/^init=//')
   if [[ -n $guest_toplevel ]]; then

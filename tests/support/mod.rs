@@ -629,12 +629,28 @@ pub fn viv_environment(tp: &TempProject) -> Vec<(OsString, OsString)> {
 }
 
 pub fn run_viv(bin: &Path, tp: &TempProject, cwd: &Path, args: &[&str]) -> io::Result<VivOutput> {
+    run_viv_with_env(bin, tp, cwd, args, &[])
+}
+
+/// `run_viv` with named variables on top of the controlled set.
+///
+/// The controlled environment is the default for the reason `env_clear` states; this exists for
+/// the trials whose subject IS a variable — a declared mount source that only expansion reveals
+/// as refusable cannot be arranged out of the fixed set.
+pub fn run_viv_with_env(
+    bin: &Path,
+    tp: &TempProject,
+    cwd: &Path,
+    args: &[&str],
+    extra: &[(&str, &str)],
+) -> io::Result<VivOutput> {
     let command_line = std::iter::once(bin.display().to_string())
         .chain(args.iter().map(|arg| (*arg).to_owned()))
         .collect();
     let mut command = Command::new(bin);
     command.args(args).current_dir(cwd).env_clear();
     command.envs(viv_environment(tp));
+    command.envs(extra.iter().map(|(name, value)| (*name, *value)));
     let output = command.output()?;
     Ok(VivOutput {
         argv: command_line,

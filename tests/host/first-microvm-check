@@ -400,7 +400,8 @@ else
       # Typed-token retention: every declared token must still be present in the
       # build-channel JSON. A token replaced by a concrete value — including one
       # that happens to equal a legitimate guest constant — removes it from here.
-      launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$launcher" | head -n1)
+      # Read at the published path (slice 019: `viv` reads the same copy pre-boot).
+      launcher_json=$(dirname "$(dirname "$launcher")")/share/vivarium/launch-arguments.json
       if [[ -n $launcher_json && -r $launcher_json ]]; then
         missing_tokens=
         token_count=$(jq -r '.tokens | length' "$launcher_json")
@@ -505,7 +506,7 @@ else
   # evaluates, taken from the launcher's own JSON, so the two cannot drift.
   # `nix-build` rather than `nix build`: the expression uses builtins.storePath,
   # which flake pure evaluation forbids.
-  host_launcher_json=$(grep -oE '/nix/store/[a-z0-9]+-vivarium-first-microvm-launch-arguments\.json' "$launcher" | head -n1)
+  host_launcher_json=$(dirname "$(dirname "$launcher")")/share/vivarium/launch-arguments.json
   canary_expr=$(jq -r .storeCanaryExpression "$host_launcher_json" 2>/dev/null || true)
   if [[ -n $canary_expr && -r $canary_expr ]]; then
     canary_out=$(nix-build --no-out-link "$canary_expr" 2>"$TEMP_ROOT/canary.err")

@@ -487,9 +487,10 @@ fn evaluate_resolved<E: Environment>(
 fn defect_failure(analysis: &config::merged::Analysis) -> Option<Failure> {
     use config::merged::ConflictKind;
 
-    let diagnostic = if let Some(conflict) = analysis.conflicts.first() {
-        let layers = conflict.layers.join(", ");
-        match conflict.kind {
+    let diagnostic =
+        if let Some(conflict) = analysis.conflicts.first() {
+            let layers = conflict.layers.join(", ");
+            match conflict.kind {
             ConflictKind::Tie => Diagnostic::new(
                 DiagnosticId::new(Namespace::Merge, "equal-priority-tie"),
                 format!(
@@ -516,17 +517,41 @@ fn defect_failure(analysis: &config::merged::Analysis) -> Option<Failure> {
                 "shared config is personal-data-free (N11): use `${HOME}` or an XDG name, ",
                 "which stay unexpanded until launch, or move the mount to your own manifest",
             )),
+            ConflictKind::SessionPath => Diagnostic::new(
+                DiagnosticId::new(Namespace::Merge, "session-path"),
+                format!("a mount in `{}` takes a host session directory", conflict.key),
+                Locus::Named("merged configuration"),
+                format!("{layers} declared {}", conflict.evidence.join(", ")),
+            )
+            .with_hint(concat!(
+                "`/tmp`, `/var/tmp`, and `${XDG_RUNTIME_DIR}` hold live session state no share ",
+                "may carry (N24), in every layer; a source only expansion reveals is refused at ",
+                "launch with `78`",
+            )),
+            ConflictKind::NonPortableVariable => Diagnostic::new(
+                DiagnosticId::new(Namespace::Merge, "non-portable-variable"),
+                format!(
+                    "a shared layer's mount in `{}` names a variable outside the portable set",
+                    conflict.key
+                ),
+                Locus::Named("merged configuration"),
+                format!("{layers} declared {}", conflict.evidence.join(", ")),
+            )
+            .with_hint(concat!(
+                "a shared layer references the host only through `${HOME}` and the four durable ",
+                "XDG directories (spec/07); a private variable belongs in your own manifest",
+            )),
         }
-    } else {
-        let irreconcilable = analysis.irreconcilable.first()?;
-        Diagnostic::new(
-            DiagnosticId::new(Namespace::Merge, "irreconcilable"),
-            irreconcilable.what.clone(),
-            Locus::Named("merged configuration"),
-            irreconcilable.why.clone(),
-        )
-        .with_hint("run `viv config sources` to see every layer that contributed")
-    };
+        } else {
+            let irreconcilable = analysis.irreconcilable.first()?;
+            Diagnostic::new(
+                DiagnosticId::new(Namespace::Merge, "irreconcilable"),
+                irreconcilable.what.clone(),
+                Locus::Named("merged configuration"),
+                irreconcilable.why.clone(),
+            )
+            .with_hint("run `viv config sources` to see every layer that contributed")
+        };
     Some(Failure::Diagnosed {
         diagnostic: Box::new(diagnostic),
         code: ExitKind::DataErr,

@@ -252,6 +252,38 @@ impl Supervisor {
         let shares = profile.shares();
         let holder = profile.netns_holder();
         let drops_bounding_set = profile.drops_bounding_set();
+        // spec/06:37 asks a source's type check to read through the descriptor the share is then
+        // served from. Measured on the target host (2026-08-18, virtiofsd 1.14.0): the daemon's
+        // own `--sandbox namespace` re-opens its root inside the new mount namespace, where a
+        // `/proc/self/fd/N` spelling no longer resolves (`Error entering sandbox: OpenNewRoot:
+        // NotFound`) — the same invocation with `--sandbox none` accepts it. The N20 sandbox
+        // wins, so the closest honest enactment is this: the type check reads through an
+        // `O_PATH` descriptor in the spawning process, the descriptors stay open (pinning each
+        // inode) until every daemon has opened its own root, and the daemon is handed the path.
+        // The residual window between this `fstat` and the daemon's open is recorded in Q-012's
+        // exit, and it is bounded by the sandbox itself: the daemon pivots into whatever the
+        // path then names and can reach nothing else.
+        let share_roots = self
+            .spec
+            .shares
+            .iter()
+            .map(|share| {
+                let fd = rustix::fs::open(
+                    &share.source,
+                    rustix::fs::OFlags::PATH,
+                    rustix::fs::Mode::empty(),
+                )
+                .map_err(|errno| LaunchError::io("open share source", errno.into()))?;
+                let stat = rustix::fs::fstat(&fd)
+                    .map_err(|errno| LaunchError::io("inspect share source", errno.into()))?;
+                if !rustix::fs::FileType::from_raw_mode(stat.st_mode).is_dir() {
+                    return Err(LaunchError::InvalidSpec(
+                        "share source is not a directory at spawn",
+                    ));
+                }
+                Ok(fd)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         for (share, command) in self.spec.shares.clone().into_iter().zip(shares.iter()) {
             self.spawn_child(ChildKind::Virtiofsd(share.tag), command)?;
         }
@@ -264,6 +296,8 @@ impl Supervisor {
         for (socket, tag) in share_sockets {
             self.wait_for_socket(&socket, Some(&tag)).await?;
         }
+        // Every daemon has opened its root; the checked descriptors have done their pinning.
+        drop(share_roots);
         let vmm = self.bring_up_network(&holder, drops_bounding_set).await?;
         ConfinementProfile::validate_rendered(&vmm, &shares, drops_bounding_set)?;
         self.spawn_child(ChildKind::Vmm, &vmm)?;
@@ -571,13 +605,35 @@ impl Supervisor {
             .and_then(|payload| payload.get_mut("cmdline"))
             .and_then(|value| value.as_str())
             .ok_or(LaunchError::InvalidSpec("VM create cmdline is missing"))?;
-        let cmdline = format!(
+        let mut cmdline = format!(
             "{cmdline} vivarium.boot_identity={boot_identity} vivarium.workspace={}",
             encode_cmdline_path(&workspace_host_path)
         );
+        // The launch half of each declared mount's plan, matched by tag against the bind table
+        // the image carries (`mount-bind.sh`). The entry is already percent-encoded — it goes
+        // verbatim, and the guest is the one decoder.
+        for share in &self.spec.shares {
+            use std::fmt::Write as _;
+            match &share.mount_plan {
+                None => {}
+                Some(plan) => match (plan.kind, plan.entry.as_deref()) {
+                    (crate::launch::MountPlanKind::Dir, _) => {
+                        let _ = write!(cmdline, " vivarium.mount.{}=dir", share.tag);
+                    }
+                    (crate::launch::MountPlanKind::File, Some(entry)) => {
+                        let _ = write!(cmdline, " vivarium.mount.{}=file:{entry}", share.tag);
+                    }
+                    (crate::launch::MountPlanKind::File, None) => {
+                        // `LaunchSpec::validate` refuses this shape; a spec that got here
+                        // anyway must not boot a guest with half a plan.
+                        return Err(LaunchError::InvalidSpec("a file mount plan lost its entry"));
+                    }
+                },
+            }
+        }
         if cmdline.len() >= CMDLINE_LIMIT {
             return Err(LaunchError::InvalidSpec(
-                "the workspace path does not fit the guest kernel command line",
+                "the launch parameters do not fit the guest kernel command line",
             ));
         }
         self.spec.vm_create["payload"]["cmdline"] = serde_json::Value::String(cmdline);

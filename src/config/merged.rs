@@ -47,13 +47,18 @@ pub struct KeyView {
     pub contributors: Vec<Contributor>,
 }
 
-/// The two defect classes `conflicts` carries.
+/// The defect classes `conflicts` carries (spec/01 fixes the `kind` words).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConflictKind {
     /// One key with two surviving definitions at the same priority.
     Tie,
     /// A literal personal path in a shared layer (N11).
     LiteralPath,
+    /// A mount source that is textually a host session directory or an ancestor of one (N24's
+    /// decidable half; the launch-time check owns the spellings only expansion reveals).
+    SessionPath,
+    /// A shared layer's mount source naming a variable outside the portable set (spec/07).
+    NonPortableVariable,
 }
 
 impl ConflictKind {
@@ -63,6 +68,8 @@ impl ConflictKind {
         match self {
             Self::Tie => "tie",
             Self::LiteralPath => "literal-path",
+            Self::SessionPath => "session-path",
+            Self::NonPortableVariable => "non-portable-variable",
         }
     }
 }
@@ -158,6 +165,8 @@ pub fn analyze(report: &Report) -> Analysis {
     }
 
     conflicts.extend(literal_path_conflicts(report));
+    conflicts.extend(session_path_conflicts(report));
+    conflicts.extend(non_portable_variable_conflicts(report));
     Analysis {
         values,
         conflicts,
@@ -250,41 +259,12 @@ fn view_of(
 }
 
 /// Every shared layer that mounts a literal personal host path.
+///
+/// The `source` field only, here and in the two classifiers below. A mount's `target` is a guest
+/// path, where `/home/<name>` is the ordinary shape of a home directory rather than one person's
+/// machine.
 fn literal_path_conflicts(report: &Report) -> Vec<Conflict> {
-    let mut layers = Vec::new();
-    let mut evidence = Vec::new();
-    for layer in &report.layers {
-        if !layer.kind.is_shared() {
-            continue;
-        }
-        let Some(definition) = layer.defines.get("mounts") else {
-            continue;
-        };
-        // The `source` field only. A mount's `target` is a guest path, where `/home/<name>` is the
-        // ordinary shape of a home directory rather than one person's machine.
-        let personal: Vec<String> = definition
-            .value
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|mount| mount.get("source").and_then(Value::as_str))
-            .filter(|source| is_personal_path(source))
-            .map(str::to_owned)
-            .collect();
-        if !personal.is_empty() {
-            layers.push(layer.name.clone());
-            evidence.extend(personal);
-        }
-    }
-    if layers.is_empty() {
-        return Vec::new();
-    }
-    vec![Conflict {
-        kind: ConflictKind::LiteralPath,
-        key: "mounts".to_owned(),
-        layers,
-        evidence,
-    }]
+    mount_source_conflicts(report, ConflictKind::LiteralPath, true, is_personal_path)
 }
 
 fn is_personal_path(value: &str) -> bool {
@@ -293,8 +273,131 @@ fn is_personal_path(value: &str) -> bool {
         .any(|prefix| value.starts_with(prefix))
 }
 
+/// Collect one conflict over every layer whose mount `source`s the predicate flags.
+///
+/// The shape `literal_path_conflicts` established, factored because N24 and the portable-variable
+/// rule walk the same field with a different test and a different layer filter.
+fn mount_source_conflicts(
+    report: &Report,
+    kind: ConflictKind,
+    shared_only: bool,
+    flagged: impl Fn(&str) -> bool,
+) -> Vec<Conflict> {
+    let mut layers = Vec::new();
+    let mut evidence = Vec::new();
+    for layer in &report.layers {
+        if shared_only && !layer.kind.is_shared() {
+            continue;
+        }
+        let Some(definition) = layer.defines.get("mounts") else {
+            continue;
+        };
+        let offending: Vec<String> = definition
+            .value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|mount| mount.get("source").and_then(Value::as_str))
+            .filter(|source| flagged(source))
+            .map(str::to_owned)
+            .collect();
+        if !offending.is_empty() {
+            layers.push(layer.name.clone());
+            evidence.extend(offending);
+        }
+    }
+    if layers.is_empty() {
+        return Vec::new();
+    }
+    vec![Conflict {
+        kind,
+        key: "mounts".to_owned(),
+        layers,
+        evidence,
+    }]
+}
+
+/// N24's decidable half: a mount `source` that is textually a session directory, under one, or a
+/// literal ancestor of one — in EVERY layer, unlike N11, because the invariant binds the personal
+/// manifest too. A source a variable hides is not decidable here; the launch-time refusal in
+/// `src/launch/mounts.rs` owns it, which is the two-tier shape spec/06 names.
+fn session_path_conflicts(report: &Report) -> Vec<Conflict> {
+    mount_source_conflicts(report, ConflictKind::SessionPath, false, is_session_path)
+}
+
+fn is_session_path(value: &str) -> bool {
+    // The ancestors, exactly: `/` holds everything, and `/var` and `/run` hold two of the three
+    // roots. Component-wise, so `/varnish` is not `/var`.
+    if matches!(value, "/" | "/var" | "/run") {
+        return true;
+    }
+    if value.starts_with("${XDG_RUNTIME_DIR}") {
+        return true;
+    }
+    ["/tmp", "/var/tmp", "/run/user"].iter().any(|root| {
+        value == *root
+            || value
+                .strip_prefix(root)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+/// The variables a shared layer may reference in a mount `source` (spec/07): `${HOME}` and the
+/// four durable XDG directories. `${XDG_RUNTIME_DIR}` is deliberately not here — and is refused
+/// harder, as a session path above.
+const PORTABLE_VARIABLES: [&str; 5] = [
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+];
+
+/// spec/07's sharing rule, decidable from text: a shared layer referencing the host through any
+/// variable outside the portable set. The personal manifest is exempt — a literal path is legal
+/// there, so a private variable is too.
+fn non_portable_variable_conflicts(report: &Report) -> Vec<Conflict> {
+    mount_source_conflicts(
+        report,
+        ConflictKind::NonPortableVariable,
+        true,
+        |source: &str| {
+            variable_references(source)
+                .iter()
+                .any(|name| !PORTABLE_VARIABLES.contains(&name.as_str()))
+        },
+    )
+}
+
+/// Every `${NAME}` reference in a source, by the same grammar the launch-time expander reads:
+/// braced, named, nothing else. A bare `$VAR` is literal text there, so it is literal text here.
+fn variable_references(source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = source;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else { break };
+        let name = &after[..end];
+        if !name.is_empty()
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            names.push(name.to_owned());
+        }
+        rest = &after[end + 1..];
+    }
+    names
+}
+
 /// Merges no priority can settle, which are defects of the result rather than of one key.
 fn irreconcilable_merges(report: &Report) -> Vec<Irreconcilable> {
+    let mut found = duplicate_volume_mounts(report);
+    found.extend(duplicate_mount_targets(report));
+    found
+}
+
+fn duplicate_volume_mounts(report: &Report) -> Vec<Irreconcilable> {
     let Some(entry) = report.keys.get("volumes") else {
         return Vec::new();
     };
@@ -316,6 +419,33 @@ fn irreconcilable_merges(report: &Report) -> Vec<Irreconcilable> {
             });
         }
         seen.push((name, mount));
+    }
+    found
+}
+
+/// ADR-0020: mount declarations concatenate across layers and duplicate `target`s fail
+/// evaluation. Textual duplicates only — `~/x` and its expansion are one guest path this view
+/// cannot see — so the guest module's post-expansion assertion stays the authority and this is
+/// the reader that refuses the ordinary collision with a merged-view diagnostic.
+fn duplicate_mount_targets(report: &Report) -> Vec<Irreconcilable> {
+    let Some(entry) = report.keys.get("mounts") else {
+        return Vec::new();
+    };
+    let mut seen: Vec<&str> = Vec::new();
+    let mut found = Vec::new();
+    for mount in entry.value.as_array().into_iter().flatten() {
+        let Some(target) = mount.get("target").and_then(Value::as_str) else {
+            continue;
+        };
+        if seen.contains(&target) {
+            found.push(Irreconcilable {
+                what: format!("two declared mounts share the target `{target}`"),
+                why: "declarations concatenate across layers, and one guest path cannot carry \
+                    two sources (ADR-0020)"
+                    .to_owned(),
+            });
+        }
+        seen.push(target);
     }
     found
 }
@@ -496,6 +626,101 @@ mod tests {
             ))
             .is_defective()
         );
+    }
+
+    #[test]
+    fn a_session_path_source_is_a_defect_in_every_layer() {
+        let fixture = |kind: &str, source: &str| {
+            let mounts =
+                format!(r#"[ {{ "source": "{source}", "target": "/x", "readonly": false }} ]"#);
+            report(
+                &[key("mounts", "list", "[]")],
+                &[layer("l", kind, &[defines("mounts", 100, mounts.as_str())])],
+            )
+        };
+        // Decidable spellings: the roots, paths under them, the literal ancestors, and the
+        // runtime-directory variable — refused in the personal manifest too, unlike N11.
+        for source in [
+            "/tmp",
+            "/tmp/shared",
+            "/var/tmp/x",
+            "/run/user",
+            "/run/user/1000",
+            "/var",
+            "/run",
+            "/",
+            "${XDG_RUNTIME_DIR}",
+            "${XDG_RUNTIME_DIR}/gnupg",
+        ] {
+            for kind in ["piece", "manifest"] {
+                let analysis = analyze(&fixture(kind, source));
+                assert_eq!(
+                    analysis.conflicts.first().map(|conflict| conflict.kind),
+                    Some(ConflictKind::SessionPath),
+                    "{kind} declaring {source}"
+                );
+            }
+        }
+        // Names that merely share a prefix are ordinary paths, and `/var/lib` is an ancestor of
+        // nothing in the session set.
+        for source in ["/tmpfiles", "/var/tmpish/x", "/var/lib/x", "/run/media/u/d"] {
+            assert!(
+                !analyze(&fixture("manifest", source)).is_defective(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_portable_variable_is_a_defect_only_in_a_shared_layer() {
+        let fixture = |kind: &str, source: &str| {
+            let mounts =
+                format!(r#"[ {{ "source": "{source}", "target": "/x", "readonly": false }} ]"#);
+            report(
+                &[key("mounts", "list", "[]")],
+                &[layer("l", kind, &[defines("mounts", 100, mounts.as_str())])],
+            )
+        };
+        let shared = analyze(&fixture("piece", "${PROJECTS_DIR}/tool"));
+        assert_eq!(shared.conflicts[0].kind, ConflictKind::NonPortableVariable);
+        assert_eq!(shared.conflicts[0].evidence, vec!["${PROJECTS_DIR}/tool"]);
+        // The personal manifest may name any variable it likes.
+        assert!(!analyze(&fixture("manifest", "${PROJECTS_DIR}/tool")).is_defective());
+        // The five portable names pass in a shared layer (spec/07).
+        for source in [
+            "${HOME}/.config/x",
+            "${XDG_CONFIG_HOME}/x",
+            "${XDG_DATA_HOME}/x",
+            "${XDG_STATE_HOME}/x",
+            "${XDG_CACHE_HOME}/x",
+        ] {
+            assert!(
+                !analyze(&fixture("piece", source)).is_defective(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_mounts_on_one_target_are_irreconcilable() {
+        let fixture = |targets: [&str; 2]| {
+            let entry = |source: &str, target: &str| {
+                format!(r#"{{ "source": "{source}", "target": "{target}", "readonly": false }}"#)
+            };
+            let value = format!(
+                "[ {}, {} ]",
+                entry("${HOME}/a", targets[0]),
+                entry("${HOME}/b", targets[1])
+            );
+            report(
+                &[key("mounts", "list", value.as_str())],
+                &[layer("m", "manifest", &[])],
+            )
+        };
+        let colliding = analyze(&fixture(["~/.config/x", "~/.config/x"]));
+        assert!(colliding.is_defective());
+        assert!(colliding.irreconcilable[0].what.contains("~/.config/x"));
+        assert!(!analyze(&fixture(["~/.config/x", "~/.config/y"])).is_defective());
     }
 
     #[test]

@@ -244,6 +244,9 @@ let
           # this prefix in the guest's own `image` field, so both halves read one
           # constant rather than agreeing on a spelling.
           volumeDirSentinel
+          # How the launcher tells the workspace share apart from a declared
+          # mount's share: both are non-store, and only one is the sentinel.
+          workspaceSourceSentinel
           storeCanaryExpression
           gcInterlockCanaryExpression
           gcInterlockControlExpression

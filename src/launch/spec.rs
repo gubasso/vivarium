@@ -28,7 +28,13 @@ use std::path::{Component, Path, PathBuf};
 /// 7 since the installation supplies vivarium (ADR-0102): the supervisor left the build-side
 /// JSON and enters the rendered specification from the running installation, and the runner
 /// stopped exec-ing a built `viv`.
-pub const LAUNCH_SCHEMA_VERSION: u32 = 7;
+///
+/// 8 since declared mounts reach the guest (slice 019): the share list stopped being a fixed
+/// pair. Every share's socket token took the one `@SHARE_SOCKET_<TAG>@` shape, and a declared
+/// mount's share carries a [`MountPlan`] — whether the declared source was a directory or a
+/// regular file served through its parent — which the supervisor relays to the guest's bind
+/// unit on the kernel command line.
+pub const LAUNCH_SCHEMA_VERSION: u32 = 8;
 pub const VIRTIOFSD_RLIMIT_NOFILE: u64 = 524_288;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -257,8 +263,33 @@ pub struct ShareSpec {
     pub socket: PathBuf,
     pub cache: String,
     pub read_only: bool,
+    /// Present exactly on the shares that came from declared mounts (spec/06, ADR-0020).
+    ///
+    /// `viv` decided it at launch when it expanded the declared source: a directory is served
+    /// whole, a regular file is served through its parent directory with `entry` naming the one
+    /// file inside the share the guest binds at the target. The supervisor relays the plan on the
+    /// kernel command line as `vivarium.mount.<tag>=...`; the target itself is baked into the
+    /// guest's own bind table and never crosses here.
+    #[serde(default)]
+    pub mount_plan: Option<MountPlan>,
     #[serde(default)]
     pub extra_args: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MountPlanKind {
+    Dir,
+    File,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MountPlan {
+    pub kind: MountPlanKind,
+    /// The percent-encoded basename a `file` mount serves, kept encoded end to end: the guest's
+    /// bind unit is the one decoder, checking the allowlist before decoding (`mount-bind.sh`).
+    pub entry: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -562,12 +593,40 @@ impl LaunchSpec {
             {
                 return Err(LaunchError::InvalidSpec(reason));
             }
+            // Every share source is a directory: a declared mount whose source is a regular
+            // file is served through its parent, with the file named by the plan's `entry`
+            // (spec/06, ADR-0071). The authoritative type check reads through the descriptor
+            // the daemon is then served from (`src/launch/supervisor.rs`); this is the
+            // spec-shaped backstop for a hand-written record.
             let metadata = std::fs::metadata(&share.source)
                 .map_err(|error| LaunchError::io("inspect share source", error))?;
-            if !(metadata.is_dir() || metadata.is_file()) {
-                return Err(LaunchError::InvalidSpec(
-                    "share source is not a regular file or directory",
-                ));
+            if !metadata.is_dir() {
+                return Err(LaunchError::InvalidSpec("share source is not a directory"));
+            }
+            match &share.mount_plan {
+                None
+                | Some(MountPlan {
+                    kind: MountPlanKind::Dir,
+                    entry: None,
+                }) => {}
+                Some(MountPlan {
+                    kind: MountPlanKind::Dir,
+                    entry: Some(_),
+                }) => {
+                    return Err(LaunchError::InvalidSpec(
+                        "a directory mount plan carries no entry",
+                    ));
+                }
+                Some(MountPlan {
+                    kind: MountPlanKind::File,
+                    entry,
+                }) => {
+                    if !entry.as_deref().is_some_and(is_encoded_entry) {
+                        return Err(LaunchError::InvalidSpec(
+                            "a file mount plan needs a well-formed encoded entry",
+                        ));
+                    }
+                }
             }
             if !matches!(
                 share.cache.as_str(),
@@ -656,13 +715,15 @@ fn contains_unresolved_token(rendered: &str) -> bool {
     while let Some(open) = rest.find('@') {
         let after = &rest[open + 1..];
         match after.find('@') {
-            // Every sentinel `launch-arguments.nix` emits is upper-case ASCII with underscores and
-            // is never empty, so `a@b@c` is a filename and `@WORKSPACE_SOURCE@` is a leftover.
+            // Every sentinel `launch-arguments.nix` emits is upper-case ASCII with underscores
+            // and digits — a share's socket token embeds its tag, and `mnt0` upper-cases to
+            // `MNT0` — and is never empty, so `a@b@c` is a filename and `@SHARE_SOCKET_MNT0@`
+            // is a leftover.
             Some(close)
                 if close > 0
-                    && after[..close]
-                        .bytes()
-                        .all(|byte| byte.is_ascii_uppercase() || byte == b'_') =>
+                    && after[..close].bytes().all(|byte| {
+                        byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                    }) =>
             {
                 return true;
             }
@@ -761,6 +822,39 @@ fn require_exact_child(path: &Path, root: &Path) -> Result<(), LaunchError> {
         ));
     }
     Ok(())
+}
+
+/// Whether a file plan's entry is in the percent-encoded shape the guest's decoder accepts.
+///
+/// The allowlist has no `/` and no bare `%`, so a well-formed entry cannot name a path or smuggle
+/// bytes past the decode; `.` and `..` are refused literally here and again, after decoding, by
+/// the guest — which is the authority, this being the backstop for a hand-written record.
+fn is_encoded_entry(entry: &str) -> bool {
+    if entry.is_empty() || entry == "." || entry == ".." {
+        return false;
+    }
+    let bytes = entry.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                let hex = |offset: usize| {
+                    bytes
+                        .get(index + offset)
+                        .is_some_and(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(byte))
+                };
+                if !(hex(1) && hex(2)) {
+                    return false;
+                }
+                index += 3;
+            }
+            byte if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'~' | b'-') => {
+                index += 1;
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 fn reject_session_source(source: &Path, runtime_root: &Path) -> Result<(), LaunchError> {
@@ -870,6 +964,7 @@ pub mod tests {
                 socket: child("workspace.sock"),
                 cache: "auto".into(),
                 read_only: false,
+                mount_plan: None,
                 extra_args: vec![],
             }],
             volumes: vec![],
@@ -1036,6 +1131,45 @@ pub mod tests {
             Box::new(|s| s.network.guest_mac = "02-56-49-56-41-00".into()),
             Box::new(|s| s.network.guest_mac = "02:56:49:56:41".into()),
             Box::new(|s| s.backend_programs.pasta = "/usr/bin/pasta".into()),
+            // The mount-plan half of schema 8: a directory plan carrying an entry, a file plan
+            // with none, and file plans whose entry the guest's decoder would refuse — a path,
+            // a dot-name, a bare `%`.
+            Box::new(|s| {
+                s.shares[0].mount_plan = Some(MountPlan {
+                    kind: MountPlanKind::Dir,
+                    entry: Some("stray".into()),
+                });
+            }),
+            Box::new(|s| {
+                s.shares[0].mount_plan = Some(MountPlan {
+                    kind: MountPlanKind::File,
+                    entry: None,
+                });
+            }),
+            Box::new(|s| {
+                s.shares[0].mount_plan = Some(MountPlan {
+                    kind: MountPlanKind::File,
+                    entry: Some("a/b".into()),
+                });
+            }),
+            Box::new(|s| {
+                s.shares[0].mount_plan = Some(MountPlan {
+                    kind: MountPlanKind::File,
+                    entry: Some("..".into()),
+                });
+            }),
+            Box::new(|s| {
+                s.shares[0].mount_plan = Some(MountPlan {
+                    kind: MountPlanKind::File,
+                    entry: Some("%2".into()),
+                });
+            }),
+            Box::new(|s| {
+                s.shares[0].mount_plan = Some(MountPlan {
+                    kind: MountPlanKind::File,
+                    entry: Some(String::new()),
+                });
+            }),
         ];
         for mutate in mutations {
             let mut spec = fixture();
@@ -1043,6 +1177,29 @@ pub mod tests {
             mutate(&mut spec);
             assert!(spec.validate().is_err());
         }
+    }
+
+    /// The declared-mount shapes schema 8 admits: a share with no plan, a directory plan, and a
+    /// file plan whose encoded entry carries a percent sequence.
+    #[test]
+    fn declared_share_plans_validate_in_both_kinds() {
+        let mut spec = fixture();
+        let mut declared = spec.shares[0].clone();
+        declared.tag = "mnt0".into();
+        declared.mount_point = "/run/vivarium-mounts/mnt0".into();
+        declared.socket = spec.runtime_paths.root.join("mnt0.sock");
+        declared.mount_plan = Some(MountPlan {
+            kind: MountPlanKind::Dir,
+            entry: None,
+        });
+        spec.shares.push(declared);
+        spec.validate().unwrap();
+
+        spec.shares[1].mount_plan = Some(MountPlan {
+            kind: MountPlanKind::File,
+            entry: Some("a%20config.toml".into()),
+        });
+        spec.validate().unwrap();
     }
 
     #[test]
@@ -1099,6 +1256,9 @@ pub mod tests {
             "@VOLUME_DIR@/cache.img",
             "/a/@GID@/b",
             "/@A@",
+            // A share socket token embeds its tag, and a declared mount's tag holds digits —
+            // the leftover a runner that never learned the tag would leave (slice 019).
+            "/x/@SHARE_SOCKET_MNT0@",
         ] {
             assert!(contains_unresolved_token(leftover), "{leftover}");
         }

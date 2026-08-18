@@ -87,7 +87,7 @@ case $path in "$internal" | "$internal"/*) refuse under-the-internal-mount-point
 # the guest owns under those two roots is named individually instead.
 for owned in /nix /proc /sys /dev /etc /boot /usr /bin /sbin /lib /lib64 \
   /root /tmp /var/lib /var/log /var/tmp /var/empty /home/vivarium \
-  /run/vivarium /run/user /run/current-system /run/booted-system /run/wrappers \
+  /run/vivarium /run/vivarium-mounts /run/user /run/current-system /run/booted-system /run/wrappers \
   /run/systemd /run/udev /run/dbus /run/lock /run/log /run/keys /run/credentials \
   /run/binfmt /run/nscd /run/opengl-driver "$internal"; do
   case $path in "$owned" | "$owned"/*) refuse "under-guest-owned:$owned" ;; esac

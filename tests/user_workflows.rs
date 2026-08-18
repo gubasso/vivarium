@@ -24,7 +24,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 21] = [
+const WORKFLOWS: [WorkflowSpec; 25] = [
     (
         "workflow_01_first_time_bind_usage",
         GateLevel::Cli,
@@ -119,6 +119,26 @@ const WORKFLOWS: [WorkflowSpec; 21] = [
         "workflow_16_doctor_report",
         GateLevel::Cli,
         workflow_16_doctor,
+    ),
+    (
+        "workflow_17_declared_mounts_eval",
+        GateLevel::ConfigEval,
+        workflow_17_eval,
+    ),
+    (
+        "workflow_17_declared_mounts_refusals",
+        GateLevel::Virtualization,
+        workflow_17_refusals,
+    ),
+    (
+        "workflow_17_declared_mounts_round_trip",
+        GateLevel::Virtualization,
+        workflow_17_round_trip,
+    ),
+    (
+        "workflow_17_linked_worktree_reaches_main",
+        GateLevel::Virtualization,
+        workflow_17_worktree,
     ),
     (
         "workflow_15_contract_skew_refusal",
@@ -1898,6 +1918,439 @@ fn workflow_09_round_trip() -> Result<(), Failed> {
     )?;
     check(expect_code(&overwritten, 0))?;
     check(expect_stdout_mentions(&overwritten, "host overwrote this"))
+}
+
+/// Slice 019's evaluation tier: the declared-mount defects the merged view can decide refuse
+/// `config eval` with `65` and render through `config sources` at `0` (ADR-0042), each named by
+/// its `conflicts` kind (spec/01).
+fn workflow_17_eval() -> Result<(), Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+
+    // N24's decidable half: a literal session-directory source, refused in the PERSONAL layer —
+    // which is what separates it from N11, where a literal path in one's own manifest is
+    // ordinary authorship.
+    arrange_manifest(
+        &tp,
+        "mounts-eval",
+        "\n[[mounts]]\nsource = \"/tmp/wf17-shared-tools\"\ntarget = \"/workspaces/tools\"\n",
+        "",
+    )?;
+    bind(&tp, "mounts-eval")?;
+    let session = viv(&tp, &["config", "eval", "--json"])?;
+    check(expect_code(&session, EX_DATAERR))?;
+    check(expect_stderr_mentions(&session, "session-path"))?;
+    check(expect_stderr_mentions(&session, "/tmp/wf17-shared-tools"))?;
+    let sources = viv(&tp, &["config", "sources", "--json"])?;
+    check(expect_code(&sources, 0))?;
+    check(expect_json_array_nonempty(
+        &sources,
+        "conflicts",
+        &["kind", "key", "layers"],
+    ))?;
+    check(expect_stdout_mentions(&sources, "session-path"))?;
+
+    // spec/07's sharing rule: a shared piece may reference the host only through the portable
+    // set, and the same private variable in the personal manifest is legal.
+    write_piece(
+        &tp,
+        "wf17tool",
+        r#"{ ... }: {
+    vivarium.mounts = [
+        {
+            source = "\${WF17_PRIVATE_DIR}/tool";
+            target = "/workspaces/tool";
+            readonly = false;
+        }
+    ];
+}
+"#,
+    )?;
+    arrange_manifest(&tp, "mounts-eval", "pieces = [ \"wf17tool\" ]\n", "")?;
+    let nonportable = viv(&tp, &["config", "eval", "--json"])?;
+    check(expect_code(&nonportable, EX_DATAERR))?;
+    check(expect_stderr_mentions(
+        &nonportable,
+        "non-portable-variable",
+    ))?;
+    arrange_manifest(
+        &tp,
+        "mounts-eval",
+        "\n[[mounts]]\nsource = \"${WF17_PRIVATE_DIR}/tool\"\ntarget = \"/workspaces/tool\"\n",
+        "",
+    )?;
+    check(expect_code(&viv(&tp, &["config", "eval", "--json"])?, 0))?;
+
+    // ADR-0020: declarations concatenate across layers, and duplicate targets fail evaluation.
+    write_piece(
+        &tp,
+        "wf17dup",
+        r#"{ ... }: {
+    vivarium.mounts = [
+        {
+            source = "\${HOME}/.config/wf17";
+            target = "~/.config/wf17";
+            readonly = false;
+        }
+    ];
+}
+"#,
+    )?;
+    arrange_manifest(
+        &tp,
+        "mounts-eval",
+        concat!(
+            "pieces = [ \"wf17dup\" ]\n\n[[mounts]]\n",
+            "source = \"${HOME}/wf17-other\"\ntarget = \"~/.config/wf17\"\n"
+        ),
+        "",
+    )?;
+    let duplicate = viv(&tp, &["config", "eval", "--json"])?;
+    check(expect_code(&duplicate, EX_DATAERR))?;
+    check(expect_stderr_mentions(&duplicate, "~/.config/wf17"))
+}
+
+/// Slice 019's launch tier: a declared source that is unset, missing, not a regular file or
+/// directory, or a session directory only expansion reveals refuses `viv start` with `78`
+/// before any boot, each under its own diagnostic id, and leaves no VM behind.
+fn workflow_17_refusals() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("mounts-refusals").map_err(io_failed)?;
+    bind_after_arrange(
+        &tp,
+        "\n[[mounts]]\nsource = \"${VIVARIUM_WF17_UNSET}/tools\"\ntarget = \"/workspaces/tools\"\n",
+    )?;
+    // The variable is guaranteed unset: the harness clears the child's environment.
+    let unset = viv(&tp, &["start"])?;
+    check(expect_code(&unset, EX_CONFIG))?;
+    check(expect_stderr_mentions(
+        &unset,
+        "mount-source-unset-variable",
+    ))?;
+    check(expect_stderr_mentions(&unset, "VIVARIUM_WF17_UNSET"))?;
+    check(expect_resting(&tp))?;
+
+    bind_after_arrange(
+        &tp,
+        concat!(
+            "\n[[mounts]]\nsource = \"${HOME}/wf17-definitely-missing\"\n",
+            "target = \"/workspaces/tools\"\n"
+        ),
+    )?;
+    let missing = viv(&tp, &["start"])?;
+    check(expect_code(&missing, EX_CONFIG))?;
+    check(expect_stderr_mentions(&missing, "mount-source-missing"))?;
+    check(expect_resting(&tp))?;
+
+    // ADR-0071: filesystem data only. A FIFO is the cheapest special file a fixture can make.
+    let fifo = tp.home().join("wf17-fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .map_err(io_failed)?;
+    if !made.success() {
+        return fail("mkfifo could not create the fixture FIFO".to_owned());
+    }
+    bind_after_arrange(
+        &tp,
+        "\n[[mounts]]\nsource = \"${HOME}/wf17-fifo\"\ntarget = \"/workspaces/tools\"\n",
+    )?;
+    let special = viv(&tp, &["start"])?;
+    check(expect_code(&special, EX_CONFIG))?;
+    check(expect_stderr_mentions(
+        &special,
+        "mount-source-not-mountable",
+    ))?;
+    check(expect_resting(&tp))?;
+
+    // N24's launch half: `${VIVARIUM_WF17_SESSION}/agent` is not decidable from text — the
+    // evaluation tier passed it — and expansion lands it under `/tmp`, where the launch
+    // refuses with `78` (spec/06's two-tier shape, Q-012's exit).
+    bind_after_arrange(
+        &tp,
+        concat!(
+            "\n[[mounts]]\nsource = \"${VIVARIUM_WF17_SESSION}/agent\"\n",
+            "target = \"/workspaces/tools\"\n"
+        ),
+    )?;
+    check(expect_code(
+        &viv_with_env(
+            &tp,
+            &["config", "eval", "--json"],
+            &[("VIVARIUM_WF17_SESSION", "/tmp/wf17-session")],
+        )?,
+        0,
+    ))?;
+    let hidden = viv_with_env(
+        &tp,
+        &["start"],
+        &[("VIVARIUM_WF17_SESSION", "/tmp/wf17-session")],
+    )?;
+    check(expect_code(&hidden, EX_CONFIG))?;
+    check(expect_stderr_mentions(
+        &hidden,
+        "mount-source-session-directory",
+    ))?;
+    check(expect_resting(&tp))
+}
+
+/// Slice 019's acceptance heart: a piece-declared directory mount with a portable source is
+/// readable and writable in the guest at its declared target, a manifest-declared regular-file
+/// mount lands at its target through its parent directory, and `readonly = true` refuses a
+/// guest write with the host tree unchanged — all in one boot, so the two extra confined
+/// daemons demonstrably serve side by side.
+#[allow(clippy::too_many_lines)]
+fn workflow_17_round_trip() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("mounts-project").map_err(io_failed)?;
+    // The portable-variable piece: the same declaration would work in anyone's manifest, and
+    // the trial proves it against this host's `${HOME}` (spec/07).
+    write_piece(
+        &tp,
+        "wf17cache",
+        r#"{ ... }: {
+    vivarium.mounts = [
+        {
+            source = "\${HOME}/.cache/wf17-tool";
+            target = "~/.cache/wf17-tool";
+            readonly = false;
+        }
+    ];
+}
+"#,
+    )?;
+    // The file mount's basename holds a space on purpose: the entry crosses the kernel command
+    // line percent-encoded, and a name that needs the encoding is the case worth exercising.
+    arrange_manifest(
+        &tp,
+        "mounts-demo",
+        concat!(
+            "pieces = [ \"wf17cache\" ]\n\n[[mounts]]\n",
+            "source = \"${HOME}/wf17-ro/wf17 config.toml\"\n",
+            "target = \"/workspaces/wf17-config.toml\"\nreadonly = true\n"
+        ),
+        "",
+    )?;
+    bind(&tp, "mounts-demo")?;
+
+    // Written before the VM exists, like the workspace round trip: the files are part of the
+    // trees at the moment the shares are served.
+    let cache_dir = tp.home().join(".cache").join("wf17-tool");
+    write_file(&cache_dir.join("marker.txt"), "host cache marker\n").map_err(io_failed)?;
+    let ro_dir = tp.home().join("wf17-ro");
+    write_file(&ro_dir.join("wf17 config.toml"), "key = \"wf17-value\"\n").map_err(io_failed)?;
+
+    // Host to guest, at the declared target. `~` in the declaration is the GUEST home, so the
+    // session's own `$HOME` is exactly where it must appear.
+    let read_cache = viv(
+        &tp,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-lc",
+            "cat \"$HOME\"/.cache/wf17-tool/marker.txt",
+        ],
+    )?;
+    check(expect_code(&read_cache, 0))?;
+    check(expect_stdout_mentions(&read_cache, "host cache marker"))?;
+
+    // Guest to host through the read-write mount, and the identity translation with it: the
+    // file must land owned by the invoking user, exactly as the workspace's does.
+    check(expect_code(
+        &viv(
+            &tp,
+            &[
+                "exec",
+                "--",
+                "sh",
+                "-lc",
+                "printf 'guest cache write\\n' > \"$HOME\"/.cache/wf17-tool/from-guest.txt",
+            ],
+        )?,
+        0,
+    ))?;
+    let landed = cache_dir.join("from-guest.txt");
+    let content = fs::read_to_string(&landed).map_err(io_failed)?;
+    if content.trim() != "guest cache write" {
+        return fail(format!(
+            "the host reads `{}` at {}, not what the guest wrote",
+            content.trim(),
+            landed.display()
+        ));
+    }
+    let owner = fs::metadata(&landed).map_err(io_failed)?.uid();
+    if owner != vivarium::config::effective_uid() {
+        return fail(format!(
+            "the guest's file is owned by uid {owner} on the host, not by the invoking user {}",
+            vivarium::config::effective_uid()
+        ));
+    }
+
+    // The regular-file mount: served through its parent, bound at the declared absolute target.
+    let read_ro = viv(
+        &tp,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-lc",
+            "cat /workspaces/wf17-config.toml",
+        ],
+    )?;
+    check(expect_code(&read_ro, 0))?;
+    check(expect_stdout_mentions(&read_ro, "wf17-value"))?;
+
+    // `readonly = true`: the guest write fails and the host tree is byte-identical after.
+    let before = snapshot_tree(&ro_dir).map_err(io_failed)?;
+    check(expect_nonzero(&viv(
+        &tp,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-lc",
+            "printf 'guest defaced this' > /workspaces/wf17-config.toml",
+        ],
+    )?))?;
+    check(expect_tree_unchanged(&ro_dir, &before))?;
+
+    // One confined daemon per share (N20): while the guest is up, each declared mount's own
+    // socket exists under the runtime root — `mnt0.sock` and `mnt1.sock` beside the two
+    // reserved shares' — which is the host-visible edge of "its own daemon". The rendered
+    // profile validated over all four or the boot above would have refused.
+    for socket in ["mnt0.sock", "mnt1.sock"] {
+        if !path_named_exists(tp.runtime(), socket) {
+            return fail(format!(
+                "no `{socket}` under the runtime root while the guest runs: a declared mount \
+                is not being served by its own daemon"
+            ));
+        }
+    }
+    check(expect_code(&viv(&tp, &["stop"])?, 0))
+}
+
+/// Q-016's exit: a linked worktree's `.git` names `<main>/.git/worktrees/<id>`, outside the one
+/// mirrored project tree — and a declared mount whose `source` and `target` are the main
+/// repository's own path is what makes it resolvable from inside the guest.
+fn workflow_17_worktree() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("wf17-main").map_err(io_failed)?;
+    let main_repo = tp.project().to_path_buf();
+    let git = |args: &[&str], cwd: &Path| -> Result<(), Failed> {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .status()
+            .map_err(io_failed)?;
+        if !status.success() {
+            return fail(format!("git {args:?} failed in {}", cwd.display()));
+        }
+        Ok(())
+    };
+    git(&["init", "-q"], &main_repo)?;
+    git(
+        &[
+            "-c",
+            "user.name=wf17",
+            "-c",
+            "user.email=wf17@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "wf17",
+        ],
+        &main_repo,
+    )?;
+    let worktree = tp.root().join("wf17-tree");
+    git(
+        &["worktree", "add", "-q", worktree.to_str().unwrap_or("")],
+        &main_repo,
+    )?;
+
+    // The manifest is the personal layer, where a literal absolute path is ordinary authorship;
+    // source and target are the SAME path, which is the whole point — the worktree's `.git`
+    // file names it absolutely, from either side.
+    let main_spelling = main_repo.to_string_lossy().into_owned();
+    arrange_manifest(
+        &tp,
+        "wf17-worktree",
+        &format!(
+            "\n[[mounts]]\nsource = \"{main_spelling}\"\n\
+            target = \"{main_spelling}\"\nreadonly = false\n"
+        ),
+        "",
+    )?;
+    check(expect_code(
+        &viv_at(
+            &tp,
+            &worktree,
+            &["init", "--manifest", "wf17-worktree", "--write", "--yes"],
+        )?,
+        0,
+    ))?;
+
+    // From inside the guest: resolve the worktree's own `.git` pointer and read HEAD through
+    // it. No git in the guest image, and none needed — reachability of the named git directory
+    // is exactly what Q-016 asks for. The worktree path is an argument rather than shell
+    // source, for the space-safety reason workflow_09 records.
+    let reach = viv_at(
+        &tp,
+        &worktree,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-lc",
+            concat!(
+                "gitdir=$(sed -n 's/^gitdir: //p' \"$1\"/.git) && ",
+                "test -d \"$gitdir\" && cat \"$gitdir\"/HEAD"
+            ),
+            "sh",
+            worktree.to_str().unwrap_or(""),
+        ],
+    )?;
+    check(expect_code(&reach, 0))?;
+    check(expect_stdout_mentions(&reach, "ref:"))?;
+    check(expect_code(&viv_at(&tp, &worktree, &["stop"])?, 0))
+}
+
+/// Rewrites the one manifest this trial binds and rebinds it, one defective declaration a leg.
+fn bind_after_arrange(tp: &TempProject, mounts: &str) -> Result<(), Failed> {
+    arrange_manifest(tp, "mounts-refusals", mounts, "")?;
+    bind(tp, "mounts-refusals")
+}
+
+/// The resting assertion every refusal leg shares: the refusal left a build and no VM.
+fn expect_resting(tp: &TempProject) -> Result<(), String> {
+    let status = run_viv(gate().viv(), tp, tp.project(), &["status", "--json"])
+        .map_err(|error| error.to_string())?;
+    expect_code(&status, 0)?;
+    expect_json_string(&status, "state", "built")
+}
+
+fn viv_with_env(
+    tp: &TempProject,
+    args: &[&str],
+    extra: &[(&str, &str)],
+) -> Result<VivOutput, Failed> {
+    support::run_viv_with_env(gate().viv(), tp, tp.project(), args, extra).map_err(io_failed)
+}
+
+/// Whether a file with this exact name exists anywhere under `root`.
+fn path_named_exists(root: &Path, name: &str) -> bool {
+    let Ok(entries) = fs::read_dir(root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.file_name().is_some_and(|found| found == name) {
+            return true;
+        }
+        if path.is_dir() && path_named_exists(&path, name) {
+            return true;
+        }
+    }
+    false
 }
 
 fn arrange_manifest(

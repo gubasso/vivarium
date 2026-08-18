@@ -4,9 +4,16 @@
 }:
 
 let
-  launchArgumentsFile = pkgs.writeText "vivarium-first-microvm-launch-arguments.json" (
+  # One copy at a published path, read by two consumers: the runner renders the
+  # launch specification from it, and `viv` reads the share list from it before
+  # the runner ever runs — a declared mount's source must be expanded and
+  # refused pre-boot (spec/06, ADR-0020), and on `--no-rebuild` nothing else
+  # evaluates, so the built artifact is the only place the merged mount list
+  # exists.
+  contract = pkgs.writeTextDir "share/vivarium/launch-arguments.json" (
     builtins.toJSON launchArguments
   );
+  launchArgumentsFile = "${contract}/share/vivarium/launch-arguments.json";
   # Substitution must precede `writeShellApplication`: its generated
   # buildCommand makes post-install substitution ineffective. Pre-commit
   # reports source-relative shellcheck lines; Nix's check is the backstop.
@@ -17,7 +24,7 @@ let
       pkgs.gnugrep
       pkgs.jq
     ];
-    text = builtins.replaceStrings [ "@launchArgumentsPath@" ] [ (toString launchArgumentsFile) ] (
+    text = builtins.replaceStrings [ "@launchArgumentsPath@" ] [ launchArgumentsFile ] (
       builtins.readFile ./runner.sh
     );
   };
@@ -31,6 +38,7 @@ pkgs.symlinkJoin {
   name = "vivarium-first-microvm";
   paths = [
     launcher
+    contract
     (pkgs.writeTextDir "share/vivarium/launch-contract-schema" "${toString launchArguments.schemaVersion}\n")
   ];
 }

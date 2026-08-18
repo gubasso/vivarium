@@ -3,6 +3,7 @@
   lib,
   pkgs,
   volumeDirSentinel,
+  workspaceSourceSentinel,
   storeCanaryExpression,
   gcInterlockCanaryExpression,
   gcInterlockControlExpression,
@@ -34,7 +35,6 @@ let
       "console=ttyAMA0"
     else
       throw "vivarium first microVM: unsupported system ${system}";
-  shareByTag = tag: lib.findFirst (share: share.tag == tag) (throw "missing ${tag} share") shares;
   # A list, in `config.microvm.volumes` order, rather than a flat field set per
   # volume. The reason is correctness, not tidiness: cloud-hypervisor assigns
   # /dev/vda, /dev/vdb in `--disk` order and microvm.nix's `withDriveLetters`
@@ -83,23 +83,52 @@ let
   # Per-share virtiofsd policy is declared once, in the guest module, and read
   # from there. Duplicating it in the launcher would make the guest declaration
   # dead — a change to `cache` would alter no behaviour and raise no error.
-  shareLaunch = map (share: {
-    inherit (share)
-      tag
-      cache
-      readOnly
-      extraArgs
-      # Where the guest mounts it. The guest's own fstab is what enacts this; the
-      # launcher carries it so `viv exec` can name the workspace cwd a session
-      # starts in without a second, silently divergent spelling of a path the
-      # guest module alone decides.
-      mountPoint
-      ;
-    socketToken = "@${lib.toUpper share.tag}_SOCKET@";
-    # The store source is a machine-independent constant (mounts.nix selects on
-    # it); the workspace source is launch-channel and stays a token (N5).
-    sourceToken = if share.source == "/nix/store" then "/nix/store" else "@WORKSPACE_SOURCE@";
-  }) shares;
+  shareLaunch = map (
+    share:
+    let
+      # What kind of share this is, decided by the two build-time constants the
+      # guest module uses: the store's machine-independent source and the
+      # workspace's sentinel. Everything else is a declared mount (spec/06,
+      # ADR-0020), whose `source` below is the declaration's own string —
+      # `${VAR}` unexpanded — that `viv` resolves against the host environment
+      # at launch and hands back through the runner's `--mount` arguments.
+      origin =
+        if share.source == "/nix/store" then
+          "store"
+        else if share.source == workspaceSourceSentinel then
+          "workspace"
+        else
+          "declared";
+    in
+    {
+      inherit (share)
+        tag
+        cache
+        readOnly
+        extraArgs
+        # Where the guest mounts it. The guest's own fstab is what enacts this; the
+        # launcher carries it so `viv exec` can name the workspace cwd a session
+        # starts in without a second, silently divergent spelling of a path the
+        # guest module alone decides.
+        mountPoint
+        ;
+      inherit origin;
+      # One token shape for every share, recovered by the runner as
+      # `<runtime>/<lowercased tag>.sock`. The guest module asserts every tag is
+      # `[a-z0-9]+`, which is what makes the case roundtrip total.
+      socketToken = "@SHARE_SOCKET_${lib.toUpper share.tag}@";
+      # The store source is a machine-independent constant (mounts.nix selects
+      # on it); the workspace source is launch-channel and stays a token (N5); a
+      # declared source is the declaration itself, resolved at launch.
+      sourceToken =
+        if origin == "store" then
+          "/nix/store"
+        else if origin == "workspace" then
+          "@WORKSPACE_SOURCE@"
+        else
+          share.source;
+    }
+  ) shares;
   # What a guest process gets that no host variable could supply.
   #
   # The guest agent clears the environment before every spawn and inherits
@@ -149,10 +178,13 @@ let
   };
 in
 {
-  # 7 since the installation supplies vivarium (ADR-0102): the supervisor left
-  # this JSON — it enters the rendered specification from the running
-  # installation, named by the runner's `--supervisor` — and the runner stopped
-  # exec-ing a built `viv`, so its job now ends at writing the specification.
+  # 8 since declared mounts reach the guest (slice 019): the share list stopped
+  # being a fixed pair — `shareLaunch` gained `origin`, every share's socket
+  # token took the one `@SHARE_SOCKET_<TAG>@` shape, a declared share's
+  # `sourceToken` carries the declaration's own unexpanded string, and declared
+  # shares carry a `mountPlan` the runner takes from `--mount` arguments.
+  # 7 was the installation supplying vivarium (ADR-0102): the supervisor left
+  # this JSON and the runner's job now ends at writing the specification.
   # 6 was guest networking: the `egress` and `network` objects and six backend
   # programs joined. The version pairs this JSON with the `viv` that parses the
   # specification rendered from it, and `viv` reads it from the built output's
@@ -162,7 +194,7 @@ in
   # It deliberately does not catch a hand-invoked runner from another
   # generation, whose argument names can differ before any schema is read —
   # `usage()` prints this number for exactly that reason.
-  schemaVersion = 7;
+  schemaVersion = 8;
   inherit guestSession;
   # The launch half of `sandbox.egress` (spec/05): carried across so host-side
   # enforcement needs no evaluation at start. `or`-defaulted because the shipped
@@ -249,11 +281,11 @@ in
     "--disk"
     "path=${volume.imagePath},direct=off,readonly=off,image_type=${volume.imageType},sparse=on"
   ]) volumeLaunch
+  ++ lib.concatMap (share: [
+    "--fs"
+    "tag=${share.tag},socket=${share.socketToken}"
+  ]) shareLaunch
   ++ [
-    "--fs"
-    "tag=${(shareByTag "store").tag},socket=@STORE_SOCKET@"
-    "--fs"
-    "tag=${(shareByTag "workspace").tag},socket=@WORKSPACE_SOCKET@"
     "--api-socket"
     "@API_SOCKET@"
   ];
@@ -280,17 +312,17 @@ in
   # changing silently if the capability is ever granted.
   virtiofsdInodeFileHandles = "never";
   inherit virtiofsdThreadPoolSize;
+  # No per-share socket entries: those spellings live on each `shareLaunch`
+  # entry's `socketToken`, one shape for any number of shares.
   tokens = {
     apiSocket = "@API_SOCKET@";
     consoleSocket = "@CONSOLE_SOCKET@";
     controlSocket = "@CONTROL_SOCKET@";
     gid = "@GID@";
     memoryMiB = "@MEMORY_MIB@";
-    storeSocket = "@STORE_SOCKET@";
     uid = "@UID@";
     vcpu = "@VCPU@";
     volumeDir = "@VOLUME_DIR@";
-    workspaceSocket = "@WORKSPACE_SOCKET@";
     workspaceSource = "@WORKSPACE_SOURCE@";
   };
   socketLegs = {

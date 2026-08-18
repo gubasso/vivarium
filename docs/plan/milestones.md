@@ -4,10 +4,11 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 005 cli-runtime-plumbing — shaped — 2 sessions — next to start
-
 ## later
 
+- 020 many-workspaces-in-one-sandbox — later — 3 sessions — needs 019
+- 021 the-manifest-is-the-sandbox — later — 4 sessions — needs 020; item 1 blocked on Q-029
+- 005 cli-runtime-plumbing — later — 2 sessions
 - 006 generate-config-contract — later — 2 sessions
 - 007 build-test-lanes — later — 4 sessions
 - 008 enforce-implementation-status — later — 2 sessions
@@ -28,3 +29,4 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 015 the-binary-supplies-itself — done — 3 sessions — enacted `ADR-0102` in one merged pass under the appetite; the host sweep and its measurement are in the slice `Revisions`
 - 016 the-human-face — done — 3 sessions — enacted `ADR-0103` in one merged pass under the appetite; the acceptance rescope is in the slice `Revisions`
 - 017 doctor-catalog — done — 4 sessions — the whole spec/13 catalog in one merged pass under the appetite; the host evidence is in the slice `Revisions`
+- 019 declared-mounts-reach-the-guest — done — 3 sessions — one merged pass under the appetite, remainder included; the descriptor-read measurement and the file-mount design are in the slice `Revisions`

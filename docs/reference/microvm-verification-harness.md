@@ -672,6 +672,10 @@ Two deltas are intended and are the point of the change: the shipped image's uni
 
 Confirmed by boot: `tests/host/first-microvm-check` against the measurement image returned `PASS=33 FAIL=0 SKIP=1`, identical to the cold-boot result recorded for the pre-refactor image.
 
+### The slice 019 re-run found the manager-owned launch block dead since ADR-0102, and one artifact of measuring while editing
+
+Measured 2026-08-18, the lane re-run slice 019 owed after moving the launch-arguments JSON to the published `share/vivarium/launch-arguments.json` (the lanes' discovery greps were updated to the published path in the same change). Result: `PASS=25 FAIL=1`, the one failure being the manager-owned launch block — it invokes the built runner and waits for a console and a transient unit, but since `ADR-0102` the runner's job ends at writing the specification and the invocation also omits the `--supervisor` argument that decision added, so the block exits at the usage line. Predates slice 019; recorded as `Q-030` in [`../plan/open-questions.md`](../plan/open-questions.md), the same failing-since-unnoticed shape as the normaliser entry above. A first run of the same lane also failed both metamorphism checks, and that was the harness reporting on the operator: the checks evaluate a path-form flake that snapshots the working tree, and formatting hooks were rewriting files between the two evaluations, so the drvs differed for a reason that is not an impurity. Quiescent, both pass — a lane run concurrent with edits to the tree reports on the edits.
+
 ## The method note
 
 One clean run proves that an outcome is possible; it is not evidence of reliability, low variance, or the absence of intermittent failure. Repeat runs whenever the claim depends on any of those properties.

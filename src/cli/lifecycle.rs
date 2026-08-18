@@ -21,8 +21,8 @@ use crate::config::{self, Environment};
 use crate::diagnostic::{Locus, Namespace};
 use crate::exit::ExitKind;
 use crate::launch::{
-    BootMetadata, GuestSession, LAUNCH_SCHEMA_VERSION, LaunchSpec, VersionEnvelope, secure_fs,
-    unmirrorable,
+    BootMetadata, GuestSession, LAUNCH_SCHEMA_VERSION, LaunchSpec, MountPlanKind, VersionEnvelope,
+    mounts, secure_fs, unmirrorable,
 };
 use crate::ui::{Ui, watch};
 
@@ -1233,6 +1233,140 @@ fn write_build_record(path: &Path, store_path: &str) -> Result<(), Failure> {
 /// `start --spec`, the async handoff that spawns the supervisor. The supervisor is resolved
 /// beside the running executable and named to the runner, because no host-side vivarium program
 /// may come from the project's build.
+/// Resolve every declared mount source against this host, refusing before boot (spec/06).
+///
+/// The session roots N24 refuses are `/tmp`, `/var/tmp`, and the host's own
+/// `${XDG_RUNTIME_DIR}`; `reject_session_source` in the launch specification is the backstop
+/// behind this with the same rule over the runtime root. Variable lookup reads the process
+/// environment directly rather than the `Environment` trait: the trait's names are static by
+/// design, and a declaration may name any variable.
+fn resolve_declared_mounts<E: Environment>(
+    context: &Context<'_, E>,
+    store_path: &str,
+) -> Result<Vec<mounts::ResolvedMount>, Failure> {
+    let contract_path = Path::new(store_path).join("share/vivarium/launch-arguments.json");
+    let declared = mounts::declared_shares(store_path).map_err(|error| {
+        diagnosed(
+            Namespace::Vm,
+            "launch-contract-unreadable",
+            "the selected build's launch contract cannot be read",
+            Locus::File(contract_path.clone()),
+            error.to_string(),
+            ExitKind::Config,
+        )
+        .with_hint("`viv start --rebuild` rebuilds the selected build with this version")
+    })?;
+    if declared.is_empty() {
+        return Ok(Vec::new());
+    }
+    let lookup =
+        |name: &str| std::env::var_os(name).map(|value| value.to_string_lossy().into_owned());
+    let mut session_roots = vec![PathBuf::from("/tmp"), PathBuf::from("/var/tmp")];
+    if let Some(runtime_dir) = context.environment.variable("XDG_RUNTIME_DIR") {
+        session_roots.push(PathBuf::from(runtime_dir));
+    }
+    // Sources are compared symlink-resolved (a link into a session directory is still a
+    // session source), so the roots must be the same kind of path or the comparison would
+    // read two spellings of one directory as two directories. A root that fails to resolve
+    // stays as spelled: the lexical check still covers the declared form.
+    for root in &mut session_roots {
+        if let Ok(resolved) = root.canonicalize() {
+            *root = resolved;
+        }
+    }
+    declared
+        .iter()
+        .map(|share| {
+            let expanded = mounts::expand_source(&share.source_token, &lookup)
+                .map_err(|defect| mount_source_failure(share, defect))?;
+            mounts::classify_source(&share.tag, &expanded, &session_roots)
+                .map_err(|defect| mount_source_failure(share, defect))
+        })
+        .collect()
+}
+
+/// One diagnostic per broken mount-source invariant, every one `78` and every one naming the
+/// declared spelling, so the refusal reads against what the user wrote rather than against a
+/// tag they never chose.
+fn mount_source_failure(share: &mounts::BuiltShare, defect: mounts::MountSourceDefect) -> Failure {
+    use mounts::MountSourceDefect as Defect;
+    let declared = &share.source_token;
+    let sources_hint = "`viv config sources` names the layer that declares this mount";
+    match defect {
+        Defect::UnsetVariable { variable } => diagnosed(
+            Namespace::Host,
+            "mount-source-unset-variable",
+            format!(
+                "a declared mount's source names `${{{variable}}}`, which this host does not set"
+            ),
+            Locus::Named("declared mounts"),
+            format!("`{declared}` cannot resolve while `{variable}` is unset (ADR-0020)"),
+            ExitKind::Config,
+        )
+        .with_hint(format!(
+            "set `{variable}` or declare the source another way; {sources_hint}"
+        )),
+        Defect::NotAbsolute { expanded } => diagnosed(
+            Namespace::Host,
+            "mount-source-not-absolute",
+            "a declared mount's source does not expand to an absolute path",
+            Locus::File(expanded.clone()),
+            format!("`{declared}` expanded to `{}`", expanded.display()),
+            ExitKind::Config,
+        )
+        .with_hint(sources_hint),
+        Defect::Missing { expanded } => diagnosed(
+            Namespace::Host,
+            "mount-source-missing",
+            "a declared mount's source does not exist on this host",
+            Locus::File(expanded.clone()),
+            format!(
+                "`{declared}` expanded to `{}`, which is missing (ADR-0020)",
+                expanded.display()
+            ),
+            ExitKind::Config,
+        )
+        .with_hint(format!(
+            "create the path or remove the declaration; {sources_hint}"
+        )),
+        Defect::Unreadable { expanded, error } => diagnosed(
+            Namespace::Host,
+            "mount-source-unreadable",
+            "a declared mount's source cannot be inspected",
+            Locus::File(expanded),
+            error,
+            ExitKind::Config,
+        )
+        .with_hint(sources_hint),
+        Defect::NotMountable { expanded } => diagnosed(
+            Namespace::Host,
+            "mount-source-not-mountable",
+            "a declared mount's source is not a regular file or directory",
+            Locus::File(expanded),
+            format!(
+                "`{declared}` names a socket, FIFO, or device node; a share conveys an inode, \
+                not a kernel object (ADR-0071)"
+            ),
+            ExitKind::Config,
+        )
+        .with_hint(
+            "sockets cross through the credential channels of spec/07, never through a mount",
+        ),
+        Defect::SessionDirectory { expanded } => diagnosed(
+            Namespace::Host,
+            "mount-source-session-directory",
+            "a declared mount's source resolves to a host session directory",
+            Locus::File(expanded),
+            format!(
+                "`{declared}` lands in `/tmp`, `/var/tmp`, or `${{XDG_RUNTIME_DIR}}`, which hold \
+                live session state no share may carry (N24)"
+            ),
+            ExitKind::Config,
+        )
+        .with_hint(sources_hint),
+    }
+}
+
 fn execute_runner<E: Environment>(
     context: &Context<'_, E>,
     store_path: &str,
@@ -1264,6 +1398,14 @@ fn execute_runner<E: Environment>(
         .with_hint("move the project under a path the guest does not own, such as your home"));
     }
 
+    // Every declared mount's source resolves against this host here, before anything is
+    // created, for the workspace refusal's reason stated above: this is where a user meets
+    // "the variable is unset" or "the path is missing" as a sentence rather than as a dead
+    // boot (spec/06, ADR-0020). The list comes from the built contract because a
+    // piece-declared mount exists only in the merged evaluation and `--no-rebuild`
+    // evaluates nothing.
+    let declared_mounts = resolve_declared_mounts(context, store_path)?;
+
     let volumes = volume_directory(&context.roots, project_id, DEFAULT_TARGET);
     std::fs::create_dir_all(&volumes).map_err(|source| {
         diagnosed(
@@ -1282,31 +1424,42 @@ fn execute_runner<E: Environment>(
         .join("bin")
         .join("vivarium-first-microvm");
     let step = context.ui.step("rendering the launch specification");
-    let output = watch::output(
-        Command::new(&program)
-            .arg("--workspace")
-            .arg(&context.project)
-            .arg("--runtime-dir")
-            .arg(&runtime.directory)
-            .arg("--volume-dir")
-            .arg(&volumes)
-            .arg("--supervisor")
-            .arg(&supervisor)
-            .arg("--uid")
-            .arg(config::effective_uid().to_string())
-            .arg("--gid")
-            .arg(config::effective_gid().to_string())
-            .arg("--memory-mib")
-            .arg(resources.mem_mib.to_string())
-            .arg("--vcpu")
-            .arg(resources.vcpu.to_string())
-            .arg("--project-id")
-            .arg(project_id)
-            .arg("--target")
-            .arg(DEFAULT_TARGET),
-        &step,
-    )
-    .map_err(|source| {
+    let mut command = Command::new(&program);
+    command
+        .arg("--workspace")
+        .arg(&context.project)
+        .arg("--runtime-dir")
+        .arg(&runtime.directory)
+        .arg("--volume-dir")
+        .arg(&volumes)
+        .arg("--supervisor")
+        .arg(&supervisor)
+        .arg("--uid")
+        .arg(config::effective_uid().to_string())
+        .arg("--gid")
+        .arg(config::effective_gid().to_string())
+        .arg("--memory-mib")
+        .arg(resources.mem_mib.to_string())
+        .arg("--vcpu")
+        .arg(resources.vcpu.to_string())
+        .arg("--project-id")
+        .arg(project_id)
+        .arg("--target")
+        .arg(DEFAULT_TARGET);
+    for mount in &declared_mounts {
+        // Four values per flag, matching the runner's `--mount TAG KIND ABS ENTRY` group; the
+        // runner's own belt re-checks the set against the contract's declared tags.
+        command
+            .arg("--mount")
+            .arg(&mount.tag)
+            .arg(match mount.kind {
+                MountPlanKind::Dir => "dir",
+                MountPlanKind::File => "file",
+            })
+            .arg(&mount.share_source)
+            .arg(mount.entry.as_deref().unwrap_or("-"));
+    }
+    let output = watch::output(&mut command, &step).map_err(|source| {
         diagnosed(
             Namespace::Vm,
             "launcher-unavailable",

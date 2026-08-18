@@ -124,6 +124,97 @@ let
     ) preparedVolumes
   );
 
+  # What the merged configuration asked to mount beyond the project tree
+  # (spec/06, ADR-0020). `or [ ]` for the same reason as `vivarium.volumes`
+  # above: the option surface lives in `nix/vivarium-options.nix`, which only a
+  # generated flake composes.
+  requestedMounts = config.vivarium.mounts or [ ];
+
+  # Guest-side target expansion (ADR-0020): `~` is the guest home, and each side
+  # expands its own home, which is what lets an identity mount such as
+  # `~/.config/foo` name one spelling even though the guest username differs
+  # from the host's.
+  expandTarget =
+    target:
+    if target == "~" then
+      sessionUser.home
+    else if lib.hasPrefix "~/" target then
+      "${sessionUser.home}/${lib.removePrefix "~/" target}"
+    else
+      target;
+
+  # Where a declared mount's share lands before `vivarium-mounts.service` binds
+  # it at the declared target. A build constant, like the workspace's own
+  # internal point, because whether a `source` is a directory or a regular file
+  # — and so what actually binds at the target — is a host fact that resolves
+  # only at launch (a file is served through its parent directory), so the
+  # guest's own fstab cannot mount the share at the target directly.
+  mountInternalRoot = "/run/vivarium-mounts";
+
+  declaredMounts = lib.imap0 (index: mount: {
+    # `mnt<i>` by merged-list order: deterministic (layers concatenate in a
+    # fixed order), `[a-z0-9]` so the launcher's socket-token case roundtrip is
+    # total, and short — a share's socket path has 108 bytes to live in. The
+    # tag is a per-boot artifact; nothing persists it, so an index shifting
+    # when the list is edited costs nothing.
+    tag = "mnt${toString index}";
+    internal = "${mountInternalRoot}/mnt${toString index}";
+    target = expandTarget mount.target;
+    inherit (mount) source readonly;
+  }) requestedMounts;
+
+  # Whitespace-free by assertion, like the volume table: three fields a line.
+  mountTable = pkgs.writeText "vivarium-mount-table" (
+    lib.concatMapStrings (
+      mount: "${mount.tag} ${if mount.readonly then "1" else "0"} ${mount.target}\n"
+    ) declaredMounts
+  );
+
+  # Paths the guest owns, which no declared mount may target: binding a share
+  # over one either corrupts a mount the guest is made of or shadows state the
+  # guest must keep. The session home is deliberately absent as a prefix —
+  # identity mounts under `~` are this surface's primary use — and guarded as
+  # an exact match and an ancestor below. Kept in agreement with the runtime
+  # denylist in `workspace-mirror.sh`, which owns the reasoning for the
+  # individually named `/run` and `/var` entries.
+  guestOwnedTargetRoots = [
+    "/nix"
+    "/proc"
+    "/sys"
+    "/dev"
+    "/etc"
+    "/boot"
+    "/usr"
+    "/bin"
+    "/sbin"
+    "/lib"
+    "/lib64"
+    "/root"
+    "/tmp"
+    "/var/lib"
+    "/var/log"
+    "/var/tmp"
+    "/var/empty"
+    "/run/vivarium"
+    mountInternalRoot
+    "/run/user"
+    "/run/current-system"
+    "/run/booted-system"
+    "/run/wrappers"
+    "/run/systemd"
+    "/run/udev"
+    "/run/dbus"
+    "/run/lock"
+    "/run/log"
+    "/run/keys"
+    "/run/credentials"
+    "/run/binfmt"
+    "/run/nscd"
+    "/run/opengl-driver"
+    upperRoot
+    workspaceInternalMountPoint
+  ];
+
   # `sandbox.egress` is build-channel policy the guest system is built against.
   # `or`-defaulted like `vivarium.volumes` above and for the same reason: the
   # option surface lives in `nix/vivarium-options.nix`, which only a generated
@@ -236,7 +327,29 @@ in
             "@GID_TRANSLATION@"
           ];
         }
-      ];
+      ]
+      # One share per declared mount, appended after the two reserved entries —
+      # the same "reserved first, declared appended" contract the volumes keep.
+      # `source` carries the DECLARED string verbatim, `${VAR}` and all: a host
+      # path may not enter a build output (N19), and expansion against the host
+      # environment happens at launch (ADR-0020), where `viv` refuses a source
+      # that is unset, missing, or not a regular file or directory before any
+      # boot. The launcher recognises these shares by neither being the store
+      # constant nor the workspace sentinel.
+      ++ map (mount: {
+        inherit (mount) tag source;
+        mountPoint = mount.internal;
+        proto = "virtiofs";
+        readOnly = mount.readonly;
+        cache = "auto";
+        posixAcl = false;
+        # The same complete bidirectional identity translation as the
+        # workspace, expanded by the launcher from the launch-time host ids.
+        extraArgs = [
+          "@UID_TRANSLATION@"
+          "@GID_TRANSLATION@"
+        ];
+      }) declaredMounts;
 
       # Order is a correctness contract, not presentation: cloud-hypervisor assigns
       # /dev/vda, /dev/vdb in `--disk` order and microvm.nix's `withDriveLetters`
@@ -330,7 +443,22 @@ in
           "mode=0755"
         ];
       };
-    };
+    }
+    # The same spec/06:22 rule the store entry above enacts by hand, held for
+    # every read-only declared mount: `readOnly` gives the daemon `--readonly`,
+    # and these flags are the guest half, on the internal point the bind unit
+    # then carries to the target.
+    // lib.listToAttrs (
+      map (mount: {
+        name = mount.internal;
+        value.options = [
+          "ro"
+          "nodev"
+          "nosuid"
+          "noexec"
+        ];
+      }) (lib.filter (mount: mount.readonly) declaredMounts)
+    );
 
     # ADR-0094: the guest's memory posture, and it is four decisions of which three
     # are "write nothing".
@@ -480,6 +608,49 @@ in
           script = builtins.readFile ./workspace-mirror.sh;
         };
 
+        # ADR-0020's guest half for declared mounts, shaped like
+        # `vivarium-workspace` above: shares mount at build-time internal
+        # points, and this unit binds each at its declared target, taking the
+        # dir-or-file plan from the kernel command line the launcher wrote.
+        vivarium-mounts = lib.mkIf (declaredMounts != [ ]) {
+          description = "Bind declared mounts at their declared targets";
+          wantedBy = [ "multi-user.target" ];
+          # Internal points AND targets. The internal half carries the
+          # `Requires` guard `vivarium-workspace` documents — a failed share
+          # leaves an empty directory a bind would happily serve. The target
+          # half orders a home-relative target after the home volume's mount.
+          unitConfig.RequiresMountsFor =
+            map (mount: mount.internal) declaredMounts ++ map (mount: mount.target) declaredMounts;
+          # After the first-boot ownership pass, or the ancestors this unit
+          # creates under `~` would land in a home the session user does not
+          # own yet — and `Requires`, because binding into an unprepared home
+          # is the same silent-loss shape as binding from a failed share.
+          after = [ "vivarium-volume-prepare.service" ];
+          requires = [ "vivarium-volume-prepare.service" ];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            UMask = "0022";
+            # No mount-namespace hardening, for the reason recorded on
+            # `vivarium-workspace` above: a private namespace makes every bind
+            # this unit exists to make invisible to the rest of the guest.
+          };
+          path = [
+            pkgs.coreutils
+            pkgs.util-linux
+            pkgs.gnugrep
+          ];
+          environment = {
+            VIVARIUM_MOUNT_INTERNAL_ROOT = mountInternalRoot;
+            VIVARIUM_MOUNT_TABLE = mountTable;
+            VIVARIUM_GUEST_HOME = sessionUser.home;
+            VIVARIUM_GUEST_OWNER = "${sessionUser.name}:${sessionUser.group}";
+          };
+          # Same `enableStrictShellChecks` posture as its siblings: the body is
+          # covered by the repository's shellcheck hook.
+          script = builtins.readFile ./mount-bind.sh;
+        };
+
         vivarium-agent = {
           description = "Vivarium guest control and credential agent";
           wantedBy = [ "multi-user.target" ];
@@ -497,11 +668,16 @@ in
           after = [
             "vivarium-workspace.service"
             "vivarium-volume-prepare.service"
-          ];
+          ]
+          # A session must see every declared mount for the same reason it must
+          # see the workspace: one loud boot failure beats one refusal per
+          # session naming three possible causes.
+          ++ lib.optional (declaredMounts != [ ]) "vivarium-mounts.service";
           requires = [
             "vivarium-workspace.service"
             "vivarium-volume-prepare.service"
-          ];
+          ]
+          ++ lib.optional (declaredMounts != [ ]) "vivarium-mounts.service";
           serviceConfig = {
             Type = "simple";
             User = "vivarium";
@@ -687,6 +863,68 @@ in
         message =
           "the store volume at `${config.microvm.writableStoreOverlay}` must not be prepared on "
           + "first boot: it mounts in the initrd, before the guest has an identity to own it";
+      }
+    ]
+    ++ lib.concatMap (mount: [
+      {
+        # The declaration is refused with the string it was written in, so the
+        # message names the declared target; the checks run on the expansion.
+        assertion = mount.source != "";
+        message = "a declared mount targeting `${mount.target}` has an empty `source`";
+      }
+      {
+        assertion =
+          lib.hasPrefix "/" mount.target
+          && mount.target != "/"
+          && builtins.match ".*[[:space:]].*" mount.target == null
+          && builtins.match "(.*/)?\\.\\.(/.*)?" mount.target == null;
+        message =
+          "mount target `${mount.target}` must be an absolute, whitespace-free path "
+          + "without `..` (`~` expands to the guest home)";
+      }
+      {
+        # Under the home is this surface's primary use; the home itself, or an
+        # ancestor of it, would shadow the volume the session lives on.
+        assertion =
+          mount.target != sessionUser.home && !(lib.hasPrefix "${mount.target}/" sessionUser.home);
+        message = "mount target `${mount.target}` would shadow the guest home `${sessionUser.home}`";
+      }
+      {
+        assertion =
+          !(lib.any (
+            owned:
+            mount.target == owned
+            || lib.hasPrefix "${owned}/" mount.target
+            || lib.hasPrefix "${mount.target}/" owned
+          ) guestOwnedTargetRoots);
+        message =
+          "mount target `${mount.target}` collides with a path the guest owns "
+          + "(or is an ancestor of one)";
+      }
+    ]) declaredMounts
+    ++ [
+      {
+        # ADR-0020: declarations concatenate across layers and duplicate
+        # targets fail evaluation. Volume mountpoints are in the same namespace
+        # — one guest path cannot be both a disk and a share.
+        assertion =
+          let
+            targets = map (mount: mount.target) declaredMounts;
+            volumeMounts = map (volume: volume.mountPoint) config.microvm.volumes;
+          in
+          targets == lib.unique targets && lib.all (target: !(lib.elem target volumeMounts)) targets;
+        message = "declared mounts must have distinct targets, distinct from every volume mountpoint";
+      }
+      {
+        # The launcher derives each share's socket token by upper-casing its
+        # tag and the runner recovers the socket name by lower-casing it back,
+        # so the roundtrip is total only over this charset. Checked on the
+        # MERGED list: a composed layer contributing its own share is exactly
+        # the entry worth catching.
+        assertion = lib.all (share: builtins.match "[a-z0-9]+" share.tag != null) config.microvm.shares;
+        message =
+          "every virtiofs share tag must match [a-z0-9]+; found "
+          + lib.concatMapStringsSep ", " (share: "`${share.tag}`") config.microvm.shares;
       }
     ]
     ++ map (share: {

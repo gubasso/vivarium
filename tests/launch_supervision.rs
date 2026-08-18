@@ -12,10 +12,11 @@ use vivarium::doctor::descriptors::host_fd_limit_sufficient;
 use vivarium::launch::{
     BackendPrograms, ConfinementProfile, ConsoleReader, ConsoleSink, DescriptorBudget, EgressSpec,
     GuestSession, IdentityTranslation, LAUNCH_SCHEMA_VERSION, LaunchEgressMode, LaunchReady,
-    LaunchSpec, NetworkSpec, ReadinessReport, ResourceSpec, RuntimePaths, ShareSpec, SocketLegs,
-    Supervisor, TransientUnitSpec,
+    LaunchSpec, MountPlan, MountPlanKind, NetworkSpec, ReadinessReport, ResourceSpec, RuntimePaths,
+    ShareSpec, SocketLegs, Supervisor, TransientUnitSpec,
 };
 
+#[allow(clippy::too_many_lines)]
 fn fixture(name: &str) -> LaunchSpec {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -95,15 +96,34 @@ fn fixture(name: &str) -> LaunchSpec {
             guest_mac: "02:56:49:56:41:00".into(),
             resolver_port: 53,
         },
-        shares: vec![ShareSpec {
-            tag: "workspace".into(),
-            source: std::env::current_dir().unwrap(),
-            mount_point: "/run/vivarium-workspace".into(),
-            socket: child("workspace.sock"),
-            cache: "auto".into(),
-            read_only: false,
-            extra_args: vec![],
-        }],
+        shares: vec![
+            ShareSpec {
+                tag: "workspace".into(),
+                source: std::env::current_dir().unwrap(),
+                mount_point: "/run/vivarium-workspace".into(),
+                socket: child("workspace.sock"),
+                cache: "auto".into(),
+                read_only: false,
+                mount_plan: None,
+                extra_args: vec![],
+            },
+            // A declared mount's share (slice 019), so every per-share loop below — spawn,
+            // cleanup allowlist, rendered validation — is exercised over a list the two
+            // reserved entries no longer bound.
+            ShareSpec {
+                tag: "mnt0".into(),
+                source: std::env::current_dir().unwrap(),
+                mount_point: "/run/vivarium-mounts/mnt0".into(),
+                socket: child("mnt0.sock"),
+                cache: "auto".into(),
+                read_only: true,
+                mount_plan: Some(MountPlan {
+                    kind: MountPlanKind::Dir,
+                    entry: None,
+                }),
+                extra_args: vec![],
+            },
+        ],
         volumes: vec![],
         vm_create: json!({"payload":{"kernel":"/nix/store/fake/vmlinux"}}),
         landlock_available: false,
@@ -401,12 +421,13 @@ fn one_descriptor_field_drives_daemon_unit_and_doctor() {
         worker_pool_size: 4,
     };
     let profile = ConfinementProfile::new(&spec).unwrap();
-    assert_eq!(profile.shares().len(), 1);
-    assert!(
-        profile.shares()[0]
-            .args()
-            .contains(&"--rlimit-nofile=1000".into())
-    );
+    // One rendered daemon per share, and the explicit budget reaches every one of them
+    // (ADR-0093) — a declared mount's daemon included, which is what makes this a check on
+    // the loop rather than on the workspace entry.
+    assert_eq!(profile.shares().len(), spec.shares.len());
+    for share in profile.shares() {
+        assert!(share.args().contains(&"--rlimit-nofile=1000".into()));
+    }
     assert!(
         TransientUnitSpec::new(&spec)
             .command()

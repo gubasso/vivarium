@@ -38,6 +38,9 @@ pkgs.runCommand "vivarium-first-microvm-contract" {
         "vivarium-volume-prepare.service"
         "vivarium-workspace.service"
       ]
+      # The bind unit exists exactly when a mount is declared, so the unit
+      # allowlist stays exact for both kinds of image.
+      ++ pkgs.lib.optional (expect.declaredMounts != [ ]) "vivarium-mounts.service"
       ++ expect.units
     )
   );
@@ -51,4 +54,12 @@ pkgs.runCommand "vivarium-first-microvm-contract" {
     volume:
     "${pkgs.lib.removeSuffix ".img" (baseNameOf volume.image)} ${volume.mountPoint} ${volume.label} ${toString volume.size}\n"
   ) expect.declaredVolumes;
+  # `<tag> <internal mountPoint> <readonly> <source>` per declared mount, in
+  # `microvm.shares` order — the source last because it is the one field `read`
+  # may take to end of line. Same third-reading role as the volume rows above:
+  # the launcher's JSON and the guest's own units are each compared against
+  # this, and the row count keeps the loop total (slice 019).
+  VIVARIUM_DECLARED_MOUNTS = pkgs.lib.concatMapStrings (
+    share: "${share.tag} ${share.mountPoint} ${if share.readOnly then "1" else "0"} ${share.source}\n"
+  ) expect.declaredMounts;
 } (builtins.readFile ./contract.sh)
