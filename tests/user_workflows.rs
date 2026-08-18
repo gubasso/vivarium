@@ -2,7 +2,7 @@ mod support;
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use libtest_mimic::{Arguments, Failed, Trial};
@@ -24,7 +24,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 25] = [
+const WORKFLOWS: [WorkflowSpec; 26] = [
     (
         "workflow_01_first_time_bind_usage",
         GateLevel::Cli,
@@ -139,6 +139,11 @@ const WORKFLOWS: [WorkflowSpec; 25] = [
         "workflow_17_linked_worktree_reaches_main",
         GateLevel::Virtualization,
         workflow_17_worktree,
+    ),
+    (
+        "workflow_22_file_mount_serves_only_its_file",
+        GateLevel::Virtualization,
+        workflow_22_file_mount_confinement,
     ),
     (
         "workflow_15_contract_skew_refusal",
@@ -2314,6 +2319,193 @@ fn workflow_17_worktree() -> Result<(), Failed> {
     check(expect_code(&viv_at(&tp, &worktree, &["stop"])?, 0))
 }
 
+/// A declared file mount reaches the guest, and nothing beside it does (ADR-0105, spec/06).
+///
+/// The demonstration is made at the export rather than by attacking from inside the guest, and
+/// deliberately: the product hands out no root in the guest — `viv exec` runs as the session user,
+/// the agent unit runs as `vivarium`, the image carries no `sudo` and no getty, and a piece can
+/// only set `vivarium.*` options — so a guest-root remount is a modelled adversary and not
+/// something a trial can perform. What bounds that adversary is the daemon's own root directory:
+/// whatever a guest does with the tag, root included, it reaches what this asserts on. So the
+/// trial reads the live daemon's root from the host and requires exactly the declared file, with a
+/// sibling planted next to the source on purpose and required absent.
+#[allow(clippy::too_many_lines)]
+fn workflow_22_file_mount_confinement() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("wf22-project").map_err(io_failed)?;
+    // Two file mounts from one populated directory: a read-only one and a read-write one, so the
+    // trial covers both halves of the declaration through the same staged export.
+    arrange_manifest(
+        &tp,
+        "wf22-demo",
+        concat!(
+            "[[mounts]]\n",
+            "source = \"${HOME}/wf22-secrets/wf22 identity.toml\"\n",
+            "target = \"/workspaces/wf22-identity.toml\"\nreadonly = true\n\n",
+            "[[mounts]]\n",
+            "source = \"${HOME}/wf22-secrets/wf22-notes.txt\"\n",
+            "target = \"~/wf22-notes.txt\"\nreadonly = false\n"
+        ),
+        "",
+    )?;
+    bind(&tp, "wf22-demo")?;
+
+    let secrets = tp.home().join("wf22-secrets");
+    write_file(&secrets.join("wf22 identity.toml"), "id = \"wf22-value\"\n").map_err(io_failed)?;
+    write_file(&secrets.join("wf22-notes.txt"), "host notes\n").map_err(io_failed)?;
+    // The sibling that must never cross. Its name is what the assertions below look for, and it
+    // shares the parent directory with both declared files.
+    write_file(&secrets.join("wf22-sibling-secret"), "SIBLING\n").map_err(io_failed)?;
+
+    // Both declared files reach their targets, so the confinement is not the trivial kind that
+    // serves nothing at all.
+    let read_ro = viv(
+        &tp,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-lc",
+            "cat /workspaces/wf22-identity.toml",
+        ],
+    )?;
+    check(expect_code(&read_ro, 0))?;
+    check(expect_stdout_mentions(&read_ro, "wf22-value"))?;
+    let notes_read = viv(
+        &tp,
+        &["exec", "--", "sh", "-lc", "cat \"$HOME\"/wf22-notes.txt"],
+    )?;
+    check(expect_code(&notes_read, 0))?;
+    check(expect_stdout_mentions(&notes_read, "host notes"))?;
+
+    // The export root is read-only while the declared file is not: a read-write file mount stays
+    // writable through its own bind, and the write lands on the host inode.
+    check(expect_code(
+        &viv(
+            &tp,
+            &[
+                "exec",
+                "--",
+                "sh",
+                "-lc",
+                "printf 'guest note\\n' >> \"$HOME\"/wf22-notes.txt",
+            ],
+        )?,
+        0,
+    ))?;
+    let notes = fs::read_to_string(secrets.join("wf22-notes.txt")).map_err(io_failed)?;
+    if !notes.contains("guest note") {
+        return fail(format!(
+            "the guest's append never reached the host: {notes:?}"
+        ));
+    }
+
+    // The share as the guest sees it: exactly the declared file at the internal mount point, which
+    // is now readable rather than shadowed, because there is nothing left to hide.
+    for (tag, name) in [("mnt0", "wf22 identity.toml"), ("mnt1", "wf22-notes.txt")] {
+        let listing = viv(
+            &tp,
+            &[
+                "exec",
+                "--",
+                "sh",
+                "-lc",
+                "ls -A /run/vivarium-mounts/\"$1\"",
+                "sh",
+                tag,
+            ],
+        )?;
+        check(expect_code(&listing, 0))?;
+        let served = String::from_utf8_lossy(&listing.stdout);
+        let entries = served.lines().filter(|line| !line.is_empty()).count();
+        if entries != 1 || !served.contains(name) {
+            return fail(format!(
+                "the guest sees {entries} entries in share {tag}, not the one declared file: \
+                {served:?}"
+            ));
+        }
+        if served.contains("wf22-sibling-secret") {
+            return fail(format!(
+                "a sibling of the declared file reached share {tag}"
+            ));
+        }
+    }
+
+    // And the same property where it is actually enforced: the daemon's own root. This is what
+    // bounds a guest that has root — it cannot address what its daemon cannot see.
+    for tag in ["mnt0", "mnt1"] {
+        let socket = path_named(tp.runtime(), &format!("{tag}.sock")).ok_or_else(|| {
+            Failed::from(format!("no socket for share {tag} under the runtime root"))
+        })?;
+        let pid = daemon_pid_serving(&socket)
+            .ok_or_else(|| Failed::from(format!("no live daemon serving {}", socket.display())))?;
+        let root = PathBuf::from(format!("/proc/{pid}/root"));
+        let mut served = fs::read_dir(&root)
+            .map_err(io_failed)?
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        served.sort();
+        if served.len() != 1 {
+            return fail(format!(
+                "share {tag}'s daemon serves {served:?}, not one declared file"
+            ));
+        }
+        if served.iter().any(|name| name == "wf22-sibling-secret") {
+            return fail(format!(
+                "share {tag}'s daemon can reach the planted sibling"
+            ));
+        }
+        // The parent directory itself must be unreachable, not merely unlisted: a daemon whose
+        // root were the parent would answer this.
+        if root.join("wf22-sibling-secret").exists() {
+            return fail(format!(
+                "share {tag}'s daemon resolves a sibling path under its own root"
+            ));
+        }
+    }
+
+    // `readonly = true` still refuses the guest, and nothing beside the declared files moves.
+    // Snapshotted after the read-write append, so the only change this could catch is one the
+    // declaration never asked for — a defaced identity file, or a touched sibling.
+    let before = snapshot_tree(&secrets).map_err(io_failed)?;
+    check(expect_nonzero(&viv(
+        &tp,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-lc",
+            "printf 'guest defaced this' > /workspaces/wf22-identity.toml",
+        ],
+    )?))?;
+    check(expect_tree_unchanged(&secrets, &before))?;
+    check(expect_code(&viv(&tp, &["stop"])?, 0))
+}
+
+/// The pid of the live `virtiofsd` serving this socket, read from the host's own process table.
+///
+/// By command line rather than by a pid file: what this trial needs to be true is that the process
+/// actually serving the guest is confined, and the process serving the guest is the one whose
+/// arguments name this socket.
+fn daemon_pid_serving(socket: &Path) -> Option<u32> {
+    let needle = socket.to_string_lossy().into_owned();
+    for entry in fs::read_dir("/proc").ok()?.flatten() {
+        // `/proc` holds more than processes, so a name that is not a pid is skipped rather than
+        // ending the search — the difference between a scan and a scan that stops at `acpi`.
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(cmdline) = fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+        if cmdline.contains("virtiofsd") && cmdline.contains(&needle) {
+            return Some(pid);
+        }
+    }
+    None
+}
+
 /// Rewrites the one manifest this trial binds and rebinds it, one defective declaration a leg.
 fn bind_after_arrange(tp: &TempProject, mounts: &str) -> Result<(), Failed> {
     arrange_manifest(tp, "mounts-refusals", mounts, "")?;
@@ -2338,19 +2530,28 @@ fn viv_with_env(
 
 /// Whether a file with this exact name exists anywhere under `root`.
 fn path_named_exists(root: &Path, name: &str) -> bool {
-    let Ok(entries) = fs::read_dir(root) else {
-        return false;
-    };
+    path_named(root, name).is_some()
+}
+
+/// The first path with this exact name anywhere under `root`.
+///
+/// The runtime root a trial holds is the session's, while a guest's own artefacts live a few
+/// levels down under project and target names the trial does not spell — so the search is by name
+/// rather than by constructed path.
+fn path_named(root: &Path, name: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(root).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.file_name().is_some_and(|found| found == name) {
-            return true;
+            return Some(path);
         }
-        if path.is_dir() && path_named_exists(&path, name) {
-            return true;
+        if path.is_dir()
+            && let Some(found) = path_named(&path, name)
+        {
+            return Some(found);
         }
     }
-    false
+    None
 }
 
 fn arrange_manifest(

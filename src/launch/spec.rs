@@ -1,6 +1,7 @@
 //! Versioned, strict launch contract consumed from the Nix-built JSON handoff.
 
 use crate::launch::LaunchError;
+use crate::launch::mounts::encode_entry;
 use crate::protocol::CredentialId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,7 +35,14 @@ use std::path::{Component, Path, PathBuf};
 /// mount's share carries a [`MountPlan`] — whether the declared source was a directory or a
 /// regular file served through its parent — which the supervisor relays to the guest's bind
 /// unit on the kernel command line.
-pub const LAUNCH_SCHEMA_VERSION: u32 = 8;
+///
+/// 9 since a file mount serves only its file (ADR-0105): under a file plan, `source` stopped
+/// meaning the parent directory and became the declared file itself, which the supervisor stages
+/// as the only entry of that share's export root. The field kept its name and changed its
+/// meaning, which is exactly the skew this constant exists to catch — a schema-8 record paired
+/// with this code would hand a daemon a directory where a file is required, and the pairing is
+/// refused before that can happen.
+pub const LAUNCH_SCHEMA_VERSION: u32 = 9;
 pub const VIRTIOFSD_RLIMIT_NOFILE: u64 = 524_288;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -290,6 +298,28 @@ pub struct MountPlan {
     /// The percent-encoded basename a `file` mount serves, kept encoded end to end: the guest's
     /// bind unit is the one decoder, checking the allowlist before decoding (`mount-bind.sh`).
     pub entry: Option<String>,
+}
+
+impl ShareSpec {
+    /// Where this share's daemon finds its export root, for the shares that are staged.
+    ///
+    /// A file mount's daemon is never pointed at the declared file's parent (ADR-0105): the
+    /// supervisor gives it a private directory holding that one file and nothing else. The path is
+    /// derived rather than declared, and derived in exactly one place, because two parties need to
+    /// agree on it and disagreeing is silent — the confinement profile renders it into the daemon's
+    /// command, and the teardown sweep, which refuses a runtime-directory entry nobody named, has
+    /// to recognise the same name.
+    #[must_use]
+    pub fn stage_dir(&self, runtime_root: &Path) -> Option<PathBuf> {
+        matches!(
+            self.mount_plan,
+            Some(MountPlan {
+                kind: MountPlanKind::File,
+                ..
+            })
+        )
+        .then(|| runtime_root.join(format!("{}.stage", self.tag)))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -581,6 +611,15 @@ impl LaunchSpec {
             require_absolute_resolved(&share.source)?;
             require_absolute_resolved(&share.mount_point)?;
             require_exact_child(&share.socket, &self.runtime_paths.root)?;
+            // The staging directory is held to the same rule as the socket beside it, and for a
+            // sharper reason: it is derived from the tag rather than carried, so a tag holding a
+            // separator or a leading `/` would have `Path::join` name a directory outside the
+            // runtime root — one the supervisor then creates and the teardown sweep then removes.
+            // The build side already constrains a tag to `[a-z0-9]+` (`nix/guest.nix`); this
+            // validator exists for the record no build wrote.
+            if let Some(stage) = share.stage_dir(&self.runtime_paths.root) {
+                require_exact_child(&stage, &self.runtime_paths.root)?;
+            }
             if !sockets.insert(&share.socket) {
                 return Err(LaunchError::InvalidSpec("duplicate socket path"));
             }
@@ -593,14 +632,27 @@ impl LaunchSpec {
             {
                 return Err(LaunchError::InvalidSpec(reason));
             }
-            // Every share source is a directory: a declared mount whose source is a regular
-            // file is served through its parent, with the file named by the plan's `entry`
-            // (spec/06, ADR-0071). The authoritative type check reads through the descriptor
-            // the daemon is then served from (`src/launch/supervisor.rs`); this is the
-            // spec-shaped backstop for a hand-written record.
+            // A share source is a directory, except under a file mount plan, where it is the
+            // declared regular file itself and the supervisor stages it as the only entry of the
+            // share's export root (spec/06, ADR-0071, ADR-0105). The authoritative type check
+            // reads through the descriptor held across the spawn (`src/launch/supervisor.rs`);
+            // this is the spec-shaped backstop for a hand-written record.
             let metadata = std::fs::metadata(&share.source)
                 .map_err(|error| LaunchError::io("inspect share source", error))?;
-            if !metadata.is_dir() {
+            let staged = matches!(
+                share.mount_plan,
+                Some(MountPlan {
+                    kind: MountPlanKind::File,
+                    ..
+                })
+            );
+            if staged {
+                if !metadata.is_file() {
+                    return Err(LaunchError::InvalidSpec(
+                        "a file mount plan's share source is not a regular file",
+                    ));
+                }
+            } else if !metadata.is_dir() {
                 return Err(LaunchError::InvalidSpec("share source is not a directory"));
             }
             match &share.mount_plan {
@@ -624,6 +676,17 @@ impl LaunchSpec {
                     if !entry.as_deref().is_some_and(is_encoded_entry) {
                         return Err(LaunchError::InvalidSpec(
                             "a file mount plan needs a well-formed encoded entry",
+                        ));
+                    }
+                    // One file, named twice: the staging step reads the export root's only entry
+                    // from the source's own basename (`stage-share`), while the guest binds the
+                    // entry this plan carries. Nothing downstream reconciles the two, so a record
+                    // whose spellings disagree stages one name and asks the guest for another,
+                    // and the mount unit refuses at boot for a reason that looks like a missing
+                    // file. Both spellings are in hand here, so the disagreement is refused here.
+                    if share.source.file_name().map(encode_entry).as_deref() != entry.as_deref() {
+                        return Err(LaunchError::InvalidSpec(
+                            "a file mount plan's entry does not name its source",
                         ));
                     }
                 }
@@ -1179,10 +1242,15 @@ pub mod tests {
         }
     }
 
-    /// The declared-mount shapes schema 8 admits: a share with no plan, a directory plan, and a
-    /// file plan whose encoded entry carries a percent sequence.
+    /// The declared-mount shapes schema 9 admits, and the pairing it now requires.
+    ///
+    /// A plan does not only say what the guest does with the share; since ADR-0105 it says what
+    /// kind of thing `source` is. A directory plan names a directory, a file plan names the file
+    /// itself — the parent stopped appearing anywhere — so each plan is asserted against both
+    /// kinds of source, and the two crossed pairings are refusals rather than shapes that boot
+    /// into a daemon serving the wrong tree.
     #[test]
-    fn declared_share_plans_validate_in_both_kinds() {
+    fn a_plan_and_its_source_kind_must_agree() {
         let mut spec = fixture();
         let mut declared = spec.shares[0].clone();
         declared.tag = "mnt0".into();
@@ -1195,11 +1263,71 @@ pub mod tests {
         spec.shares.push(declared);
         spec.validate().unwrap();
 
+        let directory = spec.shares[1].source.clone();
+        let file = std::env::current_dir().unwrap().join("Cargo.toml");
+        let file_plan = Some(MountPlan {
+            kind: MountPlanKind::File,
+            entry: Some("Cargo.toml".into()),
+        });
+
+        spec.shares[1].mount_plan.clone_from(&file_plan);
+        spec.shares[1].source.clone_from(&file);
+        spec.validate().unwrap();
+        assert!(spec.shares[1].stage_dir(&spec.runtime_paths.root).is_some());
+
+        // A file plan whose source is the parent directory again: the shape this slice removed.
+        spec.shares[1].source.clone_from(&directory);
+        assert!(spec.validate().is_err());
+
+        // And the mirror image, a directory plan handed a regular file.
+        spec.shares[1].source.clone_from(&file);
+        spec.shares[1].mount_plan = Some(MountPlan {
+            kind: MountPlanKind::Dir,
+            entry: None,
+        });
+        assert!(spec.validate().is_err());
+        assert!(spec.shares[1].stage_dir(&spec.runtime_paths.root).is_none());
+
+        // A well-formed entry that names a different file than the source. The staging step reads
+        // the export root's one entry from the source, so a record that disagrees with itself
+        // stages one name and asks the guest for another; refused here rather than at the guest's
+        // mount unit, which would report a missing file.
+        spec.shares[1].source = file;
         spec.shares[1].mount_plan = Some(MountPlan {
             kind: MountPlanKind::File,
-            entry: Some("a%20config.toml".into()),
+            entry: Some("Cargo.lock".into()),
         });
-        spec.validate().unwrap();
+        assert!(spec.validate().is_err());
+    }
+
+    /// A tag that is not the `[a-z0-9]+` token the build emits cannot walk the export root out of
+    /// the runtime directory.
+    ///
+    /// The staging path is derived from the tag rather than carried in the record, so a tag
+    /// holding a separator turns `Path::join` into a path constructor: the supervisor would create
+    /// a directory the launch never named, point a daemon at it, and the teardown sweep would then
+    /// remove it. Held to the socket's own rule instead — an exact child of the runtime root.
+    #[test]
+    fn a_staged_share_cannot_name_an_export_root_outside_the_runtime_directory() {
+        let base = fixture();
+        let file = std::env::current_dir().unwrap().join("Cargo.toml");
+        for tag in ["/tmp/escaped", "../escaped", "nested/escaped"] {
+            let mut spec = base.clone();
+            let mut declared = spec.shares[0].clone();
+            declared.tag = tag.into();
+            declared.source.clone_from(&file);
+            declared.mount_point = "/run/vivarium-mounts/mnt0".into();
+            declared.socket = spec.runtime_paths.root.join("mnt0.sock");
+            declared.mount_plan = Some(MountPlan {
+                kind: MountPlanKind::File,
+                entry: Some("Cargo.toml".into()),
+            });
+            spec.shares.push(declared);
+            assert!(
+                spec.validate().is_err(),
+                "a share tagged {tag} derived an export root the runtime root does not hold"
+            );
+        }
     }
 
     #[test]

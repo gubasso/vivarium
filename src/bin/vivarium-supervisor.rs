@@ -25,7 +25,8 @@ const MODE_MASK: u32 = 0o777;
 enum SupervisorError {
     #[error(
         "invalid invocation: expected `--spec <path> --ready-socket <path>` (both \
-        absolute), `net-init`, or `resolver --spec <path>`"
+        absolute), `net-init`, `resolver --spec <path>`, or `stage-share --source <path> \
+        --stage <path> [--readonly] -- <program> [argument]...`"
     )]
     Usage,
     #[error(
@@ -60,6 +61,17 @@ enum SupervisorError {
     ResolverBind(#[source] std::io::Error),
     #[error("the gating resolver's socket failed")]
     ResolverServe(#[source] std::io::Error),
+    #[error("cannot build the share's export root at {stage}: {step} failed")]
+    Stage {
+        stage: PathBuf,
+        /// Which of the five steps refused, because they fail for different host reasons and an
+        /// operator reading the journal cannot tell them apart from the error alone.
+        step: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("cannot start the share's daemon inside its staging namespace")]
+    StageExec(#[source] std::io::Error),
 }
 
 impl SupervisorError {
@@ -80,7 +92,9 @@ impl SupervisorError {
             | Self::ReportReadiness(_)
             | Self::NetInit(_)
             | Self::ResolverBind(_)
-            | Self::ResolverServe(_) => ExitKind::IoErr,
+            | Self::ResolverServe(_)
+            | Self::Stage { .. }
+            | Self::StageExec(_) => ExitKind::IoErr,
             // Encoding a fixed-shape report cannot fail on well-formed input, so a failure here is
             // a defect in this program rather than an I/O condition.
             Self::EncodeReadiness(_)
@@ -104,6 +118,7 @@ async fn main() -> ExitCode {
         Ok(Invocation::Supervise { spec, ready }) => run(&spec, &ready).await,
         Ok(Invocation::NetInit) => net_init(),
         Ok(Invocation::Resolver { spec }) => run_resolver(&spec).await,
+        Ok(Invocation::StageShare(request)) => stage_share(&request),
         Err(error) => Err(error),
     };
     match outcome {
@@ -233,15 +248,116 @@ async fn send_ready(path: &Path, report: ReadinessReport) -> Result<(), Supervis
         .map_err(SupervisorError::ReportReadiness)
 }
 
-/// The three things this binary can be: the supervisor itself, the in-namespace
-/// sysctl one-shot, and the in-namespace gating resolver. The latter two are here
-/// rather than in separate binaries because the launch closure already carries this
-/// program as a store path and both need code the crate owns.
+/// The four things this binary can be: the supervisor itself, the in-namespace
+/// sysctl one-shot, the in-namespace gating resolver, and the in-namespace share
+/// staging step. The last three are here rather than in separate binaries because
+/// the launch closure already carries this program as a store path and each needs
+/// code the crate owns.
 #[derive(Debug, Eq, PartialEq)]
 enum Invocation {
     Supervise { spec: PathBuf, ready: PathBuf },
     NetInit,
     Resolver { spec: PathBuf },
+    StageShare(StageRequest),
+}
+
+/// What the staging step was told to build, and what to become afterwards.
+///
+/// `program` and `args` stay `OsString`: this process execs them verbatim, and a store path is no
+/// place to lose a byte to a lossy conversion.
+#[derive(Debug, Eq, PartialEq)]
+struct StageRequest {
+    source: PathBuf,
+    stage: PathBuf,
+    readonly: bool,
+    program: std::ffi::OsString,
+    args: Vec<std::ffi::OsString>,
+}
+
+/// Build a share's export root: one directory holding the declared file and nothing else.
+///
+/// This runs inside the user and mount namespaces `unshare` has already made, with the
+/// capabilities kept ambient across that exec, so every mount here is namespace-local — the host
+/// sees an empty directory throughout, and the whole construction disappears when the daemon
+/// exits. That is the point of doing it here rather than on the host: virtiofs exports a tree, and
+/// the only way to export exactly one file without a privileged helper is to build the tree the
+/// daemon is allowed to see (`ADR-0105`).
+///
+/// The export root is left read-only so it cannot grow a sibling later, while the file itself
+/// keeps the declaration's own access: a `readonly` mount is remounted read-only on the bind, a
+/// read-write one stays writable, because mount flags are per-mount and the bind is its own mount.
+fn stage_share(request: &StageRequest) -> Result<(), SupervisorError> {
+    use rustix::mount::{MountFlags, mount, mount_bind, mount_remount};
+    use std::os::unix::fs::DirBuilderExt as _;
+    use std::os::unix::process::CommandExt as _;
+
+    let failed = |step: &'static str| {
+        move |source: std::io::Error| SupervisorError::Stage {
+            stage: request.stage.clone(),
+            step,
+            source,
+        }
+    };
+    let io = |step: &'static str| {
+        move |error: rustix::io::Errno| (failed(step))(std::io::Error::from(error))
+    };
+    // The entry is named after the source itself rather than carried as an argument: the guest
+    // binds `<internal>/<basename>` from its own decoded plan, and two spellings of one name are
+    // two chances to disagree. A path that resolved to a regular file has a final component.
+    let name = request.source.file_name().ok_or_else(|| {
+        (failed("naming the entry"))(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+    })?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&request.stage)
+        .map_err(failed("creating the export root"))?;
+    mount(
+        "tmpfs",
+        &request.stage,
+        "tmpfs",
+        MountFlags::empty(),
+        Some(c"mode=0700,size=64k"),
+    )
+    .map_err(io("mounting the export root"))?;
+    let entry = request.stage.join(name);
+    std::fs::File::create(&entry).map_err(failed("creating the entry"))?;
+    mount_bind(&request.source, &entry).map_err(io("binding the declared file"))?;
+    if request.readonly {
+        // `nosuid`, `nodev` and `noexec` are named alongside `ro` rather than left out, and this
+        // is not decoration: a remount replaces the whole flag set, and a mount inherited from
+        // outside this user namespace carries those flags locked. Omitting one asks the kernel to
+        // clear it, which it refuses with `EPERM` — measured on the target host against a source
+        // under a `nosuid,nodev` filesystem, where dropping them turned every read-only file mount
+        // into a failed launch. Adding flags is always allowed; clearing a locked one never is.
+        mount_remount(
+            &entry,
+            MountFlags::BIND
+                | MountFlags::RDONLY
+                | MountFlags::NOSUID
+                | MountFlags::NODEV
+                | MountFlags::NOEXEC,
+            "",
+        )
+        .map_err(io("sealing the entry read-only"))?;
+    }
+    // The export root is remounted with its restrictions rather than mounted with them, because
+    // the entry has to be created first and a read-only root has no room for it. The flags are
+    // named in full here: a remount replaces the whole set, so anything omitted is cleared.
+    mount_remount(
+        &request.stage,
+        MountFlags::RDONLY | MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC,
+        "",
+    )
+    .map_err(io("sealing the export root"))?;
+    // `exec` replaces this process, so a return is always the failure. It is also what drops the
+    // staging authority: the wrapper it execs into clears the ambient capabilities that made every
+    // mount above possible, and nothing after this point can change what the daemon serves.
+    Err(SupervisorError::StageExec(
+        std::process::Command::new(&request.program)
+            .args(&request.args)
+            .exec(),
+    ))
 }
 
 /// Raise the forwarding sysctl inside the namespace this process was joined into.
@@ -328,6 +444,9 @@ where
         }
         return Ok(Invocation::Resolver { spec });
     }
+    if first == *"stage-share" {
+        return stage_arguments(tokens);
+    }
     if first != *"--spec" {
         return Err(SupervisorError::Usage);
     }
@@ -342,9 +461,50 @@ where
     Ok(Invocation::Supervise { spec, ready })
 }
 
+/// The staging invocation's own grammar, from the token after `stage-share`.
+///
+/// Fixed order and no repetition, like every other invocation here: the only caller is the
+/// confinement profile, so anything looser would be a grammar nobody writes and everybody has to
+/// keep working. The `--` is mandatory even though the program follows it unambiguously, because
+/// without it a mistyped flag would be silently taken as the program to exec.
+fn stage_arguments<I>(mut tokens: I) -> Result<Invocation, SupervisorError>
+where
+    I: Iterator<Item = std::ffi::OsString>,
+{
+    let mut expect = |flag: &str| {
+        (tokens.next().as_deref() == Some(std::ffi::OsStr::new(flag)))
+            .then(|| tokens.next())
+            .flatten()
+            .ok_or(SupervisorError::Usage)
+    };
+    let source = PathBuf::from(expect("--source")?);
+    let stage = PathBuf::from(expect("--stage")?);
+    let mut next = tokens.next().ok_or(SupervisorError::Usage)?;
+    let readonly = next == *"--readonly";
+    if readonly {
+        next = tokens.next().ok_or(SupervisorError::Usage)?;
+    }
+    if next != *"--" {
+        return Err(SupervisorError::Usage);
+    }
+    let program = tokens.next().ok_or(SupervisorError::Usage)?;
+    if !source.is_absolute() || !stage.is_absolute() || !Path::new(&program).is_absolute() {
+        return Err(SupervisorError::Usage);
+    }
+    Ok(Invocation::StageShare(StageRequest {
+        source,
+        stage,
+        readonly,
+        program,
+        args: tokens.collect(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ExitKind, Invocation, LaunchError, ReadinessError, SupervisorError, arguments};
+    use super::{
+        ExitKind, Invocation, LaunchError, ReadinessError, StageRequest, SupervisorError, arguments,
+    };
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -362,6 +522,7 @@ mod tests {
     /// The launcher constructs exactly one invocation, so anything else is a usage error rather
     /// than something to interpret. Testable at all only because `arguments` takes its input.
     #[test]
+    #[allow(clippy::too_many_lines)] // argv tables, not logic
     fn only_the_exact_invocations_parse() {
         let ok = arguments(argv(&[
             "--spec",
@@ -386,6 +547,50 @@ mod tests {
                 spec: PathBuf::from("/run/a/spec.json"),
             })
         );
+        // The staging invocation carries a trailing command, so its tail is deliberately open
+        // where every other invocation's is closed: everything after `--` is what to become.
+        assert_eq!(
+            arguments(argv(&[
+                "stage-share",
+                "--source",
+                "/home/a/.gitconfig",
+                "--stage",
+                "/run/u/mnt0.stage",
+                "--readonly",
+                "--",
+                "/nix/store/setpriv",
+                "--no-new-privs",
+                "--",
+                "/nix/store/virtiofsd",
+            ]))
+            .ok(),
+            Some(Invocation::StageShare(StageRequest {
+                source: PathBuf::from("/home/a/.gitconfig"),
+                stage: PathBuf::from("/run/u/mnt0.stage"),
+                readonly: true,
+                program: OsString::from("/nix/store/setpriv"),
+                args: ["--no-new-privs", "--", "/nix/store/virtiofsd"]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect(),
+            }))
+        );
+        assert!(matches!(
+            arguments(argv(&[
+                "stage-share",
+                "--source",
+                "/home/a/.gitconfig",
+                "--stage",
+                "/run/u/mnt0.stage",
+                "--",
+                "/nix/store/virtiofsd",
+            ]))
+            .ok(),
+            Some(Invocation::StageShare(StageRequest {
+                readonly: false,
+                ..
+            }))
+        ));
 
         for rejected in [
             vec![],                                                          // no arguments
@@ -398,6 +603,55 @@ mod tests {
             vec!["resolver"],                                                // spec absent
             vec!["resolver", "--spec", "spec.json"],                         // relative spec
             vec!["resolver", "--spec", "/run/a/s", "--x"],                   // trailing argument
+            vec!["stage-share"],                                             // nothing to stage
+            // The separator is mandatory: without it a mistyped flag becomes the program.
+            vec![
+                "stage-share",
+                "--source",
+                "/a/f",
+                "--stage",
+                "/r/s",
+                "/nix/store/p",
+            ],
+            // No program to become.
+            vec!["stage-share", "--source", "/a/f", "--stage", "/r/s", "--"],
+            // Fixed order, and every path absolute.
+            vec![
+                "stage-share",
+                "--stage",
+                "/r/s",
+                "--source",
+                "/a/f",
+                "--",
+                "/nix/store/p",
+            ],
+            vec![
+                "stage-share",
+                "--source",
+                "f",
+                "--stage",
+                "/r/s",
+                "--",
+                "/nix/store/p",
+            ],
+            vec![
+                "stage-share",
+                "--source",
+                "/a/f",
+                "--stage",
+                "s",
+                "--",
+                "/nix/store/p",
+            ],
+            vec![
+                "stage-share",
+                "--source",
+                "/a/f",
+                "--stage",
+                "/r/s",
+                "--",
+                "virtiofsd",
+            ],
         ] {
             assert!(
                 arguments(argv(&rejected)).is_err(),
@@ -439,6 +693,15 @@ mod tests {
             (SupervisorError::NetInit(io()), ExitKind::IoErr),
             (SupervisorError::ResolverBind(io()), ExitKind::IoErr),
             (SupervisorError::ResolverServe(io()), ExitKind::IoErr),
+            (
+                SupervisorError::Stage {
+                    stage: PathBuf::from("/run/u/mnt0.stage"),
+                    step: "mounting the export root",
+                    source: io(),
+                },
+                ExitKind::IoErr,
+            ),
+            (SupervisorError::StageExec(io()), ExitKind::IoErr),
             (
                 SupervisorError::EncodeReadiness(ReadinessError::UnsupportedSchema(2)),
                 ExitKind::Software,

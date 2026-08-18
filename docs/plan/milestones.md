@@ -4,11 +4,9 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 022 a-file-mount-serves-only-its-file — shaped — 2 sessions — next to start; closes the file-mount confinement residual slice 019 recorded (Q-031)
-
 ## later
 
-- 020 many-workspaces-in-one-sandbox — later — 3 sessions — needs 019 (done); sequenced behind 022
+- 020 many-workspaces-in-one-sandbox — later — 3 sessions — needs 019 (done) and 022 (done)
 - 021 the-manifest-is-the-sandbox — later — 4 sessions — needs 020; item 1 blocked on Q-029
 - 005 cli-runtime-plumbing — later — 2 sessions
 - 006 generate-config-contract — later — 2 sessions
@@ -32,3 +30,4 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 016 the-human-face — done — 3 sessions — enacted `ADR-0103` in one merged pass under the appetite; the acceptance rescope is in the slice `Revisions`
 - 017 doctor-catalog — done — 4 sessions — the whole spec/13 catalog in one merged pass under the appetite; the host evidence is in the slice `Revisions`
 - 019 declared-mounts-reach-the-guest — done — 3 sessions — one merged pass under the appetite, remainder included; the descriptor-read measurement and the file-mount design are in the slice `Revisions`
+- 022 a-file-mount-serves-only-its-file — done — 2 sessions — one merged pass under the appetite; the acceptance reshape and the measurements are in the slice `Revisions`

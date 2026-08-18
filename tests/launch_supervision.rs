@@ -123,6 +123,22 @@ fn fixture(name: &str) -> LaunchSpec {
                 }),
                 extra_args: vec![],
             },
+            // And a staged one (ADR-0105), whose source is the declared file itself and whose
+            // export root is a directory the teardown sweep has to recognise: the per-share loops
+            // now come in two shapes, and a sweep that knew only one would refuse every `stop`.
+            ShareSpec {
+                tag: "mnt1".into(),
+                source: std::env::current_dir().unwrap().join("Cargo.toml"),
+                mount_point: "/run/vivarium-mounts/mnt1".into(),
+                socket: child("mnt1.sock"),
+                cache: "auto".into(),
+                read_only: true,
+                mount_plan: Some(MountPlan {
+                    kind: MountPlanKind::File,
+                    entry: Some("Cargo.toml".into()),
+                }),
+                extra_args: vec![],
+            },
         ],
         volumes: vec![],
         vm_create: json!({"payload":{"kernel":"/nix/store/fake/vmlinux"}}),

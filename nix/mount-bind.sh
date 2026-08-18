@@ -3,9 +3,11 @@
 # Bind each declared mount's share at the target the declaration named (spec/06,
 # ADR-0020). The share itself mounts at a build-time internal point under
 # `/run/vivarium-mounts`, because whether a declared `source` is a directory or a
-# regular file is a host fact that resolves only at launch (a file is served
-# through its parent directory), so the guest's own fstab cannot mount it at the
-# target directly. This unit closes the gap the way `workspace-mirror.sh` does
+# regular file is a host fact that resolves only at launch, so the guest's own
+# fstab cannot mount it at the target directly. A file mount's share holds
+# exactly that one file — the host stages it as the only entry of the share's
+# export root (ADR-0105), so nothing here has to hide a sibling; there are
+# none. This unit closes the gap the way `workspace-mirror.sh` does
 # for the project tree: the static half — tag, read-only flag, target — is baked
 # into `VIVARIUM_MOUNT_TABLE` from the merged configuration, and the launch half
 # — dir or file, and which entry of the share is the file — arrives on the
@@ -183,20 +185,6 @@ while read -r tag readonly_flag target; do
     # expects to see them (spec/06:26).
     mount -o remount,bind,ro,nodev,nosuid,noexec -- "$target" \
       || refuse "$tag" readonly-remount-failed
-  fi
-
-  if [ "$kind" = file ]; then
-    # A file's share serves its whole parent directory (spec/06: virtiofs
-    # exports trees), so after the one named file is bound at the target, the
-    # internal point still exposes every sibling. The declaration asked for one
-    # file; shadow the internal point with an empty, root-only tmpfs so nothing
-    # else is reachable. An overmount rather than a umount, because
-    # `RequiresMountsFor` makes this unit require the internal mount, and
-    # unmounting it would deactivate this unit and, through the agent's own
-    # `Requires`, the session path with it. The bind above holds the virtiofs
-    # superblock alive underneath.
-    mount -t tmpfs -o ro,nosuid,nodev,noexec,mode=0000,size=4k tmpfs "$internal" \
-      || refuse "$tag" internal-shadow-failed
   fi
 
   bound=$((bound + 1))

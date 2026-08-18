@@ -194,7 +194,7 @@ in
   # It deliberately does not catch a hand-invoked runner from another
   # generation, whose argument names can differ before any schema is read —
   # `usage()` prints this number for exactly that reason.
-  schemaVersion = 8;
+  schemaVersion = 9;
   inherit guestSession;
   # The launch half of `sandbox.egress` (spec/05): carried across so host-side
   # enforcement needs no evaluation at start. `or`-defaulted because the shipped

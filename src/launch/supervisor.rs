@@ -252,38 +252,12 @@ impl Supervisor {
         let shares = profile.shares();
         let holder = profile.netns_holder();
         let drops_bounding_set = profile.drops_bounding_set();
-        // spec/06:37 asks a source's type check to read through the descriptor the share is then
-        // served from. Measured on the target host (2026-08-18, virtiofsd 1.14.0): the daemon's
-        // own `--sandbox namespace` re-opens its root inside the new mount namespace, where a
-        // `/proc/self/fd/N` spelling no longer resolves (`Error entering sandbox: OpenNewRoot:
-        // NotFound`) — the same invocation with `--sandbox none` accepts it. The N20 sandbox
-        // wins, so the closest honest enactment is this: the type check reads through an
-        // `O_PATH` descriptor in the spawning process, the descriptors stay open (pinning each
-        // inode) until every daemon has opened its own root, and the daemon is handed the path.
-        // The residual window between this `fstat` and the daemon's open is recorded in Q-012's
-        // exit, and it is bounded by the sandbox itself: the daemon pivots into whatever the
-        // path then names and can reach nothing else.
-        let share_roots = self
-            .spec
-            .shares
-            .iter()
-            .map(|share| {
-                let fd = rustix::fs::open(
-                    &share.source,
-                    rustix::fs::OFlags::PATH,
-                    rustix::fs::Mode::empty(),
-                )
-                .map_err(|errno| LaunchError::io("open share source", errno.into()))?;
-                let stat = rustix::fs::fstat(&fd)
-                    .map_err(|errno| LaunchError::io("inspect share source", errno.into()))?;
-                if !rustix::fs::FileType::from_raw_mode(stat.st_mode).is_dir() {
-                    return Err(LaunchError::InvalidSpec(
-                        "share source is not a directory at spawn",
-                    ));
-                }
-                Ok(fd)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        // Before the first daemon, not only with the VMM at the end: a share's confinement is
+        // settled the moment its daemon opens its root, so the re-read that refuses a rendering
+        // which lost a staging leg — or which points a staged daemon at the declared file's
+        // parent — has to happen while there is still nothing serving (ADR-0105).
+        ConfinementProfile::validate_shares(&shares, drops_bounding_set)?;
+        let share_roots = self.open_share_roots()?;
         for (share, command) in self.spec.shares.clone().into_iter().zip(shares.iter()) {
             self.spawn_child(ChildKind::Virtiofsd(share.tag), command)?;
         }
@@ -496,6 +470,52 @@ impl Supervisor {
                 .map_err(|error| LaunchError::io("publish volume", error))?;
         }
         Ok(())
+    }
+
+    /// Type-check every share source through a descriptor, and hold the descriptors.
+    ///
+    /// spec/06 asks a source's type check to read through the descriptor the share is then served
+    /// from. Measured on the target host (2026-08-18, virtiofsd 1.14.0): the daemon's own
+    /// `--sandbox namespace` re-opens its root inside the new mount namespace, where a
+    /// `/proc/self/fd/N` spelling no longer resolves (`Error entering sandbox: OpenNewRoot:
+    /// NotFound`) — the same invocation with `--sandbox none` accepts it. The N20 sandbox wins, so
+    /// the closest honest enactment is this: the type check reads through an `O_PATH` descriptor
+    /// in the spawning process, the descriptors stay open (pinning each inode) until every daemon
+    /// has opened its own root, and the daemon is handed the path. The residual window between
+    /// this `fstat` and that open is bounded by the sandbox itself — the daemon pivots into
+    /// whatever the path then names and can reach nothing else.
+    ///
+    /// What "the right type" means differs by share: a staged share's source is the declared file
+    /// itself, which the staging step binds as the only entry of the export root (ADR-0105), while
+    /// every other share is served as the directory it names.
+    fn open_share_roots(&self) -> Result<Vec<rustix::fd::OwnedFd>, LaunchError> {
+        self.spec
+            .shares
+            .iter()
+            .map(|share| {
+                let fd = rustix::fs::open(
+                    &share.source,
+                    rustix::fs::OFlags::PATH,
+                    rustix::fs::Mode::empty(),
+                )
+                .map_err(|errno| LaunchError::io("open share source", errno.into()))?;
+                let stat = rustix::fs::fstat(&fd)
+                    .map_err(|errno| LaunchError::io("inspect share source", errno.into()))?;
+                let kind = rustix::fs::FileType::from_raw_mode(stat.st_mode);
+                let staged = share.stage_dir(&self.spec.runtime_paths.root).is_some();
+                if staged && !kind.is_file() {
+                    return Err(LaunchError::InvalidSpec(
+                        "a staged share source is not a regular file at spawn",
+                    ));
+                }
+                if !staged && !kind.is_dir() {
+                    return Err(LaunchError::InvalidSpec(
+                        "share source is not a directory at spawn",
+                    ));
+                }
+                Ok(fd)
+            })
+            .collect()
     }
 
     fn spawn_child(&mut self, kind: ChildKind, spec: &CommandSpec) -> Result<(), LaunchError> {
@@ -909,6 +929,16 @@ async fn cleanup_runtime(spec: &LaunchSpec) -> Result<(), LaunchError> {
         allowed.push(share.socket.clone());
         allowed.push(PathBuf::from(format!("{}.pid", share.socket.display())));
     }
+    // A staged share's export root is a directory rather than a file, and it is empty on the host
+    // by construction: the tmpfs and the bind that fill it exist only inside the daemon's own mount
+    // namespace, which ends with the daemon (ADR-0105). It is swept separately for that reason —
+    // `remove_file` cannot take a directory — and it is listed either way, because an entry nobody
+    // named aborts the whole sweep and every `stop` would then report an incomplete teardown.
+    let stages = spec
+        .shares
+        .iter()
+        .filter_map(|share| share.stage_dir(&spec.runtime_paths.root))
+        .collect::<Vec<_>>();
     let mut entries = match fs::read_dir(&spec.runtime_paths.root).await {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -920,7 +950,7 @@ async fn cleanup_runtime(spec: &LaunchSpec) -> Result<(), LaunchError> {
         .map_err(|error| LaunchError::io("read runtime entry", error))?
     {
         let path = entry.path();
-        if path != lock && !allowed.contains(&path) {
+        if path != lock && !allowed.contains(&path) && !stages.contains(&path) {
             return Err(LaunchError::UnknownRuntimeArtifact(path));
         }
     }
@@ -929,6 +959,13 @@ async fn cleanup_runtime(spec: &LaunchSpec) -> Result<(), LaunchError> {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(LaunchError::io("remove runtime artifact", error)),
+        }
+    }
+    for path in stages {
+        match fs::remove_dir(path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(LaunchError::io("remove share staging directory", error)),
         }
     }
     // The directory goes only when the retained lock is not in it. A `viv`-driven boot leaves the

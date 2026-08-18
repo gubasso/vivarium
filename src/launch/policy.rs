@@ -193,11 +193,19 @@ impl<'a> ConfinementProfile<'a> {
 
     fn virtiofsd(&self, share: &ShareSpec) -> CommandSpec {
         let ids = self.spec.identity_translation;
+        let stage = share.stage_dir(&self.spec.runtime_paths.root);
+        // A staged share's daemon is pointed at the export root the staging step builds, never at
+        // the declared file's parent (ADR-0105). Every other share keeps its own source.
+        let shared_dir = stage
+            .clone()
+            .unwrap_or_else(|| share.source.clone())
+            .display()
+            .to_string();
         let mut child = vec![
             "--socket-path".into(),
             share.socket.display().to_string(),
             "--shared-dir".into(),
-            share.source.display().to_string(),
+            shared_dir,
             "--sandbox".into(),
             "namespace".into(),
             "--seccomp".into(),
@@ -229,12 +237,22 @@ impl<'a> ConfinementProfile<'a> {
             child.push("--readonly".into());
         }
         child.extend(share.extra_args.clone());
-        wrapped(
+        let daemon = wrapped(
             &self.spec.backend_programs.setpriv,
             &self.spec.backend_programs.virtiofsd,
             child,
             self.drop_bounding_set,
-        )
+        );
+        match stage {
+            None => daemon,
+            Some(stage) => staged(
+                &self.spec.backend_programs.unshare,
+                &self.spec.backend_programs.supervisor,
+                share,
+                &stage,
+                &daemon,
+            ),
+        }
     }
 
     /// Re-read the rendered commands and refuse any that lost a mandatory leg.
@@ -242,6 +260,10 @@ impl<'a> ConfinementProfile<'a> {
     /// `bounding_set_dropped` is passed rather than inferred: the check has to know what
     /// the profile intended, or a rendering that silently lost the flag would look the same
     /// as one that never asked for it.
+    ///
+    /// The share half is separately callable, and the supervisor calls it before it spawns a
+    /// single daemon: a check that a share serves the right directory is worth nothing once that
+    /// share is already serving.
     pub(crate) fn validate_rendered(
         vmm: &CommandSpec,
         shares: &[CommandSpec],
@@ -251,8 +273,23 @@ impl<'a> ConfinementProfile<'a> {
         // wrapper is checked against that intent while the shares keep the host's.
         validate_wrapper(vmm, false)?;
         require_pair(vmm.args(), "--seccomp", "true")?;
+        Self::validate_shares(shares, bounding_set_dropped)
+    }
+
+    /// The share half of [`Self::validate_rendered`], which runs before any daemon is spawned.
+    ///
+    /// The VMM's rendering is not in hand until the network is up, which is why the full check
+    /// runs late. The shares' renderings are in hand immediately, and the confinement they carry
+    /// is enforced by the daemon's own startup rather than by anything afterwards — a daemon
+    /// pointed at the wrong directory has served it by the time a late check could object. So the
+    /// share legs are re-read here, at the only moment refusing them still prevents anything.
+    pub(crate) fn validate_shares(
+        shares: &[CommandSpec],
+        bounding_set_dropped: bool,
+    ) -> Result<(), LaunchError> {
         for command in shares {
             validate_wrapper(command, bounding_set_dropped)?;
+            validate_staging(command)?;
             require_pair(command.args(), "--sandbox", "namespace")?;
             require_pair(command.args(), "--seccomp", "kill")?;
             require_pair(command.args(), "--shared-dir", "")?;
@@ -293,6 +330,66 @@ fn wrapped(
     args.push(child.display().to_string());
     args.extend(child_args);
     CommandSpec::new(setpriv.to_path_buf(), args)
+}
+
+/// The legs that create the staging namespace, in the order `unshare` takes them.
+///
+/// `--keep-caps` is the load-bearing one and the easy one to lose. A user namespace grants its
+/// creator every capability inside it, but a process that is not mapped to root drops them at
+/// `execve`, so without this the staging program would run with no authority to mount at all —
+/// measured on the target host, where every mount then fails with `must be superuser`. Keeping
+/// them ambient carries them across the exec; `setpriv --ambient-caps=-all` inside the wrapper
+/// drops them again before the daemon starts, so the authority exists for exactly the stretch
+/// that builds the export root. `--map-current-user` rather than `--map-root-user` because
+/// nothing here needs the daemon to believe it is root, and the host uid it runs as is the
+/// identity translation's whole premise.
+const STAGING_NAMESPACE: [&str; 6] = [
+    "--user",
+    "--map-current-user",
+    "--keep-caps",
+    "--mount",
+    "--propagation",
+    "private",
+];
+
+/// The staging subcommand's own name, shared by the renderer and its belt.
+const STAGE_SHARE: &str = "stage-share";
+
+/// Wrap a share's daemon in the namespace that gives it an export root holding one file.
+///
+/// The composition is three programs and one direction of travel: `unshare` makes the namespace,
+/// the supervisor's own `stage-share` builds the export root inside it and hands over, and the
+/// existing `setpriv`-wrapped daemon runs with the capabilities dropped again. Nothing the staging
+/// does is visible on the host — the tmpfs and the bind live in a namespace that dies with the
+/// daemon — which is why the confinement needs no privileged helper and leaves nothing to clean up
+/// beyond an empty directory (ADR-0105).
+fn staged(
+    unshare: &Path,
+    supervisor: &Path,
+    share: &ShareSpec,
+    stage: &Path,
+    daemon: &CommandSpec,
+) -> CommandSpec {
+    let mut args = STAGING_NAMESPACE
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    args.extend([
+        "--".into(),
+        supervisor.display().to_string(),
+        STAGE_SHARE.into(),
+        "--source".into(),
+        share.source.display().to_string(),
+        "--stage".into(),
+        stage.display().to_string(),
+    ]);
+    if share.read_only {
+        args.push("--readonly".into());
+    }
+    args.push("--".into());
+    args.push(daemon.program().display().to_string());
+    args.extend(daemon.args().iter().cloned());
+    CommandSpec::new(unshare.to_path_buf(), args)
 }
 
 /// Whether this process may empty its own capability bounding set.
@@ -339,6 +436,43 @@ fn add_translation(
             format!("squash-host:{}:{overflow}:{}", host + 1, id_max - host),
         ]);
     }
+}
+
+/// Re-read a staged share's rendering: a staging step that lost a leg must not reach a daemon.
+///
+/// A share is staged or it is not, and the tell is `stage-share` in the argument list. When it is
+/// there, the namespace legs have to be there too — a staging step that ran without `--keep-caps`
+/// would fail to mount, and one that ran without `--mount` would mount on the host — and the
+/// daemon's `--shared-dir` has to be the very directory the staging built. That last check is the
+/// one that matters most: a rendering where the two disagree would serve the declared file's
+/// parent again, silently, which is exactly the residual this construction exists to close.
+fn validate_staging(command: &CommandSpec) -> Result<(), LaunchError> {
+    if !command.args().iter().any(|arg| arg == STAGE_SHARE) {
+        return Ok(());
+    }
+    for leg in STAGING_NAMESPACE {
+        if !command.args().iter().any(|arg| arg == leg) {
+            return Err(LaunchError::Policy("share staging namespace incomplete"));
+        }
+    }
+    let value = |flag: &str| {
+        command
+            .args()
+            .windows(2)
+            .find(|pair| pair[0] == flag)
+            .map(|pair| pair[1].clone())
+    };
+    let (Some(stage), Some(shared_dir), Some(source)) =
+        (value("--stage"), value("--shared-dir"), value("--source"))
+    else {
+        return Err(LaunchError::Policy("share staging arguments incomplete"));
+    };
+    if stage != shared_dir || stage == source {
+        return Err(LaunchError::Policy(
+            "a staged share must serve its staging directory",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_wrapper(command: &CommandSpec, bounding_set_dropped: bool) -> Result<(), LaunchError> {
@@ -494,6 +628,74 @@ mod tests {
             );
             assert!(ConfinementProfile::validate_rendered(&vmm, &[mutated], true).is_err());
         }
+    }
+
+    /// A file mount's daemon is pointed at its staging directory, never at the file's parent.
+    ///
+    /// Rendered through the profile from the shared fixture rather than assembled by hand, or the
+    /// assertion would compare one hand-written argument list against another and pass however the
+    /// renderer changes. The negative half is the point: the parent directory must appear nowhere
+    /// in the command, because a single argument naming it is the whole residual coming back.
+    #[test]
+    fn a_file_mount_is_served_from_its_staging_directory() {
+        use crate::launch::spec::{MountPlan, MountPlanKind, tests::fixture};
+        let mut spec = fixture();
+        let root = spec.runtime_paths.root.clone();
+        let source = std::env::current_dir().unwrap().join("Cargo.toml");
+        spec.shares.push(ShareSpec {
+            tag: "mnt0".into(),
+            source: source.clone(),
+            mount_point: "/run/vivarium-mounts/mnt0".into(),
+            socket: root.join("mnt0.sock"),
+            cache: "auto".into(),
+            read_only: true,
+            mount_plan: Some(MountPlan {
+                kind: MountPlanKind::File,
+                entry: Some("Cargo.toml".into()),
+            }),
+            extra_args: vec![],
+        });
+        let profile = ConfinementProfile::with_bounding_set_drop(&spec, true).unwrap();
+        let shares = profile.shares();
+        let staged = shares.last().unwrap();
+        let stage = root.join("mnt0.stage").display().to_string();
+
+        assert_eq!(staged.program(), spec.backend_programs.unshare);
+        for leg in STAGING_NAMESPACE {
+            assert!(staged.args().iter().any(|arg| arg == leg), "lost {leg}");
+        }
+        assert!(staged.args().contains(&stage));
+        assert!(
+            staged
+                .args()
+                .windows(2)
+                .any(|pair| pair[0] == "--shared-dir" && pair[1] == stage),
+            "the daemon was not pointed at the staging directory"
+        );
+        let parent = source.parent().unwrap().display().to_string();
+        assert!(
+            !staged.args().contains(&parent),
+            "the declared file's parent directory reached the daemon's command line"
+        );
+        // The workspace share keeps the unstaged rendering, so the new construction is confined
+        // to the share kind that needs it.
+        assert_eq!(shares[0].program(), spec.backend_programs.setpriv);
+        validate_staging(&shares[0]).unwrap();
+        validate_staging(staged).unwrap();
+
+        // The belt, against the two ways a rendering could quietly serve the parent again.
+        let mutate = |edit: &dyn Fn(&mut Vec<String>)| {
+            let mut args = staged.args().to_vec();
+            edit(&mut args);
+            CommandSpec::new(staged.program().to_path_buf(), args)
+        };
+        let served_elsewhere = mutate(&|args| {
+            let index = args.iter().position(|arg| arg == "--shared-dir").unwrap();
+            args[index + 1] = parent.clone();
+        });
+        assert!(validate_staging(&served_elsewhere).is_err());
+        let without_keep_caps = mutate(&|args| args.retain(|arg| arg != "--keep-caps"));
+        assert!(validate_staging(&without_keep_caps).is_err());
     }
 
     /// An unprivileged launcher renders a wrapper it can actually exec.

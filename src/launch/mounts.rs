@@ -58,9 +58,12 @@ pub fn declared_shares(store_path: &str) -> Result<Vec<BuiltShare>, std::io::Err
 pub struct ResolvedMount {
     pub tag: String,
     pub kind: MountPlanKind,
-    /// What the share's daemon serves, symlinks resolved: the source itself for a directory,
-    /// its parent for a regular file (virtiofs serves trees, so a single file crosses through
-    /// the directory that holds it).
+    /// The declared source, symlinks resolved, for either kind.
+    ///
+    /// A directory share is served as it stands. A regular file is not served directly — virtiofs
+    /// exports a tree — but it is not served through its parent either: the supervisor stages it as
+    /// the only entry of a private export root (ADR-0105), so this stays the file itself and the
+    /// parent directory never reaches a daemon.
     pub share_source: PathBuf,
     /// The percent-encoded basename of a `file` mount, in the alphabet `mount-bind.sh` checks
     /// before it decodes.
@@ -211,15 +214,10 @@ pub fn classify_source(
     if !metadata.is_file() {
         return Err(MountSourceDefect::NotMountable { expanded: resolved });
     }
-    // A regular file crosses through its parent directory; an absolute file path always has
-    // one, and a parent that is itself a session directory was refused above by the ancestor
-    // rule over the resolved path.
-    let parent = resolved
-        .parent()
-        .ok_or_else(|| MountSourceDefect::NotMountable {
-            expanded: resolved.clone(),
-        })?
-        .to_path_buf();
+    // The file itself is what the share carries. The supervisor stages it as the only entry of the
+    // share's own export root (ADR-0105), so the name is needed twice: to name that entry, which it
+    // reads from this path, and to tell the guest which entry of the share to bind, which travels
+    // encoded on the kernel command line. A path that resolves to a file always has one.
     let name = resolved
         .file_name()
         .ok_or_else(|| MountSourceDefect::NotMountable {
@@ -229,7 +227,7 @@ pub fn classify_source(
     Ok(ResolvedMount {
         tag: tag.to_owned(),
         kind: MountPlanKind::File,
-        share_source: parent,
+        share_source: resolved,
         entry: Some(encode_entry(name.as_os_str())),
     })
 }
@@ -239,7 +237,7 @@ pub fn classify_source(
 /// The unreserved set is the workspace encoder's without `/` — an entry is one name inside the
 /// share, never a path — and the hex is upper-case, matching the allowlist `mount-bind.sh` and
 /// the runner check before decoding.
-fn encode_entry(name: &std::ffi::OsStr) -> String {
+pub(crate) fn encode_entry(name: &std::ffi::OsStr) -> String {
     use std::fmt::Write as _;
     use std::os::unix::ffi::OsStrExt as _;
     let mut encoded = String::new();
@@ -352,9 +350,9 @@ mod tests {
     }
 
     #[test]
-    fn a_file_source_is_served_through_its_parent_with_an_encoded_entry() {
+    fn a_file_source_carries_itself_with_an_encoded_entry() {
         // No session roots on purpose: this fixture lives in the test temp dir, and what is
-        // under test is the parent/entry split, not N24.
+        // under test is the file/entry pairing, not N24.
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -365,7 +363,9 @@ mod tests {
         std::fs::write(&file, "x").unwrap();
         let resolved = classify_source("mnt1", file.to_str().unwrap(), &[]).unwrap();
         assert_eq!(resolved.kind, MountPlanKind::File);
-        assert_eq!(resolved.share_source, dir);
+        // The file, not the directory that holds it: the parent never reaches a daemon.
+        assert_eq!(resolved.share_source, file.canonicalize().unwrap());
+        assert_ne!(resolved.share_source, dir);
         assert_eq!(resolved.entry.as_deref(), Some("a%20config.toml"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
