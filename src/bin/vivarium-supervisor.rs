@@ -158,19 +158,28 @@ async fn run(spec_path: &Path, ready_path: &Path) -> Result<(), SupervisorError>
     {
         return Err(SupervisorError::SpecPathMismatch);
     }
+    // The handoff connection is opened here, before supervision starts, and held until there is
+    // an outcome to write on it. Connecting at report time instead is a race this repository has
+    // already paid for: the supervision task sends `Failed` into a buffered channel and proceeds
+    // straight into its teardown, and that teardown unlinks the readiness socket. Whichever of
+    // the two tasks the scheduler runs first decides whether a `connect` on that name still finds
+    // it, so on a loaded host the failure report was lost and the launcher waited out its full
+    // handoff timeout for a supervisor that had already exited. A connection outlives the name it
+    // was made through, so once it exists no teardown can take the report away.
+    let mut handoff = UnixStream::connect(ready_path)
+        .await
+        .map_err(SupervisorError::ReportReadiness)?;
     let (ready_tx, mut ready_rx) = mpsc::channel(1);
     let supervisor = Supervisor::new(spec);
     let task = tokio::spawn(supervisor.run(ready_tx));
     match ready_rx.recv().await {
         Some(LaunchReady::ProcessReady) => {
-            send_ready(ready_path, ReadinessReport::process_ready()).await?;
+            send_ready(&mut handoff, ReadinessReport::process_ready()).await?;
         }
         Some(LaunchReady::Failed) => {
-            // The supervisor sends `Failed` before its teardown unlinks the
-            // readiness socket, so this report is what spares the launcher its
-            // full handoff wait. Best-effort, because the journal and the exit
-            // code below carry the real cause either way.
-            let _ = send_ready(ready_path, ReadinessReport::failed()).await;
+            // This report is what spares the launcher its full handoff wait. Best-effort,
+            // because the journal and the exit code below carry the real cause either way.
+            let _ = send_ready(&mut handoff, ReadinessReport::failed()).await;
             return Err(join(task)
                 .await
                 .err()
@@ -179,11 +188,10 @@ async fn run(spec_path: &Path, ready_path: &Path) -> Result<(), SupervisorError>
         None => {
             // The channel dropping without a report is the unexpected shape now
             // that both outcomes send one; reporting is attempted anyway, and
-            // best-effort, because the runtime directory — where the readiness
-            // socket lives — may already be gone on this path. The task's own
-            // error is the real account; wait for it rather than reporting the
-            // empty channel, which is only the symptom.
-            let reported = send_ready(ready_path, ReadinessReport::failed()).await;
+            // best-effort, because the launcher may itself be gone by then. The
+            // task's own error is the real account; wait for it rather than
+            // reporting the empty channel, which is only the symptom.
+            let reported = send_ready(&mut handoff, ReadinessReport::failed()).await;
             return Err(join(task)
                 .await
                 .err()
@@ -237,13 +245,23 @@ async fn validate_metadata(spec: &Path, ready: &Path) -> Result<(), SupervisorEr
     Ok(())
 }
 
-async fn send_ready(path: &Path, report: ReadinessReport) -> Result<(), SupervisorError> {
+/// Writes the one report this process sends, on the connection opened before supervision began.
+///
+/// The shutdown is load-bearing rather than tidiness: the launcher reads the report to end of
+/// file, and on the `ProcessReady` path this process goes on supervising a running guest for as
+/// long as the guest lives. Without a half-close the launcher would read an open connection until
+/// its own timeout and call a successful handoff a failure.
+async fn send_ready(
+    stream: &mut UnixStream,
+    report: ReadinessReport,
+) -> Result<(), SupervisorError> {
     let encoded = report.encode().map_err(SupervisorError::EncodeReadiness)?;
-    let mut stream = UnixStream::connect(path)
+    stream
+        .write_all(&encoded)
         .await
         .map_err(SupervisorError::ReportReadiness)?;
     stream
-        .write_all(&encoded)
+        .shutdown()
         .await
         .map_err(SupervisorError::ReportReadiness)
 }

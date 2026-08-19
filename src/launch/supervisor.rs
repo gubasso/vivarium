@@ -214,13 +214,15 @@ impl Supervisor {
             return Err(error);
         }
         if let Err(error) = self.run_inner(&ready).await {
-            // Failure is reported before the ladder, not after: `cleanup` unlinks
-            // the readiness socket, and the receiver is already parked on this
-            // channel, so the report crosses while the ladder (child shutdown,
-            // then cleanup) is still spending its own budget. `let _` because a
-            // departed receiver must not turn a launch failure into a different
-            // failure. The `monitor` arm below deliberately sends nothing —
-            // readiness was already reported by then.
+            // Failure is reported before the ladder, not after, so the receiver
+            // parked on this channel learns of it while the ladder (child
+            // shutdown, then cleanup) is still spending its own budget. What the
+            // report no longer depends on is winning that race: `cleanup` unlinks
+            // the readiness socket, and `vivarium-supervisor` therefore holds an
+            // already-open handoff connection rather than dialling the name after
+            // this send. `let _` because a departed receiver must not turn a
+            // launch failure into a different failure. The `monitor` arm below
+            // deliberately sends nothing — readiness was already reported by then.
             let _ = ready.send(LaunchReady::Failed).await;
             self.cancellation.cancel();
             let _ = self.shutdown_children().await;

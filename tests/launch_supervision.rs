@@ -408,21 +408,32 @@ async fn a_failed_launch_reports_failed_across_the_readiness_socket() {
     .await
     .unwrap();
     let listener = UnixListener::bind(&spec.runtime_paths.ready_socket).unwrap();
-    let status = tokio::process::Command::new(env!("CARGO_BIN_EXE_vivarium-supervisor"))
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_vivarium-supervisor"))
         .arg("--spec")
         .arg(&spec.runtime_paths.launch_spec)
         .arg("--ready-socket")
         .arg(&spec.runtime_paths.ready_socket)
-        .status()
-        .await
+        .spawn()
         .unwrap();
-    assert!(!status.success(), "fake store paths cannot launch");
-    // The report was sent before the exit just observed, so the connection is
-    // already queued; the timeout only keeps a regression from hanging the run.
+    // The connection is accepted while the supervisor is still running, and the socket is then
+    // unlinked from under it — which is what the supervisor's own teardown does on this path. A
+    // report that still arrives is a report that does not depend on the name at write time, and
+    // that independence is the whole repair: a build that dialled the name at report time instead
+    // lost the report whenever teardown reached the unlink first, and the launcher then waited out
+    // its full handoff timeout for a process that had already exited. The timeouts only keep a
+    // regression from hanging the run.
     let (mut peer, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
         .await
         .unwrap()
         .unwrap();
+    tokio::fs::remove_file(&spec.runtime_paths.ready_socket)
+        .await
+        .unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!status.success(), "fake store paths cannot launch");
     let mut bytes = Vec::new();
     peer.read_to_end(&mut bytes).await.unwrap();
     assert_eq!(
