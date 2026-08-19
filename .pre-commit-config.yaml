@@ -567,33 +567,6 @@ repos:
         language_version: system
         additional_dependencies: ['markdownlint-rule-relative-links']
 
-  # --- The round's own leftovers (report, never a gate) ---------------------
-  #
-  # Last at the push stage, because by then everything that writes has written:
-  # the compile cache, the fixture roots, the guest closures, the volumes a boot
-  # trial made, and whatever a hand-run lane left earlier in the session. The
-  # report names each pile, its size, and the command that would clear it, and
-  # leaves the deciding to whoever is reading — removing a sandbox volume is not
-  # a call a hook may make on someone's behalf.
-  #
-  # It also answers the question the gate above raises: anything listed under
-  # `host` is something a gated run puts on the drive, so a size there is
-  # evidence that something ran outside the gate while the round is still fresh.
-  #
-  # `always_run` because it reports on the machine rather than on the diff, and
-  # `verbose` because pre-commit prints a passing hook's output only when asked
-  # — and this one always passes. A push is never blocked by what is on a disk.
-  - repo: local
-    hooks:
-      - id: leftovers
-        name: leftover sweep (report only)
-        entry: tests/host/leftovers
-        language: system
-        always_run: true
-        pass_filenames: false
-        verbose: true
-        stages: [pre-push]
-
   # --- Slides (Slidev deck) -------------------------------------------------
   #
   # Every Markdown gate above is excluded from `slides/`, so the deck's only
@@ -619,4 +592,34 @@ repos:
         language: system
         files: ^slides/
         pass_filenames: false
+        stages: [pre-push]
+
+  # --- The round's own leftovers (report, never a gate) ---------------------
+  #
+  # Last in this file, which is what makes it last at the push stage: pre-commit
+  # runs hooks in declaration order, so a writer declared below this one would
+  # leave a pile the report had already finished counting. By the time it runs,
+  # everything that writes has written: the compile cache, the fixture roots, the
+  # guest closures, the volumes a boot trial made, the deck build, and whatever a
+  # hand-run lane left earlier in the session. The
+  # report names each pile, its size, and the command that would clear it, and
+  # leaves the deciding to whoever is reading — removing a sandbox volume is not
+  # a call a hook may make on someone's behalf.
+  #
+  # It also answers the question the gate above raises: anything listed under
+  # `host` is something a gated run puts on the drive, so a size there is
+  # evidence that something ran outside the gate while the round is still fresh.
+  #
+  # `always_run` because it reports on the machine rather than on the diff, and
+  # `verbose` because pre-commit prints a passing hook's output only when asked
+  # — and this one always passes. A push is never blocked by what is on a disk.
+  - repo: local
+    hooks:
+      - id: leftovers
+        name: leftover sweep (report only)
+        entry: tests/host/leftovers
+        language: system
+        always_run: true
+        pass_filenames: false
+        verbose: true
         stages: [pre-push]

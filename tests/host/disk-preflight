@@ -28,11 +28,17 @@
 # for the image root, without it for the scratch root — and does so with no
 # capacity gate, no prompt, and nothing on stderr.
 #
+# `--require-drive` is for a caller that cannot use the host-disk fallback, which
+# is every gated check: it makes a missing drive a prompt or a refusal rather
+# than a notice. `tests/host/heavy-run` is what the hooks call, and it asks here.
+#
 # stdout carries the directory to use and nothing else, so a caller can capture
 # it. Everything a human reads goes to stderr.
 #
 # `VIVARIUM_HEAVY_DRIVE` is the answer given in advance: point it at a directory
-# on the drive that should absorb this, and no prompt appears. It is read from
+# that already exists on the drive that should absorb this, and no prompt
+# appears. Already exists, because this never creates it — see the note above the
+# validation below for why creating it is what breaks the check. It is read from
 # the environment first and from the repository's untracked `.envrc.local`
 # second, so a developer answers once per machine rather than once per shell —
 # and a lane invoked outside a direnv shell, which is how an agent runs one,
@@ -44,6 +50,14 @@
 # failure — an external disk gets unplugged, and that should cost a notice rather
 # than a run. What it must never cost is silence: the reason is named on stderr
 # and the run then faces the ordinary short-disk decision on the host disk.
+#
+# `--require-drive` is that same decision with the default the other way round,
+# and it exists because a gated run is not a hand-run lane. Nothing about a
+# fallback is wrong when a person watching the terminal chose to start something;
+# it is wrong when the caller is a git hook nobody is reading, because then the
+# boot disk absorbs a booting test suite and the first anyone hears of it is a
+# full filesystem. Under the flag the fallback becomes what it would have been if
+# someone were there to ask: a prompt with a terminal, and a refusal without one.
 #
 # One thing it deliberately cannot promise: the Nix store's own location. A
 # closure lands in the store this daemon serves, and moving that is a machine
@@ -60,18 +74,45 @@ NEED_GIB=0
 LABEL="this run"
 IMAGES=0
 LOCATE=0
+REQUIRE_DRIVE=0
 # Enough headroom that a run finishing exactly at the line still leaves the host
 # usable. A disk at literally zero takes more than the build down with it.
 MARGIN_GIB=2
 
+# An option that takes an operand checks that one is there before shifting past
+# it. `shift 2` with a single argument left shifts nothing and returns non-zero,
+# and with no `set -e` the loop then re-reads the same option forever — a typo at
+# a prompt becomes a hook that hangs instead of a usage error.
+need_operand() {
+  (($1 >= 2)) && return 0
+  printf 'disk-preflight: %s needs a value\n' "$2" >&2
+  exit 64
+}
+
+# A requirement is a quantity, so it is checked as one before it becomes a
+# threshold. `REQUIRED` is built by arithmetic, and arithmetic accepts what the
+# caller meant as a number without asking whether it is one: `--need -100` makes
+# every free-space comparison true and turns the whole preflight into a formality
+# that reports success, while a non-numeric value expands to an unbound variable
+# in the middle of the run. Both are the shape this repository calls inert rather
+# than absent — a gate still present, still logging, and no longer deciding.
+need_quantity() {
+  [[ $1 =~ ^[0-9]+$ ]] && return 0
+  printf 'disk-preflight: --need takes whole gibibytes, not %s\n' "$1" >&2
+  exit 64
+}
+
 while (($#)); do
   case "$1" in
     --need)
-      NEED_GIB="${2:-0}"
+      need_operand $# --need
+      need_quantity "$2"
+      NEED_GIB=$2
       shift 2
       ;;
     --label)
-      LABEL="${2:-this run}"
+      need_operand $# --label
+      LABEL=$2
       shift 2
       ;;
     --images)
@@ -80,6 +121,10 @@ while (($#)); do
       ;;
     --locate)
       LOCATE=1
+      shift
+      ;;
+    --require-drive)
+      REQUIRE_DRIVE=1
       shift
       ;;
     *)
@@ -140,10 +185,18 @@ fi
 # because the disk is full would withhold the answer exactly when it is needed.
 # Silence is right here for the same reason — nothing is being written, so there
 # is no decision for an operator to make.
+#
+# Composed with `--require-drive` it answers the narrower question: the drive, or
+# nothing and a non-zero status. That is what a caller asks when a fallback would
+# be the wrong answer rather than a lesser one — the dev shell picking a compile
+# cache, say, where the state root is not a second-best location, just a
+# different one nobody asked for.
 if ((LOCATE == 1)); then
-  if [[ -n $drive ]] && mkdir -p -- "$drive" 2>/dev/null && [[ -w $drive ]] \
+  if [[ -n $drive && -d $drive && -w $drive ]] \
     && { ((IMAGES == 0)) || ! under_temp "$drive"; }; then
     printf '%s\n' "$drive"
+  elif ((REQUIRE_DRIVE == 1)); then
+    exit 1
   elif ((IMAGES == 1)); then
     printf '%s\n' "$STATE_HOME/vivarium"
   else
@@ -162,25 +215,119 @@ if ((IMAGES == 0)); then
 fi
 ((drive_from_file == 1)) && note "  drive named by .envrc.local"
 
+# What a rejected drive costs, which is the one thing the two modes disagree
+# about. Ordinarily the run continues on the host disk, so the reason is a
+# notice; under `--require-drive` the reason is the first half of a refusal, and
+# promising a fallback there would describe something that is not about to
+# happen.
+drive_rejected() {
+  if ((REQUIRE_DRIVE == 1)); then
+    note "disk-preflight: $1"
+  else
+    note "disk-preflight: $1; falling back to this disk"
+  fi
+}
+
+# A directory a person typed at one of the prompts below, held to the same
+# standard as a configured drive: existing, writable, wide enough, and — in
+# `--images` mode — not somewhere N24 would refuse as a workspace one boot later.
+# Every prompt in this file accepts the same answer, so the checking lives once.
+#
+# Existing, on the same grounds as the configured drive above and not as a
+# separate rule. The likeliest thing to type at this prompt is the drive that was
+# just refused, and creating it would rebuild that path on the boot filesystem
+# and hand back the answer the operator was trying to avoid — the original
+# failure, reached by typing instead of by configuring.
+accept_answer_dir() {
+  local candidate=$1 candidate_free
+  if ((IMAGES == 1)) && under_temp "$candidate"; then
+    note "disk-preflight: $candidate is under a temp root, which N24 refuses; nothing was run"
+    exit 69
+  fi
+  if [[ ! -d $candidate ]]; then
+    note "disk-preflight: $candidate does not exist; create it on the drive first. Nothing was run"
+    exit 69
+  fi
+  if [[ ! -w $candidate ]]; then
+    note "disk-preflight: $candidate is not a writable directory; nothing was run"
+    exit 69
+  fi
+  candidate_free=$(free_gib "$candidate")
+  if ((candidate_free < REQUIRED)); then
+    note "disk-preflight: $candidate has ${candidate_free}G, short of ${REQUIRED}G; nothing was run"
+    exit 69
+  fi
+}
+
 # Validated rather than trusted: a drive that is not mounted looks exactly like
 # an empty directory, and writing the run into the mountpoint of an absent disk
 # is the same failure with extra steps.
+#
+# Which is why the directory has to already be there. Creating it is what defeats
+# the check: `mkdir -p` on the mountpoint of an unplugged disk succeeds against
+# the boot filesystem, the capacity check then measures the boot disk, and the
+# gate cheerfully sends a booting test suite to the exact place it exists to keep
+# it out of. So the drive is configured once by hand — the guide's setup step —
+# and never conjured here.
+#
+# What existence proves depends on where the variable points, which is why the
+# guide says to point it under the mount rather than at it. A subdirectory of a
+# mounted filesystem goes away with it, so its absence is the drive's absence. A
+# mountpoint the system keeps around either way — an `/etc/fstab` entry, as
+# against a path a mount helper creates and removes — is still there unmounted,
+# and this check passes on the boot filesystem underneath it. Closing that needs
+# filesystem identity rather than existence, and is not done here.
 drive_ok=0
 if [[ -n $drive ]]; then
-  if ! mkdir -p -- "$drive" 2>/dev/null || [[ ! -w $drive ]]; then
-    note "disk-preflight: VIVARIUM_HEAVY_DRIVE=$drive is not a writable directory; falling back to this disk"
+  if [[ ! -d $drive ]]; then
+    drive_rejected "VIVARIUM_HEAVY_DRIVE=$drive does not exist; the drive is unplugged, or the directory was never created"
+  elif [[ ! -w $drive ]]; then
+    drive_rejected "VIVARIUM_HEAVY_DRIVE=$drive is not a writable directory"
   elif ((IMAGES == 1)) && under_temp "$drive"; then
-    note "disk-preflight: VIVARIUM_HEAVY_DRIVE=$drive is under a temp root, which N24 refuses as a workspace;"
-    note "                falling back to this disk"
+    drive_rejected "VIVARIUM_HEAVY_DRIVE=$drive is under a temp root, which N24 refuses as a workspace"
   else
     drive_free=$(free_gib "$drive")
     note "  drive   $drive: ${drive_free}G free"
     if ((drive_free < REQUIRED)); then
-      note "disk-preflight: $drive has ${drive_free}G, short of the ${REQUIRED}G this needs; falling back to this disk"
+      drive_rejected "$drive has ${drive_free}G, short of the ${REQUIRED}G this needs"
     else
       drive_ok=1
     fi
   fi
+elif ((REQUIRE_DRIVE == 1)); then
+  note 'disk-preflight: VIVARIUM_HEAVY_DRIVE names no drive, in the environment or in .envrc.local'
+fi
+
+# The requirement, decided before either mode picks a directory so that both
+# modes get the same answer. A terminal is asked, because a person who is there
+# can point at another disk or accept this one; a run with no terminal is refused
+# rather than guessed for, which is what makes this usable from a git hook.
+if ((REQUIRE_DRIVE == 1 && drive_ok == 0)); then
+  note "disk-preflight: $LABEL is gated on a drive and there is no usable one."
+  if [[ ! -t 0 ]]; then
+    note "  Nothing was run. Point VIVARIUM_HEAVY_DRIVE at a directory on a drive with"
+    note "  ${REQUIRED}G free, or state that this run belongs on the host disk."
+    exit 69
+  fi
+  note "  Enter a directory on another drive to use, or:"
+  note "    'here' to run on the current disk anyway"
+  note "    'defer' to stop now and set a drive up first"
+  printf '  path/here/defer> ' >&2
+  read -r required_answer
+  case "$required_answer" in
+    here)
+      note "disk-preflight: proceeding on the current disk at your say-so"
+      ;;
+    defer | '' | q | quit)
+      note "disk-preflight: deferred; nothing was run"
+      exit 75
+      ;;
+    *)
+      accept_answer_dir "$required_answer"
+      drive="$required_answer"
+      drive_ok=1
+      ;;
+  esac
 fi
 
 # Worth saying plainly rather than proceeding into it: the drive can hold the
@@ -242,19 +389,7 @@ if ((IMAGES == 1)); then
           exit 75
           ;;
         *)
-          if under_temp "$answer"; then
-            note "disk-preflight: $answer is under a temp root, which N24 refuses; nothing was run"
-            exit 69
-          fi
-          if ! mkdir -p -- "$answer" 2>/dev/null || [[ ! -w $answer ]]; then
-            note "disk-preflight: $answer is not a writable directory; nothing was run"
-            exit 69
-          fi
-          answer_free=$(free_gib "$answer")
-          if ((answer_free < REQUIRED)); then
-            note "disk-preflight: $answer has ${answer_free}G, short of ${REQUIRED}G; nothing was run"
-            exit 69
-          fi
+          accept_answer_dir "$answer"
           root="$answer"
           ;;
       esac
@@ -308,15 +443,7 @@ case "$answer" in
     exit 75
     ;;
   *)
-    if ! mkdir -p -- "$answer" 2>/dev/null || [[ ! -w $answer ]]; then
-      note "disk-preflight: $answer is not a writable directory; nothing was run"
-      exit 69
-    fi
-    answer_free=$(free_gib "$answer")
-    if ((answer_free < REQUIRED)); then
-      note "disk-preflight: $answer has ${answer_free}G, short of ${REQUIRED}G; nothing was run"
-      exit 69
-    fi
+    accept_answer_dir "$answer"
     note "disk-preflight: scratch goes to $answer"
     printf '%s\n' "$answer"
     exit 0

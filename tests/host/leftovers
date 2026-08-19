@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+
+# What this development round left behind, and what it would take to remove it.
+#
+# A round of hooks, trials and hand-run lanes leaves artifacts in half a dozen
+# places: fixture roots, sandbox volumes, compile caches, runtime directories,
+# retained diagnostics, and occasionally a user unit nobody stopped. None of them
+# announce themselves, and the first symptom of the pile is a disk that is
+# suddenly full — which is the failure this whole gate exists to keep out of a
+# change's report.
+#
+# So this reports and does not act. Removing a sandbox volume is not a decision a
+# hook may take on someone's behalf, and telling the difference between a
+# registered project and an orphaned fixture is exactly what a human wants to do
+# with their own eyes. Every group carries the command that would clear it.
+#
+# It doubles as the round's own verdict on the drive. Every group listed under
+# `host` is one that a gated run puts on the drive, so anything with a size there
+# is evidence that something ran outside the gate — which is worth knowing while
+# the round is still fresh, rather than a week later from a full filesystem.
+#
+# Report-only, and it always exits `0`. A push is not blocked by what is on the
+# disk; the hook is wired `verbose: true` so its output is printed even though it
+# passes.
+
+set -u
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+
+STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
+CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
+RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+STORE=${NIX_STORE_DIR:-/nix/store}
+
+# A gated run binds the drive's own roots, so the host copies of exactly these
+# are the ones that say something ran outside the gate.
+STRAY=0
+
+if [[ -t 1 ]]; then
+  B=$(tput bold 2>/dev/null || printf '')
+  D=$(tput dim 2>/dev/null || printf '')
+  Y=$(tput setaf 3 2>/dev/null || printf '')
+  G=$(tput setaf 2 2>/dev/null || printf '')
+  R=$(tput sgr0 2>/dev/null || printf '')
+else
+  B='' D='' Y='' G='' R=''
+fi
+
+size_of() { du -sh -- "$1" 2>/dev/null | cut -f1; }
+
+free_of() { df -Ph -- "$1" 2>/dev/null | awk 'NR == 2 { print $4 }'; }
+
+# How many entries a directory holds, which is what makes "631M" mean something:
+# one retained fixture is a lane that failed halfway, and forty is a habit.
+entries_in() {
+  local dir=$1 count=0 entry
+  for entry in "$dir"/*; do
+    [[ -e $entry || -L $entry ]] && ((count++))
+  done
+  printf '%d' "$count"
+}
+
+# A section that found nothing says so, rather than ending in the silence a
+# reader has to interpret. `heading` closes the previous section first, so the
+# bookkeeping stays with the two functions that print rather than at every call.
+SECTION_ROWS=0
+
+end_section() {
+  ((SECTION_ROWS == 0)) && printf '    %snothing left behind%s\n' "$D" "$R"
+  SECTION_ROWS=0
+  return 0
+}
+
+heading() {
+  printf '\n  %s%-7s%s %s%s%s\n' "$B" "$1" "$R" "$D" "${2:-}" "$R"
+}
+
+# The name column. Wide enough for the longest host path this prints, so the
+# sizes stay in one column and a pile is visible as a shape rather than as a
+# paragraph to be read.
+NAME_WIDTH=38
+
+# A path shown as the reader thinks of it: relative to the section's root, or
+# with the home directory abbreviated. The command below it stays absolute,
+# because that one is meant to be copied.
+row() {
+  local display=$1 size=$2 note=$3
+  ((SECTION_ROWS++))
+  printf '    %-*s %6s  %s\n' "$NAME_WIDTH" "$display" "$size" "$note"
+}
+
+hint() { printf '      %s%s%s\n' "$D" "$1" "$R"; }
+
+# A path as it must appear inside a command someone is meant to copy. Every hint
+# below ends in `rm -rf`, and a drive mounted at `/run/media/you/Backup Drive`
+# turns an unquoted one into two operands — the reported cache stays and
+# `/run/media/you/Backup` goes. `%q` is the only spelling that is right for every
+# path a person could have configured.
+q() { printf '%q' "$1"; }
+
+# "1 artifacts" is the kind of detail that makes a report read like output rather
+# than like something written for a person.
+count_of() {
+  local count=$1 singular=$2 plural=${3:-${2}s}
+  if ((count == 1)); then printf '%d %s' "$count" "$singular"; else printf '%d %s' "$count" "$plural"; fi
+}
+
+# One reported group: a size, what it is, and — when it is something a person may
+# want gone — the command that would do it. Anything that is not a leftover says
+# so instead of offering a way to delete it.
+group() {
+  local display=$1 path=$2 note=$3 command=${4:-}
+  [[ -e $path ]] || return 0
+  # An empty directory is not a leftover. Listing one costs the reader a line to
+  # dismiss, and this report is only useful if every line in it means something.
+  [[ -d $path && $(entries_in "$path") == 0 ]] && return 0
+  row "$display" "$(size_of "$path")" "$note"
+  [[ -n $command ]] && hint "$command"
+  return 0
+}
+
+# Same, for a group that only matters when it is not empty — and which counts
+# against the drive's verdict when it is.
+stray_group() {
+  local display=$1 path=$2 note=$3 command=${4:-}
+  [[ -d $path ]] || return 0
+  local count
+  count=$(entries_in "$path")
+  ((count == 0)) && return 0
+  ((STRAY += count))
+  row "$display" "$(size_of "$path")" "$Y$note ($count)$R"
+  [[ -n $command ]] && hint "$command"
+  return 0
+}
+
+printf '\n%svivarium leftovers%s — what this round wrote, and what would clear it\n' "$B" "$R"
+
+drive=$("$SCRIPT_DIR/disk-preflight" --locate --images --require-drive 2>/dev/null) || drive=
+
+if [[ -n $drive ]]; then
+  heading "drive" "$drive — $(free_of "$drive") free"
+  group cargo-target "$drive/cargo-target" 'the shared compile cache; the dev shell uses this one' \
+    "rm -rf $(q "$drive/cargo-target")   # a full rebuild follows"
+  group tmp "$drive/tmp" 'scratch from gated runs' "rm -rf $(q "$drive/tmp")"
+  group state "$drive/state" 'state a gated run wrote, sandbox volumes among it' \
+    "rm -rf $(q "$drive/state")   # deletes any sandbox a gated run created"
+  group data "$drive/data" 'pinned inputs a gated run wrote' "rm -rf $(q "$drive/data")"
+  group cache "$drive/cache" 'generated flakes and built images from gated runs' "rm -rf $(q "$drive/cache")"
+  group test-fixtures "$drive/test-fixtures" 'acceptance fixture roots' \
+    "rm -rf $(q "$drive/test-fixtures")"
+  group diagnostics "$drive/diagnostics" 'diagnostics a lane retained on purpose; read before removing' \
+    "rm -rf $(q "$drive/diagnostics")"
+  for lane in "$drive"/vivarium-user-workflows-* "$drive"/vivarium-agent-host-*; do
+    group "${lane##*/}" "$lane" 'a lane root that outlived its run' "rm -rf $(q "$lane")"
+  done
+else
+  heading "drive" 'none resolved — VIVARIUM_HEAVY_DRIVE names nothing usable'
+  printf '    %severything below is on the boot disk, including anything a gated run refused to write%s\n' "$Y" "$R"
+fi
+
+end_section
+heading "host" "/ — $(free_of /) free"
+
+# Registered sandboxes are the one thing here that is somebody's data. Named as
+# live rather than offered a `rm`, because the product has a verb for this and
+# reaching around it loses the state it maintains.
+registry=$STATE_HOME/vivarium/registry.toml
+if [[ -d $STATE_HOME/vivarium/projects ]]; then
+  registered=0
+  [[ -f $registry ]] && registered=$(grep -c '^\[\[projects\]\]' "$registry" 2>/dev/null || printf '0')
+  row "${STATE_HOME/#$HOME/\~}/vivarium/projects" "$(size_of "$STATE_HOME/vivarium/projects")" \
+    "$G$(count_of "$(entries_in "$STATE_HOME/vivarium/projects")" sandbox sandboxes), $registered registered — not leftovers$R"
+  hint 'viv destroy   # from the project, rather than removing the directory'
+fi
+
+stray_group "${STATE_HOME/#$HOME/\~}/vivarium/test-fixtures" "$STATE_HOME/vivarium/test-fixtures" \
+  'fixture roots that belong on the drive' "rm -rf $(q "$STATE_HOME/vivarium/test-fixtures")"
+
+if [[ -n $drive && -d $CACHE_HOME/vivarium/target ]]; then
+  ((STRAY++))
+  row "${CACHE_HOME/#$HOME/\~}/vivarium/target" "$(size_of "$CACHE_HOME/vivarium/target")" \
+    "${Y}a second compile cache; the drive already holds one$R"
+  hint "rm -rf $(q "$CACHE_HOME/vivarium/target")"
+fi
+
+for temp in /tmp/vivarium-* /tmp/viv-* /var/tmp/vivarium-*; do
+  [[ -e $temp ]] || continue
+  ((STRAY++))
+  row "$temp" "$(size_of "$temp")" "${Y}a temporary root under a temp filesystem$R"
+  hint "rm -rf $(q "$temp")"
+done
+
+# Runtime directories are small by construction and still worth listing: each one
+# is a run that did not tear down, and a stale control socket is what the next
+# launch trips over.
+runtime_left=0
+for runtime in "$RUNTIME_DIR"/viv-t* "$RUNTIME_DIR"/vivarium; do
+  [[ -e $runtime ]] || continue
+  ((runtime_left++))
+  row "$runtime" "$(size_of "$runtime")" 'a runtime root from a run that did not tear down'
+done
+((runtime_left > 0)) && hint "rm -rf $(q "$RUNTIME_DIR")/viv-t*"
+
+# Not counted against the drive: a runtime root is where these belong, and this
+# section is the one place a run still in flight shows up as a leftover. Reading
+# it during a boot trial is reading a live guest, not a residue.
+end_section
+heading "units" 'vivarium user services'
+SECTION_ROWS=1
+if command -v systemctl >/dev/null 2>&1; then
+  units=$(systemctl --user list-units --no-legend --plain 'vivarium-*' 2>/dev/null | awk '{ print $1 }')
+  if [[ -n $units ]]; then
+    while read -r unit; do
+      printf '    %s%s%s still loaded\n' "$Y" "$unit" "$R"
+      hint "systemctl --user stop $(q "$unit")"
+    done <<<"$units"
+  else
+    printf '    %snone loaded%s\n' "$G" "$R"
+  fi
+else
+  printf '    %sno systemd user manager here to ask%s\n' "$D" "$R"
+fi
+
+heading "store" "$STORE — $(free_of "$STORE") free"
+SECTION_ROWS=1
+printf '    the store is never moved by the gate, so it is the one place a round accumulates\n'
+printf '      %s%s%s\n' "$D" 'nix store gc   # unreachable paths only; keeps profile generations' "$R"
+
+if ((STRAY == 0)); then
+  printf '\n  %sthe drive carried this round%s — nothing that belongs on it landed on the boot disk\n\n' "$G" "$R"
+else
+  printf '\n  %s%s landed on the boot disk that a gated run puts on the drive%s\n' \
+    "$Y" "$(count_of "$STRAY" artifact)" "$R"
+  printf '  something ran outside the gate, or ran with VIVARIUM_HEAVY_ON_HOST set.\n\n'
+fi
+
+exit 0

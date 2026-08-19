@@ -123,8 +123,26 @@
           # duplicate. `path:` fetches the whole working tree and does not honour
           # `.gitignore`, so a multi-gigabyte `target/` would be copied into the
           # store on every evaluation. Out of the tree, it costs nothing.
+          # And it is one cache rather than two (ADR-0106). Every gated hook binds
+          # `<drive>/cargo-target`, so a shell that defaulted somewhere else would
+          # fill a second cache with the same objects and pay for both. The shell
+          # asks the same resolver the hooks ask, in its silent form: entering a
+          # shell writes nothing, so this locates rather than gates, and no drive
+          # is a notice and the cache root rather than a refusal. The resolver is
+          # reached by relative path because the shell is entered from the
+          # repository root — direnv, `just`, and CI all do — and a shell entered
+          # from elsewhere simply takes the fallback with the reason on stderr.
           shellHook = ''
-            export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-''${XDG_CACHE_HOME:-$HOME/.cache}/vivarium/target}"
+            if [ -z "''${CARGO_TARGET_DIR:-}" ]; then
+              if [ -x tests/host/disk-preflight ] \
+                && heavy_drive=$(tests/host/disk-preflight --locate --images --require-drive 2>/dev/null); then
+                export CARGO_TARGET_DIR="$heavy_drive/cargo-target"
+              else
+                export CARGO_TARGET_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/vivarium/target"
+                echo "no heavy drive resolved; the compile cache stays on this disk" >&2
+              fi
+              unset heavy_drive
+            fi
             # Both greetings go to standard error. `nix develop --command` shares
             # the command's stdout, so on stdout these lines are prepended to
             # whatever it emits — and `scripts/baseline-pins` exists to have its

@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+
+# Run a command with its bytes on the drive, or do not run it.
+#
+# `disk-preflight` decides where a heavy run's bytes go, and every hand-run lane
+# calls it. Nothing else did. So the checks that gate a commit and a push — which
+# compile a workspace, evaluate flakes, realise guest closures and boot microVMs —
+# wrote every byte to the boot disk, and the first anyone heard of it was a
+# filesystem at 100% partway through a `git push`. The drive was configured the
+# whole time; nothing carried the answer into the process that needed it.
+#
+# This carries it. One job: resolve where the bytes go, bind that into the
+# environment, and exec.
+#
+#   tests/host/heavy-run --need 12 --label "cargo nextest (integration)" -- \
+#     cargo nextest run --profile pre-push --all-features
+#
+# The environment it binds, and why each variable is in the list:
+#
+#   VIVARIUM_HEAVY_DRIVE  the resolved root. The acceptance fixture reads this
+#                         directly (`tests/support/mod.rs`), and a `git push`
+#                         started outside a direnv shell would otherwise hand it
+#                         nothing and get `~/.local/state` — the exact hole above.
+#   TMPDIR                build and fixture scratch.
+#   CARGO_TARGET_DIR      the workspace compile cache, so the devShell and every
+#                         gated run share one rather than filling two.
+#   XDG_STATE_HOME        where a live `viv` writes its volumes and generations.
+#   XDG_DATA_HOME         pinned inputs.
+#   XDG_CACHE_HOME        generated flakes and built images (spec/02).
+#
+# Two roots stay where they are, and neither omission is an oversight.
+# `XDG_RUNTIME_DIR` holds control sockets, and a socket path cannot exceed 108
+# bytes — a drive's mount point does not leave room, which `TempProject` learned
+# by failing on it. `XDG_CONFIG_HOME` is the user's authored source of truth and
+# read-only to the tool (N13); moving it would change what a run resolves rather
+# than where its bytes land.
+#
+# `/nix/store` cannot move and is not attempted. A booting guest's closure has to
+# be readable at `/nix/store` on the host, because the launch contract and the
+# store share name host store paths. What this does about the store is what
+# `disk-preflight` already does: refuse before the first byte when it is short.
+#
+# The escape is `--on-host`, or `VIVARIUM_HEAVY_ON_HOST` set to anything but `0`.
+# Two spellings because `git push` cannot pass a flag to a hook. It waives the
+# requirement rather than forbidding the drive: the run falls back to
+# `disk-preflight`'s ordinary advisory behaviour, which is what a CI runner with
+# no drive needs and what a developer who says so gets. It does not waive
+# capacity — a full disk still refuses, because the point was never the drive.
+
+set -u
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+
+NEED_GIB=0
+LABEL="this run"
+ON_HOST=0
+
+note() { printf '%s\n' "$1" >&2; }
+
+# An option that takes an operand checks that one is there before shifting past
+# it. `shift 2` with a single argument left shifts nothing and returns non-zero,
+# and with no `set -e` the loop then re-reads the same option forever — a hook
+# invoked with a truncated argument list would hang rather than report usage.
+need_operand() {
+  (($1 >= 2)) && return 0
+  note "heavy-run: $2 needs a value"
+  exit 64
+}
+
+# Checked here as well as in `disk-preflight`, because this is the argument the
+# hooks and recipes actually write and a typo like `--need -4` would otherwise
+# sail through every capacity comparison and leave a gate that logs without
+# deciding.
+need_quantity() {
+  [[ $1 =~ ^[0-9]+$ ]] && return 0
+  note "heavy-run: --need takes whole gibibytes, not $1"
+  exit 64
+}
+
+while (($#)); do
+  case "$1" in
+    --need)
+      need_operand $# --need
+      need_quantity "$2"
+      NEED_GIB=$2
+      shift 2
+      ;;
+    --label)
+      need_operand $# --label
+      LABEL=$2
+      shift 2
+      ;;
+    --on-host)
+      ON_HOST=1
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      note "heavy-run: unknown argument $1"
+      exit 64
+      ;;
+  esac
+done
+
+# `--` is required rather than inferred. A command that began with a word this
+# parser does not know would otherwise be read as a flag and reported as one,
+# which is a confusing way to say "you forgot the separator".
+if (($# == 0)); then
+  note 'heavy-run: no command; usage: heavy-run --need <GiB> --label <text> [--on-host] -- <cmd> [args...]'
+  exit 64
+fi
+
+# Anything but `0` means on-host, and `0` is spelled out because a variable set
+# to it plainly means the opposite of what treating every non-empty value as true
+# would decide.
+if [[ ${VIVARIUM_HEAVY_ON_HOST:-0} != 0 ]]; then
+  ON_HOST=1
+  ON_HOST_BY='VIVARIUM_HEAVY_ON_HOST'
+else
+  ON_HOST_BY='--on-host'
+fi
+
+if ((ON_HOST == 1)); then
+  note "heavy-run: $LABEL is not required to use the drive ($ON_HOST_BY); capacity is still checked"
+  scratch=$("$SCRIPT_DIR/disk-preflight" --need "$NEED_GIB" --label "$LABEL") || exit $?
+  # Whatever the preflight settled on, which is the drive when one is configured
+  # and usable and the current disk otherwise. Nothing else is redirected: the
+  # environment this run wants is the one it already has, or the two compile
+  # caches this exists to avoid would both be filled.
+  [[ -n $scratch ]] && export TMPDIR="$scratch"
+  exec "$@"
+fi
+
+root=$("$SCRIPT_DIR/disk-preflight" \
+  --need "$NEED_GIB" --label "$LABEL" --images --require-drive) || {
+  status=$?
+  if ((status == 69)); then
+    note "heavy-run: nothing ran. To run $LABEL on the host disk anyway, pass --on-host,"
+    note '           or set VIVARIUM_HEAVY_ON_HOST=1 for a run git starts.'
+  fi
+  exit "$status"
+}
+
+export VIVARIUM_HEAVY_DRIVE="$root"
+export TMPDIR="$root/tmp"
+export CARGO_TARGET_DIR="$root/cargo-target"
+export XDG_STATE_HOME="$root/state"
+export XDG_DATA_HOME="$root/data"
+export XDG_CACHE_HOME="$root/cache"
+
+# Created here rather than left to the command, because a tool handed a TMPDIR
+# that does not exist fails in its own vocabulary about a temporary file. The
+# scratch root is `0700`: it holds fixture trees and build intermediates, and the
+# drive is a filesystem other users on this host can otherwise read.
+mkdir -p -- "$TMPDIR" "$CARGO_TARGET_DIR" "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" || {
+  note "heavy-run: cannot create the run roots under $root; nothing ran"
+  exit 69
+}
+# Named rather than refused when it fails, because the filesystems this targets
+# make it fail for a reason that is not a problem: an exFAT or vfat drive has no
+# mode bits to set and rejects the call outright, and refusing there would turn
+# the commonest external drive into a machine that cannot run its own checks. So
+# the run continues and the reader is told the scratch root is as private as the
+# mount options make it, which on such a drive is the honest answer.
+chmod 700 -- "$TMPDIR" 2>/dev/null \
+  || note "heavy-run: cannot set 0700 on $TMPDIR; its privacy is whatever the mount grants"
+
+exec "$@"

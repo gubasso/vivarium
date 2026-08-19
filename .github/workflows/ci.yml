@@ -30,6 +30,24 @@ on:
 permissions:
   contents: read
 
+# A runner has no external drive, and every recipe and hook that compiles or
+# boots is gated on one (ADR-0106). This is the escape, stated once for the
+# workflow: run here, on the runner's own disk. Deliberately explicit rather
+# than having the gate detect CI for itself — a gate that decides it is
+# somewhere special is one nobody can reason about from the outside, and the
+# capacity check still runs, so a runner that is genuinely out of room still
+# refuses instead of failing mid-write.
+#
+# Which is why each step below reaches `heavy-run` before `nix develop` rather
+# than through it. `nix develop` realises the development environment into the
+# store, so a gate placed inside it measures a store the step has already
+# written to, and the refusal above would arrive after the write it exists to
+# prevent. Outside, the step needs only the runner's own `bash` and coreutils.
+# The recipes gate themselves again from within; paying for the check twice is
+# cheaper than choosing which of the two invocations may skip it.
+env:
+  VIVARIUM_HEAVY_ON_HOST: '1'
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -42,9 +60,9 @@ jobs:
       - name: Cache Nix store
         uses: DeterminateSystems/flakehub-cache-action@v3.21.5
       - name: Format
-        run: nix develop --command just fmt-check
+        run: tests/host/heavy-run --need 4 --label "ci fmt-check" -- nix develop --command just fmt-check
       - name: Clippy
-        run: nix develop --command just lint
+        run: tests/host/heavy-run --need 4 --label "ci lint" -- nix develop --command just lint
 
   test:
     runs-on: ubuntu-latest
@@ -57,7 +75,7 @@ jobs:
       - name: Cache Nix store
         uses: DeterminateSystems/flakehub-cache-action@v3.21.5
       - name: Test
-        run: nix develop --command just test-ci
+        run: tests/host/heavy-run --need 12 --label "ci test-ci" -- nix develop --command just test-ci
 
   build:
     runs-on: ubuntu-latest
@@ -70,7 +88,7 @@ jobs:
       - name: Cache Nix store
         uses: DeterminateSystems/flakehub-cache-action@v3.21.5
       - name: Build
-        run: nix develop --command just build
+        run: tests/host/heavy-run --need 4 --label "ci build" -- nix develop --command just build
 
   hooks:
     runs-on: ubuntu-latest
@@ -89,7 +107,7 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Hooks
-        run: nix develop --command just hooks
+        run: tests/host/heavy-run --need 12 --label "ci hooks" -- nix develop --command just hooks
       - name: Commit messages
         # The commit-msg stage is the one installed hook type `pre-commit run
         # --all-files` cannot replay — it lints a message, not files — so the

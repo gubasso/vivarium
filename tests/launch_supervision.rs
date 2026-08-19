@@ -16,13 +16,32 @@ use vivarium::launch::{
     ShareSpec, SocketLegs, Supervisor, TransientUnitSpec,
 };
 
+/// Where a supervision fixture puts its runtime tree.
+///
+/// Not `std::env::temp_dir()`, and the reason is a hard limit rather than tidiness. Every path
+/// under this root is a control, console, ready or api socket, and a `sun_path` cannot exceed 108
+/// bytes. A `TMPDIR` on an external drive — which is exactly what a gated run binds (`ADR-0106`) —
+/// spends enough of that budget to overrun it, and the failure arrives as `path must be shorter
+/// than SUN_LEN` from `UnixListener::bind`, saying nothing about the drive that caused it.
+///
+/// `TempProject` learned this in slice 012 and `tests/guest_agent_host.rs` after it; this fixture
+/// had not, because nothing pointed its scratch at a drive until the gate did. `/run/user/<uid>`
+/// is short, is a per-user tmpfs, and is where runtime files belong. The fallback stays
+/// `temp_dir()` for a host with no runtime directory, which is the same host that could not have
+/// bound a long path either.
+fn runtime_base() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|value| !value.is_empty())
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+}
+
 #[allow(clippy::too_many_lines)]
 fn fixture(name: &str) -> LaunchSpec {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("vivarium-supervision-{name}-{nonce}"));
+    let root = runtime_base().join(format!("vivarium-supervision-{name}-{nonce}"));
     let child = |name: &str| root.join(name);
     LaunchSpec {
         schema_version: LAUNCH_SCHEMA_VERSION,

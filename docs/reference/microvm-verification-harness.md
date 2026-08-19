@@ -41,9 +41,36 @@ Point `VIVARIUM_HEAVY_DRIVE` at a directory on the drive that should absorb this
 export VIVARIUM_HEAVY_DRIVE=/run/media/you/external/vivarium
 ```
 
+The directory it names has to exist already, and the resolver creates it for nobody — not for the configured value, and not for a path typed at a prompt. An unmounted mountpoint is indistinguishable from an empty directory, so a resolver that created its own answer would recreate the path on the boot filesystem the moment the drive was unplugged, measure the boot disk, and route a booting test suite exactly where the gate exists to keep it out of. Creating the directory is therefore a setup step a person takes once.
+
+Point the variable at a directory under the mount rather than at the mount itself. That is a rule rather than advice ([`../decisions/ADR-0106-gated-runs-put-their-bytes-on-the-heavy-drive.md`](../decisions/ADR-0106-gated-runs-put-their-bytes-on-the-heavy-drive.md)), and it is what makes the existence check load-bearing: a subdirectory of a mounted filesystem disappears with it, so its absence is the drive's absence. A mountpoint the system keeps around either way — an `/etc/fstab` entry at `/mnt/heavy`, as against a `/run/media/...` path a mount helper creates and removes — stays present while unmounted, and existence would then prove nothing. Deciding it by filesystem identity instead was considered and refused: every spelling carries false refusals of its own, since btrfs subvolumes of one pool report distinct devices and a `/run/media` mountpoint is tmpfs while unmounted. The rule costs one directory at setup and needs no such policy.
+
 A configured drive that is absent, unwritable, or short falls back to the host disk with the reason on stderr. An external disk gets unplugged, and that should cost a notice rather than a run — but the fallback then faces the ordinary short-disk decision: enough room proceeds, a short disk with a terminal asks, and a short disk without one refuses. Nothing proceeds silently onto a full disk, and the store's own location is never moved by this, so a run that will not fit in the store is refused rather than relocated.
 
 Two modes, because the lanes need different answers. A lane that wants build scratch gets a directory to use as `TMPDIR`. A lane that creates disk images asks with `--images` and gets a root to hang them off, which falls back to the state root rather than to `TMPDIR`: `/tmp` is a tmpfs on an ordinary Linux desktop, and N24 refuses a workspace source that resolves under one. `--locate` answers either question with no capacity gate and no prompt, which is what the `--clean` paths use — a cleaner must be told where the bytes are even on a disk too full to start a run.
+
+`--require-drive` inverts the fallback for a caller that cannot use one: a drive that is absent, unwritable, or short is then a prompt with a terminal and exit `69` without one. Composed with `--locate` it narrows that mode the same way — the drive, or nothing and a non-zero status, still silently.
+
+### The gate the commit and push stages run behind
+
+Every hook that compiles, evaluates a flake, or boots is invoked through [`../../tests/host/heavy-run`](../../tests/host/heavy-run), which asks the resolver above with `--require-drive` and then binds the answer into the command's environment: `VIVARIUM_HEAVY_DRIVE`, `TMPDIR`, `CARGO_TARGET_DIR`, and vivarium's own state, data and cache roots. The `just` recipes that are those hooks' twins go through the same wrapper, and the dev shell picks the same compile cache so one is filled rather than two ([`../decisions/ADR-0106-gated-runs-put-their-bytes-on-the-heavy-drive.md`](../decisions/ADR-0106-gated-runs-put-their-bytes-on-the-heavy-drive.md)).
+
+Two roots are deliberately not in that list. `XDG_RUNTIME_DIR` holds control sockets against a 108-byte path limit that a drive's mount point does not leave room under, and `XDG_CONFIG_HOME` is the user's authored source of truth, which the tool only reads.
+
+The refusal is deterministic because it has to be: pre-commit runs every hook with standard input on `/dev/null`, so a gate at that stage cannot prompt. No usable drive means exit `69` and nothing ran.
+
+```bash
+# run the gated checks on this disk anyway — the capacity check still applies
+VIVARIUM_HEAVY_ON_HOST=1 git push
+VIVARIUM_HEAVY_ON_HOST=1 just test-pre-push
+tests/host/heavy-run --on-host --need 12 --label "a hand run" -- cargo nextest run
+```
+
+The variable prefixes each command it applies to. It is an assignment on one command rather than an exported setting, so a second line does not inherit it, and a hand run that means to waive says so on its own line or reaches for `--on-host` directly.
+
+A variable rather than a flag because git passes no arguments to its hooks. It is what [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml) sets for the whole workflow: a runner has no external drive, and the honest way to say so is to say so.
+
+What the waiver leaves in place is the preflight itself, which measures the store and the scratch filesystem and refuses a run that will not fit in either. It does not measure the state, data and cache roots separately, because a waived run leaves those where the shell already had them — on a host where they share a filesystem with scratch, which is every ordinary one, the scratch measurement is the measurement for all of them.
 
 Per-lane overrides stay available and win over the resolved root: `VIVARIUM_BENCH_TEMP_BASE`, `VIVARIUM_DENSITY_TEMP_BASE`, `VIVARIUM_GC_TEMP_BASE`, and `VIVARIUM_PRESSURE_TEMP_BASE` each place one lane's scratch base explicitly.
 
@@ -150,6 +177,16 @@ Slice 015's pre-boot refusal, proved on a real host. Like `exec-and-shell-check`
 
 ```console
 $ tests/host/contract-skew-check
+```
+
+## The sibling script: `tests/host/leftovers`
+
+What a round left behind, on both disks, and the command that would clear each pile. It reports and never acts: telling a registered sandbox from an orphaned fixture root is exactly the judgement a person wants to make with their own eyes, and a volume holds user data. Groups are named with a size and a note — the shared compile cache, scratch, fixture roots, retained diagnostics, runtime roots a run did not tear down, vivarium user units still loaded, and the store's own free space, which no gate moves.
+
+It is also the round's verdict on the drive. Everything listed under `host` is something a gated run puts on the drive instead, so a size there means something ran outside the gate — surfaced while the round is still fresh rather than a week later from a full filesystem. The same report runs as the last `pre-push` hook, wired `verbose` because pre-commit prints a passing hook's output only when asked, and it always passes: a push is not blocked by what is on a disk.
+
+```console
+$ tests/host/leftovers
 ```
 
 ## Findings register
@@ -710,3 +747,17 @@ These are all defects in checks. The same round produced one in the repository's
 Two probe-authoring facts belong beside these, because each produced a check that looked correct and reported nothing true. `systemd.services.<name>.path` replaces the unit's PATH rather than extending it, so a probe that lists one tool loses every other tool it did not name — `awk` went missing this way. And `systemctl show -p MainPID` reads `0` for a socket-activated unit that is serving requests, so a liveness check written on `MainPID` reports a healthy `nix-daemon` as dead.
 
 One more, from the same round and cheaper to state: a lane that restates a build-time constant instead of reading it out of the artifact will drift the moment the artifact gains a parameter. The threshold gate here re-declared the scaled variant's attrset, drifted, and refused a correct image — the same two-copies-of-one-constant defect the build contract exists to avoid. It now reads the guest system out of the launcher's own `--cmdline`.
+
+### A gated run had no way to learn where the drive was, and the store move that would have helped most is the one measurement rejects
+
+Measured 2026-08-19 on the target host, against pre-commit 4.5.1 and nix 2.34.8. The occasion was a `git push` that took `/` to 100% partway through the integration hook, on a machine where the drive had been configured for weeks.
+
+The drive was never the problem. `VIVARIUM_HEAVY_DRIVE` lives in the environment or in `.envrc.local`, and a hook started by git from a shell direnv never touched has neither — so the acceptance fixture's own resolver took its documented fallback and put every trial's project tree, volumes and images under the state root. Nothing failed, nothing warned, and the lane was doing exactly what it was written to do. That is the shape worth keeping: a rule enforced only where someone remembered to call it is enforced nowhere else, and the seven hand-run lanes calling `disk-preflight` faithfully said nothing about the two stages that run far more often.
+
+A gate at those stages cannot ask, which decides its whole shape. pre-commit runs each hook with standard input on `/dev/null` (`pre_commit/util.py`), so there is no terminal to prompt and the only honest answers are proceed or refuse. The same call sets the hook's stdout to a pty when it is capturing with color, so a program that decided interactivity on `-t 1` would prompt into a buffer nobody is reading — an assumption-shaped check that would pass its own inspection. Both programs here test stdin.
+
+The store is what actually fills the disk, and it is the one thing this cannot move. A chroot store on the drive works unprivileged and keeps logical `/nix/store` paths, so `cache.nixos.org` serves it — the manual is explicit that only changing the logical store dir loses substituters. But it shares nothing with the store already on the host: realising `hello` into a fresh one fetched five paths, two of which the host store already held, for 10.8 MiB downloaded, 36.2 MiB unpacked and 82M on disk in 5s. Scaled to a guest closure that is gigabytes of duplicate over the network, and a booted guest could not read it regardless, because the launch contract and the store share name host store paths. So the store keeps its preflight refusal and nothing else.
+
+What did move is the compile cache, which populated to 1.7G on its first gated run. The drive is rotational USB, so that is a real and accepted cost, and it is one cache rather than two only because the dev shell resolves it through the same silent locate the gate uses.
+
+A third instance of the 108-byte lesson arrived in the same round, and its timing is the useful part. `tests/launch_supervision.rs` rooted its runtime tree at `std::env::temp_dir()`, which was harmless while that resolved to `/tmp`. Binding the drive into the gate moved it, and the suite still passed — 51 of 51 — because the drive was configured as its mountpoint. Moving the configured path one directory deeper, so that its absence would prove the drive was unplugged, added nine bytes and took two trials over the limit: `path must be shorter than SUN_LEN` from `UnixListener::bind`, in a suite whose subject is supervision. `TempProject` learned this in slice 012 and `tests/guest_agent_host.rs` after it; this fixture had not, because nothing had pointed its scratch at a drive before. Runtime sockets belong under `$XDG_RUNTIME_DIR` by construction, and the fixture now says so where it picks its root. Worth stating plainly: a suite that passes at one drive path and fails at another nine bytes longer was never passing on the strength of the property it asserts.

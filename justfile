@@ -7,33 +7,49 @@ default:
     @just --list
 
 # --- Build & test ---------------------------------------------------------
+#
+# The recipes that compile or test go through `tests/host/heavy-run`, the same
+# gate their hook twins use (ADR-0106): it resolves `VIVARIUM_HEAVY_DRIVE` and
+# binds the compile cache, scratch, and vivarium's own roots onto it before the
+# command starts. Leaving a recipe unwrapped while its hook is wrapped is
+# exactly the drift the "keep them byte-identical" notes below exist to prevent
+# — and it would fill a second compile cache on the boot disk. Without a usable
+# drive these refuse; `VIVARIUM_HEAVY_ON_HOST=1 just <recipe>` runs here anyway,
+# which is what CI sets.
+#
+# The gate is outside `nix develop` rather than inside it, which is the order
+# that makes the capacity check mean something: `nix develop` realises the
+# development environment into the store, and a check that runs after that has
+# already let the write it was meant to gate happen. Outside, it needs only the
+# host's own `bash`, `df` and coreutils, which is what every hand-run lane
+# already assumes when it calls `disk-preflight` before entering a shell.
 
 # Build the workspace.
 build:
-    nix develop --command cargo build
+    tests/host/heavy-run --need 4 --label "just build" -- nix develop --command cargo build
 
 # Run the test suite.
 test:
-    nix develop --command cargo nextest run
+    tests/host/heavy-run --need 12 --label "just test" -- nix develop --command cargo nextest run
 
 # Run the pre-commit unit-test profile (twin of hook cargo-nextest-unit).
 test-pre-commit:
-    nix develop --command cargo nextest run --profile pre-commit --all-features
+    tests/host/heavy-run --need 4 --label "just test-pre-commit" -- nix develop --command cargo nextest run --profile pre-commit --all-features
 
 # Run the pre-push integration-test profile (twin of hook
 # cargo-nextest-integration).
 test-pre-push:
-    nix develop --command cargo nextest run --profile pre-push --all-features
+    tests/host/heavy-run --need 12 --label "just test-pre-push" -- nix develop --command cargo nextest run --profile pre-push --all-features
 
 # Run the complete CI profile.
 # Twin of the cargo-nextest hooks in .pre-commit-config.yaml: keep the
 # feature flags byte-identical so the two cannot drift.
 test-ci:
-    nix develop --command cargo nextest run --profile ci --all-features
+    tests/host/heavy-run --need 12 --label "just test-ci" -- nix develop --command cargo nextest run --profile ci --all-features
 
 # Type-check without producing binaries.
 typecheck:
-    nix develop --command cargo check
+    tests/host/heavy-run --need 4 --label "just typecheck" -- nix develop --command cargo check
 
 # --- Lint & format --------------------------------------------------------
 
@@ -41,7 +57,7 @@ typecheck:
 # Twin of the clippy-strict hook in .pre-commit-config.yaml: keep the
 # command byte-identical so the two cannot drift when a feature lands.
 lint:
-    nix develop --command cargo clippy --all-targets --all-features -- -D warnings
+    tests/host/heavy-run --need 4 --label "just lint" -- nix develop --command cargo clippy --all-targets --all-features -- -D warnings
 
 # Format the source tree.
 fmt:

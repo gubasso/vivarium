@@ -16,6 +16,27 @@ That `viv` is a shim. It builds the crate from the working tree on each invocati
 
 The cost is a `cargo build` before every run. On an unchanged tree that is close to free; after an edit it is the compile you were going to pay anyway.
 
+## Where your builds and checks write
+
+Working on vivarium means compiling a workspace, realising guest closures, and booting microVMs, which together measure in gigabytes. Most of that goes to the drive named by `VIVARIUM_HEAVY_DRIVE` rather than to your boot disk: build scratch, the compile cache, sandbox images and volumes, and vivarium's own state, data and cache roots. The one exception is the Nix store, which stays at `/nix/store` because a booting guest has to read its closure there — the checks refuse to start a run that will not fit in it rather than moving it.
+
+Create the directory on the drive, then name it once per machine in the untracked `.envrc.local` beside [`../../.envrc`](../../.envrc):
+
+```bash
+# .envrc.local — untracked, per machine
+export VIVARIUM_HEAVY_DRIVE=/run/media/you/external/vivarium
+```
+
+The directory has to exist, and nothing creates it for you. That is what tells a mounted drive apart from an unplugged one, whose mountpoint is otherwise an empty directory on your boot disk that the checks would happily fill. Point the variable at a directory under the mount, as above, rather than at the mount itself — a subdirectory goes away when the drive does, which is what makes its absence mean something, while a mountpoint from `/etc/fstab` stays present unmounted and would pass the check against your boot disk.
+
+The development shell puts the compile cache there (`CARGO_TARGET_DIR`), and so does every check that compiles, evaluates a flake, or boots — one cache rather than two. Without a usable drive the shell says so and keeps the cache under `~/.cache`, but the checks refuse: `git push` exits with nothing run and names what it needed. To run them on this disk anyway:
+
+```console
+$ VIVARIUM_HEAVY_ON_HOST=1 git push
+```
+
+That waives the drive and not the capacity check: the store and the scratch filesystem are still measured, so a disk that is genuinely full still refuses rather than failing mid-write. Two things are worth knowing before you rely on it: unplugging the drive during a build surfaces as cargo errors that read like a corrupt cache, and the first build after pointing at a new drive is a full one. The reasoning is in [`../decisions/ADR-0106-gated-runs-put-their-bytes-on-the-heavy-drive.md`](../decisions/ADR-0106-gated-runs-put-their-bytes-on-the-heavy-drive.md), and the operator-facing detail in [`../reference/microvm-verification-harness.md`](../reference/microvm-verification-harness.md).
+
 ## Outside the repository: `just install`
 
 A sandbox is bound to a project directory, so exercising one means running `viv` somewhere other than here. Install it:
