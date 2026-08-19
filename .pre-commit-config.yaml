@@ -9,6 +9,23 @@ default_install_hook_types: [pre-commit, commit-msg, pre-push]
 # it just failed. A hook belongs at push only via an explicit `stages:` key.
 default_stages: [pre-commit]
 
+# Where the bytes go (ADR-0106). Every hook below that compiles, evaluates a
+# flake, or boots a guest is invoked through `tests/host/heavy-run`, which
+# resolves `VIVARIUM_HEAVY_DRIVE` and binds it into the hook's environment
+# before the command starts. Without that, `git push` runs a suite that boots
+# microVMs and realises guest closures straight onto the boot disk, and the
+# first report is a filesystem at 100% partway through — which is how this
+# repository learned it.
+#
+# The refusal is deterministic here because it has to be: pre-commit runs every
+# hook with standard input on `/dev/null`, so a gate at this stage cannot ask.
+# No drive means exit `69` and nothing ran, with the escape named. To run on the
+# host disk anyway, `VIVARIUM_HEAVY_ON_HOST=1 git push` — a variable rather than
+# a flag because git passes no arguments to its hooks.
+#
+# The hooks that are NOT wrapped are the formatters, the markdown gates, the
+# secret scans, `taplo`, `machete` and `deny`. They write kilobytes, and a
+# whitespace commit should not need an external drive plugged in.
 repos:
   # --- Housekeeping (auto-fix where possible) ---
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -137,7 +154,7 @@ repos:
       # the commit stage rather than first appearing at the push-only gate.
       - id: clippy-fix
         name: clippy auto-fix
-        entry: cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features -- -W clippy::all
+        entry: tests/host/heavy-run --need 4 --label "clippy auto-fix" -- cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features -- -W clippy::all
         language: system
         types: [rust]
         pass_filenames: false
@@ -147,7 +164,7 @@ repos:
       # is lint-level findings only, never a compile error.
       - id: clippy-strict
         name: clippy gate
-        entry: cargo clippy --all-targets --all-features -- -D warnings
+        entry: tests/host/heavy-run --need 4 --label "the clippy gate" -- cargo clippy --all-targets --all-features -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false
@@ -207,7 +224,7 @@ repos:
     hooks:
       - id: cargo-nextest-unit
         name: cargo nextest (unit tests)
-        entry: cargo nextest run --profile pre-commit --all-features
+        entry: tests/host/heavy-run --need 4 --label "cargo nextest (unit tests)" -- cargo nextest run --profile pre-commit --all-features
         language: system
         types: [rust]
         pass_filenames: false
@@ -215,7 +232,7 @@ repos:
 
       - id: cargo-nextest-integration
         name: cargo nextest (integration tests)
-        entry: cargo nextest run --profile pre-push --all-features
+        entry: tests/host/heavy-run --need 12 --label "cargo nextest (integration tests)" -- cargo nextest run --profile pre-push --all-features
         language: system
         types_or: [rust, toml]
         pass_filenames: false
@@ -223,7 +240,7 @@ repos:
 
       - id: cargo-doc-tests
         name: cargo test --doc (doctests)
-        entry: cargo test --doc --all-features
+        entry: tests/host/heavy-run --need 4 --label "cargo test --doc" -- cargo test --doc --all-features
         language: system
         types_or: [rust, toml]
         pass_filenames: false
@@ -332,7 +349,7 @@ repos:
       # not an omission.
       - id: dev-flake-check
         name: root dev flake evaluates (devShells + formatter only)
-        entry: nix flake check
+        entry: tests/host/heavy-run --need 2 --label "the root dev flake check" -- nix flake check
         language: system
         files: '^(flake\.nix|flake\.lock)$'
         pass_filenames: false
@@ -342,7 +359,7 @@ repos:
       # and its checks are constructible.
       - id: product-flake-check
         name: product flake evaluates (checks instantiate, no build)
-        entry: nix flake check --no-build path:.?dir=nix
+        entry: tests/host/heavy-run --need 4 --label "the product flake check" -- nix flake check --no-build path:.?dir=nix
         language: system
         files: '^(nix/.*\.nix|nix/flake\.lock|tests/nix/.*\.nix)$'
         pass_filenames: false
@@ -550,6 +567,33 @@ repos:
         language_version: system
         additional_dependencies: ['markdownlint-rule-relative-links']
 
+  # --- The round's own leftovers (report, never a gate) ---------------------
+  #
+  # Last at the push stage, because by then everything that writes has written:
+  # the compile cache, the fixture roots, the guest closures, the volumes a boot
+  # trial made, and whatever a hand-run lane left earlier in the session. The
+  # report names each pile, its size, and the command that would clear it, and
+  # leaves the deciding to whoever is reading — removing a sandbox volume is not
+  # a call a hook may make on someone's behalf.
+  #
+  # It also answers the question the gate above raises: anything listed under
+  # `host` is something a gated run puts on the drive, so a size there is
+  # evidence that something ran outside the gate while the round is still fresh.
+  #
+  # `always_run` because it reports on the machine rather than on the diff, and
+  # `verbose` because pre-commit prints a passing hook's output only when asked
+  # — and this one always passes. A push is never blocked by what is on a disk.
+  - repo: local
+    hooks:
+      - id: leftovers
+        name: leftover sweep (report only)
+        entry: tests/host/leftovers
+        language: system
+        always_run: true
+        pass_filenames: false
+        verbose: true
+        stages: [pre-push]
+
   # --- Slides (Slidev deck) -------------------------------------------------
   #
   # Every Markdown gate above is excluded from `slides/`, so the deck's only
@@ -567,7 +611,11 @@ repos:
     hooks:
       - id: slidev-build
         name: slidev build (deck still compiles)
-        entry: bash -c 'cd slides && { [ -d node_modules ] || { echo "slides/node_modules is missing; run \`just slides-install\`" >&2; exit 1; }; } && npm run build'
+        # Gated like its neighbours at this stage, and the honest note is that
+        # what moves for it is `TMPDIR` alone: a deck's dependencies and its
+        # built output are in-tree by construction, so `node_modules` and
+        # `dist` stay where npm puts them no matter what this binds.
+        entry: tests/host/heavy-run --need 2 --label "the slidev build" -- bash -c 'cd slides && { [ -d node_modules ] || { echo "slides/node_modules is missing; run \`just slides-install\`" >&2; exit 1; }; } && npm run build'
         language: system
         files: ^slides/
         pass_filenames: false
