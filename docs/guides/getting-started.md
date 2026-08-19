@@ -9,7 +9,7 @@ This walkthrough follows a developer who wants to run a Rust project inside a vi
 - A host with hardware virtualization available (required by the isolation boundary; see [`../reference/spec/00-goals-and-non-goals.md`](../reference/spec/00-goals-and-non-goals.md)).
 - A Nix toolchain on the host.
 - A `viv` on your `PATH`. There is no release yet, so today that means building it from this repository; [`develop-and-install.md`](./develop-and-install.md) is the runbook.
-- A `rust-web` manifest in your config library that names a Rust image plus a few pieces (for example git, ssh-agent, direnv, and open egress). Manifest shape: [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md); how each bare name resolves to a file is decided in [the library-layout ADR](../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md).
+- A `rust-web` manifest in your config library that names a Rust image plus a few pieces (for example git, ssh-agent, direnv, and open egress). [`set-up-your-config-library.md`](./set-up-your-config-library.md) walks one worked library end to end; the manifest shape is specified in [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md), and how each bare name resolves to a file is decided in [the library-layout ADR](../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md).
 
 ## 1. Bind the project to a manifest
 
@@ -88,3 +88,4 @@ This gracefully stops the VM while preserving persistent volumes — your home d
 
 - Understand the overall shape: [`../explanation/architecture.md`](../explanation/architecture.md).
 - Share the sandbox with a team without leaking secrets: [`../reference/spec/07-secrets-and-config-sharing.md`](../reference/spec/07-secrets-and-config-sharing.md).
+- Fill the config library, with each mount declared beside the concern that needs it: [`set-up-your-config-library.md`](./set-up-your-config-library.md).
