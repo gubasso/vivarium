@@ -1,8 +1,10 @@
 # Walkthroughs
 
-The same five jobs, done four ways, start to finish. Commands are transcribed from each project's own material; see [`sources.md`](./sources.md). Where vivarium's answer is specified rather than built it is marked `*`, and no command is shown that would refuse.
+Two jobs, done four ways, start to finish. Every other question these tools answer is decided one row at a time, and [`scenarios/`](./scenarios/README.md) is where those live, each with its method, its evidence, and a worked example where the command is what the row turns on. What survives here is what no single row owns: a sequence, where the cost of a choice made in step one only becomes legible in step three.
 
-Every job runs at the fixed setup [`README.md`](./README.md)'s methodology names: vivarium's one microVM, flake-pilot's firecracker rung, glaipnir's libkrun microVM, and `podman run --runtime krun`. Container rungs appear only where they teach something, and are named as container rungs when they do, because most of what these tools do comfortably they do with the host kernel.
+Commands are transcribed from each project's own material; see [`sources.md`](./sources.md). Where vivarium's answer is specified rather than built it is marked `*`, and no command is shown that would refuse.
+
+Both jobs run at the fixed setup [`README.md`](./README.md)'s methodology names: vivarium's one microVM, flake-pilot's firecracker rung, glaipnir's libkrun microVM, and `podman run --runtime krun`. Container rungs appear only where they teach something, and are named as container rungs when they do, because most of what these tools do comfortably they do with the host kernel.
 
 ## W1 — Point an agent at a real project
 
@@ -47,7 +49,7 @@ flake-ctl podman --user register \
     --opt "\-e HOME=%HOME"
 ```
 
-The same switch can be made once for every registration instead, by setting `runtime = "krun"` under `[engine]` in `containers.conf`.
+The same switch can be made once for every registration instead, by setting `runtime = "krun"` under `[engine]` in `containers.conf` — which is [where a file rather than a flag reaches the boundary](./scenarios/boundary-file.md#podman).
 
 Rung 3, a firecracker microVM with its own storage overlay:
 
@@ -60,7 +62,7 @@ flake-ctl firecracker --user register --vm claude \
     --overlay-size 20GiB --force-vsock --resume
 ```
 
-Note what rung 3 does not carry: there is no `--volume`, because the firecracker schema has no bind mount. The guest is the image plus a 20 GiB ext2 overlay, and host files reach it only as `--include-path` or `--include-tar` copies made at provisioning. The rung with its own kernel is also the rung where the agent stops looking at your project and starts looking at a copy of it.
+Note what rung 3 does not carry: there is no `--volume`, because the firecracker schema has no bind mount. The guest is the image plus a 20 GiB ext2 overlay, and host files reach it only as `--include-path` or `--include-tar` copies made at provisioning. The rung with its own kernel is also the rung where the agent stops looking at your project and starts looking at [a copy of it](./scenarios/workspace-mount.md#flake-pilot).
 
 Afterwards the user types `claude`. The sandbox is invisible: the registered app is a symlink to a pilot binary that reads its own `argv[0]`.
 
@@ -75,9 +77,9 @@ cd ~/projects/my-thing
 glaipnir run claude
 ```
 
-That one command probes for `krun`, `libkrun` above 1.18.0, `/dev/kvm`, and `kvm` group membership; offers to add the group and re-executes itself under `sg`; finds a non-VPN egress interface or aborts; pulls the prebuilt per-agent image; creates the credential directories; and runs. If any capability check fails it proceeds in a plain container with a warning.
+That one command probes the host, offers to add the missing group and re-executes itself under `sg`, finds a non-VPN egress interface or aborts, pulls the prebuilt per-agent image, creates the credential directories, and runs. A failed probe [proceeds in a plain container with a warning](./scenarios/no-kvm.md#glaipnir) rather than refusing.
 
-On a host that passes the probe, the container name gains a `-microvm` suffix — and a second `glaipnir run claude` on the same project cannot rejoin it, because a krun guest has no in-guest agent to exec into. The script counts what exists and starts a numbered sibling instead.
+On a host that passes, the container name gains a `-microvm` suffix — and a second `glaipnir run claude` on the same project [cannot rejoin it](./scenarios/later-command.md#glaipnir). The script counts what exists and starts a numbered sibling instead.
 
 ### podman: assemble it yourself
 
@@ -90,7 +92,7 @@ podman run --rm -it --runtime krun \
   docker.io/library/node:22 bash
 ```
 
-`--runtime krun` is what makes it a microVM — it needs libkrun and `/dev/kvm`, and it is also the first flag forgotten. Nothing here is wrong, and nothing here is remembered. The next project is another line of shell.
+`--runtime krun` is what makes it a microVM, and it is also the first flag forgotten. Nothing here is wrong, and nothing here is remembered. The next project is another line of shell.
 
 ### vivarium: bind the project once
 
@@ -110,136 +112,13 @@ The project tree is at the absolute path it occupies on the host, so `git`, edit
 - podman: everything is possible, nothing is remembered.
 - vivarium: slowest to first run, and the only one where "what is this environment" is a file you can read. Against the firecracker rung it is a fair fight — both boot a kernel, and only one still has the project tree at its own path afterwards.
 
-## W2 — Stop it reaching the whole internet
+## W2 — Get the same environment back next month
+
+Four rows touch this — [the same definition](./scenarios/same-definition.md), [update on purpose](./scenarios/update.md), [rollback](./scenarios/rollback.md), and [what a shared unit pins](./scenarios/portability-enforced.md) — and none of them asks the question a user actually has, which is what they are holding when they come back.
 
 ### flake-pilot
 
-Two rungs, opposite postures. The container rungs publish `--opt "\--net host"`, which is the opposite of a restriction — and the `krun` rung carries it too, so a rung with its own kernel still shares the host's network namespace.
-
-The firecracker rung inverts it. Upstream states that firecracker "supports networking only through TUN/TAP devices" and that "it is the user's responsibility to set up the routing on the host", and `flake-ctl firecracker register` has a `--no-net` flag to disable networking outright. Turning it on is the operator's job: enable `ip_forward`, MASQUERADE on the outgoing interface, hand-edit `boot_args` in `/usr/share/flakes/<app>.yaml` to replace `ip=dhcp` with a static triple, and create and address a TAP device per instance. Restrictive by default, and by absence rather than by policy — there is no posture that denies and then readmits a name.
-
-### glaipnir
-
-Automatic on Linux, and answering a different question:
-
-```text
---network pasta:--outbound-if4,<first non-VPN default-route interface>
-```
-
-The agent cannot reach internal company networks and its requests do not carry the corporation's identity. The public internet stays fully open. This one is rung-independent: `pasta` is podman's network, and the krun guest rides it unchanged.
-
-### podman
-
-```bash
-podman run --runtime krun --network none ...
-```
-
-All or nothing, and readmitting named destinations needs a firewall outside podman. The posture is podman's, outside the OCI runtime, so it holds under `krun`.
-
-### vivarium
-
-```toml
-[egress]
-mode = "allowlist"
-allow = ["api.anthropic.com", "registry.npmjs.org"]
-```
-
-Default-deny is in the kernel before any packet path exists, and the guest's only DNS is a gating resolver that releases an answer after installing its addresses with the record's TTL. A denied name answers `REFUSED`, distinguishably from a name that does not exist. An empty `allow` list is an air-gapped run.
-
-### What the difference costs
-
-- glaipnir asks which host interface the traffic leaves by; vivarium asks which destinations may be reached at all. Both are worth having.
-- vivarium has the mechanism for glaipnir's question — a per-VM namespace and an unprivileged uplink — and no knob that selects a host interface.
-
-## W3 — Give it one credential and not the keyring
-
-### glaipnir
-
-Authenticate inside; the token lands in a host cache the tool owns:
-
-```bash
-glaipnir run claude
-#   → claude auth login
-#   → persists to ~/.cache/glaipnir/agents-mount/.claude/
-```
-
-Because `_bind_agent_mounts` emits only what the named agent needs, `run claude` never mounts the `gh` token at all. The mounts are podman volumes, so they hold at both rungs — the krun guest sees them through virtiofs.
-
-### flake-pilot
-
-At the container rung the credential arrives by sharing a path and an environment variable, and `--resume` is what keeps the resulting login alive between calls:
-
-```bash
-export ANTHROPIC_VERTEX_PROJECT_ID=vertex-ai-206179
-gcloud auth application-default login --project $ANTHROPIC_VERTEX_PROJECT_ID
-```
-
-Neither half survives the climb intact. `krun` has no resume, so a login done inside is gone by the next call. Firecracker resumes over the vsock and keeps it — but has no bind mount, so a credential that already exists on the host arrives only as an `--include-path` copy fixed at provisioning, which is a copy of the secret rather than a view of it.
-
-### vivarium
-
-An existing host credential crosses as a declared mount, on its own confined daemon:
-
-```toml
-[[mounts]]
-source = "${HOME}/.config/gcloud"
-target = "~/.config/gcloud"
-readonly = true
-```
-
-vivarium never performs or brokers the login, holds no identity, and decrypts nothing. A source resolving to `/tmp`, `/var/tmp`, or `${XDG_RUNTIME_DIR}` — or any ancestor — is refused before boot. For SSH and GPG the key itself never enters the guest: a relay over a second vsock port delivers the authority instead.
-
-### What the difference costs
-
-- glaipnir's per-agent scoping is finer than any general-purpose sandbox offers; it works because the tool knows which agent needs which path.
-- vivarium's mounts are per manifest, so narrowing means the user declaring less — exactly the kind of thing users get wrong. A real gap, no decision taken on closing it.
-
-## W4 — Run three projects at once
-
-### flake-pilot
-
-Instance identity is a call-time suffix, and for firecracker it also names the TAP device, so each extra instance is another device to create and address:
-
-```bash
-claude @projA
-claude @projB
-```
-
-### glaipnir
-
-One cache directory, one container per agent. Two projects share the credential tree; the workspace path is what separates their agent session state. At the microVM rung the count is what changes: each `run` that cannot rejoin starts another numbered sibling VM, so three projects worked on across a day leave more machines than you started them.
-
-### podman
-
-```bash
-podman ps -a
-podman stop -a
-```
-
-Enumeration and mass control are free — `podman ps -a` lists krun containers like any other. What is gone at that runtime is `podman exec` into them, and the per-project setup is still yours to retype.
-
-### vivarium
-
-Identity is the project directory, anchored by a marker so it survives a rename:
-
-```bash
-cd ~/projects/a && viv start
-cd ~/projects/b && viv start
-viv status
-```
-
-Each VM gets its own namespace pair, tap, and uplink, set up by `viv start` — no `iptables` rule, no `ip tuntap add`, no per-instance bookkeeping. Guests read the host store read-only and no per-VM store image is built, so the marginal cost of the third sandbox is small.
-
-Machine-wide, vivarium is behind: `viv status -g`\* would enumerate every project and `viv stop
---all`\* would sweep them, and neither runs. `flake-ctl list`, `glaipnir status`, and `podman ps -a` all do this today.
-
-## W5 — Get the same environment back next month
-
-### flake-pilot
-
-The two rungs answer this differently, and the microVM rung answers it better. At the container rung the unit is a `:latest` tag on a public ECR registry rebuilt daily, and `%remove` makes the next call re-check it, so the enclosure moves by default.
-
-At the firecracker rung it cannot. `flake-ctl firecracker pull` fetches a versioned artifact by URL — `claude.x86_64-1.15.6-0.tar.xz` — into `/var/lib/firecracker/images/<name>/`, and the registration then names local file paths for the rootfs and kernel. There is no registry left to re-check. Moving to a newer image is `pull --force`, which is a thing a person does.
+At the container rung the unit is a `:latest` tag on a public ECR registry rebuilt daily, and `%remove` makes the next call re-check it, so the enclosure moves by default. At the firecracker rung it cannot: `pull` fetches a versioned artifact by URL — `claude.x86_64-1.15.6-0.tar.xz` — into `/var/lib/firecracker/images/<name>/`, and the registration then names local file paths for the rootfs and kernel. There is no registry left to re-check.
 
 What it does not have is a way back or a way to re-derive: the tarball is the unit, so a second machine gets the same environment only by fetching the same URL and trusting it, and yesterday's image is gone once you overwrite it.
 
@@ -258,9 +137,9 @@ viv config eval          # the merged view, with provenance
 viv config sources       # which layer set what
 ```
 
-The manifest plus the lockfile the first evaluation writes is the unit, and vivarium's [pure-build rule](../spec/08-invariants-and-guarantees.md) fixes that the same closure and lock evaluate to the same store output on any machine at any later time. Updating is a verb rather than a default.
+The manifest plus the lockfile the first evaluation writes is the unit, and the [pure-build rule](../spec/08-invariants-and-guarantees.md) fixes that the same closure and lock evaluate to the same store output on any machine at any later time. Updating is a verb rather than a default.
 
-Getting an older environment back is specified and not built: `viv generations list`\*, `viv generations rollback`\*, and `viv start --generation <n>`\* are what `spec/11` fixes, with each retained generation pinned by a GC root so an ordinary store collection cannot eat the history. No alternative in this set has any answer to this at all.
+Getting an older environment back is specified and not built: `viv generations list`\*, `viv generations rollback`\*, and `viv start --generation <n>`\* are what [`spec/11`](../spec/11-generations-and-build-history.md) fixes, with each retained generation pinned by a GC root so an ordinary store collection cannot eat the history. No alternative in this set has any answer to this at all.
 
 ### What the difference costs
 

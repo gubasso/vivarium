@@ -1,6 +1,6 @@
 # vivarium and the alternatives
 
-Four tools that put a coding agent somewhere it cannot wreck your laptop. A capability name links to the scenario that decides it; a verdict links to what that tool did when the scenario was run against it. Row derivation: [`feature-sweep.md`](./feature-sweep.md). Provenance: [`sources.md`](./sources.md). The same work end to end: [`walkthroughs.md`](./walkthroughs.md).
+Four tools that put a coding agent somewhere it cannot wreck your laptop. A capability name links to the scenario that decides it; a verdict links to what that tool did when the scenario was run against it. Row derivation: [`feature-sweep.md`](./feature-sweep.md). Provenance: [`sources.md`](./sources.md). The two jobs that span rows, end to end: [`walkthroughs.md`](./walkthroughs.md).
 
 ## Methodology
 
