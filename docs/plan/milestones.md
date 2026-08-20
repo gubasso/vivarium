@@ -7,7 +7,7 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 ## later
 
 - 020 many-workspaces-in-one-sandbox — later — 3 sessions — needs 019 (done) and 022 (done)
-- 021 the-manifest-is-the-sandbox — later — 4 sessions — needs 020; item 1 blocked on Q-029
+- 021 the-manifest-is-the-sandbox — later — 4 sessions — needs 020
 - 005 cli-runtime-plumbing — later — 2 sessions
 - 006 generate-config-contract — later — 2 sessions
 - 007 build-test-lanes — later — 4 sessions

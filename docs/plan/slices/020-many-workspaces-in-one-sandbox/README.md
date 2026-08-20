@@ -16,10 +16,10 @@ A manifest declaring several project trees boots one VM with every one of them m
 
 Ordered, because the declaration decides everything the launch and session halves then read.
 
-1. Decide and record the declaration surface for a workspace-kind mount, distinguished from the ordinary `target`-mounted kind ADR-0020 owns. A workspace mirrors its host path; a config mirror does not, and both remain legal. The decision belongs in a record this slice's `Governed by` then names.
-2. Generalize N16's host-symmetric mirroring from the one primary workspace to every workspace-kind mount, and extend ADR-0100's refusal set to run pairwise: no declared workspace may equal, contain, or lie under a path the guest owns, and no two may nest in each other.
+1. Enact ADR-0108's `[[workspaces]]` table: a workspace declares a host `source` and no `target`, because it mirrors its host path. It reaches the manifest parser and the typed piece options ([`../../../reference/spec/03-artifact-model.md`](../../../reference/spec/03-artifact-model.md)) alongside the `target`-mounted kind ADR-0020 owns, which stays legal and unchanged.
+2. Generalize N16's host-symmetric mirroring from the one primary workspace to every declared workspace, and run ADR-0100's refusal set pairwise as ADR-0108 requires: no declared workspace may equal, contain, or lie under a path the guest owns, and no two may nest in each other.
 3. Replace the single privileged share tag. [`../../../../src/launch/spec.rs`](../../../../src/launch/spec.rs) defines one `WORKSPACE_SHARE_TAG` whose share the boot record names and whose mount point a session starts in; the boot record grows to carry the set, and the session's starting directory is chosen by matching the invoking host directory against it.
-4. Decide and implement what `viv shell` and `viv exec` do when invoked from a directory in no declared workspace: refuse naming the declared set, or start at a default. Whichever is chosen is a contract line, not an implementation detail.
+4. Enact ADR-0109's refusal in every command that resolves a manifest, as one routine rather than a check per verb: a working directory inside no declared workspace exits `78`, and the message names the resolved manifest, the undeclared directory, and the block to add. vivarium writes nothing.
 5. Land the acceptance trial: two project trees declared in one manifest, one VM, a round trip through each, and a session started from each landing in the right tree.
 6. Move the rows this slice changes in [`../../../reference/implementation-status.md`](../../../reference/implementation-status.md), and update the guide surface that currently describes one project tree per sandbox.
 
@@ -35,8 +35,11 @@ Ordered, because the declaration decides everything the launch and session halve
 - [`../../../reference/spec/06-workspace-and-project-environment.md`](../../../reference/spec/06-workspace-and-project-environment.md) — defines the workspace mount and what its share guarantees.
 - [`../../../reference/spec/12-exec-and-shell.md`](../../../reference/spec/12-exec-and-shell.md) — defines the session's working directory and the ensure-running protocol items 3 and 4 change.
 - [`../../../reference/spec/08-invariants-and-guarantees.md`](../../../reference/spec/08-invariants-and-guarantees.md) — carries N16, whose scope item 2 widens.
+- [`../../../reference/spec/14-exit-codes.md`](../../../reference/spec/14-exit-codes.md) — draws the `65`/`78` boundary item 4's refusal sits on.
+- [`../../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md`](../../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md) — fixes the declaration surface item 1 enacts and widens N16 for item 2.
+- [`../../../decisions/ADR-0109-an-undeclared-working-directory-is-refused.md`](../../../decisions/ADR-0109-an-undeclared-working-directory-is-refused.md) — fixes the refusal and the message contract item 4 enacts.
 - [`../../../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md`](../../../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md) — fixes the mirroring and the refusal set item 2 generalizes.
-- [`../../../decisions/ADR-0020-mount-and-config-mirroring-schema.md`](../../../decisions/ADR-0020-mount-and-config-mirroring-schema.md) — fixes the declaration schema item 1 extends rather than replaces.
+- [`../../../decisions/ADR-0020-mount-and-config-mirroring-schema.md`](../../../decisions/ADR-0020-mount-and-config-mirroring-schema.md) — fixes the declaration schema ADR-0108 extends rather than replaces.
 - [`../../../decisions/ADR-0009-launch-time-workspace-path-injection.md`](../../../decisions/ADR-0009-launch-time-workspace-path-injection.md) — fixes why a workspace path is injected at launch and never built in.
 
 ## Acceptance
@@ -49,7 +52,7 @@ If a declared workspace equals, contains, or lies under a path the guest owns, t
 
 If two declared workspaces nest in each other, then the launch SHALL refuse before boot and the message SHALL name both.
 
-If a session verb is invoked from a directory in no declared workspace, then the behavior item 4 decides SHALL hold, and the trial SHALL assert it.
+If a command that resolves a manifest is invoked from a directory that manifest declares as no workspace, then it SHALL exit `78` before any build or boot, and the message SHALL name the resolved manifest, the undeclared directory, and the block that declares it. A trial SHALL assert the code, the three named parts, and that the manifest is unchanged afterwards.
 
 ## Rabbit holes
 
@@ -57,10 +60,11 @@ If a session verb is invoked from a directory in no declared workspace, then the
 - Making one declared tree secretly primary so the old singleton survives — escape: every declared workspace is equal; the session's starting directory is derived from the invoking directory, not from a privileged entry.
 - Growing the refusal set into a general path-overlap solver — escape: the checks are the ones ADR-0100 already names, applied pairwise; nothing more.
 - Rewriting the ensure-running protocol because the boot record changed shape — escape: the protocol is unchanged, the record carries a set where it carried one value.
+- Writing the missing declaration into the user's manifest so the command can proceed — escape: N9 and N13 forbid the side effect, and ADR-0109 makes the message the deliverable; the user applies the edit.
 
 ## Done when
 
-Every acceptance assertion above holds and is demonstrated by the trial it names, item 1's decision is recorded and linked from `Governed by`, [`../../../reference/implementation-status.md`](../../../reference/implementation-status.md) carries the rows this slice moved, and the [`milestones.md`](../../milestones.md) row flips to `done`.
+Every acceptance assertion above holds and is demonstrated by the trial it names, `ADR-0108` and `ADR-0109` carry this slice as their enactment, [`../../../reference/implementation-status.md`](../../../reference/implementation-status.md) carries the rows this slice moved, and the [`milestones.md`](../../milestones.md) row flips to `done`.
 
 ## Revisions
 
@@ -71,3 +75,7 @@ Item 2 is the load-bearing one and the reason it precedes the session work. The 
 Item 4 exists because the current answer is structural rather than chosen. A session starts in the one workspace share's mount point because there is exactly one, so no rule was ever needed; with a set, the absence of a rule becomes a behavior nobody decided. [`../../../reference/implementation-status.md`](../../../reference/implementation-status.md) already records a neighbouring rough edge — a subdirectory of the workspace starts at the workspace root — which is the same seam and should be settled with it rather than around it.
 
 This slice depends on [slice 019](../019-declared-mounts-reach-the-guest/README.md) and cannot start before it. Declared mounts do not reach the guest today, so there is no share list to grow and no trial here could distinguish a mirroring defect from the inertness underneath it.
+
+Reshaped 2026-08-20, before any work started, so `Goal`, `Core`, `Appetite`, and `Acceptance` moved while the slice was still shaped. Items 1 and 4 stopped being decisions and became enactments: [`ADR-0108`](../../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md) settles the declaration surface as its own `[[workspaces]]` table, and [`ADR-0109`](../../../decisions/ADR-0109-an-undeclared-working-directory-is-refused.md) settles what a command does outside one. Item 4's acceptance clause gained the shape it had deferred.
+
+The reason the table beat a flag on `[[mounts]]` is worth keeping here rather than only in the decision: a workspace mirrors its host path, so it has no `target` to declare, and a row whose distinguishing feature is a missing field is a weaker contract than a row in a table that means one thing. The reason the refusal beat a default is the same argument item 4 already carried — a default makes one command mean different things in different directories.

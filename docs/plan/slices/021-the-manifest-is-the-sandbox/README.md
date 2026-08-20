@@ -10,16 +10,16 @@ Key a sandbox on the manifest that describes it rather than on the directory it 
 
 ## Core
 
-`<sandbox-id>` is the manifest name, every per-sandbox state and runtime path keys on it, resolution from a working directory derives the sandbox from the workspaces manifests declare and refuses an ambiguous directory by naming its candidates, and the `.vivarium/` marker and the identity index are gone.
+`<sandbox-id>` is the manifest name, every per-sandbox state and runtime path keys on it, resolution from a working directory derives the sandbox from the workspaces manifests declare and refuses a directory a second manifest claims by naming both, and the `.vivarium/` marker and the identity index are gone.
 
 ## In scope
 
 Ordered, because the decision governs the rekey and the rekey governs the sweep.
 
-1. Record the decision set. It supersedes [`ADR-0011`](../../../decisions/ADR-0011-config-read-only-binding-in-state.md), [`ADR-0029`](../../../decisions/ADR-0029-project-identity-and-marker.md), [`ADR-0043`](../../../decisions/ADR-0043-identity-marker-lifecycle.md), and [`ADR-0054`](../../../decisions/ADR-0054-stale-bindings-surfaced-not-reaped.md), and amends N7, N9, and N21. Blocked on [`Q-029`](../../open-questions.md), whose exit is this item.
+1. Enact [`ADR-0107`](../../../decisions/ADR-0107-the-sandbox-keys-on-the-manifest.md), which supersedes [`ADR-0011`](../../../decisions/ADR-0011-config-read-only-binding-in-state.md), [`ADR-0029`](../../../decisions/ADR-0029-project-identity-and-marker.md), [`ADR-0043`](../../../decisions/ADR-0043-identity-marker-lifecycle.md), and [`ADR-0054`](../../../decisions/ADR-0054-stale-bindings-surfaced-not-reaped.md): amend N7, N9, and N21 to what it decided, and advance its status.
 2. Rekey the state root, the runtime root, and volume identity from `<project-id>` to the manifest name, keeping the `<target>` component untouched.
 3. Invert the registry. It stops being the written home of a project-to-manifest binding and becomes a derived index from declared workspaces back to the manifest that declares them, rebuildable after deletion and invalidated when a manifest changes.
-4. Refuse ambiguity. Two manifests declaring one directory is newly possible — the current registry makes it structurally impossible by keying on the canonical path — so resolution names both candidates and fails closed, with the flag that disambiguates named in the same message.
+4. Refuse a second owner. Ownership is single-valued under ADR-0108, so a directory a second manifest declares as a workspace is refused at `78` with both manifests named, which is what keeps resolution from a working directory unique and needs no disambiguating flag. The same directory mounted by any number of manifests stays legal and is exercised rather than refused.
 5. Delete the identity machinery: the `.vivarium/` marker, the identity index, suffix minting, and the move-versus-copy resolution. N9 loses its exception and becomes absolute.
 6. Surface a sandbox whose manifest is gone. Renaming or deleting a manifest strands that sandbox's generations and volumes, so the orphan is reported rather than left to be discovered.
 7. Sweep the trials. `workflow_02_identity_collision_suffix` has no subject after item 5; the `workflow_01` binding legs and `workflow_07_volume_list_requires_binding` assert a binding that no longer exists in that form.
@@ -45,6 +45,9 @@ Ordered, because the decision governs the rekey and the rekey governs the sweep.
 - [`../../../decisions/ADR-0052-state-root-file-layout-and-schema-visibility.md`](../../../decisions/ADR-0052-state-root-file-layout-and-schema-visibility.md) — fixes which state shapes are supported interfaces, which item 3 changes for the registry.
 - [`../../../decisions/ADR-0053-state-file-atomicity-and-lock-ordering.md`](../../../decisions/ADR-0053-state-file-atomicity-and-lock-ordering.md) — fixes the total lock order, from which item 5 removes a rung.
 - [`../../../decisions/ADR-0040-manifest-is-the-personal-layer.md`](../../../decisions/ADR-0040-manifest-is-the-personal-layer.md) — fixes why a literal host path is legal in a manifest, which is what makes item 3 possible.
+- [`../../../decisions/ADR-0107-the-sandbox-keys-on-the-manifest.md`](../../../decisions/ADR-0107-the-sandbox-keys-on-the-manifest.md) — fixes the key, the inversion, and the deletions this whole slice enacts.
+- [`../../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md`](../../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md) — fixes the single-owner rule item 4 enforces and the declaration item 3 derives its index from.
+- [`../../../decisions/ADR-0109-an-undeclared-working-directory-is-refused.md`](../../../decisions/ADR-0109-an-undeclared-working-directory-is-refused.md) — fixes the code and the message shape item 4's refusal reuses.
 
 ## Acceptance
 
@@ -52,7 +55,9 @@ When two projects are declared as workspaces in one manifest, `viv start` from e
 
 When a sandbox's state and runtime paths are inspected, they SHALL key on the manifest name and SHALL carry the `<target>` component unchanged.
 
-If a working directory is declared by more than one manifest, then resolution SHALL fail closed, and the message SHALL name every candidate and the flag that selects one.
+If a directory is declared as a workspace by more than one manifest, then resolution SHALL fail closed at `78`, and the message SHALL name both manifests.
+
+When one directory is declared as a workspace by one manifest and mounted by others, resolution SHALL reach the owning manifest's sandbox, and a trial SHALL assert that the mounting manifests are not candidates.
 
 If the derived index is deleted, then the next command SHALL rebuild it from the manifests alone and SHALL reach the same sandbox.
 
@@ -66,11 +71,11 @@ If a manifest that owns retained state is renamed or removed, then that state SH
 - Letting the derived index become state again by storing something it cannot rederive — escape: if a field cannot be recomputed from the manifests, it does not belong in the index, and the acceptance clause that deletes the index is what proves it.
 - Writing a migration for existing state — escape: the sandbox is disposable and `viv destroy` followed by `viv start` is the general recovery path; a migration is machinery for a property the product does not claim.
 - Reopening the sharing model because manifests now key VMs — escape: manifests stay personal and sharing stays on pieces; that split is exactly what makes literal paths legal in a manifest and the index derivable.
-- Rewriting the trial suite around the new key before the key is settled — escape: item 1 is blocked on Q-029 and everything after it depends on the answer.
+- Recording the owning manifest in a project-local file because deriving it feels indirect — escape: that file is the `.vivarium/` marker reinvented, and item 5's prize is N9 without an exception; the manifests already answer the question.
 
 ## Done when
 
-Every acceptance assertion above holds and is demonstrated by the trial it names, item 1's decisions are recorded with this slice linked as their enactment, [`Q-029`](../../open-questions.md) carries its exit, [`../../../reference/spec/15-project-identity.md`](../../../reference/spec/15-project-identity.md) is gone with its content absorbed or dropped by decision, [`../../../reference/implementation-status.md`](../../../reference/implementation-status.md) carries the rows this slice moved, and the [`milestones.md`](../../milestones.md) row flips to `done`.
+Every acceptance assertion above holds and is demonstrated by the trial it names, `ADR-0107` carries this slice as its enactment and the records it supersedes carry it back, [`../../../reference/spec/15-project-identity.md`](../../../reference/spec/15-project-identity.md) is gone with its content absorbed or dropped by decision, [`../../../reference/implementation-status.md`](../../../reference/implementation-status.md) carries the rows this slice moved, and the [`milestones.md`](../../milestones.md) row flips to `done`.
 
 ## Revisions
 
@@ -85,3 +90,7 @@ The simplification is the reason to do this at all, and it is larger than the fe
 The appetite is four sessions because this is not additive. The resolution layer is rewritten, [`../../../../src/config/registry.rs`](../../../../src/config/registry.rs) inverts, and item 7's trial sweep touches trials that currently pass — so the slice spends a session on work that produces no new capability and is nonetheless not optional.
 
 This slice depends on [slice 020](../020-many-workspaces-in-one-sandbox/README.md), which depends on [slice 019](../019-declared-mounts-reach-the-guest/README.md). The user-visible capability arrives with 020; this slice is what makes it cheap to key and removes the machinery the old key needed.
+
+Reshaped 2026-08-20, before any work started. Item 1 stopped being the decision and became its enactment: [`ADR-0107`](../../../decisions/ADR-0107-the-sandbox-keys-on-the-manifest.md) records the key, so nothing here is blocked and the question that blocked it has left [`../../open-questions.md`](../../open-questions.md) through that exit. The two findings above are unchanged, and are now the reasoning that record was written from.
+
+Item 4 changed shape rather than size. The ambiguity it was going to arbitrate at resolution time is settled a layer earlier: [`ADR-0108`](../../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md) splits declaration into a `[[workspaces]]` table that at most one manifest may claim a directory through, and a `[[mounts]]` table any number may. So a directory lies in exactly one sandbox the way it lies in exactly one git repository, overlap stays available where a user wants it, and no flag has to select between candidates because there is never more than one. What replaces the disambiguation is a refusal — a second manifest claiming an owned workspace — which is new work of about the same size, so the appetite holds at four sessions.
