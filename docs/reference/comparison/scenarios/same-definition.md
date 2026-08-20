@@ -12,7 +12,7 @@ Yes, by two mechanisms that need each other. The [pure-build rule](../../spec/08
 
 ## flake-pilot
 
-Partial: the firecracker unit is a versioned tarball fetched by URL into `/var/lib/firecracker/images/<name>/`, so a second user given the same URL has so far received the same rootfs. Nothing makes that a property rather than a habit — no digest, and the definition the image was built from is not carried, so there is nothing to rebuild from and nothing to compare against.
+Partial: the firecracker unit is a versioned tarball fetched by URL into `/var/lib/firecracker/images/<name>/`, so a second user given the same URL has so far received the same rootfs. Nothing makes that a property rather than a habit. The archive does carry a sha256 record and `pull` verifies the rootfs against it, but the record travels inside the archive it attests, so it catches a truncated download rather than fixing which artifact was meant, and there is no digest the user names. The description the image was built from is not carried either — recoverable only where the builder published it separately, as upstream does for its own examples — so by default there is nothing to rebuild from and nothing to compare against.
 
 ## glaipnir
 
@@ -22,4 +22,4 @@ No: `Containerfile.agent` starts `FROM` a per-agent image at `:latest`, then ins
 
 Reachable, nothing arranges it: an image referenced by digest is exactly one artifact, and a colleague given the digest gets it. The published form is a tag, the documented flow is a tag, and a `Containerfile` rebuilt a month later re-executes its `RUN` steps against whatever the network serves that day. The exact answer exists and is the one nobody is pointed at.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-18.
+[^read]: Read at `vivarium` `ceb0027`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-18; `flake-pilot` `920f41e` on 2026-08-20.

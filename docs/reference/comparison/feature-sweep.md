@@ -106,8 +106,11 @@ From the registration schema, the manual pages, the two pilots, and the upstream
 
 - OCI layering: `--base` for a delta container, `--layer` repeatable and ordered
 - `include.tar` and `include.path`, host payload transferred into the instance at provisioning
-- Images built by any means the user likes: KIWI, podman, mkosi, OBS, koji
+- Images built outside flake-pilot; the firecracker artifact is KIWI's `kis` type, built directly or through the Open Build Service
+- Upstream ships the image descriptions behind its own appstore VMs, so building your own has a worked example to copy
 - A runtime store of prebuilt images, pulled on first use
+- Images enter that store over https only, relaxed by `FLAKE_ALLOW_INSECURE_TRANSPORT`; `flake-ctl podman load` has no firecracker counterpart
+- A KIS archive carries a sha256 record of its rootfs, which `pull` verifies
 
 ### The launcher
 

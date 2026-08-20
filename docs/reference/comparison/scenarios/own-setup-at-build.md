@@ -12,7 +12,7 @@ No, by rule: there is no script slot at all, because arbitrary build steps runni
 
 ## flake-pilot
 
-No: the registration flags carry no script. `--include-tar` and `--include-path` transfer a payload onto the instance rather than executing anything, and the image's own build happens in a toolchain the registration never sees.
+No: the registration flags carry no script. `--include-tar` and `--include-path` transfer a payload onto the instance rather than executing anything, and the image's own build happens in a toolchain the registration never sees. That toolchain has the hook: upstream's own example VM installs its agent with `npm install -g` and pipes a vendor installer into `bash`, from a KIWI [`config.sh`](https://github.com/OSInside/flake-pilot/blob/920f41e/appstore/firecracker/claude/config.sh) that is a build-time setup step in every sense except that flake-pilot neither provides nor records it.
 
 ## glaipnir
 
@@ -22,4 +22,4 @@ Yes, and this is the subject that has it most directly: `--build-hook` runs the 
 
 Yes: `RUN` covers the build side completely, as root, with no restriction on what it does. It is the widest build-time answer in the set, and what it costs is [the same-definition row](./same-definition.md#podman), where the same line names a package and the repository decides the version.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `44e3ab2`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-20.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `920f41e`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-20.

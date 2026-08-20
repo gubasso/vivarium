@@ -120,7 +120,7 @@ Four rows touch this — [the same definition](./scenarios/same-definition.md), 
 
 At the container rung the unit is a `:latest` tag on a public ECR registry rebuilt daily, and `%remove` makes the next call re-check it, so the enclosure moves by default. At the firecracker rung it cannot: `pull` fetches a versioned artifact by URL — `claude.x86_64-1.15.6-0.tar.xz` — into `/var/lib/firecracker/images/<name>/`, and the registration then names local file paths for the rootfs and kernel. There is no registry left to re-check.
 
-What it does not have is a way back or a way to re-derive: the tarball is the unit, so a second machine gets the same environment only by fetching the same URL and trusting it, and yesterday's image is gone once you overwrite it.
+What it does not have is a way back or a way to re-derive. A description can exist — upstream's example VM is a KIWI file anyone can copy and rebuild — but it does not pin: its `config.sh` installs the agent through `npm install -g` and a piped vendor installer, against repository URLs that carry no version, so the same file rebuilt next month produces a different system. The tarball is therefore the unit, a second machine gets the same environment only by fetching the same URL and trusting it, and yesterday's image is gone once you overwrite it.
 
 ### glaipnir
 

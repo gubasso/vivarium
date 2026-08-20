@@ -60,8 +60,14 @@ Rules cited by name, and what each fixes:
 | The three registrations for one AI tool, and what each rung costs              | The upstream `README.md`, sections "Register claude AI as podman app" and "Register claude AI as firecracker VM app" |
 | `krun` as the deeper-isolation runtime, and why it loses `exec` and `--resume` | The upstream `README.md` note beginning "For deeper isolation based on a VM"                                         |
 | Firecracker networking as the user's own responsibility                        | The upstream `README.md`, "Firecracker Networking"                                                                   |
+| That a user builds and maintains their own VM, and what that costs             | The upstream `README.md`, "How To Build Your Own App Images", and the descriptions under `appstore/firecracker/`     |
+| That a firecracker image enters the local store over https only                | `flake-ctl/src/fetch.rs`                                                                                             |
+| That `load` exists for podman and has no firecracker counterpart               | `flake-ctl/src/cli.rs`, and the file list under `doc/`                                                               |
+| The KIS store layout, and the checksum the archive carries                     | `flake-ctl/src/firecracker.rs`                                                                                       |
 
 Every row above is public and linkable at <https://github.com/OSInside/flake-pilot>. An earlier draft of this page also cited a conference deck on the same project, read 2026-08-18; it has been removed rather than reworded. Two reasons. The deck has no public location, so a reader could not check a cell against it — and the one fact this document had taken from it and from nowhere else, an engine list naming `kata` alongside `crun` and `krun`, does not survive contact with the source: `kata` appears nowhere in the flake-pilot repository at `main`. What the repository does establish is narrower and is what the tables now say — the OCI runtime is podman's own selection, passed through as `--opt "\--runtime=krun"` or set as `runtime = "krun"` in `containers.conf`, so the reachable set is whatever podman accepts rather than a list flake-pilot publishes.
+
+The 2026-08-20 reading retired a second borrowed list on the same grounds. Several cells had said images are built by any means the user likes and named KIWI, podman, mkosi, OBS, and koji. The upstream `README.md` at `920f41e` names only the Open Build Service with KIWI, and the firecracker rung needs KIWI's `kis` type, which the other three do not produce — so the enumeration was both unsourced and wrong at the boundary this page reads.
 
 ### `glaipnir`
 
@@ -113,7 +119,7 @@ A refresh re-reads the material at a new commit and updates the `Verified:` line
 
 [^vivarium]: Verified 2026-08-18.
 
-[^flake-pilot]: Verified 2026-08-18. Partially re-read 2026-08-20 against a fresh clone at `44e3ab2`: the boundary, engine-selection, and firecracker-networking rows, which are the ones that had rested on a non-public source, and later the same day the `Guest environment` rows added for packages, the inner environment, and setup hooks. The rest of this subject still carries its 2026-08-18 reading.
+[^flake-pilot]: Verified 2026-08-18. Partially re-read 2026-08-20 against a fresh clone at `44e3ab2`: the boundary, engine-selection, and firecracker-networking rows, which are the ones that had rested on a non-public source, and later the same day the `Guest environment` rows added for packages, the inner environment, and setup hooks. Re-read again 2026-08-20 at `920f41e`, two commits later — a version bump and an rsync-option change, neither touching a row here — for image provenance: how a user builds and maintains a firecracker VM of their own, and how a built image enters the local store. The rest of this subject still carries its 2026-08-18 reading.
 
 [^glaipnir]: Verified 2026-08-18. Partially re-read 2026-08-20 against a fresh clone at the same commit: the image, its hooks, and its package mechanism only, for the three `Guest environment` rows added that day. Every other row still carries its 2026-08-18 reading.
 

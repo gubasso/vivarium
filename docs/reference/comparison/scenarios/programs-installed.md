@@ -20,7 +20,13 @@ The request is an ordinary NixOS option inside the piece that needs it:
 
 ## flake-pilot
 
-No: flake-pilot registers an image and never describes its contents. Upstream is explicit that images are built by any means the user likes — KIWI, podman, mkosi, OBS, koji — and no key in a registration or an `<app>.d/` drop-in names a package. `--include-tar` and `--include-path` come closest and are not the same thing: they copy a payload onto the instance at provisioning, so the user supplies built files rather than a name to resolve.
+No: flake-pilot registers an image and never describes its contents, and no key in a registration or an `<app>.d/` drop-in names a package. `--include-tar` and `--include-path` come closest and are not the same thing: they copy a payload onto the instance at provisioning, so the user supplies built files rather than a name to resolve. A name does resolve one layer out, in the KIWI description the user [builds the image from](./guest-os.md#flake-pilot), and upstream ships one to copy — but that file belongs to KIWI, flake-pilot neither runs it nor records which description produced a registered image, so the set inside is not recoverable from anything the tool holds.
+
+The request is a package name in an image description, resolved the next time the user rebuilds ([`appliance.kiwi`](https://github.com/OSInside/flake-pilot/blob/920f41e/appstore/firecracker/claude/appliance.kiwi)):
+
+```xml
+<package name="ripgrep"/>
+```
 
 ## glaipnir
 
@@ -42,4 +48,4 @@ The request is a build step, and the repository rather than the line decides whi
 RUN zypper --non-interactive install ripgrep fd jq
 ```
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `44e3ab2`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-20.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `920f41e`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-20.
