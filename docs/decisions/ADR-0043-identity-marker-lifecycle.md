@@ -28,6 +28,8 @@ Chosen option: the ensure-running routine mints, `destroy` removes — the marke
 
 ## Status
 
-Accepted
+Superseded
+
+Superseded by [`ADR-0107-the-sandbox-keys-on-the-manifest.md`](./ADR-0107-the-sandbox-keys-on-the-manifest.md) — 2026-08-20, because the marker whose lifecycle this record assigns no longer exists. With the sandbox keyed on the manifest, nothing is written into the project tree, so there is no file for a starting verb to create or for `viv destroy` to remove, and the teardown carve-out this record added to [`ADR-0018-lifecycle-verbs-and-teardown-boundary.md`](./ADR-0018-lifecycle-verbs-and-teardown-boundary.md) lapses with it.
 
 Amends [`ADR-0018-lifecycle-verbs-and-teardown-boundary.md`](./ADR-0018-lifecycle-verbs-and-teardown-boundary.md) and [`ADR-0029-project-identity-and-marker.md`](./ADR-0029-project-identity-and-marker.md). Specified in [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md), [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md), [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md), and [`../reference/spec/15-project-identity.md`](../reference/spec/15-project-identity.md).

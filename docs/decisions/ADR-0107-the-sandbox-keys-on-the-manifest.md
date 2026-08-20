@@ -31,4 +31,8 @@ Proposed
 
 Supersedes [`./ADR-0011-config-read-only-binding-in-state.md`](./ADR-0011-config-read-only-binding-in-state.md), [`./ADR-0029-project-identity-and-marker.md`](./ADR-0029-project-identity-and-marker.md), [`./ADR-0043-identity-marker-lifecycle.md`](./ADR-0043-identity-marker-lifecycle.md), and [`./ADR-0054-stale-bindings-surfaced-not-reaped.md`](./ADR-0054-stale-bindings-surfaced-not-reaped.md).
 
-Amends N7, N9, and N21 in [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md). Enacted by [slice 021](../plan/slices/021-the-manifest-is-the-sandbox/README.md).
+Amends N7, N9, and N21 in [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md).
+
+Amends [`ADR-0008-two-layer-separation.md`](./ADR-0008-two-layer-separation.md) and [`ADR-0018-lifecycle-verbs-and-teardown-boundary.md`](./ADR-0018-lifecycle-verbs-and-teardown-boundary.md), whose marker carve-outs lapse; [`ADR-0052-state-root-file-layout-and-schema-visibility.md`](./ADR-0052-state-root-file-layout-and-schema-visibility.md), because a derived registry leaves the published class; and [`ADR-0053-state-file-atomicity-and-lock-ordering.md`](./ADR-0053-state-file-atomicity-and-lock-ordering.md), which loses its identity rung. Each stands otherwise and carries the pointer back.
+
+Enacted by [slice 021](../plan/slices/021-the-manifest-is-the-sandbox/README.md).

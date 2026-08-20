@@ -28,3 +28,5 @@ To make the inner layer work, the guest ships a working Nix toolchain plus diren
 Accepted
 
 Amended by [`ADR-0029-project-identity-and-marker.md`](./ADR-0029-project-identity-and-marker.md) — vivarium may manage a self-ignored `.vivarium/` runtime marker in the project tree; it carries project identity only and is inert to the inner dev environment, so the two-layer separation stands.
+
+Amended by [`ADR-0107-the-sandbox-keys-on-the-manifest.md`](./ADR-0107-the-sandbox-keys-on-the-manifest.md) — 2026-08-20, withdrawing the carve-out above. With the sandbox keyed on the manifest there is no marker, so vivarium manages nothing inside the project tree and the separation this record decided holds without exception.

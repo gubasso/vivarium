@@ -33,8 +33,10 @@ A mirrored path equal to, containing, or under a path the guest owns is refused 
 
 ## Status
 
-Proposed
+Implemented — the mirrored path is injected in [`../../src/launch/supervisor.rs`](../../src/launch/supervisor.rs) and bound by the `vivarium-workspace` unit in [`../../nix/guest.nix`](../../nix/guest.nix), with the refusal in [`unmirrorable`](../../src/launch/spec.rs), demonstrated by `workflow_09_workspace_round_trip` in [`../../tests/user_workflows.rs`](../../tests/user_workflows.rs). Enacted by [slice 014](../plan/slices/014-workspace-and-persistence/README.md).
 
 Supersedes [`ADR-0017-workspace-mount-path-and-extra-mounts.md`](./ADR-0017-workspace-mount-path-and-extra-mounts.md), whose extra-mount model stands and whose primary-path model this replaces.
+
+Amended by [`ADR-0108-a-workspace-is-owned-by-one-manifest.md`](./ADR-0108-a-workspace-is-owned-by-one-manifest.md) — 2026-08-20, on scope rather than mechanism. Mirroring and the refusal set decided here stand and now apply to every declared workspace rather than to one primary tree, with the refusal running pairwise so no two declared workspaces may nest in each other. The last "Bad" consequence above is also closed: a linked worktree reaches its main repository through the declared-mount surface, enacted by [slice 019](../plan/slices/019-declared-mounts-reach-the-guest/README.md).
 
 Amends N16 in [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md), which forbade a host-derived mount path. Specified in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md) and [`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exec-and-shell.md).

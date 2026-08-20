@@ -24,7 +24,9 @@ The marker carries identity only. The manifest binding still lives in the state 
 
 ## Status
 
-Accepted
+Superseded
+
+Superseded by [`ADR-0107-the-sandbox-keys-on-the-manifest.md`](./ADR-0107-the-sandbox-keys-on-the-manifest.md) — 2026-08-20, by removing the problem rather than solving it differently. A sandbox keys on the manifest name, which is already unique by construction in one library, so nothing has to be derived from a directory: the sanitization, the length cap, the collision suffix, the marker, the identity index, the global mint lock, and the move-versus-copy-versus-clone resolution table are deleted rather than replaced. The N9 exception this record won is given back, and N9 becomes absolute.
 
 Amended by [`ADR-0043-identity-marker-lifecycle.md`](./ADR-0043-identity-marker-lifecycle.md) — the marker's lifecycle is assigned: `viv start` and a cold-starting `exec`/`shell` write it, `viv destroy` removes it, and every other command resolves the identity without persisting it. The derivation and resolution algorithm above are unchanged.
 

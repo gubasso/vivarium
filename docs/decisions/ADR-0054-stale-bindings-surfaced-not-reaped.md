@@ -27,6 +27,8 @@ Chosen option: warn, and give removal its own verb — `viv status` is declared 
 
 ## Status
 
-Accepted
+Superseded
+
+Superseded by [`ADR-0107-the-sandbox-keys-on-the-manifest.md`](./ADR-0107-the-sandbox-keys-on-the-manifest.md) — 2026-08-20, because a derived index has no stale entries to reap or surface. The registry stops being written, so `viv unbind` has no binding to remove and a vanished project directory simply stops appearing when the index is rebuilt from the manifests. The judgement this record defends — vivarium reports rather than silently deletes on the user's behalf — carries forward into how a sandbox whose manifest is gone is surfaced.
 
 Specified in [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md) and [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md). Completes the explicit-and-reversible principle of [`ADR-0011-config-read-only-binding-in-state.md`](./ADR-0011-config-read-only-binding-in-state.md).

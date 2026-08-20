@@ -29,4 +29,8 @@ Every declared workspace is mirrored at its own host path, generalizing N16 beyo
 
 Proposed
 
-Amends N16 in [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md), which scopes host-symmetric mirroring to the primary workspace. Extends ADR-0020's schema rather than replacing it. Enacted by [slice 020](../plan/slices/020-many-workspaces-in-one-sandbox/README.md).
+Amends N16 in [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md), which scopes host-symmetric mirroring to the primary workspace.
+
+Amends [`ADR-0020-mount-and-config-mirroring-schema.md`](./ADR-0020-mount-and-config-mirroring-schema.md), whose schema keeps the `target`-mounted kind and loses the project tree to a table of its own, and [`ADR-0100-the-workspace-mirrors-its-host-path.md`](./ADR-0100-the-workspace-mirrors-its-host-path.md), whose mirroring and refusal set now run across a set rather than one tree. Both stand and carry the pointer back.
+
+Enacted by [slice 020](../plan/slices/020-many-workspaces-in-one-sandbox/README.md).

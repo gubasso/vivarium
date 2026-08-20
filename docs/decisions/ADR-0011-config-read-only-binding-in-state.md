@@ -26,7 +26,9 @@ Chosen option: config read-only; binding in state.
 
 ## Status
 
-Accepted
+Superseded
+
+Superseded by [`ADR-0107-the-sandbox-keys-on-the-manifest.md`](./ADR-0107-the-sandbox-keys-on-the-manifest.md) — 2026-08-20, on where the binding lives rather than on whether config is read-only. A sandbox keys on the manifest, so the registry stops being the written home of a project-to-manifest binding and becomes an index derived from the workspaces manifests declare, rebuildable after deletion. `viv init --write` and its `--write` gate go with it, because there is no longer a binding to persist. What stands is the principle this record exists for: config is read-only to the tool, and the fixed override precedence (`--manifest`, then `VIVARIUM_MANIFEST`) keeps both rungs above the derived lookup.
 
 Amended by [`ADR-0029-project-identity-and-marker.md`](./ADR-0029-project-identity-and-marker.md) — a gitignored `.vivarium/` marker is permitted, but it carries project identity only; the manifest binding still lives in the state registry and stays gated behind `viv init --write`.
 

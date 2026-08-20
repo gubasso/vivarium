@@ -29,3 +29,5 @@ Chosen option: `start`/`stop`/`destroy`, no `down` — matches the local-VM conv
 Accepted
 
 Amended by [`ADR-0043-identity-marker-lifecycle.md`](./ADR-0043-identity-marker-lifecycle.md) — the teardown boundary above gains one carve-out: `destroy` also removes the vivarium-owned `.vivarium/` identity marker and clears the identity-index entry. Workspace, config, binding, and store contents are untouched as stated; the marker is vivarium's own file, not user-authored (N9, N21).
+
+Amended by [`ADR-0107-the-sandbox-keys-on-the-manifest.md`](./ADR-0107-the-sandbox-keys-on-the-manifest.md) — 2026-08-20, retiring that carve-out. There is no marker and no identity index once the sandbox keys on the manifest, so `destroy` removes only what this record originally scoped, and the teardown boundary needs no exception.

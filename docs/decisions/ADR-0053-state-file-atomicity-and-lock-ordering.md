@@ -30,4 +30,6 @@ Chosen option: sidecar locks under a total order — losing a binding to a lost 
 
 Accepted
 
+Amended by [`ADR-0107-the-sandbox-keys-on-the-manifest.md`](./ADR-0107-the-sandbox-keys-on-the-manifest.md) — 2026-08-20, on the order's membership rather than its shape. The identity-index rung is removed, because nothing mints an identity once the sandbox keys on the manifest, so the total order loses its middle link and the short global lock this record required before a build or boot has no remaining subject. Atomicity and the surviving rungs are unchanged.
+
 Specified in [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md), with the exit codes in [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md).
