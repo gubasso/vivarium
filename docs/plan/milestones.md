@@ -8,6 +8,10 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 - 020 many-workspaces-in-one-sandbox — later — 3 sessions — needs 019 (done) and 022 (done)
 - 021 the-manifest-is-the-sandbox — later — 4 sessions — needs 020
+- 025 the-fleet-is-visible — later — 3 sessions — needs 021 (the rekey every row carries)
+- 026 a-start-checks-the-room — later — 3 sessions — needs 025 (the fleet term admission reads)
+- 027 the-stop-ladder-is-whole — later — 3 sessions — needs 025 (the reader the sweep enumerates through)
+- 028 memory-comes-back-without-a-stop — later — 4 sessions — needs 025 (the readings its record joins)
 - 005 cli-runtime-plumbing — later — 2 sessions
 - 006 generate-config-contract — later — 2 sessions
 - 007 build-test-lanes — later — 4 sessions
