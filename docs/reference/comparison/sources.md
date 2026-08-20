@@ -8,17 +8,18 @@ What every verdict in [`README.md`](./README.md) rests on. Each subject is pinne
 
 Verified: 2026-08-18 — this repository, branch `initial-implementation` at `ceb0027`.
 
-| What it establishes                                                   | Where                                                                                                    |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| The binding product rules, named in words throughout                  | [`docs/reference/spec/08-invariants-and-guarantees.md`](../spec/08-invariants-and-guarantees.md)         |
-| Which commands run and which are specified only                       | [`docs/reference/implementation-status.md`](../implementation-status.md)                                 |
-| The lifecycle ladder and what `stop` reaches                          | [`docs/reference/spec/10-vm-lifecycle.md`](../spec/10-vm-lifecycle.md)                                   |
-| Generations, rollback, and reclamation                                | [`docs/reference/spec/11-generations-and-build-history.md`](../spec/11-generations-and-build-history.md) |
-| Egress modes and the gating resolver                                  | [`docs/reference/spec/05-networking-and-egress.md`](../spec/05-networking-and-egress.md)                 |
-| The artifact model, and how a shared piece declares its own inputs    | [`docs/reference/spec/03-artifact-model.md`](../spec/03-artifact-model.md)                               |
-| Module merge, the priority convention, and the one effective lockfile | [`docs/reference/spec/04-composition-and-determinism.md`](../spec/04-composition-and-determinism.md)     |
-| Mount sources, the agent channel, and what never crosses              | [`docs/reference/spec/07-secrets-and-config-sharing.md`](../spec/07-secrets-and-config-sharing.md)       |
-| Unresolved scope questions the tables point at                        | [`docs/plan/open-questions.md`](../../plan/open-questions.md)                                            |
+| What it establishes                                                   | Where                                                                                                            |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| The binding product rules, named in words throughout                  | [`docs/reference/spec/08-invariants-and-guarantees.md`](../spec/08-invariants-and-guarantees.md)                 |
+| Which commands run and which are specified only                       | [`docs/reference/implementation-status.md`](../implementation-status.md)                                         |
+| The lifecycle ladder and what `stop` reaches                          | [`docs/reference/spec/10-vm-lifecycle.md`](../spec/10-vm-lifecycle.md)                                           |
+| Generations, rollback, and reclamation                                | [`docs/reference/spec/11-generations-and-build-history.md`](../spec/11-generations-and-build-history.md)         |
+| Egress modes and the gating resolver                                  | [`docs/reference/spec/05-networking-and-egress.md`](../spec/05-networking-and-egress.md)                         |
+| The artifact model, and how a shared piece declares its own inputs    | [`docs/reference/spec/03-artifact-model.md`](../spec/03-artifact-model.md)                                       |
+| Module merge, the priority convention, and the one effective lockfile | [`docs/reference/spec/04-composition-and-determinism.md`](../spec/04-composition-and-determinism.md)             |
+| Mount sources, the agent channel, and what never crosses              | [`docs/reference/spec/07-secrets-and-config-sharing.md`](../spec/07-secrets-and-config-sharing.md)               |
+| The two-layer design, and what the guest base must ship for it        | [`docs/reference/spec/06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md) |
+| Unresolved scope questions the tables point at                        | [`docs/plan/open-questions.md`](../../plan/open-questions.md)                                                    |
 
 Rules cited by name, and what each fixes:
 
@@ -46,7 +47,7 @@ Rules cited by name, and what each fixes:
 
 ### `flake-pilot`
 
-Verified: 2026-08-18 — <https://github.com/OSInside/flake-pilot> at `main`. Rust, MIT licensed. Partially re-read 2026-08-20 against a fresh clone at `main`: the boundary, engine-selection, and firecracker-networking rows only, which are the ones that had rested on a non-public source. The rest of this subject still carries its 2026-08-18 reading.
+Verified: 2026-08-18 — <https://github.com/OSInside/flake-pilot> at `main`. Rust, MIT licensed. Partially re-read 2026-08-20 against a fresh clone at `44e3ab2`: the boundary, engine-selection, and firecracker-networking rows, which are the ones that had rested on a non-public source, and later the same day the `Guest environment` rows added for packages, the inner environment, and setup hooks. The rest of this subject still carries its 2026-08-18 reading.
 
 | What it establishes                                                            | Where                                                                                                                |
 | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
@@ -55,6 +56,7 @@ Verified: 2026-08-18 — <https://github.com/OSInside/flake-pilot> at `main`. Ru
 | The firecracker schema, `overlay_size`, and `force_vsock`                      | `firecracker-pilot/src/config.rs`                                                                                    |
 | Registration flags and call-time `@` and `%` pseudo-arguments                  | The manual-page sources under `doc/`                                                                                 |
 | `sci` as guest init: run one command, then reboot                              | The `sci` manual page                                                                                                |
+| That an image is built outside flake-pilot, by whatever tooling the user likes | The upstream `README.md`                                                                                             |
 | The three registrations for one AI tool, and what each rung costs              | The upstream `README.md`, sections "Register claude AI as podman app" and "Register claude AI as firecracker VM app" |
 | `krun` as the deeper-isolation runtime, and why it loses `exec` and `--resume` | The upstream `README.md` note beginning "For deeper isolation based on a VM"                                         |
 | Firecracker networking as the user's own responsibility                        | The upstream `README.md`, "Firecracker Networking"                                                                   |
@@ -63,16 +65,19 @@ Every row above is public and linkable at <https://github.com/OSInside/flake-pil
 
 ### `glaipnir`
 
-Verified: 2026-08-18 — <https://github.com/val4oss/ai-agents-sandbox> at commit `21ef389`. POSIX shell, AGPL-3.0. The tool is `glaipnir`; its images and containers keep the older name `ai-agents-sandbox`.
+Verified: 2026-08-18 — <https://github.com/val4oss/ai-agents-sandbox> at commit `21ef389`. POSIX shell, AGPL-3.0. The tool is `glaipnir`; its images and containers keep the older name `ai-agents-sandbox`. Partially re-read 2026-08-20 against a fresh clone at the same commit: the image, its hooks, and its package mechanism only, for the three `Guest environment` rows added that day. Every other row still carries its 2026-08-18 reading.
 
-| What it establishes                                                 | Where                  |
-| ------------------------------------------------------------------- | ---------------------- |
-| The whole CLI, and the microVM capability probe                     | `glaipnir.sh`          |
-| Per-agent credential mounts, and which agent sees which directory   | `_bind_agent_mounts`   |
-| Egress bound to a non-VPN interface, and the abort when none exists | `_detect_public_iface` |
-| Two agents forced out of microVM mode by `containers/libkrun#674`   | `run()`                |
-| The image, its labels, and the entrypoint's privilege drop          | `image/`               |
-| The macOS VPN enforcer, and what it costs                           | `scripts/`, `launchd/` |
+| What it establishes                                                  | Where                         |
+| -------------------------------------------------------------------- | ----------------------------- |
+| The whole CLI, and the microVM capability probe                      | `glaipnir.sh`                 |
+| Per-agent credential mounts, and which agent sees which directory    | `_bind_agent_mounts`          |
+| Egress bound to a non-VPN interface, and the abort when none exists  | `_detect_public_iface`        |
+| Two agents forced out of microVM mode by `containers/libkrun#674`    | `run()`                       |
+| The image, its labels, and the entrypoint's privilege drop           | `image/`                      |
+| Build and run hooks, and the `PACKAGES` array                        | `docs/overview.md`            |
+| Run hooks executed in sorted order on every start                    | `image/scripts/entrypoint.sh` |
+| The fixed openSUSE base, carrying no Nix, direnv, or version manager | `image/Containerfile`         |
+| The macOS VPN enforcer, and what it costs                            | `scripts/`, `launchd/`        |
 
 ### `podman`
 
@@ -81,6 +86,8 @@ Verified: 2026-08-19 — plain rootless podman 5.x with no wrapper, read at `pod
 | What it establishes                                                                                  | Where                                                                                                                                      |
 | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `--runtime` selecting an OCI runtime, `-v`, `--env`, `--network`, `-p`, `exec`, `ps`, `prune`        | The upstream manual pages, <https://docs.podman.io>                                                                                        |
+| Secret drivers, and which of them encrypts at rest                                                   | The `podman-secret-create` manual page, <https://docs.podman.io/en/latest/markdown/podman-secret-create.1.html>                            |
+| `Volume=` in a Quadlet unit, and that it matches `--volume`                                          | The `podman-systemd.unit` manual page, <https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html>                              |
 | libkrun as a microVM runtime, the libkrunfw guest kernel, TSI networking                             | The libkrun project README, <https://github.com/containers/libkrun>                                                                        |
 | That impersonation carries connections inbound to a listening guest port, and what it does not carry | The networking section of that README                                                                                                      |
 | The annotation that swaps impersonation for a virtio-net interface                                   | The `krun` manual page in `crun`, <https://github.com/containers/crun/blob/main/krun.1.md>                                                 |

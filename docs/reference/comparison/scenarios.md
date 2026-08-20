@@ -164,7 +164,31 @@ glaipnir `21ef389`, read 2026-08-18. Partial: since 1.0.0 a workspace under `$HO
 
 podman 5.x, read 2026-08-19. Partial: `-v /host/path:/host/path` mirrors any single path exactly, and under krun the mount crosses as virtiofs, so it holds at the compared setup. Nothing arranges it, nothing refuses a mismatch, and published examples usually pick a different target — available rather than provided.
 
-## Host environment is deny-by-default
+## Choose which host paths cross, in a project file
+
+Every subject decides what crosses. This row asks where that decision is written down: in a file that travels with the project, or in the arguments of the command that starts it.
+
+1. Add a host path to what crosses, and a second one that must not.
+2. Record where that decision is recorded, and what a second person receives.
+3. Record whether another layer can add a path without editing the first.
+
+### Choosing mounts, vivarium
+
+vivarium `ceb0027`, 2026-08-18. Yes: `[[mounts]]` is a table in the manifest, so the set is part of the project's definition rather than of an invocation, and no command adds a path the manifest does not show. Because layers merge as NixOS modules and lists concatenate, a piece contributes mounts to the same list without editing the manifest that imported it, and a shared layer may only reach the host through portable variables — `${HOME}` and the four durable XDG directories — with a literal personal path failing evaluation with `65`. Two floors bound the choice rather than the user: a mount whose source resolves to a session directory is refused before boot, and what does cross carries the [host-symmetric](../spec/08-invariants-and-guarantees.md) target rather than one the declaration invents.
+
+### Choosing mounts, flake-pilot
+
+flake-pilot `44e3ab2`, read 2026-08-20. n/a: there is no bind-mount mechanism at the firecracker boundary, so there is no set to choose from — the same reason the [session-directory row](#refuses-a-mount-that-would-expose-the-host-session) reads `n/a` here. What the registration can carry is `include.tar` / `include.path`, which copies material into the artifact at registration time rather than selecting what crosses at run time. Under the container backend the choice is podman's `-v`, which is the shared-kernel answer.
+
+### Choosing mounts, glaipnir
+
+glaipnir `8c7420e`, read 2026-08-20 — a later revision than the `21ef389` the rest of this subject is pinned to, read fresh for this row. No: the crossing set is written in the script. `_bind_agent_mounts` emits a fixed `--volume` list per agent name, and the workspace, hooks, and cache mounts are assembled at the call site beside it. There is no configuration key that adds a path, so a user who wants one edits `glaipnir.sh` — which is the same built-in opinion that wins glaipnir the [credential-scoping row](#scopes-credentials-per-app-out-of-the-box) and loses it [Defined by a project file](#project-file-glaipnir).
+
+### Choosing mounts, podman
+
+podman 5.x, read 2026-08-20. Partial: the documented answer is `-v` on the command line, which puts the set in whatever started the container rather than in anything a colleague receives. A Quadlet unit does record it in a file — `Volume=` is "equivalent to the Podman `--volume` option" and takes the same argument form — so the decision can be written down. Two things keep it short of the row: the unit is a machine-local systemd file rather than something that travels with the project, and its `Volume=` lines are a flat list with no merge, so a second concern is added by editing the same file.
+
+## Choose which host environment variables cross
 
 Record which host environment variables are visible inside.
 
@@ -178,11 +202,11 @@ flake-pilot `main`, read 2026-08-18. Yes: at the firecracker boundary there is n
 
 ### Environment, glaipnir
 
-glaipnir `21ef389`, read 2026-08-18. Partial: a fixed list crosses — `TERM` and `COLORTERM`, `GOOGLE_CLOUD_PROJECT` and `VERTEX_LOCATION` when set, plus five computed `AI_*` values. An explicit list rather than a wholesale copy, but not deny-by-default: the host-sourced four are forwarded whenever they exist.
+glaipnir `21ef389`, read 2026-08-18. Partial: a fixed list crosses — `TERM` and `COLORTERM`, `GOOGLE_CLOUD_PROJECT` and `VERTEX_LOCATION` when set, plus five computed `AI_*` values. An explicit list rather than a wholesale copy, but the list is the tool's rather than the caller's: the host-sourced four are forwarded whenever they exist.
 
-## Session sockets refused as a source
+## Refuses a mount that would expose the host session
 
-Record what happens when the host's session directories are named as a share source.
+Record what happens when a mount names one of the host's session directories — `/tmp`, `/var/tmp`, or `${XDG_RUNTIME_DIR}` — as its source. These hold live session state: the session bus, the display socket, the authentication-agent socket.
 
 1. Name `/tmp`, `${XDG_RUNTIME_DIR}`, or an ancestor of either as a mount source.
 2. Start the tool.
@@ -196,11 +220,11 @@ vivarium `ceb0027`, 2026-08-18. Yes: the [session-directories-never-cross rule](
 
 flake-pilot `main`, read 2026-08-18. n/a: there is no bind-mount mechanism at the firecracker boundary, so there is nothing to refuse. Under the container backend a session socket is an ordinary `--opt "\-v ..."` and nothing objects — the shared-kernel answer, not this one.
 
-## Use an SSH key without the key entering the sandbox
+## Use an SSH or GPG key without the key entering the sandbox
 
 Record what has to cross the boundary before a tool inside can authenticate with a key the user already has.
 
-1. Have a key the host's authentication agent already holds.
+1. Have a key the host's `ssh-agent` or `gpg-agent` already holds.
 2. Make the tool inside the sandbox use it.
 3. Record what is in the guest afterwards: the key, a copy of it, or neither.
 
@@ -218,7 +242,7 @@ glaipnir `21ef389`, read 2026-08-18. No, by a different route: nothing is forwar
 
 ### Key material, podman
 
-podman 5.x, 2026-08-19. No: `-v $SSH_AUTH_SOCK` is the usual answer and it is a shared-kernel answer. Under `krun` the guest runs its own kernel, so the shared inode has no listener behind it, and podman relays no agent by any other route.
+podman 5.x, 2026-08-19. No: mounting the agent socket — `-v $SSH_AUTH_SOCK`, and the same move for `gpg-agent` — is the usual answer, and it is a shared-kernel answer. Under `krun` the guest runs its own kernel, so the shared inode has no listener behind it, and podman relays no agent by any other route.
 
 ## Secrets are kept out of the built artifact
 
@@ -236,12 +260,36 @@ vivarium `ceb0027`, 2026-08-18. Yes: a build-time secret is prohibited outright,
 
 glaipnir `21ef389`, read 2026-08-18. Partial: the stance is stated up front and holds in the code — nothing is baked into the image, authentication happens at runtime inside the container, the token lands in a host cache directory the user owns, and the image carries the label `security.credentials="runtime-only"`. It is practice rather than a rule: build hooks run arbitrary commands as root at build time, so a user who puts a credential there gets it in the image and nothing objects.
 
-## Credentials scoped per tool
+## Commit an encrypted secret alongside the config
 
-Record whether one tool inside the sandbox can read another tool's credentials.
+Record whether a secret the environment needs can travel with the project's own definition, rather than being installed on each machine by hand.
 
-1. Authenticate two different tools so each writes its own credential directory.
-2. Start the sandbox for one of them.
+1. Put a secret the environment needs into the project's own files, in a form safe to commit.
+2. Hand the project to a second person who holds a decryption identity.
+3. Record what reaches the guest, what reaches the build, and what the tool itself had to do.
+
+### Shipping a secret, vivarium
+
+vivarium `ceb0027`, 2026-08-18. Partial: encrypted-at-rest is one of the two shapes the [specification](../spec/07-secrets-and-config-sharing.md) names for a secret, and it is the one meant for sharing — commit files that decrypt at activation into a runtime-only location, never into the store, with only the public recipient identities in clear. What vivarium supplies is the seam, not the scheme. A piece is a NixOS module, so a team that wants decrypt-at-activation imports one the way it imports anything else, and the identity that scheme needs arrives over the GPG relay of the row above rather than as a mounted host path. What it will not do is a closed list of seven, not a gap: no decryptor, no provider command executed and relayed, no decryption identity held, no plaintext written to a host path, no credential in any root, no verb whose subject is a credential value, and no reasoning about a credential's lifetime ([`ADR-0072`](../../decisions/ADR-0072-vivarium-integrates-no-encrypted-at-rest-scheme.md)). The fourth and fifth are the load-bearing pair: a provider hook looks like the smallest possible integration and is the opposite of one, because it would put plaintext in vivarium's own address space, which is the condition its redaction guarantee is free of today. Available rather than provided, and deliberately so.
+
+### Shipping a secret, flake-pilot
+
+flake-pilot `44e3ab2`, read 2026-08-20. No: the repository has no secrets mechanism of any kind, encrypted or otherwise — the only matches for the word are a CI workflow's own credentials. Material a registration needs reaches the guest as image content or as an `include.tar` / `include.path` payload, both of which carry it in clear inside the artifact, which is the shape the row above already records.
+
+### Shipping a secret, glaipnir
+
+glaipnir `8c7420e`, read 2026-08-20 — a later revision than the `21ef389` the rest of this subject is pinned to, read fresh for this row rather than inferred from the earlier one. No: the stance is that the image holds no secret at all, stated as a documented guarantee, and nothing ships one beside the definition either. Authentication happens at runtime inside the container and the result persists to a host cache directory the user owns, which is a per-machine step by construction: the second person authenticates again rather than receiving anything.
+
+### Shipping a secret, podman
+
+podman 5.x, read 2026-08-20. Partial: `podman secret create` takes a `pass` driver, where the secret "resides in a GPG-encrypted file", and a `shell` driver that hands storage to scripts of the user's choosing; `--secret` then mounts it at runtime rather than baking it in. Two things keep it short of the row. The default `file` driver is a read-protected file and not an encrypted one, so the safe answer is the one you have to ask for. And the store is machine-local podman state that a `Containerfile` or Quadlet unit refers to by name — a `pass` store can itself be shared, but the binding to the project is a name that must already resolve, so the second person still runs a command before anything works.
+
+## Scopes credentials per app out of the box
+
+Every subject can narrow what crosses by declaring or passing less. This row asks the narrower question: whether the tool arrives already knowing which credential directory belongs to which application, so the scoping happens without the user mapping it.
+
+1. Authenticate two different applications so each writes its own credential directory.
+2. Start the sandbox for one of them, naming only the application.
 3. Inside, attempt to read the other's credential path, and record the result.
 
 ### Per-tool credentials, vivarium
@@ -360,6 +408,54 @@ glaipnir `21ef389`, read 2026-08-18. No: one `glaipnir.conf`, in the checkout or
 
 podman 5.x, 2026-08-18. Partial: a `Containerfile` can live in the project and describe the environment exactly, but nothing binds it to the directory or resolves it on entry — the binding is the user's shell history.
 
+## Choose which programs are installed in the guest
+
+Record how a user adds a program the base does not already have.
+
+1. Pick a compiler or command line tool absent from the default environment.
+2. Add it by the tool's documented mechanism.
+3. Record where that request is written, and what a second person has to do to get the same set.
+
+### Programs installed, vivarium
+
+vivarium `ceb0027`, 2026-08-20. Yes: an image and a piece are NixOS modules, so a program is named in `environment.systemPackages` exactly as it would be on a NixOS host, and the module system concatenates those lists across every layer. Adding a piece therefore adds its packages without touching the manifest that imported it. The place to write it is deliberately not the manifest: [`03-artifact-model.md`](../spec/03-artifact-model.md)'s key table is the manifest's whole surface and carries no package key, so a personal one-off goes through `extends = "./custom.nix"` and anything meant to be reused becomes a piece. That is the same split that makes the set shareable — the package a concern needs travels with the concern.
+
+### Programs installed, flake-pilot
+
+flake-pilot `44e3ab2`, read 2026-08-20. No: flake-pilot registers an image and never describes its contents. Upstream is explicit that images are built by any means the user likes — KIWI, podman, mkosi, OBS, koji — and no key in a registration or an `<app>.d/` drop-in names a package. `--include-tar` and `--include-path` come closest and are not the same thing: they copy a payload onto the instance at provisioning, so the user supplies built files rather than a name to resolve.
+
+### Programs installed, glaipnir
+
+glaipnir `21ef389`, read 2026-08-20. Yes: a `PACKAGES=(…)` array in the config file is interpolated into the image's `zypper install` line at build time. It resolves against the default Tumbleweed repositories only — a package from anywhere else needs a build hook that adds the repository first, which is the mechanism the next row measures.
+
+### Programs installed, podman
+
+podman 5.x, 2026-08-20. Yes: a `RUN` line in a `Containerfile`, which is the ordinary way and works. What it costs is the row below on pinning: the line names a package, the repository decides the version, and the same file built later produces a different set.
+
+## The project's own dev environment loads when you enter
+
+A project usually already describes its own toolchain — a `flake.nix` with direnv, a version manager, or an equivalent. Record what happens to that description inside the sandbox.
+
+1. Take a project whose toolchain is declared in its own repository.
+2. Start the sandbox and enter the workspace.
+3. Record whether the project's toolchain is active, and what the user had to change to get there.
+
+### Inner environment, vivarium
+
+vivarium `ceb0027`, 2026-08-20. Yes, specified and not yet built: [`06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md) makes this a design requirement rather than a convenience. The project's environment is the inner layer — owned by the repository, never modified by vivarium, and required to work identically whether or not the sandbox is in use. Two Nix evaluations exist and must not be conflated: the outer one builds the VM from the manifest on the host, the inner one builds the project's environment inside the guest when a shell enters the workspace, with separate files, separate lockfiles, and separate times. For that to work the base must ship a Nix toolchain with flakes enabled and direnv, and `viv shell` enters as a login-interactive shell so direnv can load it. The `*` is the shipped guest: it enables neither `nix-command` nor `flakes` globally and installs no direnv, leaving the entry-time half of the requirement unmet.
+
+### Inner environment, flake-pilot
+
+flake-pilot `44e3ab2`, read 2026-08-20. No: there is no project to enter. A registration is per application, and at the firecracker rung the guest's init is `sci`, which evaluates the single `run=` command from the kernel command line, executes it, and reboots. Nothing mounts a project tree and nothing runs a login shell in it, so a repository's own toolchain has neither a place to be nor a moment to load.
+
+### Inner environment, glaipnir
+
+glaipnir `21ef389`, read 2026-08-20. Partial: the workspace is mounted, so the project's own files — including its `flake.nix` or version-manager config — are visible inside. What is missing is anything that reads them. The base is openSUSE Tumbleweed fixed in the `Containerfile`, and it carries no Nix, no direnv, and no version manager, so entering the sandbox leaves the project's declared toolchain inert. A run hook is where a user would add one, at their own expense.
+
+### Inner environment, podman
+
+podman 5.x, 2026-08-20. Partial: bind-mount the project and its files are there, and an image that happens to ship direnv or a version manager will load them. Nothing in podman asks for that, so whether the project's toolchain activates is a property of the image someone chose rather than of the tool — the same file works for one colleague and not another.
+
 ## Compose the environment from separate, reusable parts
 
 Record how a second concern is added to an environment that already has one.
@@ -451,6 +547,30 @@ glaipnir `21ef389`, read 2026-08-18. No: `Containerfile.agent` starts `FROM` a `
 ### Pinned versions, podman
 
 podman 5.x, 2026-08-19. Partial: an image referenced by digest is exactly one artifact, and a colleague given the digest gets it. Nothing arranges that — the published form is a tag, and a `Containerfile` rebuilt on the colleague's machine re-executes its `RUN` steps against whatever the network serves that day.
+
+## Run your own setup at build time and at every start
+
+Record what a user can execute of their own, and when.
+
+1. Write a setup step the tool does not provide — a repository added, a login primed, a file generated.
+2. Attach it so it runs while the environment is built.
+3. Attach a second one so it runs every time the sandbox starts, and record what it takes to change it later.
+
+### Own setup, vivarium
+
+vivarium `ceb0027`, 2026-08-20. Partial, and the halves differ by design. At start there is no limit worth naming: a piece is a NixOS module, so a systemd service, a timer, or an activation step is declared the way it would be on any NixOS host, and it composes with every other layer through the same merge. At build there is no script slot at all — arbitrary build steps running as root are refused, which is the row directly below this one — so build-time setup is expressed as declaration: a package to install, an option to set, or a derivation that produces the file. Most setup hooks convert; one that expects to reach the network mid-build does not, because that is the reproducibility the rows above measure.
+
+### Own setup, flake-pilot
+
+flake-pilot `44e3ab2`, read 2026-08-20. No: neither moment has a hook. The registration flags carry no script, and `--include-tar` / `--include-path` transfer a payload onto the instance rather than executing anything. At start, `sci` runs the one `run=` command and then reboots, so the single execution slot is the application itself.
+
+### Own setup, glaipnir
+
+glaipnir `21ef389`, read 2026-08-20. Yes, and this is the subject that has it most directly. `--build-hook` runs the user's script as root inside the build context, which is how a package outside the default repositories gets its repository added. `--run-hook` stages scripts into a mounted directory, and the entrypoint finds every `*.sh` there, sorts them, and runs each one on every start. The ordered `NN-*.sh` convention is what composes them, and each is validated with `shellcheck` before use. The cost is the same as the mechanism: they compose the way shell does, one after another, so nothing can report a disagreement between two of them.
+
+### Own setup, podman
+
+podman 5.x, 2026-08-20. Partial: `RUN` covers the build side completely. The start side is one command — `ENTRYPOINT` baked into the image, or `--entrypoint` replacing it for a single run. There is no directory of start steps that a user adds to, so a second setup step means editing the first, or rebuilding.
 
 ## The build runs no user-supplied commands as root
 

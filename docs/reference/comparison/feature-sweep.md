@@ -22,6 +22,7 @@ Marked `built` where [`implementation-status.md`](../implementation-status.md) s
 - `built` — one TOML manifest resolved per project, compiled to a generated flake
 - `built` — composition through the NixOS module system, no bespoke merge
 - `built` — images and pieces as the two artifact kinds, with `extends` on manifests
+- `built` — packages and guest configuration declared inside an image or a piece as ordinary NixOS module options, concatenating across layers
 - `built` — a shared artifact declares its own flake inputs through `inputs.toml`
 - `built` — a pure build: same manifest closure and lock, same store output anywhere
 - `built` — `viv config eval` and `viv config sources`, the merged view with provenance
@@ -38,6 +39,7 @@ Marked `built` where [`implementation-status.md`](../implementation-status.md) s
 - `built` — a linked worktree reaching its main repository
 - `built` — `[[volumes]]`, persisting across stop, reboot, and rebuild
 - `built` — the project tree is never written to by the tool
+- `spec` — the project's own development environment as an independent inner layer: two evaluations never conflated, and a guest base that must ship Nix with flakes and direnv so entering the workspace loads it
 - `spec` — `[volume].persist` and `[volume].size_gib`, declarable and inert
 - `spec` — raising a volume ceiling after its image exists
 - `refused` — mounting `/tmp`, `/var/tmp`, or `${XDG_RUNTIME_DIR}`, or any ancestor
@@ -208,6 +210,7 @@ Plain rootless podman with no wrapper.
 - `podman exec` into a running container
 - `podman ps -a` and `podman stop -a` across everything on the machine
 - `podman system prune` and `podman volume prune` to reclaim disk
+- `podman secret create` with a `file`, `pass`, or `shell` driver, and `--secret` to mount one at runtime
 - Named volumes with their own lifecycle
 - `podman generate systemd` and Quadlet units
 - Images from any OCI registry, built from a `Containerfile` by arbitrary `RUN` steps, so the system inside is whatever the image is
@@ -229,62 +232,67 @@ A capability a subject has only at another backend is not credited. Backend avai
 
 Verified: 2026-08-18 — merged from the four inventories above, at the commits `sources.md` pins.
 
-| Merged capability                                       | Theme             | First seen in                                   |
-| ------------------------------------------------------- | ----------------- | ----------------------------------------------- |
-| Own kernel                                              | Backends          | `vivarium`, `flake-pilot`, `glaipnir`           |
-| Shared-kernel isolation with an OCI runtime             | Backends          | `flake-pilot`, `glaipnir`, `podman`             |
-| Nothing downgrades the boundary for you                 | Backends          | `vivarium`, `glaipnir`                          |
-| Runs on a host without KVM                              | Backends          | `flake-pilot`, `glaipnir`, `podman`             |
-| Choose the engine or hypervisor                         | Backends          | `flake-pilot`                                   |
-| Work stays at its host path                             | Data              | `vivarium`, `glaipnir`                          |
-| Host environment is deny-by-default                     | Data              | `vivarium`, `podman`                            |
-| Session sockets refused as a mount source               | Data              | `vivarium`                                      |
-| Use an SSH key without the key entering the sandbox     | Data              | `vivarium`                                      |
-| Secrets are kept out of the built artifact              | Data              | `glaipnir`                                      |
-| Credentials scoped per tool                             | Data              | `glaipnir`                                      |
-| Egress can be default-deny                              | Network           | `vivarium`, `podman`                            |
-| Allowlist by destination name                           | Network           | `vivarium`                                      |
-| Stays off a corporate VPN                               | Network           | `glaipnir`                                      |
-| Something outside can reach a guest service             | Network           | `flake-pilot`, `podman`                         |
-| Defined by a project file                               | Guest environment | `vivarium`                                      |
-| Compose the environment from separate, reusable parts   | Guest environment | `vivarium`, `flake-pilot`                       |
-| A config unit works unchanged on someone else's machine | Guest environment | `vivarium`, `flake-pilot`                       |
-| The same definition rebuilds the same environment       | Guest environment | `vivarium`                                      |
-| Everyone building it gets the versions you got          | Guest environment | `vivarium`                                      |
-| The build runs no user-supplied commands as root        | Guest environment | `vivarium`                                      |
-| Choose the guest operating system                       | Guest environment | `flake-pilot`, `glaipnir`, `podman`             |
-| Pull a prebuilt image instead of building               | Guest environment | `flake-pilot`, `glaipnir`, `podman`             |
-| Re-enter a running instance                             | Living with it    | `vivarium`, `flake-pilot`, `glaipnir`, `podman` |
-| Installs from a distro package in one command           | Living with it    | `flake-pilot`, `glaipnir`                       |
-| The sandboxed tool feels like a native command          | Living with it    | `flake-pilot`                                   |
-| Runs on macOS                                           | Backends          | `glaipnir`, `podman`                            |
-| Boot a previous build when the new one is broken        | What accumulates  | `vivarium`                                      |
-| Update on purpose rather than by surprise               | What accumulates  | `vivarium`                                      |
-| Reclaim disk without a teardown                         | What accumulates  | `podman`, `glaipnir`                            |
-| See every sandbox on the machine                        | What accumulates  | `flake-pilot`, `glaipnir`, `podman`             |
+| Merged capability                                          | Theme             | First seen in                                   |
+| ---------------------------------------------------------- | ----------------- | ----------------------------------------------- |
+| Own kernel                                                 | Backends          | `vivarium`, `flake-pilot`, `glaipnir`           |
+| Shared-kernel isolation with an OCI runtime                | Backends          | `flake-pilot`, `glaipnir`, `podman`             |
+| Nothing downgrades the boundary for you                    | Backends          | `vivarium`, `glaipnir`                          |
+| Runs on a host without KVM                                 | Backends          | `flake-pilot`, `glaipnir`, `podman`             |
+| Choose the engine or hypervisor                            | Backends          | `flake-pilot`                                   |
+| Work stays at its host path                                | Data              | `vivarium`, `glaipnir`                          |
+| Choose which host paths cross, in a project file           | Data              | `vivarium`                                      |
+| Choose which host environment variables cross              | Data              | `vivarium`, `podman`                            |
+| Refuses a mount that would expose the host session         | Data              | `vivarium`                                      |
+| Use an SSH or GPG key without the key entering the sandbox | Data              | `vivarium`                                      |
+| Secrets are kept out of the built artifact                 | Data              | `glaipnir`                                      |
+| Commit an encrypted secret alongside the config            | Data              | `vivarium`, `podman`                            |
+| Scopes credentials per app out of the box                  | Data              | `glaipnir`                                      |
+| Egress can be default-deny                                 | Network           | `vivarium`, `podman`                            |
+| Allowlist by destination name                              | Network           | `vivarium`                                      |
+| Stays off a corporate VPN                                  | Network           | `glaipnir`                                      |
+| Something outside can reach a guest service                | Network           | `flake-pilot`, `podman`                         |
+| Defined by a project file                                  | Guest environment | `vivarium`                                      |
+| Choose which programs are installed in the guest           | Guest environment | `glaipnir`, `podman`                            |
+| The project's own dev environment loads when you enter     | Guest environment | `vivarium`                                      |
+| Compose the environment from separate, reusable parts      | Guest environment | `vivarium`, `flake-pilot`                       |
+| A config unit works unchanged on someone else's machine    | Guest environment | `vivarium`, `flake-pilot`                       |
+| The same definition rebuilds the same environment          | Guest environment | `vivarium`                                      |
+| Everyone building it gets the versions you got             | Guest environment | `vivarium`                                      |
+| Run your own setup at build time and at every start        | Guest environment | `glaipnir`                                      |
+| The build runs no user-supplied commands as root           | Guest environment | `vivarium`                                      |
+| Choose the guest operating system                          | Guest environment | `flake-pilot`, `glaipnir`, `podman`             |
+| Pull a prebuilt image instead of building                  | Guest environment | `flake-pilot`, `glaipnir`, `podman`             |
+| Re-enter a running instance                                | Living with it    | `vivarium`, `flake-pilot`, `glaipnir`, `podman` |
+| Installs from a distro package in one command              | Living with it    | `flake-pilot`, `glaipnir`                       |
+| The sandboxed tool feels like a native command             | Living with it    | `flake-pilot`                                   |
+| Runs on macOS                                              | Backends          | `glaipnir`, `podman`                            |
+| Boot a previous build when the new one is broken           | What accumulates  | `vivarium`                                      |
+| Update on purpose rather than by surprise                  | What accumulates  | `vivarium`                                      |
+| Reclaim disk without a teardown                            | What accumulates  | `podman`, `glaipnir`                            |
+| See every sandbox on the machine                           | What accumulates  | `flake-pilot`, `glaipnir`, `podman`             |
 
-Fourteen of the thirty-one entries were first seen in a project other than vivarium — ten of the twenty-five capability rows and four of the six backend rows. That number is the point of sweeping separately, and it is the check worth repeating on any refresh: if a later sweep produces a table whose rows all originate with the subject, the sweep was not independent.
+Sixteen of the thirty-six entries were first seen in a project other than vivarium — twelve of the thirty capability rows and four of the six backend rows. That number is the point of sweeping separately, and it is the check worth repeating on any refresh: if a later sweep produces a table whose rows all originate with the subject, the sweep was not independent.
 
 ### Verdicts corrected to the microVM boundary
 
 Found by re-reading each filled row against the rule above.
 
-| Row                                               | Was                   | Now                   | Why                                                                     |
-| ------------------------------------------------- | --------------------- | --------------------- | ----------------------------------------------------------------------- |
-| Work stays at its host path                       | `flake-pilot` partial | `flake-pilot` no      | Firecracker has no share; the mirrored path is the podman engine        |
-| Host environment is deny-by-default               | `flake-pilot` no      | `flake-pilot` yes     | Nothing crosses unless the registration names it, in either engine      |
-| Session sockets refused as a source               | `flake-pilot` no      | `flake-pilot` n/a     | No bind-mount mechanism at that boundary, so nothing to refuse          |
-| Default-deny egress                               | `flake-pilot` no      | `flake-pilot` partial | The firecracker level starts with the tap device off                    |
-| Something outside reaches a guest service         | `glaipnir` partial    | `glaipnir` no         | The run publishes no port and takes no passthrough                      |
-| Re-enter a running instance                       | `glaipnir` partial    | `glaipnir` no         | A krun guest cannot be entered; the resume path is the container        |
-| The same definition rebuilds the same environment | `flake-pilot` no      | `flake-pilot` partial | Firecracker names local image files; `:latest` is the container rung    |
-| The same definition rebuilds the same environment | `podman` no           | `podman` partial      | A digest reproduces exactly; nothing arranges one                       |
-| Update on purpose                                 | `flake-pilot` no      | `flake-pilot` yes     | Nothing re-checks a local rootfs; updating is `pull --force`            |
-| Update on purpose                                 | `podman` no           | `podman` partial      | A pulled image stays; the tag it came from does not                     |
-| Reclaim disk without a teardown                   | `flake-pilot` partial | `flake-pilot` no      | `%remove` is podman-only; the firecracker overlay has no verb           |
-| See every sandbox on the machine                  | `flake-pilot` yes     | `flake-pilot` partial | `flake-ctl list` reports registrations, not instances                   |
-| Nothing downgrades the boundary for you           | `flake-pilot` no      | `flake-pilot` partial | Registration fixes the engine; only a drop-in file rewrites it          |
-| Nothing downgrades the boundary for you           | `podman` n/a          | `podman` yes          | One boundary and nothing beneath it is stability, whatever its strength |
+| Row                                                | Was                   | Now                   | Why                                                                     |
+| -------------------------------------------------- | --------------------- | --------------------- | ----------------------------------------------------------------------- |
+| Work stays at its host path                        | `flake-pilot` partial | `flake-pilot` no      | Firecracker has no share; the mirrored path is the podman engine        |
+| Choose which host environment variables cross      | `flake-pilot` no      | `flake-pilot` yes     | Nothing crosses unless the registration names it, in either engine      |
+| Refuses a mount that would expose the host session | `flake-pilot` no      | `flake-pilot` n/a     | No bind-mount mechanism at that boundary, so nothing to refuse          |
+| Default-deny egress                                | `flake-pilot` no      | `flake-pilot` partial | The firecracker level starts with the tap device off                    |
+| Something outside reaches a guest service          | `glaipnir` partial    | `glaipnir` no         | The run publishes no port and takes no passthrough                      |
+| Re-enter a running instance                        | `glaipnir` partial    | `glaipnir` no         | A krun guest cannot be entered; the resume path is the container        |
+| The same definition rebuilds the same environment  | `flake-pilot` no      | `flake-pilot` partial | Firecracker names local image files; `:latest` is the container rung    |
+| The same definition rebuilds the same environment  | `podman` no           | `podman` partial      | A digest reproduces exactly; nothing arranges one                       |
+| Update on purpose                                  | `flake-pilot` no      | `flake-pilot` yes     | Nothing re-checks a local rootfs; updating is `pull --force`            |
+| Update on purpose                                  | `podman` no           | `podman` partial      | A pulled image stays; the tag it came from does not                     |
+| Reclaim disk without a teardown                    | `flake-pilot` partial | `flake-pilot` no      | `%remove` is podman-only; the firecracker overlay has no verb           |
+| See every sandbox on the machine                   | `flake-pilot` yes     | `flake-pilot` partial | `flake-ctl list` reports registrations, not instances                   |
+| Nothing downgrades the boundary for you            | `flake-pilot` no      | `flake-pilot` partial | Registration fixes the engine; only a drop-in file rewrites it          |
+| Nothing downgrades the boundary for you            | `podman` n/a          | `podman` yes          | One boundary and nothing beneath it is stability, whatever its strength |
 
 Verified: 2026-08-19 — re-read against the sources `sources.md` pins.
 
@@ -361,19 +369,65 @@ Verified: 2026-08-19 — read, not run, against the libkrun project README's net
 
 Five capabilities present in the inventories above had no row. Each was read back out of the sweeps rather than invented for the table, which is the check that they were available all along and were missed: composition and drop-ins are in the `flake-pilot` sweep, hooks and the runtime-only credential stance are in the `glaipnir` one, and module merge, `inputs.toml`, the lockfile, and the SSH and GPG relays are in vivarium's.
 
-| Row                                                     | Theme             | Why it earns a row                                                                                |
-| ------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------- |
-| Compose the environment from separate, reusable parts   | Guest environment | All four layer something; only one reports a collision instead of letting a filename settle it    |
-| A config unit works unchanged on someone else's machine | Guest environment | Every subject can share an image; sharing one concern is where they diverge                       |
-| Everyone building it gets the versions you got          | Guest environment | Distinct from reproducibility: the input set itself being pinned, and portable to a second person |
-| Use an SSH key without the key entering the sandbox     | Data              | The one credential question a shared-kernel answer cannot be borrowed for                         |
-| Secrets are kept out of the built artifact              | Data              | A stance two subjects hold and two do not state at all                                            |
+| Row                                                        | Theme             | Why it earns a row                                                                                |
+| ---------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------- |
+| Compose the environment from separate, reusable parts      | Guest environment | All four layer something; only one reports a collision instead of letting a filename settle it    |
+| A config unit works unchanged on someone else's machine    | Guest environment | Every subject can share an image; sharing one concern is where they diverge                       |
+| Everyone building it gets the versions you got             | Guest environment | Distinct from reproducibility: the input set itself being pinned, and portable to a second person |
+| Use an SSH or GPG key without the key entering the sandbox | Data              | The one credential question a shared-kernel answer cannot be borrowed for                         |
+| Secrets are kept out of the built artifact                 | Data              | A stance two subjects hold and two do not state at all                                            |
 
 The three `Guest environment` rows are deliberately non-overlapping: same input gives the same output is `The same definition rebuilds the same environment`, the input set is pinned and portable is `Everyone building it gets the versions you got`, and the pin moves only when someone moves it is `Update on purpose`.
 
 One of the five originates outside vivarium, which is worse than the set's running ratio and is recorded rather than smoothed over: adding rows a tool was built to answer is the failure mode this document exists to catch. The counterweight is that no new row is a one-column win — `glaipnir` takes the credential-stance row outright, and the composition and sharing rows are `⚠️ partial` for three subjects rather than `❌ no`.
 
 Verified: 2026-08-19 — derived from §1 to §4 above, at the commits `sources.md` pins.
+
+### A row added for shipping a secret with the definition
+
+`Secrets are kept out of the built artifact` asks where a secret must not be. It does not ask the question a team hits next, which is where a shared secret then lives, and the two have different answers: vivarium takes the first outright and only the second partially.
+
+Adding the row exposed a gap in §4 above. vivarium's sweep already carried the refusal — `vivarium decrypting, holding an identity, or brokering a login` — so the question was readable out of the inventories on one side and not the other, because podman's sweep never recorded `podman secret create` at all. The sweep bullet was added from the manual page before the row was written, in that order, so the row is read back out of the inventories like the five before it rather than written from the tables down.
+
+| Row                                             | Theme | Why it earns a row                                                                           |
+| ----------------------------------------------- | ----- | -------------------------------------------------------------------------------------------- |
+| Commit an encrypted secret alongside the config | Data  | Two subjects supply a seam and neither supplies the scheme, which no other row distinguishes |
+
+This is the second added row that originates in vivarium's own sweep, and the counterweight is the same one the section above names: it is not a one-column win. vivarium and podman both land `⚠️ partial` for unrelated reasons — one refuses the integration by rule, the other defaults to an unencrypted driver — and the row's value is that it separates supplying a seam from supplying a scheme.
+
+Verified: 2026-08-20 — vivarium against [`spec/07-secrets-and-config-sharing.md`](../spec/07-secrets-and-config-sharing.md) and `ADR-0072`; flake-pilot against a fresh clone at `44e3ab2`; glaipnir against a fresh clone at `8c7420e`, a later revision than this document's pin, recorded as such in the evidence; podman against the `podman-secret-create` manual page. No existing verdict moved.
+
+### A row added for where the crossing set is written
+
+Relabelling `Credentials scoped per tool` to `Scopes credentials per app out of the box` exposed what that row had been absorbing. Under the old label it read as though only one subject could scope a credential at all, when every subject can narrow what crosses by declaring or passing less. Once the label said `out of the box`, the ordinary capability underneath it had no row: choosing the crossing set is something all four do, and where that choice is recorded is what separates them.
+
+`Work stays at its host path` does not ask it — that row is about the target a mount lands on, not about who picks the set — and `Defined by a project file` asks where the definition lives without asking what is in it. The new row is the mount twin of `Choose which host environment variables cross`, which had no counterpart for paths.
+
+| Row                                              | Theme | Why it earns a row                                                                                                 |
+| ------------------------------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------ |
+| Choose which host paths cross, in a project file | Data  | The four record the same decision in four places: a merged project file, a registration, a script, and a call site |
+
+The row is read out of the inventories rather than invented: `[[mounts]]` and module merge are in vivarium's sweep, `include.tar` / `include.path` in flake-pilot's, and `-v` in podman's. The spread is genuine — one `n/a` at the compared boundary, one `no` that is a hardcoded script, and a `partial` that turns on Quadlet recording in a file what the command line otherwise holds.
+
+Verified: 2026-08-20 — vivarium against [`spec/07-secrets-and-config-sharing.md`](../spec/07-secrets-and-config-sharing.md) and [`spec/08-invariants-and-guarantees.md`](../spec/08-invariants-and-guarantees.md); flake-pilot against a fresh clone at `44e3ab2`; glaipnir against `_bind_agent_mounts` in a fresh clone at `8c7420e`; podman against the `podman-systemd.unit` manual page for `Volume=`. No existing verdict moved.
+
+### Three rows added for what goes inside
+
+The `Guest environment` section asked how an artifact is defined, shared, and reproduced, and never what a user can put in it. Every row there was about the mechanism of definition, so a reader could learn that vivarium composes and pins without learning whether they can add a compiler.
+
+Three separate capabilities were hiding in that gap, and they separate the subjects differently, which is why they are three rows rather than one.
+
+| Row                                                    | Theme             | Why it earns a row                                                                                                  |
+| ------------------------------------------------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Choose which programs are installed in the guest       | Guest environment | Three subjects name packages in a definition; the fourth registers an image whose contents it never describes       |
+| The project's own dev environment loads when you enter | Guest environment | One subject makes the inner layer a specified requirement; the rest leave it to whatever the image happens to carry |
+| Run your own setup at build time and at every start    | Guest environment | A script slot at both moments, against declaration-only, against one baked-in command                               |
+
+Two of the three were first seen elsewhere. `PACKAGES=(…)` is in glaipnir's sweep and `Containerfile` build steps are in podman's, while vivarium's sweep recorded module merge without ever recording that a module is where packages are named. The build-and-start hook pair is glaipnir's alone. Only the inner-environment row originates with vivarium, and it too was missing from that sweep — [`spec/06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md) fixes the two-layer design in normative terms and no bullet carried it, so no row could be derived from it. Both gaps were filled in section 1 before any row here was written.
+
+The hook row is placed beside `The build runs no user-supplied commands as root` on purpose. The two are the same question asked from opposite sides, and reading them together is what keeps vivarium's `partial` from looking like a shortfall: the missing half is the arbitrary root build step the next row reports as refused.
+
+Verified: 2026-08-20 — vivarium against [`spec/03-artifact-model.md`](../spec/03-artifact-model.md) for the manifest key table and [`spec/06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md) for the inner layer, and against [`implementation-status.md`](../implementation-status.md) and the shipped guest module for the `*`; flake-pilot against the `sci` and `flake-ctl-firecracker-register` manual pages in a fresh clone at `44e3ab2`; glaipnir against `image/Containerfile`, `image/scripts/entrypoint.sh`, and `docs/overview.md` at `21ef389`; podman against its manual pages. No existing verdict moved.
 
 ### Cut, and why
 
