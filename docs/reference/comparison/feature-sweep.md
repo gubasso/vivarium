@@ -304,7 +304,7 @@ Found by re-reading each filled row against the rule above.
 
 Verified: 2026-08-19 — re-read against the sources `sources.md` pins.
 
-Eight of the fourteen moved in an alternative's favour, which is the check that the rule was applied to the comparison rather than to the competitors. Six came from re-reading the table, four from writing [`walkthroughs.md`](./walkthroughs.md), two more from re-reading [`scenarios.md`](./scenarios.md), and the last two from the row-label audit below — each pass found what the previous one could not, because a verdict, a worked example, a method, and a label fail in different ways. The walkthrough exposes a cell filled from the rung with the better answer; the method exposes a verdict resting on a mechanism the method never runs; the label exposes a question only one design was ever going to answer well.
+Eight of the fourteen moved in an alternative's favour, which is the check that the rule was applied to the comparison rather than to the competitors. Six came from re-reading the table, four from writing [`walkthroughs.md`](./walkthroughs.md), two more from re-reading [`scenarios/`](./scenarios/README.md), and the last two from the row-label audit below — each pass found what the previous one could not, because a verdict, a worked example, a method, and a label fail in different ways. The walkthrough exposes a cell filled from the rung with the better answer; the method exposes a verdict resting on a mechanism the method never runs; the label exposes a question only one design was ever going to answer well.
 
 ### Verdicts corrected by fixing podman's setup
 
@@ -367,7 +367,7 @@ One cell in the previous round was marked partial for a reason that names the re
 | ----------------------------------------- | ---------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Something outside reaches a guest service | `podman` partial | `podman` yes | Impersonation is documented to carry inbound connections to a listening guest port, and an impersonated listener sits host-side in the namespace podman already publishes into |
 
-The correction is worth stating as a rule. Reading the runtime's own documentation showed the mechanism is not a gap in the publish path but the thing that makes it work unchanged: because a guest listener is a host socket owned by the VMM process, `-p` needs no krun-specific handling, which is the same property that lets a sidecar reach the workload. Two conditions and one unsettled report bound the cell, and [`scenarios.md`](./scenarios.md#inbound-podman) carries all three rather than the verdict absorbing them.
+The correction is worth stating as a rule. Reading the runtime's own documentation showed the mechanism is not a gap in the publish path but the thing that makes it work unchanged: because a guest listener is a host socket owned by the VMM process, `-p` needs no krun-specific handling, which is the same property that lets a sidecar reach the workload. Two conditions and one unsettled report bound the cell, and [`scenarios/inbound.md`](./scenarios/inbound.md#podman) carries all three rather than the verdict absorbing them.
 
 This also sharpens the row's spread. It is now the one network row where the two microVM tools built as agent sandboxes both say no and the general-purpose runtime says yes, which reads as a posture rather than a shortfall — except that neither sandbox states it as one, and vivarium's silence is [`Q-033`](../../plan/open-questions.md).
 
@@ -474,7 +474,7 @@ Seven of those eleven moved in an alternative's favour and none of the four rema
 
 The `‡` mark is what made the promotions honest rather than generous. It says the tool provides the mechanism and arranges nothing, and it applies only when the user invokes something the tool offers — not when the user builds the mechanism themselves. That line is why `Something outside reaches a guest service` stays a hedge for flake-pilot: `ip_forward`, a MASQUERADE rule, and a hand-edited `boot_args` are host plumbing an operator assembles, not a flag anyone passes. A mark that turned every no into a qualified yes would be worth nothing.
 
-Verified: 2026-08-20 — every split and every promotion re-read against the evidence already recorded in [`scenarios.md`](./scenarios.md) at the revisions [`sources.md`](./sources.md) pins, with no subject re-read for this pass. The correction tables above keep the row labels they were written with; a label frozen in a dated record is what makes the record readable later, and the inventory above is where the current set lives.
+Verified: 2026-08-20 — every split and every promotion re-read against the evidence already recorded in [`scenarios/`](./scenarios/README.md) at the revisions [`sources.md`](./sources.md) pins, with no subject re-read for this pass. The correction tables above keep the row labels they were written with; a label frozen in a dated record is what makes the record readable later, and the inventory above is where the current set lives.
 
 ### Cut, and why
 

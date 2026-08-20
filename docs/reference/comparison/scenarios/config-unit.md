@@ -1,0 +1,23 @@
+# Config unit
+
+Record what a user can hand a colleague so the colleague's environment gains one concern — and whether that unit is the concern or the whole environment. Whether it then works unchanged is [the next row](./portability-enforced.md).
+
+1. Configure one concern that needs a package and a host path.
+2. Identify the smallest unit carrying it.
+3. Record what the colleague receives, and what else comes with it.
+
+## vivarium
+
+vivarium `ceb0027`, 2026-08-18. Yes: images and pieces are the shared class and the manifest is the personal one. A piece carries its whole concern — packages, guest config, mounts, environment, and any third-party flake input it needs through its own `inputs.toml` — so adopting it is one name in the colleague's `pieces` list. The same split is how a team makes a guarantee unwaivable: a piece setting a value with `mkForce` outranks every personal manifest.
+
+## flake-pilot
+
+flake-pilot `main`, read 2026-08-18. Yes: an `<app>.d/*.yaml` drop-in is smaller than the registration and carries one concern's options, and a colleague adopts it by copying it into place. The image is the other unit and it is the whole environment; the drop-in is the small one.
+
+## glaipnir
+
+glaipnir `21ef389`, read 2026-08-18. No: configuration is one `glaipnir.conf`, in the checkout or under `$XDG_CONFIG_HOME`, per user rather than per concern — there is no unit smaller than that file, and it is the user's own machine-local settings. The hooks directory can be copied by hand, which is file transfer rather than adoption.
+
+## podman
+
+podman 5.x, 2026-08-19. No: a `Containerfile` travels and reproduces its build steps elsewhere, and a published image travels as a pull. Neither is a unit of one concern — the smallest shareable thing is the whole environment, which is the same single-base limit that loses podman [the composition row](./composition.md#podman).
