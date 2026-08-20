@@ -15,6 +15,7 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 009 automate-backend-advisories — later — 2 sessions
 - 018 the-user-owns-the-image — later — 4 sessions
 - 023 a-declared-port-crosses-inward — later — 3 sessions
+- 024 installing-vivarium-takes-one-command — later — 5 sessions
 
 ## closed
 
