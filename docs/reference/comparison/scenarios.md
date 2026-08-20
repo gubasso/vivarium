@@ -9,7 +9,7 @@ Every evidence section is read at the subject's fixed setup:
 - `glaipnir` — the libkrun microVM
 - `podman` — `podman run --runtime krun`
 
-The first six sections back the `Isolation backends` table; the rest back the capability tables.
+The first seven sections back the `Isolation backends` table; the rest back the capability tables.
 
 ## Own kernel
 
@@ -98,31 +98,53 @@ glaipnir `21ef389`, read 2026-08-19. Falls back: a failed `_check_microvm` proce
 
 podman 5.x, read 2026-08-19. `--runtime krun` cannot create the VM without `/dev/kvm`; the default `crun` runtime runs anywhere. Nothing falls back on its own — the failing flag is the user's to remove.
 
-## Nothing downgrades the boundary for you
+## No flag selects a weaker boundary
 
-A boundary is chosen once and used for months, on a host that changes in between. Record what can still reach that choice afterwards: a flag the user passes, a file the user did not write, or the host itself.
+A boundary is chosen once and used for months, on a host that changes in between. Three things can still reach that choice afterwards: a flag the user passes, a file the user did not write, or the host itself. This row asks the first, [the next row](#no-file-you-did-not-write-selects-a-weaker-boundary) asks the second, and [Runs on a host without KVM](#runs-on-a-host-without-kvm) asks the third.
 
 1. Record which boundary the tool used on an ordinary first run.
-2. Read its flag list and configuration schema for anything that selects a weaker one.
-3. Record whether reaching that weaker one takes the user's own command, or whether a configuration file or a host condition can reach it instead.
-4. Invoke it again on a host lacking the strongest boundary's prerequisites.
-5. Record whether it refuses, warns, or proceeds, and which boundary it then used.
+2. Read its flag list and its call-time arguments for anything that selects a weaker one.
+3. Pass it, and record which boundary the run then used, and what it said.
 
-### Boundary, vivarium
+### Boundary flag, vivarium
 
-vivarium `ceb0027`, read 2026-08-19. Yes: one boundary, no second mode beneath it, so no flag, file, or host condition selects a weaker one. A host that cannot provide it gets a refusal rather than a substitute, which is what the [separate-kernel rule](../spec/08-invariants-and-guarantees.md) fixes.
+vivarium `ceb0027`, read 2026-08-19. Yes: one boundary and no second mode beneath it, so there is no flag to pass. A host that cannot provide it gets a refusal rather than a substitute, which is what the [separate-kernel rule](../spec/08-invariants-and-guarantees.md) fixes.
 
-### Boundary, flake-pilot
+### Boundary flag, flake-pilot
 
-flake-pilot `main`, read 2026-08-18. Partial: the engine is written into `/usr/share/flakes/<app>.yaml` at registration and no call-time pseudo-argument revisits it — but the drop-in directory `<app>.d/*.yaml` (alpha-ordered, last key wins) can rewrite an existing registration's options.
+flake-pilot `main`, read 2026-08-18. Yes: the engine is written into `/usr/share/flakes/<app>.yaml` at registration, and no call-time pseudo-argument revisits it. The set the pilot consumes — `@NAME`, `%remove`, `%interactive`, `%ignore_sync_error`, `%ignore_missing_volume_path`, `%progress`, `%port:number` — contains nothing that names an engine.
 
-### Boundary, glaipnir
+### Boundary flag, glaipnir
 
-glaipnir `21ef389`, read 2026-08-18. No: `--no-microvm` selects the weaker boundary outright, and a failed probe reaches it anyway with a warning, so the boundary can change without the user asking. The stance is deliberate: a weaker sandbox beats no sandbox. vivarium's [separate-kernel rule](../spec/08-invariants-and-guarantees.md) takes the opposite position, and both are coherent.
+glaipnir `21ef389`, read 2026-08-18. No: `--no-microvm` selects the container outright, in the user's own command. The stance is deliberate — a weaker sandbox beats no sandbox — and vivarium's [separate-kernel rule](../spec/08-invariants-and-guarantees.md) takes the opposite position. Both are coherent; they disagree about what a sandbox is for.
 
-### Boundary, podman
+### Boundary flag, podman
 
-podman 5.x, read 2026-08-19. No: at the krun setup the boundary is a per-invocation flag. Omit `--runtime krun` and the same command runs the same image under the default runtime with no warning, and `containers.conf` can change that default in a file the user did not write. Nothing records that a workload was meant to run behind its own kernel.
+podman 5.x, read 2026-08-19. No: the boundary is a per-invocation flag. Omit `--runtime krun` and the same command runs the same image under the default runtime, with no warning, and nothing records that the workload was meant to run behind a kernel of its own.
+
+## No file you did not write selects a weaker boundary
+
+The companion to [the flag row](#no-flag-selects-a-weaker-boundary). A flag is at least typed by the person who wanted it; a file is read by a run that never mentions it.
+
+1. Read the tool's configuration schema for a key naming the engine, runtime, or boundary.
+2. Record which files that key is read from, and who installs them.
+3. Set it there rather than on the command line, re-run the ordinary invocation, and record which boundary was used.
+
+### Boundary file, vivarium
+
+vivarium `ceb0027`, read 2026-08-19. Yes: there is no weaker boundary for a file to select, so no key in a manifest, an image, or a piece can name one. The [class-not-tool rule](../spec/08-invariants-and-guarantees.md) is why the key does not exist rather than being refused — the backend is fixed by capability class, so there is nothing for a file to choose between.
+
+### Boundary file, flake-pilot
+
+flake-pilot `main`, read 2026-08-18. No: the drop-in directory `<app>.d/*.yaml` is read in alpha order with the last key winning, and rewrites an existing registration's options. A file dropped in beside a registration reaches what the registration fixed, and no merge stage reports that it did — the same mechanism that loses flake-pilot the [collision row](#a-collision-between-two-parts-is-reported).
+
+### Boundary file, glaipnir
+
+glaipnir `21ef389`, read 2026-08-18. Yes: the weaker boundary is reached by `--no-microvm` and by a failed host probe, and neither is a file. One adjacency is worth naming and is unverified at this revision: `_parse_conf` runs after the argument loop, so a key `glaipnir.conf` parses overwrites the same value given on the command line. Were the microVM selector ever among those keys, a file would not merely reach the boundary — it would outrank the flag.
+
+### Boundary file, podman
+
+podman 5.x, read 2026-08-19. No: `containers.conf` sets the default OCI runtime, and both a system-wide copy and a per-user copy apply. An invocation that omits `--runtime` runs at whatever that file says, which is a boundary decided somewhere the command does not mention.
 
 ## Runs on macOS
 
@@ -143,34 +165,62 @@ glaipnir `21ef389`, read 2026-08-18. Container only: `_macos_adjust_microvm` set
 
 podman 5.x, read 2026-08-19. Container only: Podman Machine interposes one managed Linux VM for every container, and a krun microVM inside it would need nested virtualization the machine does not provide. The VM boundary is per machine, not per workload.
 
+## The tool arranges the workspace mount
+
+Two questions hide in "can I see my project inside". This one asks whether the tool puts the project there without being asked; [the next](#work-stays-at-its-host-path) asks whether the path it lands on is the one it had outside.
+
+1. Put a project at a known absolute path on the host.
+2. Start the tool for that project with no mount argument.
+3. Record whether the project is visible inside, and what named it.
+
+### Workspace mount, vivarium
+
+vivarium `ceb0027`, 2026-08-18. Yes: the workspace is the project the manifest belongs to, so binding the project once is what names it, and no argument repeats the decision at each start. Project identity is anchored by a marker rather than by the path, so the mount survives a rename.
+
+### Workspace mount, flake-pilot
+
+flake-pilot `main`, read 2026-08-18. No: the firecracker schema has no bind mount, so nothing is arranged and nothing can be. `include.tar` and `include.path` copy a payload into the artifact at provisioning time — work is copied, not seen through.
+
+### Workspace mount, glaipnir
+
+glaipnir `21ef389`, read 2026-08-18. Yes: the invocation's workspace crosses with no argument naming it, and a workspace equal to `$HOME` is refused and falls back rather than crossing wholesale. Where it lands is [the next row](#host-path-glaipnir), and it is not where it came from.
+
+### Workspace mount, podman
+
+podman 5.x, read 2026-08-19. No: `-v` is the only route and it is typed at the call site every time. Nothing reads the current directory, and a run that omits the flag starts a container that cannot see the project at all.
+
 ## Work stays at its host path
 
-Record the path the project occupies on the host and the path it occupies inside.
+Given that the project is visible inside — [the row above](#the-tool-arranges-the-workspace-mount) — record whether the path it occupies inside is the path it occupies outside. Agents key session state on the working directory, so a mirrored tail is not the same answer as a mirrored path.
 
 1. Put a project at a known absolute path on the host.
 2. Give the tool that directory by its documented mechanism.
 3. Inside, run `pwd` and read the path of a file the host also sees.
 4. Record both paths, and whether a tool that stores absolute paths still resolves them.
 
+### Host path, vivarium
+
+vivarium `ceb0027`, 2026-08-18. Yes: the [host-symmetric mount rule](../spec/08-invariants-and-guarantees.md) fixes the workspace at the absolute path it occupies on the host, and a declared mount carries that same target rather than one the declaration invents.
+
 ### Host path, flake-pilot
 
-flake-pilot `main`, read 2026-08-18. No: the firecracker schema has no bind mount. `include.tar` and `include.path` copy a payload in at provisioning time — work is copied, not seen through. The published `--volume %HOME/ai:%HOME/ai` that does mirror a path is the `crun` container backend, and it mirrors a quarantine directory rather than the project tree.
+flake-pilot `main`, read 2026-08-18. n/a: nothing crosses at the firecracker boundary, so there is no inside path to compare — the same reason the [mount-choice row](#choose-which-host-paths-cross-in-a-file-rather-than-on-the-command-line) and the [session-directory row](#refuses-a-mount-that-would-expose-the-host-session) read `n/a` here. The published `--volume %HOME/ai:%HOME/ai` that does mirror a path is the `crun` container backend, and it mirrors a quarantine directory rather than the project tree.
 
 ### Host path, glaipnir
 
-glaipnir `21ef389`, read 2026-08-18. Partial: since 1.0.0 a workspace under `$HOME` mounts at `/home/aiuser/<path relative to $HOME>` — a mirror of the tail, not of the path. The change answers the same failure class vivarium's [host-symmetric mount rule](../spec/08-invariants-and-guarantees.md) does: agents key session state on the working directory.
+glaipnir `21ef389`, read 2026-08-18. No: since 1.0.0 a workspace under `$HOME` mounts at `/home/aiuser/<path relative to $HOME>` — a mirror of the tail, not of the path. The change answers the same failure class vivarium's [host-symmetric mount rule](../spec/08-invariants-and-guarantees.md) does and stops short of it: an agent that stored `/home/you/api` reads a path that is not there, and a project outside `$HOME` has no tail to mirror.
 
 ### Host path, podman
 
-podman 5.x, read 2026-08-19. Partial: `-v /host/path:/host/path` mirrors any single path exactly, and under krun the mount crosses as virtiofs, so it holds at the compared setup. Nothing arranges it, nothing refuses a mismatch, and published examples usually pick a different target — available rather than provided.
+podman 5.x, read 2026-08-19. Reachable, nothing arranges it: `-v /host/path:/host/path` mirrors any single path exactly, and under krun the mount crosses as virtiofs, so it holds at the compared setup. The user types the path twice at every invocation, nothing refuses a mismatch, and published examples usually pick a different target.
 
-## Choose which host paths cross, in a project file
+## Choose which host paths cross, in a file rather than on the command line
 
-Every subject decides what crosses. This row asks where that decision is written down: in a file that travels with the project, or in the arguments of the command that starts it.
+Every subject decides what crosses. This row asks where that decision is written down: in a file, or in the arguments of the command that starts it. Whether that file travels with the project is [Defined by a project file](#defined-by-a-project-file), and whether a second author can add a path without editing the first is [Compose the environment from separate, reusable parts](#compose-the-environment-from-separate-reusable-parts); neither is re-asked here.
 
 1. Add a host path to what crosses, and a second one that must not.
-2. Record where that decision is recorded, and what a second person receives.
-3. Record whether another layer can add a path without editing the first.
+2. Record where that decision is recorded.
+3. Record what a run that names neither path then sees.
 
 ### Choosing mounts, vivarium
 
@@ -182,27 +232,31 @@ flake-pilot `44e3ab2`, read 2026-08-20. n/a: there is no bind-mount mechanism at
 
 ### Choosing mounts, glaipnir
 
-glaipnir `8c7420e`, read 2026-08-20 — a later revision than the `21ef389` the rest of this subject is pinned to, read fresh for this row. No: the crossing set is written in the script. `_bind_agent_mounts` emits a fixed `--volume` list per agent name, and the workspace, hooks, and cache mounts are assembled at the call site beside it. There is no configuration key that adds a path, so a user who wants one edits `glaipnir.sh` — which is the same built-in opinion that wins glaipnir the [credential-scoping row](#scopes-credentials-per-app-out-of-the-box) and loses it [Defined by a project file](#project-file-glaipnir).
+glaipnir `8c7420e`, read 2026-08-20 — a later revision than the `21ef389` the rest of this subject is pinned to, read fresh for this row. No: the crossing set is written in the script. `_bind_agent_mounts` emits a fixed `--volume` list per agent name, and the workspace, hooks, and cache mounts are assembled at the call site beside it. There is no configuration key that adds a path, so a user who wants one edits `glaipnir.sh` — which is the same built-in opinion that wins glaipnir the [credential-scoping row](#scopes-credentials-per-app-out-of-the-box) and loses it [Works for a tool the sandbox has never heard of](#works-for-a-tool-the-sandbox-has-never-heard-of).
 
 ### Choosing mounts, podman
 
-podman 5.x, read 2026-08-20. Partial: the documented answer is `-v` on the command line, which puts the set in whatever started the container rather than in anything a colleague receives. A Quadlet unit does record it in a file — `Volume=` is "equivalent to the Podman `--volume` option" and takes the same argument form — so the decision can be written down. Two things keep it short of the row: the unit is a machine-local systemd file rather than something that travels with the project, and its `Volume=` lines are a flat list with no merge, so a second concern is added by editing the same file.
+podman 5.x, read 2026-08-20. Reachable, nothing arranges it: the documented answer is `-v` on the command line, and a Quadlet unit does record the same decision in a file — `Volume=` is "equivalent to the Podman `--volume` option" and takes the same argument form. What the unit is not is the path anyone is sent down: the manual pages teach `-v`, and a project that wants the file writes it itself. Where that file lives, and what happens when two concerns want to edit it, are the two rows this one defers to.
 
-## Choose which host environment variables cross
+## The caller chooses which host environment variables cross
 
-Record which host environment variables are visible inside.
+Record who decides which of the host's environment variables are visible inside: the person starting the sandbox, or the tool.
 
 1. Export a distinctive variable on the host.
-2. Start the tool without naming that variable.
-3. Inside, run `env` and record whether it appears, along with everything else that did.
+2. Start the tool without naming that variable, and record whether it appears inside.
+3. Name it by the tool's documented mechanism, and record whether that mechanism is open to any variable or fixed to a list the tool ships.
+
+### Environment, vivarium
+
+vivarium `ceb0027`, 2026-08-18. Yes: the host environment is deny-by-default against a fixed allowlist, and `--env KEY` copies a named variable from the host only when it exists while `--env KEY=VAL` supplies a literal. The caller names what crosses, per invocation, and the manifest names what crosses durably.
 
 ### Environment, flake-pilot
 
-flake-pilot `main`, read 2026-08-18. Yes: at the firecracker boundary there is no environment passthrough at all, so nothing crosses. What it lacks is a policy of its own — at the container backend the set is whatever the registration froze into `--opt` lines, and a `%VAR` placeholder with no matching variable becomes the literal name rather than failing.
+flake-pilot `main`, read 2026-08-18. Yes: at the firecracker boundary there is no environment passthrough at all, so nothing crosses until the registration says so. What it lacks is a policy of its own — at the container backend the set is whatever the registration froze into `--opt` lines, and a `%VAR` placeholder with no matching variable becomes the literal name rather than failing.
 
 ### Environment, glaipnir
 
-glaipnir `21ef389`, read 2026-08-18. Partial: a fixed list crosses — `TERM` and `COLORTERM`, `GOOGLE_CLOUD_PROJECT` and `VERTEX_LOCATION` when set, plus five computed `AI_*` values. An explicit list rather than a wholesale copy, but the list is the tool's rather than the caller's: the host-sourced four are forwarded whenever they exist.
+glaipnir `21ef389`, read 2026-08-18. No: an explicit list crosses rather than a wholesale copy — `TERM` and `COLORTERM`, `GOOGLE_CLOUD_PROJECT` and `VERTEX_LOCATION` when set, plus five computed `AI_*` values — but the list is the tool's rather than the caller's. The four host-sourced names are forwarded whenever they exist, and there is no argument or key that adds a fifth. A closed set is a real guarantee; it is not this row's question.
 
 ## Refuses a mount that would expose the host session
 
@@ -246,19 +300,35 @@ podman 5.x, 2026-08-19. No: mounting the agent socket — `-v $SSH_AUTH_SOCK`, a
 
 ## Secrets are kept out of the built artifact
 
-Record whether a credential can end up in the artifact the environment is built from, and who can read it if one does.
+Record whether the documented way of using the tool puts a credential into the artifact the environment is built from, and who can read it if one lands there. Whether anything stops a user putting one there anyway is [the next row](#keeping-secrets-out-of-the-build-is-enforced).
 
 1. Read what the build consumes, and whether any documented flow puts a credential there.
-2. Record what the tool does about it: a rule, a check, or nothing.
+2. Record what the tool says about it.
 3. Record who else on the machine can read the artifact.
 
 ### Secrets in the build, vivarium
 
-vivarium `ceb0027`, 2026-08-18. Yes: a build-time secret is prohibited outright, and the reach of one is why the rule takes no exception. The store is shared read-only into every guest on the machine, so a secret in a store path is readable by every sandbox running there, including one deliberately running untrusted code. The rule is wider than "do not read a credential during the build": the manifest is itself compiled into a module and realised, so `[env] TOKEN = "…"` is a build-time secret whatever its launch-channel classification suggests. What replaces it is the agent channel above, a scoped short-lived value passed at launch, or an encrypted-at-rest scheme the user composes in — vivarium performs no decryption and holds no identity. One caveat the specification states itself: a plaintext secret is not decidable by inspection, so the `manifest-no-inline-secret` check warns heuristically, and a value it does not flag is not a promise.
+vivarium `ceb0027`, 2026-08-18. Yes: a build-time secret is prohibited outright, and the reach of one is why the rule takes no exception. The store is shared read-only into every guest on the machine, so a secret in a store path is readable by every sandbox running there, including one deliberately running untrusted code. The rule is wider than "do not read a credential during the build": the manifest is itself compiled into a module and realised, so `[env] TOKEN = "…"` is a build-time secret whatever its launch-channel classification suggests. What replaces it is the agent channel above, a scoped short-lived value passed at launch, or an encrypted-at-rest scheme the user composes in — vivarium performs no decryption and holds no identity.
 
 ### Secrets in the build, glaipnir
 
-glaipnir `21ef389`, read 2026-08-18. Partial: the stance is stated up front and holds in the code — nothing is baked into the image, authentication happens at runtime inside the container, the token lands in a host cache directory the user owns, and the image carries the label `security.credentials="runtime-only"`. It is practice rather than a rule: build hooks run arbitrary commands as root at build time, so a user who puts a credential there gets it in the image and nothing objects.
+glaipnir `21ef389`, read 2026-08-18. Yes: the stance is stated up front and holds in the code — nothing is baked into the image, authentication happens at runtime inside the container, the token lands in a host cache directory the user owns, and the image carries the label `security.credentials="runtime-only"`. Whether anything holds a user to it is [the next row](#secrets-enforced-glaipnir), and there the answer changes.
+
+## Keeping secrets out of the build is enforced
+
+The companion to [the row above](#secrets-are-kept-out-of-the-built-artifact). A documented flow that keeps credentials out of the artifact is worth having; this row asks what happens to the user who ignores it.
+
+1. Put a credential into the build by whatever route the tool leaves open.
+2. Record whether anything refuses, warns, or notices.
+3. Record whether what noticed is a rule, a check, or a convention.
+
+### Secrets enforced, vivarium
+
+vivarium `ceb0027`, 2026-08-18. Partial: the prohibition is a binding rule rather than a practice, and the pure build means there is no arbitrary build step to smuggle one through. What detection cannot be is complete, and the specification says so itself — a plaintext secret is not decidable by inspection, so the `manifest-no-inline-secret` check warns heuristically, and a value it does not flag is not a promise. A rule that binds and a check that only warns is two thirds of an answer.
+
+### Secrets enforced, glaipnir
+
+glaipnir `21ef389`, read 2026-08-18. No: it is practice rather than a rule. Build hooks run arbitrary commands as root at build time, so a user who puts a credential there gets it in the image, and nothing objects — no check reads the hooks, and the `security.credentials="runtime-only"` label keeps saying what it said.
 
 ## Commit an encrypted secret alongside the config
 
@@ -270,7 +340,7 @@ Record whether a secret the environment needs can travel with the project's own 
 
 ### Shipping a secret, vivarium
 
-vivarium `ceb0027`, 2026-08-18. Partial: encrypted-at-rest is one of the two shapes the [specification](../spec/07-secrets-and-config-sharing.md) names for a secret, and it is the one meant for sharing — commit files that decrypt at activation into a runtime-only location, never into the store, with only the public recipient identities in clear. What vivarium supplies is the seam, not the scheme. A piece is a NixOS module, so a team that wants decrypt-at-activation imports one the way it imports anything else, and the identity that scheme needs arrives over the GPG relay of the row above rather than as a mounted host path. What it will not do is a closed list of seven, not a gap: no decryptor, no provider command executed and relayed, no decryption identity held, no plaintext written to a host path, no credential in any root, no verb whose subject is a credential value, and no reasoning about a credential's lifetime ([`ADR-0072`](../../decisions/ADR-0072-vivarium-integrates-no-encrypted-at-rest-scheme.md)). The fourth and fifth are the load-bearing pair: a provider hook looks like the smallest possible integration and is the opposite of one, because it would put plaintext in vivarium's own address space, which is the condition its redaction guarantee is free of today. Available rather than provided, and deliberately so.
+vivarium `ceb0027`, 2026-08-18. Reachable, nothing arranges it: encrypted-at-rest is one of the two shapes the [specification](../spec/07-secrets-and-config-sharing.md) names for a secret, and it is the one meant for sharing — commit files that decrypt at activation into a runtime-only location, never into the store, with only the public recipient identities in clear. What vivarium supplies is the seam, not the scheme. A piece is a NixOS module, so a team that wants decrypt-at-activation imports one the way it imports anything else, and the identity that scheme needs arrives over the GPG relay of the row above rather than as a mounted host path. What it will not do is a closed list of seven, not a gap: no decryptor, no provider command executed and relayed, no decryption identity held, no plaintext written to a host path, no credential in any root, no verb whose subject is a credential value, and no reasoning about a credential's lifetime ([`ADR-0072`](../../decisions/ADR-0072-vivarium-integrates-no-encrypted-at-rest-scheme.md)). The fourth and fifth are the load-bearing pair: a provider hook looks like the smallest possible integration and is the opposite of one, because it would put plaintext in vivarium's own address space, which is the condition its redaction guarantee is free of today. Available rather than provided, and deliberately so.
 
 ### Shipping a secret, flake-pilot
 
@@ -282,7 +352,7 @@ glaipnir `8c7420e`, read 2026-08-20 — a later revision than the `21ef389` the 
 
 ### Shipping a secret, podman
 
-podman 5.x, read 2026-08-20. Partial: `podman secret create` takes a `pass` driver, where the secret "resides in a GPG-encrypted file", and a `shell` driver that hands storage to scripts of the user's choosing; `--secret` then mounts it at runtime rather than baking it in. Two things keep it short of the row. The default `file` driver is a read-protected file and not an encrypted one, so the safe answer is the one you have to ask for. And the store is machine-local podman state that a `Containerfile` or Quadlet unit refers to by name — a `pass` store can itself be shared, but the binding to the project is a name that must already resolve, so the second person still runs a command before anything works.
+podman 5.x, read 2026-08-20. Reachable, nothing arranges it: `podman secret create` takes a `pass` driver, where the secret "resides in a GPG-encrypted file", and a `shell` driver that hands storage to scripts of the user's choosing; `--secret` then mounts it at runtime rather than baking it in. Two things keep the arrangement the user's own. The default `file` driver is a read-protected file and not an encrypted one, so the safe answer is the one you have to ask for. And the store is machine-local podman state that a `Containerfile` or Quadlet unit refers to by name — a `pass` store can itself be shared, but the binding to the project is a name that must already resolve, so the second person runs a command before anything works.
 
 ## Scopes credentials per app out of the box
 
@@ -314,12 +384,11 @@ podman 5.x, read 2026-08-19. No: `-v` is a flat list assembled at the call site 
 
 ## Egress can be default-deny
 
-Record what the tool can reach on the network with no destination named. The row asks whether a default-deny posture is reachable at all, not what the tool does out of the box.
+Record what the tool can reach on the network with no destination named. The row asks whether a default-deny posture is reachable at all; whether a destination can then be readmitted by name is [the next row](#allowlist-by-destination-name), and is not re-asked here.
 
 1. Configure the tool for its most restrictive documented network posture.
 2. Inside, attempt a TCP connection to an arbitrary public address.
-3. Attempt one to a destination the configuration names.
-4. Record both results and how long each took to answer.
+3. Record the result and how long it took to answer.
 
 ### Default-deny egress, vivarium
 
@@ -329,11 +398,11 @@ The deny posture is enforced host-side, in the VM's own network namespace, becau
 
 ### Default-deny egress, flake-pilot
 
-flake-pilot `main`, read 2026-08-18, re-read 2026-08-20. Partial, and by absence rather than by policy. Upstream states that firecracker "supports networking only through TUN/TAP devices" and that "it is the user's responsibility to set up the routing on the host from the TUN/TAP device to the outside world", then walks a static-IP NAT setup: `ip_forward`, a MASQUERADE rule, a `tap-<app>` device per registration, and `boot_args` edited from `ip=dhcp` to a static triple. Until an operator does that work a microVM reaches nothing, and `flake-ctl firecracker register --no-net` keeps it that way deliberately. All-or-nothing: nothing readmits a named destination.
+flake-pilot `main`, read 2026-08-18, re-read 2026-08-20. Yes, by absence rather than by policy, and the absence is the shipped state. Upstream states that firecracker "supports networking only through TUN/TAP devices" and that "it is the user's responsibility to set up the routing on the host from the TUN/TAP device to the outside world", then walks a static-IP NAT setup: `ip_forward`, a MASQUERADE rule, a `tap-<app>` device per registration, and `boot_args` edited from `ip=dhcp` to a static triple. Until an operator does that work a microVM reaches nothing, and `flake-ctl firecracker register --no-net` keeps it that way deliberately, which is the documented restrictive posture this row asks for.
 
 ### Default-deny egress, podman
 
-podman 5.x, read 2026-08-19. Partial: `--network none` is genuinely default-deny and the network posture is podman's, outside the OCI runtime, so it applies at the krun setup too. All-or-nothing — readmitting named destinations needs a firewall the user maintains outside podman.
+podman 5.x, read 2026-08-19. Yes: `--network none` is genuinely default-deny, and the network posture is podman's rather than the OCI runtime's, so it applies at the krun setup too.
 
 ## Allowlist by destination name
 
@@ -378,7 +447,7 @@ vivarium `ceb0027`, re-read 2026-08-19. No, and nothing is arranged either way: 
 
 ### Inbound, flake-pilot
 
-flake-pilot `main`, read 2026-08-18. Partial: reachable but entirely the operator's job — a TAP device per instance (`@NAME` names it), `ip_forward`, MASQUERADE, hand-edited `boot_args`. Nothing in the tool arranges any of it.
+flake-pilot `main`, read 2026-08-18. Partial: reachable but entirely the operator's job — a TAP device per instance (`@NAME` names it), `ip_forward`, MASQUERADE, hand-edited `boot_args`. Nothing in the tool arranges any of it, and that is host plumbing the user builds rather than a mechanism the tool offers, which is why this stays a hedge rather than becoming a qualified yes.
 
 ### Inbound, glaipnir
 
@@ -458,43 +527,67 @@ podman 5.x, 2026-08-20. Partial: bind-mount the project and its files are there,
 
 ## Compose the environment from separate, reusable parts
 
-Record how a second concern is added to an environment that already has one.
+Record how a second concern is added to an environment that already has one. What happens when the two disagree is [the next row](#a-collision-between-two-parts-is-reported).
 
 1. Define an environment carrying one concern.
 2. Add a second concern written by somebody else, without editing the first.
-3. Record what happens when the two set the same value.
+3. Record what was edited to adopt it.
 
 ### Composition, vivarium
 
-vivarium `ceb0027`, 2026-08-18. Yes: an image and an ordered list of pieces are imported as NixOS modules and merged by the module system, with no vivarium merge engine of its own. Lists concatenate, so every layer contributes to the package set, the mount list, and the egress allowlist. Scalars resolve by priority rather than by position: a shared piece proposes with `mkDefault` and the user's manifest outranks it, a policy floor uses `mkForce` and nothing outranks that, and two definitions surviving at the same priority fail evaluation with `65` rather than being settled by order. That last rule is what lets two independently written pieces be adopted together — a collision is reported, never resolved behind the user's back.
+vivarium `ceb0027`, 2026-08-18. Yes: an image and an ordered list of pieces are imported as NixOS modules and merged by the module system, with no vivarium merge engine of its own. Lists concatenate, so every layer contributes to the package set, the mount list, and the egress allowlist without editing the layer beneath it.
 
 ### Composition, flake-pilot
 
-flake-pilot `main`, read 2026-08-18. Partial: two mechanisms, neither of which merges. An image composes by OCI layering, `--base` for a delta container and a repeatable ordered `--layer`; a registration composes by drop-in, `<app>.d/*.yaml` read in alpha order with the last key winning. Two drop-ins setting one key is neither a conflict nor a merge — the later filename wins — so adopting a second author's file can undo the first's without saying so.
+flake-pilot `main`, read 2026-08-18. Yes: two mechanisms, at two levels. An image composes by OCI layering, `--base` for a delta container and a repeatable ordered `--layer`; a registration composes by drop-in, `<app>.d/*.yaml` read in alpha order. A second author's file is adopted by dropping it in, with nothing edited.
 
 ### Composition, glaipnir
 
-glaipnir `21ef389`, read 2026-08-18. Partial: the extension surface is ordered `NN-*.sh` drop-in hooks, run as root at build and as `aiuser` on every start, plus a `PACKAGES=(...)` array interpolated into the base install line. Hooks compose the way shell does, by running one after another; there is no declaration for two of them to disagree over, and so no stage at which a disagreement could be reported.
+glaipnir `21ef389`, read 2026-08-18. Yes: the extension surface is ordered `NN-*.sh` drop-in hooks, run as root at build and as `aiuser` on every start, `shellcheck`-validated before use, plus a `PACKAGES=(...)` array interpolated into the base install line. A second concern is a second file in the hooks directory.
 
 ### Composition, podman
 
-podman 5.x, 2026-08-19. Partial: a `Containerfile` composes linearly — one `FROM` and a sequence of steps, with multi-stage builds copying artifacts between stages. There is exactly one base, so two bases cannot be adopted together, and combining two authors' work means editing one file into the other by hand.
+podman 5.x, 2026-08-19. No: a `Containerfile` composes linearly — one `FROM` and a sequence of steps, with multi-stage builds copying artifacts between stages. There is exactly one base, so two bases cannot be adopted together, and combining two authors' work means editing one file into the other by hand.
 
-## A config unit works unchanged on someone else's machine
+## A collision between two parts is reported
 
-Record what a user can hand a colleague so the colleague's environment gains the same concern.
+Composition is cheap until two parts set the same thing. Record what the tool does then: report it, resolve it silently, or have nothing to resolve.
+
+1. Adopt two parts that set the same value to different things.
+2. Build, and record what the tool said.
+3. Record which value the guest ended up with, and whether anything named the other.
+
+### Collision, vivarium
+
+vivarium `ceb0027`, 2026-08-18. Yes: scalars resolve by priority rather than by position — a shared piece proposes with `mkDefault` and the user's manifest outranks it, a policy floor uses `mkForce` and nothing outranks that, and two definitions surviving at the same priority fail evaluation with `65` rather than being settled by order. That last rule is what lets two independently written pieces be adopted together: a collision is reported, never resolved behind the user's back. `viv config eval` and `viv config sources` give the merged view with provenance, so the answer to "who set this" is a command rather than a reading exercise.
+
+### Collision, flake-pilot
+
+flake-pilot `main`, read 2026-08-18. No: `<app>.d/*.yaml` is read in alpha order and the last key wins. Two drop-ins setting one key is neither a conflict nor a merge — the later filename wins — so adopting a second author's file can undo the first's without saying so, and the deciding fact is a filename. The same mechanism is what loses flake-pilot the [boundary-file row](#boundary-file-flake-pilot).
+
+### Collision, glaipnir
+
+glaipnir `21ef389`, read 2026-08-18. n/a: hooks compose the way shell does, by running one after another, and `PACKAGES=(...)` is one array in one file. There is no declaration for two parts to disagree over, so there is no stage at which a disagreement could be reported. Not a gap — a different shape of extension, whose cost is paid in [the row above](#composition-glaipnir) rather than here.
+
+### Collision, podman
+
+podman 5.x, 2026-08-19. n/a: there is one `Containerfile` and one author of it at a time, so two parts never meet to collide. A later `RUN` overwriting an earlier one's work is a script overwriting itself, which is the ordinary reading of a sequence.
+
+## There is a shareable unit smaller than the whole environment
+
+Record what a user can hand a colleague so the colleague's environment gains one concern — and whether that unit is the concern or the whole environment. Whether it then works unchanged is [the next row](#a-shared-units-portability-is-enforced).
 
 1. Configure one concern that needs a package and a host path.
-2. Identify the smallest unit carrying it, and hand that unit to a second user.
-3. Record what the second user edits before it works.
+2. Identify the smallest unit carrying it.
+3. Record what the colleague receives, and what else comes with it.
 
 ### Config unit, vivarium
 
-vivarium `ceb0027`, 2026-08-18. Yes: images and pieces are the shared class and the manifest is the personal one. A shared layer reaches the host only through portable variables — `${HOME}` and the four durable XDG directories — which every host resolves, and expansion happens at launch, so no expanded path is ever written into the artifact. A literal personal path in a shared layer fails evaluation with `65` before the build, so this is enforced rather than advised. A piece carries its whole concern — packages, guest config, mounts, environment, and any third-party flake input it needs through its own `inputs.toml` — so adopting it is one name in the colleague's `pieces` list. The same split is how a team makes a guarantee unwaivable: a piece setting a value with `mkForce` outranks every personal manifest.
+vivarium `ceb0027`, 2026-08-18. Yes: images and pieces are the shared class and the manifest is the personal one. A piece carries its whole concern — packages, guest config, mounts, environment, and any third-party flake input it needs through its own `inputs.toml` — so adopting it is one name in the colleague's `pieces` list. The same split is how a team makes a guarantee unwaivable: a piece setting a value with `mkForce` outranks every personal manifest.
 
 ### Config unit, flake-pilot
 
-flake-pilot `main`, read 2026-08-18. Partial: what travels is the image and the registration. A colleague reruns `flake-ctl firecracker register` with the same flags, or copies an `<app>.d/*.yaml` drop-in into place. Both work; neither is portable by construction, because the firecracker registration names local file paths under `/var/lib/firecracker/images/` and a drop-in carrying a host path carries it literally, with nothing checking.
+flake-pilot `main`, read 2026-08-18. Yes: an `<app>.d/*.yaml` drop-in is smaller than the registration and carries one concern's options, and a colleague adopts it by copying it into place. The image is the other unit and it is the whole environment; the drop-in is the small one.
 
 ### Config unit, glaipnir
 
@@ -502,75 +595,103 @@ glaipnir `21ef389`, read 2026-08-18. No: configuration is one `glaipnir.conf`, i
 
 ### Config unit, podman
 
-podman 5.x, 2026-08-19. Partial: a `Containerfile` travels and reproduces its build steps elsewhere, and a published image travels as a pull. Neither is a unit of one concern — the smallest shareable thing is the whole environment — and nothing checks a `Containerfile` for a host path the colleague does not have.
+podman 5.x, 2026-08-19. No: a `Containerfile` travels and reproduces its build steps elsewhere, and a published image travels as a pull. Neither is a unit of one concern — the smallest shareable thing is the whole environment, which is the same single-base limit that loses podman [the composition row](#composition-podman).
 
-## The same definition rebuilds the same environment
+## A shared unit's portability is enforced
 
-Record whether the same definition produces the same environment on a second machine or at a later date.
+A unit that travels is not the same as a unit that works. Record what happens when a shared unit carries something only its author's machine has.
+
+1. Put a literal personal path into a unit meant to be shared.
+2. Hand it to a second user and build.
+3. Record whether anything refused, warned, or noticed, and when.
+
+### Portability enforced, vivarium
+
+vivarium `ceb0027`, 2026-08-18. Yes: a shared layer reaches the host only through portable variables — `${HOME}` and the four durable XDG directories — which every host resolves, and expansion happens at launch, so no expanded path is ever written into the artifact. A literal personal path in a shared artifact fails evaluation with `65` before the build, naming the artifact. This is the mechanism, not the advice: the same rule that makes the docs self-contained is the one the evaluator applies to a piece.
+
+### Portability enforced, flake-pilot
+
+flake-pilot `main`, read 2026-08-18. No: the firecracker registration names local file paths under `/var/lib/firecracker/images/`, and a drop-in carrying a host path carries it literally. Nothing checks, so the failure arrives on the colleague's machine at run time rather than on the author's at build time.
+
+### Portability enforced, glaipnir
+
+glaipnir `21ef389`, read 2026-08-18. No: there is no shared unit for a check to apply to, and the hooks that can be copied by hand are shell scripts that may name anything. `shellcheck` validates them as shell, which is not the same question.
+
+### Portability enforced, podman
+
+podman 5.x, 2026-08-19. No: nothing reads a `Containerfile` for a host path the colleague does not have, and a `-v` or `Volume=` line naming one is ordinary. The build succeeds and the run is what fails.
+
+## The same definition gives everyone the same environment
+
+Record whether a definition produces the same environment on a second machine and at a later date, and what a second person has to be given for that to hold.
 
 1. Record the definition and every version it names.
-2. Reproduce the environment from it on a second machine.
-3. Record what identifies the result, and whether the two are the same object or merely similar.
+2. Reproduce the environment from it on a second machine, a month later.
+3. Record what identifies each result, whether the two are the same object or merely similar, and what fixed each version.
+
+### Same definition, vivarium
+
+vivarium `ceb0027`, 2026-08-18. Yes, by two mechanisms that need each other. The [pure-build rule](../spec/08-invariants-and-guarantees.md) fixes the build as pure — the same manifest closure and lock give the same store output anywhere — and exactly one lockfile is in force, pinning the whole input graph rather than a revision here and there. By default that is the per-target lock vivarium owns under the data root, created by the first evaluation and moved only by `viv update`; a team that wants one shared answer puts a read-only override lock beside the manifest, and it then outranks the tool-owned lock for everybody. `viv config` reports which of the two is in force. A piece declaring a flake input the lock has no node for fails closed with `78`, naming the input and the artifact, rather than resolving it quietly — an unannounced input jump is exactly what the pin exists to prevent.
 
 ### Same definition, flake-pilot
 
-flake-pilot `main`, read 2026-08-18. Partial: the firecracker unit is a versioned tarball fetched by URL into `/var/lib/firecracker/images/<name>/`, and the registration names local file paths, so the same URL gives a second machine the same environment. Nothing pins it: no digest, and the definition it was built from is not carried.
+flake-pilot `main`, read 2026-08-18. Partial: the firecracker unit is a versioned tarball fetched by URL into `/var/lib/firecracker/images/<name>/`, so a second user given the same URL has so far received the same rootfs. Nothing makes that a property rather than a habit — no digest, and the definition the image was built from is not carried, so there is nothing to rebuild from and nothing to compare against.
 
 ### Same definition, glaipnir
 
-glaipnir `21ef389`, read 2026-08-18. No: `Containerfile.agent` starts `FROM` a per-agent image at `:latest`, then installs whatever `PACKAGES=(...)` names and runs whatever build hooks were given. Two of those three inputs move without notice.
+glaipnir `21ef389`, read 2026-08-18. No: `Containerfile.agent` starts `FROM` a per-agent image at `:latest`, then installs whatever `PACKAGES=(...)` names and runs whatever build hooks were given. Two of those three inputs move without notice, and there is nothing to hand a second user that fixes any of them.
 
 ### Same definition, podman
 
-podman 5.x, 2026-08-18. Partial: a digest reference reproduces an image exactly, and nothing arranges one — the published form is a tag, and a `Containerfile`'s `RUN` steps re-execute against whatever the network serves that day.
+podman 5.x, read 2026-08-18. Reachable, nothing arranges it: an image referenced by digest is exactly one artifact, and a colleague given the digest gets it. The published form is a tag, the documented flow is a tag, and a `Containerfile` rebuilt a month later re-executes its `RUN` steps against whatever the network serves that day. The exact answer exists and is the one nobody is pointed at.
 
-## Everyone building it gets the versions you got
+## Run your own setup at build time
 
-Record what fixes the versions inside the environment, and whether a second person can hold the same answer.
+Record what a user can execute of their own while the environment is being produced. Read it beside [The build runs no user-supplied commands as root](#the-build-runs-no-user-supplied-commands-as-root): the two ask one question from opposite sides, and a yes here is what a no there is refusing. What can run at each start is [the next row](#run-your-own-setup-at-every-start).
 
-1. Build the environment and record what fixed each version in it.
-2. Hand the definition to a second user who builds it a month later.
-3. Record what that user would have to be given to get the versions the first one got.
-
-### Pinned versions, vivarium
-
-vivarium `ceb0027`, 2026-08-18. Yes: exactly one lockfile is in force, and it pins the whole input graph rather than a revision here and there. By default it is the per-target lock vivarium owns under the data root, created by the first evaluation and moved only by `viv update`; a team that wants one shared answer puts a read-only override lock beside the manifest, and it then outranks the tool-owned lock for everybody. `viv config` reports which of the two is in force. A piece declaring a flake input the lock has no node for fails closed with `78`, naming the input and the artifact, rather than resolving it quietly — an unannounced input jump is exactly what the pin exists to prevent.
-
-### Pinned versions, flake-pilot
-
-flake-pilot `main`, read 2026-08-18. Partial: the firecracker registration names a versioned tarball fetched by URL into `/var/lib/firecracker/images/<name>/`, so a second user given the same URL gets the same rootfs. Nothing pins it — no digest, and the definition it was built from is not carried — so what the colleague holds is a name that has resolved to the same bytes so far.
-
-### Pinned versions, glaipnir
-
-glaipnir `21ef389`, read 2026-08-18. No: `Containerfile.agent` starts `FROM` a `:latest` tag, installs whatever `PACKAGES=(...)` names, and runs whatever build hooks are present. There is nothing to hand a second user that fixes any of the three.
-
-### Pinned versions, podman
-
-podman 5.x, 2026-08-19. Partial: an image referenced by digest is exactly one artifact, and a colleague given the digest gets it. Nothing arranges that — the published form is a tag, and a `Containerfile` rebuilt on the colleague's machine re-executes its `RUN` steps against whatever the network serves that day.
-
-## Run your own setup at build time and at every start
-
-Record what a user can execute of their own, and when.
-
-1. Write a setup step the tool does not provide — a repository added, a login primed, a file generated.
+1. Write a setup step the tool does not provide — a repository added, a file generated.
 2. Attach it so it runs while the environment is built.
-3. Attach a second one so it runs every time the sandbox starts, and record what it takes to change it later.
+3. Record whether it ran, as whom, and what a second person needs to reproduce the result.
 
-### Own setup, vivarium
+### Own setup at build, vivarium
 
-vivarium `ceb0027`, 2026-08-20. Partial, and the halves differ by design. At start there is no limit worth naming: a piece is a NixOS module, so a systemd service, a timer, or an activation step is declared the way it would be on any NixOS host, and it composes with every other layer through the same merge. At build there is no script slot at all — arbitrary build steps running as root are refused, which is the row directly below this one — so build-time setup is expressed as declaration: a package to install, an option to set, or a derivation that produces the file. Most setup hooks convert; one that expects to reach the network mid-build does not, because that is the reproducibility the rows above measure.
+vivarium `ceb0027`, 2026-08-20. No, by rule: there is no script slot at all, because arbitrary build steps running as root are refused. Build-time setup is expressed as declaration instead — a package to install, an option to set, or a derivation that produces the file. Most setup hooks convert; one that expects to reach the network mid-build does not, because that is the reproducibility [the same-definition row](#same-definition-vivarium) measures. Not planned, and the cost is real.
 
-### Own setup, flake-pilot
+### Own setup at build, flake-pilot
 
-flake-pilot `44e3ab2`, read 2026-08-20. No: neither moment has a hook. The registration flags carry no script, and `--include-tar` / `--include-path` transfer a payload onto the instance rather than executing anything. At start, `sci` runs the one `run=` command and then reboots, so the single execution slot is the application itself.
+flake-pilot `44e3ab2`, read 2026-08-20. No: the registration flags carry no script. `--include-tar` and `--include-path` transfer a payload onto the instance rather than executing anything, and the image's own build happens in a toolchain the registration never sees.
 
-### Own setup, glaipnir
+### Own setup at build, glaipnir
 
-glaipnir `21ef389`, read 2026-08-20. Yes, and this is the subject that has it most directly. `--build-hook` runs the user's script as root inside the build context, which is how a package outside the default repositories gets its repository added. `--run-hook` stages scripts into a mounted directory, and the entrypoint finds every `*.sh` there, sorts them, and runs each one on every start. The ordered `NN-*.sh` convention is what composes them, and each is validated with `shellcheck` before use. The cost is the same as the mechanism: they compose the way shell does, one after another, so nothing can report a disagreement between two of them.
+glaipnir `21ef389`, read 2026-08-20. Yes, and this is the subject that has it most directly: `--build-hook` runs the user's script as root inside the build context, which is how a package outside the default repositories gets its repository added — the mechanism [the packages row](#programs-installed-glaipnir) defers to. The cost is [the no-root-build row](#build-steps-glaipnir) and [the same-definition row](#same-definition-glaipnir), where the same generality reads as a loss.
 
-### Own setup, podman
+### Own setup at build, podman
 
-podman 5.x, 2026-08-20. Partial: `RUN` covers the build side completely. The start side is one command — `ENTRYPOINT` baked into the image, or `--entrypoint` replacing it for a single run. There is no directory of start steps that a user adds to, so a second setup step means editing the first, or rebuilding.
+podman 5.x, 2026-08-20. Yes: `RUN` covers the build side completely, as root, with no restriction on what it does. It is the widest build-time answer in the set, and what it costs is [the same-definition row](#same-definition-podman), where the same line names a package and the repository decides the version.
+
+## Run your own setup at every start
+
+The companion to [the build-time row](#run-your-own-setup-at-build-time). Some setup cannot happen at build: it needs the host as it is now, or the credential that arrived since. Record whether the tool has a place for it, and whether a second such step can be added without editing the first.
+
+1. Write a setup step that must run each time the sandbox starts, before the user's work does.
+2. Attach it by the tool's documented mechanism.
+3. Attach a second one, and record what it took to add.
+
+### Own setup at start, vivarium
+
+vivarium `ceb0027`, 2026-08-20. Yes, with no limit worth naming: a piece is a NixOS module, so a systemd service, a timer, or an activation step is declared the way it would be on any NixOS host, and it composes with every other layer through the same merge. A second one is a second module rather than an edit to the first, which is [the composition row](#composition-vivarium) paying out. What it is not is a shell hook — the unit is a declaration the module system can see, which is what lets [a collision be reported](#collision-vivarium).
+
+### Own setup at start, flake-pilot
+
+flake-pilot `44e3ab2`, read 2026-08-20. No: `sci` runs the one `run=` command and then reboots, so the single execution slot is the application itself. That is the same in-guest emptiness that loses flake-pilot [a second session](#concurrent-sessions-flake-pilot).
+
+### Own setup at start, glaipnir
+
+glaipnir `21ef389`, read 2026-08-20. Yes: `--run-hook` stages scripts into a mounted directory, and the entrypoint finds every `*.sh` there, sorts them, and runs each one on every start. The ordered `NN-*.sh` convention is what composes them, and each is validated with `shellcheck` before use. The cost is the same as the mechanism: they compose the way shell does, one after another, so nothing can report a disagreement between two of them — which is where [the collision row](#collision-glaipnir) reads `n/a`.
+
+### Own setup at start, podman
+
+podman 5.x, 2026-08-20. Reachable, nothing arranges it: the start side is one command — `ENTRYPOINT` baked into the image, or `--entrypoint` replacing it for a single run — so setup means writing a script that does the work and then execs the real one. The mechanism is podman's and the arrangement is the user's: there is no directory of start steps to add to, so a second step edits the first, or rebuilds.
 
 ## The build runs no user-supplied commands as root
 
@@ -619,32 +740,60 @@ Record what the first run has to do before the environment is usable.
 
 vivarium `ceb0027`, 2026-08-18. No, by rule: the [pure-build rule](../spec/08-invariants-and-guarantees.md) fixes the build as pure, a property an OCI registry pull cannot have since a tag is a mutable name. Not planned — the cheap cold start is a Nix binary cache, which delivers the same closure rather than a differently-built one.
 
-## Re-enter a running instance
+## A later command reaches the instance already running
 
-Record whether a second command can join an instance that is already running.
+Two questions hide in "can I get back into it". This one asks whether the instance outlives the command that started it, so that the next invocation joins it rather than booting a fresh one; [the next](#a-second-session-joins-it-while-the-first-is-still-there) asks whether two can be inside at once.
 
-1. Start the instance and leave a process running inside it.
-2. From a second terminal, run another command against the same instance.
+1. Start the instance and let the first command finish.
+2. Run a second command against the same instance.
 3. Record whether it joined the existing instance or created another.
 
-### Re-entry, flake-pilot
+### Later command, vivarium
 
-flake-pilot `main`, read 2026-08-18. Partial: the instance survives between calls, a second session into it does not. `--resume --force-vsock` keeps the VM alive host-side so the next call reaches it over the vsock, but the guest init is `sci`, which executes the one command named by `run=` and reboots. Nothing is left in the guest to hand out a second shell, so two concurrent sessions are two VMs, separated by a call-time suffix that for firecracker also names the TAP device:
+vivarium `ceb0027`, 2026-08-18. Yes: the VM outlives the command, and `start` is idempotent — on a fresh, already-running VM it is a no-op that exits `0`. That ensure-running step is the shared routine `viv exec` and `viv shell` reuse when they start the VM if needed, so joining and starting are the same code path reached from either state.
+
+### Later command, flake-pilot
+
+flake-pilot `main`, read 2026-08-18. Yes: `--resume` keeps the instance, and with `--force-vsock` the VM stays alive host-side so the next call reaches it over the vsock rather than booting a second one. The registration is where that is fixed, and it is fixed for firecracker: upstream states the `krun` handler does not support `exec`, so a `krun` registration cannot use `--resume` either.
+
+### Later command, glaipnir
+
+glaipnir `21ef389`, read 2026-08-18. No: a running krun container cannot be entered at all, so `run` cannot resume into one. The script counts what exists and starts a numbered sibling instead. The `podman exec` and `podman start -ai` resume path that `run` does have is the container backend's.
+
+### Later command, podman
+
+podman 5.x, read 2026-08-19. No: `podman exec` cannot enter a krun container — there is no in-guest agent to inject a process into. The container keeps running and remains listed; what cannot happen is getting back inside it. The exec that works is the shared-kernel runtime's.
+
+## A second session joins it while the first is still there
+
+The companion to [the row above](#a-later-command-reaches-the-instance-already-running): not one session after another, but two at once, sharing one guest, one working tree, and one set of processes.
+
+1. Start the instance and leave a process running inside it.
+2. From a second terminal, open another session against the same instance.
+3. Record whether it joined the existing instance or created another, and what the two sessions share.
+
+### Concurrent sessions, vivarium
+
+vivarium `ceb0027`, 2026-08-18. Yes: `control.sock` is a listening socket, and each `viv exec` and each `viv shell` opens its own connection to it and performs the transport's per-connection session handshake. Session state — the PTY, the argv, the environment, the exit status — is per connection, and the multiplexing is the transport's rather than vivarium's. N terminals therefore share one guest rather than getting N guests, and an interactive session is a PTY sized before it starts, with job control and resize forwarding.
+
+### Concurrent sessions, flake-pilot
+
+flake-pilot `main`, read 2026-08-18. No: the guest init is `sci`, which executes the one command named by `run=` and reboots, so nothing is left inside to hand out a second shell. Two concurrent sessions are therefore two VMs, separated by a call-time suffix that for firecracker also names the TAP device:
 
 ```bash
 claude @projA        # one VM: instance projA, tap-claude@projA
 claude @projB        # a second VM: its own overlay, memory, and TAP device
 ```
 
-Two VMs is not the same capability as two shells: the sessions share no working tree, no running process, and no warm state. Registering the app as a multiplexer or an `sshd` would buy that back, at the cost of building the in-guest supervisor flake-pilot does not ship. The `--attach` flag that would join a running instance exists only in `flake-ctl podman register`; the firecracker registration has no such flag, and the full `exec`/`attach` ergonomics belong to the `crun` container backend.
+Two VMs is not the same capability as two shells: the sessions share no working tree, no running process, and no warm state. Registering the app as a multiplexer or an `sshd` would buy that back, at the cost of building the in-guest supervisor flake-pilot does not ship. The `--attach` flag that would join a running instance exists only in `flake-ctl podman register`; the firecracker registration has no such flag, and the full `exec` and `attach` ergonomics belong to the `crun` container backend.
 
-### Re-entry, glaipnir
+### Concurrent sessions, glaipnir
 
-glaipnir `21ef389`, read 2026-08-18. No: a running krun container cannot be entered, so the script counts what exists and starts a numbered sibling instead. The microVM boundary and re-entry are mutually exclusive here; the `podman exec` resume path is the container backend.
+glaipnir `21ef389`, read 2026-08-18. No, and for the same reason it fails [the row above](#later-command-glaipnir): a krun guest cannot be entered even once more, so it cannot be entered twice. Two runs are two numbered sibling containers.
 
-### Re-entry, podman
+### Concurrent sessions, podman
 
-podman 5.x, read 2026-08-19. No: `podman exec` cannot enter a krun container — there is no in-guest agent to inject a process into, the same reason it fails in the other two tools. The exec that works is the shared-kernel runtime's.
+podman 5.x, read 2026-08-19. No: with no in-guest agent there is no way to inject a first extra process, let alone a concurrent one. Two `podman run` invocations are two microVMs with two rootfs layers.
 
 ## Installs from a distro package
 
@@ -659,10 +808,10 @@ vivarium `ceb0027`, 2026-08-18. No: installation is Nix-native — the user need
 
 ## Feels like a native command
 
-Record what the user types to run the sandboxed tool.
+Record what the user types to run the sandboxed tool, and whether it names the sandbox.
 
 1. Complete the tool's setup for one application.
-2. Record the exact invocation a user types afterwards, and whether it names the sandbox.
+2. Record the exact invocation a user types afterwards.
 
 ### Native command, vivarium
 
@@ -670,7 +819,31 @@ vivarium `ceb0027`, 2026-08-18. No: running something inside is `viv exec -- <co
 
 ### Native command, glaipnir
 
-glaipnir `21ef389`, read 2026-08-18. Partial: `glaipnir run claude` names the sandbox, but the tool is one word away and the agent roster is built in — between flake-pilot's invisible symlink and a general-purpose wrapper.
+glaipnir `21ef389`, read 2026-08-18. No: `glaipnir run claude` names the sandbox, the same as vivarium's does, and one word shorter is not a different answer. What glaipnir does buy with that word is a roster the invocation can be checked against, which is [the next row](#works-for-a-tool-the-sandbox-has-never-heard-of) and where the two tools part company.
+
+## Works for a tool the sandbox has never heard of
+
+Record whether the sandbox is general, or arrives knowing a fixed set of applications.
+
+1. Choose a program the tool's documentation never mentions.
+2. Run it inside by the tool's ordinary mechanism.
+3. Record whether anything had to be taught its name, and where.
+
+### Any tool, vivarium
+
+vivarium `ceb0027`, 2026-08-18. Yes: vivarium is application-agnostic and classifies nothing inside as trusted or untrusted. The manifest names packages and mounts; it never names an application the tool holds an opinion about. That generality is the same position that loses vivarium the [credential-scoping row](#per-tool-credentials-vivarium), where knowing which directory belongs to which application is exactly what would be needed, and it is logged as `Q-031` in [`open-questions.md`](../../plan/open-questions.md).
+
+### Any tool, flake-pilot
+
+flake-pilot `main`, read 2026-08-18. Yes: a registration is a command name and an image, and nothing constrains which command. The pilot reads `argv[0]` from a symlink, so an unheard-of tool is one more registration.
+
+### Any tool, glaipnir
+
+glaipnir `21ef389`, read 2026-08-18. No: the roster is five trusted agents and one untrusted one, hardcoded, with per-agent images, per-agent credential directories, and per-agent authentication predicates. A tool outside the roster has no image, no mounts, and no entry in `_bind_agent_mounts`, so running it means editing `glaipnir.sh`. This is the cost side of the same built-in opinion that wins glaipnir [the credential-scoping row](#per-tool-credentials-glaipnir) — the two rows are one design decision, read from its two ends.
+
+### Any tool, podman
+
+podman 5.x, read 2026-08-19. Yes: podman runs an image and an image runs anything. It knows nothing about applications, which is why it neither helps nor hinders here.
 
 ## Boot a previous build when the new one is broken
 
@@ -724,18 +897,50 @@ flake-pilot `main`, read 2026-08-18. No: no reclamation verb. The overlay is a f
 
 glaipnir `21ef389`, read 2026-08-18. Yes, structurally: the container filesystem is disposable and everything durable is a host directory, so deleting a file inside frees host space immediately. `clean <agent>` and `clean <agent> all` cover the images. Holds at the microVM — krun changes the kernel, not where the bytes live.
 
-## See every sandbox on the machine
+## See every definition on the machine
 
-Record how a user finds every sandbox that exists, running or not.
+Record how a user finds every sandbox that has been defined on the machine, running or not. Whether the running ones can be found is [the next row](#see-every-running-instance-on-the-machine).
 
-1. Create sandboxes for three different projects and leave one running.
+1. Define sandboxes for three different projects.
 2. Run the tool's enumeration command from an unrelated directory.
 3. Record what is listed and what is missing.
 
-### Enumerate, flake-pilot
+### Definitions, vivarium
 
-flake-pilot `main`, read 2026-08-18. Partial: `flake-ctl list` reports registrations — name, engine, config path — not instances. Podman instances live in a separate storage root needing `CONTAINERS_STORAGE_CONF` to see, and firecracker instances are processes with TAP devices that nothing enumerates.
+vivarium `ceb0027`, 2026-08-18. Specified, not built: there is no machine-wide index of projects today. `viv status` reports the current project, and `viv status -g` together with `viv images list` are specified and do not run — the `*`. A definition lives in the project directory it belongs to, so the filesystem holds the answer and nothing collects it.
 
-### Enumerate, vivarium
+### Definitions, flake-pilot
 
-vivarium `ceb0027`, 2026-08-18. Specified, not built: `viv status` reports the current project; `viv status -g` and `viv stop --all` are specified and do not run — the `*`. The machine-wide view is the one thing all three alternatives provide today and vivarium does not.
+flake-pilot `main`, read 2026-08-18. Yes: `flake-ctl list --format table|json|csv` reports every registration — name, engine, config path. The unit is the application rather than the project, which is [Defined by a project file](#project-file-flake-pilot), but every unit that exists is listed.
+
+### Definitions, glaipnir
+
+glaipnir `21ef389`, read 2026-08-18. Yes: `status` reports the agents and images that exist, and the roster is fixed, so the set is small and fully known by construction. Enumeration is easy for the same reason [an unknown tool cannot run](#any-tool-glaipnir).
+
+### Definitions, podman
+
+podman 5.x, read 2026-08-19. Yes: `podman images` lists every image on the machine, from any directory.
+
+## See every running instance on the machine
+
+Record how a user finds every sandbox that is running right now, including ones started from directories they have forgotten.
+
+1. Start sandboxes for three different projects and leave them running.
+2. Run the tool's enumeration command from an unrelated directory.
+3. Record what is listed, what is missing, and what would stop them all.
+
+### Instances, vivarium
+
+vivarium `ceb0027`, 2026-08-18. Specified, not built: `viv status` reports the current project; `viv status -g`, a live-session count, and `viv stop --all` are specified and do not run — the `*`. The machine-wide view is the one thing all three alternatives provide today and vivarium does not.
+
+### Instances, flake-pilot
+
+flake-pilot `main`, read 2026-08-18. No: `flake-ctl list` reports registrations rather than instances. Firecracker instances are processes with TAP devices that nothing enumerates, and podman instances live in a separate storage root that needs `CONTAINERS_STORAGE_CONF` to be visible at all — so even the engine's own listing does not find them by default.
+
+### Instances, glaipnir
+
+glaipnir `21ef389`, read 2026-08-18. Yes: instances are podman containers under the user's ordinary storage, so `status` and podman's own listing both find them, and the numbered-sibling naming makes a forgotten one legible rather than anonymous.
+
+### Instances, podman
+
+podman 5.x, read 2026-08-19. Yes: `podman ps -a` lists everything on the machine and `podman stop -a` stops it, at any runtime, including krun.

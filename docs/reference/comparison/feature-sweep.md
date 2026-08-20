@@ -228,50 +228,58 @@ Cells are then filled at one fixed setup per subject — the microVM backend for
 3. `glaipnir` — the libkrun microVM.
 4. `podman` — rootless `podman run --runtime krun`.
 
-A capability a subject has only at another backend is not credited. Backend availability and selection are not capability rows: the six entries themed `Backends` below fill the `Isolation backends` matrix in [`README.md`](./README.md) instead of a capability table. Filling a cell from whichever backend answers best would compare a tool with two modes against a tool with one, and every such mismatch found in review is listed below.
+A capability a subject has only at another backend is not credited. Backend availability and selection are not capability rows: the seven entries themed `Backends` below fill the `Isolation backends` matrix in [`README.md`](./README.md) instead of a capability table. Filling a cell from whichever backend answers best would compare a tool with two modes against a tool with one, and every such mismatch found in review is listed below.
 
 Verified: 2026-08-18 — merged from the four inventories above, at the commits `sources.md` pins.
 
-| Merged capability                                          | Theme             | First seen in                                   |
-| ---------------------------------------------------------- | ----------------- | ----------------------------------------------- |
-| Own kernel                                                 | Backends          | `vivarium`, `flake-pilot`, `glaipnir`           |
-| Shared-kernel isolation with an OCI runtime                | Backends          | `flake-pilot`, `glaipnir`, `podman`             |
-| Nothing downgrades the boundary for you                    | Backends          | `vivarium`, `glaipnir`                          |
-| Runs on a host without KVM                                 | Backends          | `flake-pilot`, `glaipnir`, `podman`             |
-| Choose the engine or hypervisor                            | Backends          | `flake-pilot`                                   |
-| Work stays at its host path                                | Data              | `vivarium`, `glaipnir`                          |
-| Choose which host paths cross, in a project file           | Data              | `vivarium`                                      |
-| Choose which host environment variables cross              | Data              | `vivarium`, `podman`                            |
-| Refuses a mount that would expose the host session         | Data              | `vivarium`                                      |
-| Use an SSH or GPG key without the key entering the sandbox | Data              | `vivarium`                                      |
-| Secrets are kept out of the built artifact                 | Data              | `glaipnir`                                      |
-| Commit an encrypted secret alongside the config            | Data              | `vivarium`, `podman`                            |
-| Scopes credentials per app out of the box                  | Data              | `glaipnir`                                      |
-| Egress can be default-deny                                 | Network           | `vivarium`, `podman`                            |
-| Allowlist by destination name                              | Network           | `vivarium`                                      |
-| Stays off a corporate VPN                                  | Network           | `glaipnir`                                      |
-| Something outside can reach a guest service                | Network           | `flake-pilot`, `podman`                         |
-| Defined by a project file                                  | Guest environment | `vivarium`                                      |
-| Choose which programs are installed in the guest           | Guest environment | `glaipnir`, `podman`                            |
-| The project's own dev environment loads when you enter     | Guest environment | `vivarium`                                      |
-| Compose the environment from separate, reusable parts      | Guest environment | `vivarium`, `flake-pilot`                       |
-| A config unit works unchanged on someone else's machine    | Guest environment | `vivarium`, `flake-pilot`                       |
-| The same definition rebuilds the same environment          | Guest environment | `vivarium`                                      |
-| Everyone building it gets the versions you got             | Guest environment | `vivarium`                                      |
-| Run your own setup at build time and at every start        | Guest environment | `glaipnir`                                      |
-| The build runs no user-supplied commands as root           | Guest environment | `vivarium`                                      |
-| Choose the guest operating system                          | Guest environment | `flake-pilot`, `glaipnir`, `podman`             |
-| Pull a prebuilt image instead of building                  | Guest environment | `flake-pilot`, `glaipnir`, `podman`             |
-| Re-enter a running instance                                | Living with it    | `vivarium`, `flake-pilot`, `glaipnir`, `podman` |
-| Installs from a distro package in one command              | Living with it    | `flake-pilot`, `glaipnir`                       |
-| The sandboxed tool feels like a native command             | Living with it    | `flake-pilot`                                   |
-| Runs on macOS                                              | Backends          | `glaipnir`, `podman`                            |
-| Boot a previous build when the new one is broken           | What accumulates  | `vivarium`                                      |
-| Update on purpose rather than by surprise                  | What accumulates  | `vivarium`                                      |
-| Reclaim disk without a teardown                            | What accumulates  | `podman`, `glaipnir`                            |
-| See every sandbox on the machine                           | What accumulates  | `flake-pilot`, `glaipnir`, `podman`             |
+| Merged capability                                                        | Theme             | First seen in                                   |
+| ------------------------------------------------------------------------ | ----------------- | ----------------------------------------------- |
+| Own kernel                                                               | Backends          | `vivarium`, `flake-pilot`, `glaipnir`           |
+| Shared-kernel isolation with an OCI runtime                              | Backends          | `flake-pilot`, `glaipnir`, `podman`             |
+| No flag selects a weaker boundary                                        | Backends          | `vivarium`, `glaipnir`                          |
+| No file you did not write selects a weaker boundary                      | Backends          | `flake-pilot`, `podman`                         |
+| Runs on a host without KVM                                               | Backends          | `flake-pilot`, `glaipnir`, `podman`             |
+| Choose the engine or hypervisor                                          | Backends          | `flake-pilot`                                   |
+| Runs on macOS                                                            | Backends          | `glaipnir`, `podman`                            |
+| The tool arranges the workspace mount                                    | Data              | `vivarium`, `glaipnir`                          |
+| Work stays at its host path                                              | Data              | `vivarium`, `glaipnir`                          |
+| Choose which host paths cross, in a file rather than on the command line | Data              | `vivarium`                                      |
+| The caller chooses which host environment variables cross                | Data              | `vivarium`, `podman`                            |
+| Refuses a mount that would expose the host session                       | Data              | `vivarium`                                      |
+| Use an SSH or GPG key without the key entering the sandbox               | Data              | `vivarium`                                      |
+| Secrets are kept out of the built artifact                               | Data              | `glaipnir`                                      |
+| Keeping secrets out of the build is enforced                             | Data              | `glaipnir`                                      |
+| Commit an encrypted secret alongside the config                          | Data              | `vivarium`, `podman`                            |
+| Scopes credentials per app out of the box                                | Data              | `glaipnir`                                      |
+| Egress can be default-deny                                               | Network           | `vivarium`, `podman`                            |
+| Allowlist by destination name                                            | Network           | `vivarium`                                      |
+| Stays off a corporate VPN                                                | Network           | `glaipnir`                                      |
+| Something outside can reach a guest service                              | Network           | `flake-pilot`, `podman`                         |
+| Defined by a project file                                                | Guest environment | `vivarium`                                      |
+| Choose which programs are installed in the guest                         | Guest environment | `glaipnir`, `podman`                            |
+| The project's own dev environment loads when you enter                   | Guest environment | `vivarium`                                      |
+| Compose the environment from separate, reusable parts                    | Guest environment | `vivarium`, `flake-pilot`                       |
+| A collision between two parts is reported                                | Guest environment | `vivarium`                                      |
+| There is a shareable unit smaller than the whole environment             | Guest environment | `vivarium`, `flake-pilot`                       |
+| A shared unit's portability is enforced                                  | Guest environment | `vivarium`                                      |
+| The same definition gives everyone the same environment                  | Guest environment | `vivarium`                                      |
+| Run your own setup at build time                                         | Guest environment | `glaipnir`, `podman`                            |
+| Run your own setup at every start                                        | Guest environment | `glaipnir`                                      |
+| The build runs no user-supplied commands as root                         | Guest environment | `vivarium`                                      |
+| Choose the guest operating system                                        | Guest environment | `flake-pilot`, `glaipnir`, `podman`             |
+| Pull a prebuilt image instead of building                                | Guest environment | `flake-pilot`, `glaipnir`, `podman`             |
+| A later command reaches the instance already running                     | Living with it    | `vivarium`, `flake-pilot`, `glaipnir`, `podman` |
+| A second session joins it while the first is still there                 | Living with it    | `vivarium`                                      |
+| Installs from a distro package in one command                            | Living with it    | `flake-pilot`, `glaipnir`                       |
+| The sandboxed tool feels like a native command                           | Living with it    | `flake-pilot`                                   |
+| Works for a tool the sandbox has never heard of                          | Living with it    | `glaipnir`                                      |
+| Boot a previous build when the new one is broken                         | What accumulates  | `vivarium`                                      |
+| Update on purpose rather than by surprise                                | What accumulates  | `vivarium`                                      |
+| Reclaim disk without a teardown                                          | What accumulates  | `podman`, `glaipnir`                            |
+| See every definition on the machine                                      | What accumulates  | `flake-pilot`, `glaipnir`, `podman`             |
+| See every running instance on the machine                                | What accumulates  | `flake-pilot`, `glaipnir`, `podman`             |
 
-Sixteen of the thirty-six entries were first seen in a project other than vivarium — twelve of the thirty capability rows and four of the six backend rows. That number is the point of sweeping separately, and it is the check worth repeating on any refresh: if a later sweep produces a table whose rows all originate with the subject, the sweep was not independent.
+Twenty-one of the forty-four entries were first seen in a project other than vivarium — sixteen of the thirty-seven capability rows and five of the seven backend rows. That number is the point of sweeping separately, and it is the check worth repeating on any refresh: if a later sweep produces a table whose rows all originate with the subject, the sweep was not independent.
 
 ### Verdicts corrected to the microVM boundary
 
@@ -428,6 +436,45 @@ Two of the three were first seen elsewhere. `PACKAGES=(…)` is in glaipnir's sw
 The hook row is placed beside `The build runs no user-supplied commands as root` on purpose. The two are the same question asked from opposite sides, and reading them together is what keeps vivarium's `partial` from looking like a shortfall: the missing half is the arbitrary root build step the next row reports as refused.
 
 Verified: 2026-08-20 — vivarium against [`spec/03-artifact-model.md`](../spec/03-artifact-model.md) for the manifest key table and [`spec/06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md) for the inner layer, and against [`implementation-status.md`](../implementation-status.md) and the shipped guest module for the `*`; flake-pilot against the `sci` and `flake-ctl-firecracker-register` manual pages in a fresh clone at `44e3ab2`; glaipnir against `image/Containerfile`, `image/scripts/entrypoint.sh`, and `docs/overview.md` at `21ef389`; podman against its manual pages. No existing verdict moved.
+
+### Rows split so one cell states one claim
+
+A reader asked what `Re-enter a running instance` meant for flake-pilot, because its `partial` was answering two questions at once: the instance does survive between calls, and a second session into it does not exist. Those are different mechanisms with different verdicts, and one symbol could only average them.
+
+Sweeping every remaining cell for the same shape produced a test. A row is split when two mechanisms sit under one label, some subject has one without the other, both halves discriminate among subjects, neither half restates a row that already exists, and the resulting row is not one only vivarium was ever going to win. Most hedges failed it. Eight rows passed.
+
+| Split                                                   | Into                                                                                      | What the one symbol was hiding                                                                                             |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Nothing downgrades the boundary for you                 | No flag selects a weaker boundary; no file you did not write selects one                  | The method already named three readers and the verdict averaged them; flake-pilot fails on the file, glaipnir on the flag  |
+| Work stays at its host path                             | The tool arranges the workspace mount; work stays at its host path                        | glaipnir arranges the mount and moves the path; podman keeps the path and arranges nothing — one symbol, opposite failures |
+| Secrets are kept out of the built artifact              | The documented flow keeps them out; keeping them out is enforced                          | glaipnir's stance holds in the code and nothing holds a user to it                                                         |
+| Compose the environment from separate, reusable parts   | Composition; a collision between two parts is reported                                    | Three subjects compose and three resolve collisions differently, including two with nothing to collide                     |
+| A config unit works unchanged on someone else's machine | There is a shareable unit smaller than the whole environment; its portability is enforced | flake-pilot has the unit and no check; podman has neither                                                                  |
+| Run your own setup at build time and at every start     | At build time; at every start                                                             | The label named two moments and vivarium answers them oppositely — refused at build, declarative at start                  |
+| Re-enter a running instance                             | A later command reaches the instance; a second session joins it                           | flake-pilot keeps the instance with `--resume` and has no in-guest supervisor to hand out a second shell                   |
+| See every sandbox on the machine                        | See every definition; see every running instance                                          | flake-pilot enumerates registrations and cannot enumerate instances                                                        |
+
+One row was added by the same pass rather than split out of one. `Feels like a native command` hedged glaipnir partly on its built-in roster, which is a capability of its own: `Works for a tool the sandbox has never heard of`. It is the cost side of the design that wins glaipnir `Scopes credentials per app out of the box`, and the table carried only the winning side.
+
+Two rows were merged, which is the same principle running backwards. `The same definition rebuilds the same environment` and `Everyone building it gets the versions you got` had near-verbatim evidence for both alternatives — the same tarball-by-URL argument, the same digest-versus-tag argument — because they were one claim wearing two labels. They are now `The same definition gives everyone the same environment`, and vivarium's two mechanisms, the pure build and the single lockfile, are stated in one place because neither is sufficient alone.
+
+Nine hedges were left standing on the test. `Defined by a project file` splits cleanly into whether the definition can live beside the project and whether entering the directory selects it, and the second is a row only vivarium was ever going to win — the failure mode this document already names, where a label exposes a question one design was built to answer. `Update on purpose` splits into whether the environment moves and whether you can tell what you are running, and the second belongs nearer the enumeration rows than to a row of its own.
+
+| Row                                       | Was                                     | Now                                   | Why                                                                                               |
+| ----------------------------------------- | --------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Egress can be default-deny                | `flake-pilot` partial, `podman` partial | `flake-pilot` yes, `podman` yes       | Both hedged on readmitting a named destination, which is the next row, where both already read no |
+| Choose which host paths cross             | `podman` partial                        | `podman` yes‡, and the row narrowed   | Hedged on travelling with the project and on merging, which are two other rows                    |
+| The caller chooses which environment vars | `glaipnir` partial                      | `glaipnir` no, and the row relabelled | An explicit list is a real guarantee and not this row's question; the list is the tool's          |
+| Work stays at its host path               | `podman` partial                        | `podman` yes‡                         | `-v /path:/path` is exact; what was missing is arrangement, which the mark now carries            |
+| Commit an encrypted secret                | `vivarium` partial, `podman` partial    | `vivarium` yes‡, `podman` yes‡        | Both supply a seam and neither supplies the scheme; the mark says so without averaging it         |
+| The same definition                       | `podman` partial                        | `podman` yes‡                         | A digest reproduces exactly and the documented flow is a tag                                      |
+| Run your own setup at every start         | `podman` partial                        | `podman` yes‡                         | `ENTRYPOINT` is the mechanism; there being no directory of steps is the composition row           |
+
+Seven of those eleven moved in an alternative's favour and none of the four remaining moved in vivarium's: vivarium gains `‡` on one cell, loses `Run your own setup at build time` outright as a `†`, and picks up a `partial` on `Keeping secrets out of the build is enforced` that its old cell had absorbed. Twenty-four hedged cells became seven.
+
+The `‡` mark is what made the promotions honest rather than generous. It says the tool provides the mechanism and arranges nothing, and it applies only when the user invokes something the tool offers — not when the user builds the mechanism themselves. That line is why `Something outside reaches a guest service` stays a hedge for flake-pilot: `ip_forward`, a MASQUERADE rule, and a hand-edited `boot_args` are host plumbing an operator assembles, not a flag anyone passes. A mark that turned every no into a qualified yes would be worth nothing.
+
+Verified: 2026-08-20 — every split and every promotion re-read against the evidence already recorded in [`scenarios.md`](./scenarios.md) at the revisions [`sources.md`](./sources.md) pins, with no subject re-read for this pass. The correction tables above keep the row labels they were written with; a label frozen in a dated record is what makes the record readable later, and the inventory above is where the current set lives.
 
 ### Cut, and why
 
