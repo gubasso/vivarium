@@ -69,21 +69,20 @@ Where the tool can reach, and who decides. Reachable, not default: vivarium's eg
 
 The guest is an artifact somebody produced. These rows ask how that artifact is defined and assembled, what goes inside it and how the project's own tooling meets it, whether the definition travels to another person and repeats there, what ran while it was being produced, and how you get one in the first place.
 
-| capability                                                                                 | `vivarium`                                             | `flake-pilot`                                            | `glaipnir`                                             | `podman`                                             |
-| ------------------------------------------------------------------------------------------ | ------------------------------------------------------ | -------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------- |
-| [Defined by a project file](./scenarios/project-file.md)                                   | ✅ yes                                                 | [❌ no](./scenarios/project-file.md#flake-pilot)         | [❌ no](./scenarios/project-file.md#glaipnir)          | [⚠️ partial](./scenarios/project-file.md#podman)      |
-| [Choose which programs are installed in the guest](./scenarios/programs-installed.md)      | [✅ yes](./scenarios/programs-installed.md#vivarium)   | [❌ no](./scenarios/programs-installed.md#flake-pilot)   | [✅ yes](./scenarios/programs-installed.md#glaipnir)   | [✅ yes](./scenarios/programs-installed.md#podman)   |
-| [The project's own dev environment loads when you enter](./scenarios/inner-environment.md) | [✅ yes*](./scenarios/inner-environment.md#vivarium)   | [❌ no](./scenarios/inner-environment.md#flake-pilot)    | [⚠️ partial](./scenarios/inner-environment.md#glaipnir) | [⚠️ partial](./scenarios/inner-environment.md#podman) |
-| [Compose the environment from separate, reusable parts](./scenarios/composition.md)        | [✅ yes](./scenarios/composition.md#vivarium)          | [✅ yes](./scenarios/composition.md#flake-pilot)         | [✅ yes](./scenarios/composition.md#glaipnir)          | [❌ no](./scenarios/composition.md#podman)           |
-| [A collision between two parts is reported](./scenarios/collision.md)                      | [✅ yes](./scenarios/collision.md#vivarium)            | [❌ no](./scenarios/collision.md#flake-pilot)            | [➖ n/a](./scenarios/collision.md#glaipnir)            | [➖ n/a](./scenarios/collision.md#podman)            |
-| [There is a shareable unit smaller than the whole environment](./scenarios/config-unit.md) | [✅ yes](./scenarios/config-unit.md#vivarium)          | [✅ yes](./scenarios/config-unit.md#flake-pilot)         | [❌ no](./scenarios/config-unit.md#glaipnir)           | [❌ no](./scenarios/config-unit.md#podman)           |
-| [A shared unit's portability is enforced](./scenarios/portability-enforced.md)             | [✅ yes](./scenarios/portability-enforced.md#vivarium) | [❌ no](./scenarios/portability-enforced.md#flake-pilot) | [❌ no](./scenarios/portability-enforced.md#glaipnir)  | [❌ no](./scenarios/portability-enforced.md#podman)  |
-| [The same definition gives everyone the same environment](./scenarios/same-definition.md)  | [✅ yes](./scenarios/same-definition.md#vivarium)      | [⚠️ partial](./scenarios/same-definition.md#flake-pilot)  | [❌ no](./scenarios/same-definition.md#glaipnir)       | [✅ yes‡](./scenarios/same-definition.md#podman)     |
-| [Run your own setup at build time](./scenarios/own-setup-at-build.md)                      | [❌ no†](./scenarios/own-setup-at-build.md#vivarium)   | [❌ no](./scenarios/own-setup-at-build.md#flake-pilot)   | [✅ yes](./scenarios/own-setup-at-build.md#glaipnir)   | [✅ yes](./scenarios/own-setup-at-build.md#podman)   |
-| [Run your own setup at every start](./scenarios/own-setup-at-start.md)                     | [✅ yes](./scenarios/own-setup-at-start.md#vivarium)   | [❌ no](./scenarios/own-setup-at-start.md#flake-pilot)   | [✅ yes](./scenarios/own-setup-at-start.md#glaipnir)   | [✅ yes‡](./scenarios/own-setup-at-start.md#podman)  |
-| [The build runs no user-supplied commands as root](./scenarios/build-steps.md)             | ✅ yes                                                 | ❌ no                                                    | [❌ no](./scenarios/build-steps.md#glaipnir)           | ❌ no                                                |
-| [Choose the guest operating system](./scenarios/guest-os.md)                               | [❌ no†](./scenarios/guest-os.md#vivarium)             | [✅ yes](./scenarios/guest-os.md#flake-pilot)            | [❌ no](./scenarios/guest-os.md#glaipnir)              | [✅ yes](./scenarios/guest-os.md#podman)             |
-| [Pull a prebuilt image](./scenarios/prebuilt-image.md)                                     | [❌ no†](./scenarios/prebuilt-image.md#vivarium)       | ✅ yes                                                   | ✅ yes                                                 | ✅ yes                                               |
+| capability                                                                                 | `vivarium`                                              | `flake-pilot`                                            | `glaipnir`                                             | `podman`                                             |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------- |
+| [Defined by a project file](./scenarios/project-file.md)                                   | ✅ yes                                                  | [❌ no](./scenarios/project-file.md#flake-pilot)         | [❌ no](./scenarios/project-file.md#glaipnir)          | [⚠️ partial](./scenarios/project-file.md#podman)      |
+| [The project's own dev environment loads when you enter](./scenarios/inner-environment.md) | [✅ yes*](./scenarios/inner-environment.md#vivarium)    | [❌ no](./scenarios/inner-environment.md#flake-pilot)    | [⚠️ partial](./scenarios/inner-environment.md#glaipnir) | [⚠️ partial](./scenarios/inner-environment.md#podman) |
+| [Compose the environment from separate, reusable parts](./scenarios/composition.md)        | [✅ yes](./scenarios/composition.md#vivarium)           | [✅ yes](./scenarios/composition.md#flake-pilot)         | [✅ yes](./scenarios/composition.md#glaipnir)          | [❌ no](./scenarios/composition.md#podman)           |
+| [A collision between two parts is reported](./scenarios/collision.md)                      | [✅ yes](./scenarios/collision.md#vivarium)             | [❌ no](./scenarios/collision.md#flake-pilot)            | [➖ n/a](./scenarios/collision.md#glaipnir)            | [➖ n/a](./scenarios/collision.md#podman)            |
+| [There is a shareable unit smaller than the whole environment](./scenarios/config-unit.md) | [✅ yes](./scenarios/config-unit.md#vivarium)           | [✅ yes](./scenarios/config-unit.md#flake-pilot)         | [❌ no](./scenarios/config-unit.md#glaipnir)           | [❌ no](./scenarios/config-unit.md#podman)           |
+| [A shared unit's portability is enforced](./scenarios/portability-enforced.md)             | [✅ yes](./scenarios/portability-enforced.md#vivarium)  | [❌ no](./scenarios/portability-enforced.md#flake-pilot) | [❌ no](./scenarios/portability-enforced.md#glaipnir)  | [❌ no](./scenarios/portability-enforced.md#podman)  |
+| [The same definition gives everyone the same environment](./scenarios/same-definition.md)  | [✅ yes](./scenarios/same-definition.md#vivarium)       | [⚠️ partial](./scenarios/same-definition.md#flake-pilot)  | [❌ no](./scenarios/same-definition.md#glaipnir)       | [✅ yes‡](./scenarios/same-definition.md#podman)     |
+| [Choose what goes in the guest, and set it up at build](./scenarios/own-setup-at-build.md) | [⚠️ partial](./scenarios/own-setup-at-build.md#vivarium) | [✅ yes](./scenarios/own-setup-at-build.md#flake-pilot)  | [✅ yes](./scenarios/own-setup-at-build.md#glaipnir)   | [✅ yes](./scenarios/own-setup-at-build.md#podman)   |
+| [Run your own setup at every start](./scenarios/own-setup-at-start.md)                     | [✅ yes](./scenarios/own-setup-at-start.md#vivarium)    | [✅ yes‡](./scenarios/own-setup-at-start.md#flake-pilot) | [✅ yes](./scenarios/own-setup-at-start.md#glaipnir)   | [✅ yes‡](./scenarios/own-setup-at-start.md#podman)  |
+| [The build runs no user-supplied commands as root](./scenarios/build-steps.md)             | ✅ yes                                                  | ❌ no                                                    | [❌ no](./scenarios/build-steps.md#glaipnir)           | ❌ no                                                |
+| [Choose the guest operating system](./scenarios/guest-os.md)                               | [❌ no†](./scenarios/guest-os.md#vivarium)              | [✅ yes](./scenarios/guest-os.md#flake-pilot)            | [❌ no](./scenarios/guest-os.md#glaipnir)              | [✅ yes](./scenarios/guest-os.md#podman)             |
+| [Pull a prebuilt image](./scenarios/prebuilt-image.md)                                     | [❌ no†](./scenarios/prebuilt-image.md#vivarium)        | ✅ yes                                                   | ✅ yes                                                 | ✅ yes                                               |
 
 ## Living with it
 
@@ -95,7 +94,6 @@ What it costs to use every day.
 | [A second session joins it while the first is still there](./scenarios/concurrent-sessions.md) | [✅ yes](./scenarios/concurrent-sessions.md#vivarium) | [❌ no](./scenarios/concurrent-sessions.md#flake-pilot) | [❌ no](./scenarios/concurrent-sessions.md#glaipnir) | [❌ no](./scenarios/concurrent-sessions.md#podman) |
 | [Installs from a distro package](./scenarios/install.md)                                       | [❌ no](./scenarios/install.md#vivarium)              | ✅ yes                                                  | ✅ yes                                               | ✅ yes                                             |
 | [Feels like a native command](./scenarios/native-command.md)                                   | [❌ no](./scenarios/native-command.md#vivarium)       | ✅ yes                                                  | [❌ no](./scenarios/native-command.md#glaipnir)      | ❌ no                                              |
-| [Works for a tool the sandbox has never heard of](./scenarios/any-tool.md)                     | [✅ yes](./scenarios/any-tool.md#vivarium)            | [✅ yes](./scenarios/any-tool.md#flake-pilot)           | [❌ no](./scenarios/any-tool.md#glaipnir)            | [✅ yes](./scenarios/any-tool.md#podman)           |
 
 ## What accumulates
 
@@ -113,20 +111,20 @@ Builds, sandboxes, and disk pile up on a machine that gets used. These rows ask 
 
 Three kinds of no, and one qualified yes.
 
-| form      | means                                                                  | in vivarium's column |
-| --------- | ---------------------------------------------------------------------- | -------------------- |
-| `❌ no`   | an ordinary gap, no position taken                                     | 4                    |
-| `❌ no*`  | the specification closes it; the code has not caught up                | 3                    |
-| `❌ no†`  | unreachable by design; the linked cell names what forecloses it        | 4                    |
-| `✅ yes‡` | the tool provides the mechanism; nothing arranges it, so the user does | 1                    |
+| form      | means                                                                  |
+| --------- | ---------------------------------------------------------------------- |
+| `❌ no`   | an ordinary gap, no position taken                                     |
+| `❌ no*`  | the specification closes it; the code has not caught up                |
+| `❌ no†`  | unreachable by design; the linked cell names what forecloses it        |
+| `✅ yes‡` | the tool provides the mechanism; nothing arranges it, so the user does |
 
-Read the bare ones first: they are what a comparison written by the subject would have left out. Three of the four `†` cells cite a binding invariant; the fourth, `Scopes credentials per app out of the box`, cites a design position no invariant states yet, logged as `Q-031` in [`open-questions.md`](../../plan/open-questions.md).
+Read the bare ones first: they are what a comparison written by the subject would have left out. Most `†` cells cite a binding invariant; `Scopes credentials per app out of the box` is the exception, citing a design position no invariant states yet, logged as `Q-031` in [`open-questions.md`](../../plan/open-questions.md).
 
-The `‡` is the mark that keeps a row honest in the other direction. Six cells carry it, five of them podman's, and it says something specific: the capability is real and reachable by a documented mechanism, and the tool will not do it for you or notice that you forgot. A reader choosing between "it can" and "it does" needs both halves, and a bare yes gives only the first.
+The `‡` is the mark that keeps a row honest in the other direction, and it says something specific: the capability is real and reachable by a documented mechanism, and the tool will not do it for you or notice that you forgot. A reader choosing between "it can" and "it does" needs both halves, and a bare yes gives only the first.
 
-Seven `⚠️ partial` cells remain out of one hundred and forty-eight. Each is a genuine middle rather than a compressed pair — a mechanism that exists and stops short, or a half-built one. Where the hedge was two capabilities wearing one symbol, the row was split instead; [`feature-sweep.md`](./feature-sweep.md) records which rows moved and what each half was hiding.
+A `⚠️ partial` is rare and always a genuine middle rather than a compressed pair — a mechanism that exists and stops short, or a half-built one. Where the hedge was two capabilities wearing one symbol, the row was split instead; [`feature-sweep.md`](./feature-sweep.md) records which rows moved and what each half was hiding.
 
-Sixteen of the thirty-seven capability rows, and five of the seven backend rows, were first found in a project other than vivarium.
+Many of the rows above were first found in a project other than vivarium rather than in this one; [`feature-sweep.md`](./feature-sweep.md) records which, and why that ratio is the check on whether the sweep was independent.
 
 ## What moves at another backend
 

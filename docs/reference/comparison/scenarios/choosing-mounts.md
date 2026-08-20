@@ -25,7 +25,7 @@ n/a: there is no bind-mount mechanism at the firecracker boundary, so there is n
 
 ## glaipnir
 
-No: the crossing set is written in the script. `_bind_agent_mounts` emits a fixed `--volume` list per agent name, and the workspace, hooks, and cache mounts are assembled at the call site beside it. There is no configuration key that adds a path, so a user who wants one edits `glaipnir.sh` — which is the same built-in opinion that wins glaipnir the [credential-scoping row](./per-tool-credentials.md) and loses it [Works for a tool the sandbox has never heard of](./any-tool.md).
+No: the crossing set is written in the script. `_bind_agent_mounts` emits a fixed `--volume` list per agent name, and the workspace, hooks, and cache mounts are assembled at the call site beside it. There is no configuration key that adds a path, so a user who wants one edits `glaipnir.sh` — which is the same built-in opinion that wins glaipnir the [credential-scoping row](./per-tool-credentials.md) and costs it every tool outside the roster.
 
 ## podman
 

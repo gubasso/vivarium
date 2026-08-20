@@ -20,7 +20,7 @@ No: at the firecracker boundary a credential arrives as an `--include-path` copy
 
 Yes: `_bind_agent_mounts` holds a table mapping seven agent names to the credential directories each one owns, and emits only the volumes the selected agents need, so `run claude` never mounts the `gh` token — it is absent from the guest rather than hidden inside it. The volumes cross into the krun guest as virtiofs, so the scoping holds at the compared setup.
 
-What it costs is the reason vivarium answers the other way. The table is seven hardcoded names, so an agent glaipnir does not know gets no scoping, and a user who wants a different mapping edits the tool rather than a file they own. The same built-in opinion is what loses glaipnir [Defined by a project file](./project-file.md#glaipnir) and [Choose the guest operating system](./guest-os.md#glaipnir).
+What it costs is the reason vivarium answers the other way, and it is larger than the scoping. The table is seven hardcoded names, so an agent glaipnir does not know gets no scoping — and it gets no image and no mounts either, because the same script decides those, so running a tool glaipnir has never heard of means editing `glaipnir.sh` rather than a file the user owns. The same built-in opinion is what loses glaipnir [Defined by a project file](./project-file.md#glaipnir) and [Choose the guest operating system](./guest-os.md#glaipnir).
 
 Naming the agent is what scopes the mounts; nothing else is passed:
 

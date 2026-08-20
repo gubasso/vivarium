@@ -12,7 +12,7 @@ Yes: an image and an ordered list of pieces are imported as NixOS modules and me
 
 ## flake-pilot
 
-Yes: two mechanisms, at two levels. An image composes by OCI layering, `--base` for a delta container and a repeatable ordered `--layer`; a registration composes by drop-in, `<app>.d/*.yaml` read in alpha order. A second author's file is adopted by dropping it in, with nothing edited.
+Yes, at the registration: `<app>.d/*.yaml` drop-ins are read in alpha order, so a second author's file is adopted by dropping it in with nothing edited. Inside the guest there is no second level — the image is one artifact, and composing what goes into it belongs to the builder that produced it rather than to flake-pilot.
 
 ## glaipnir
 

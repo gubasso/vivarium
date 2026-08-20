@@ -16,7 +16,7 @@ Yes: `flake-ctl list --format table|json|csv` reports every registration — nam
 
 ## glaipnir
 
-Yes: `status` reports the agents and images that exist, and the roster is fixed, so the set is small and fully known by construction. Enumeration is easy for the same reason [an unknown tool cannot run](./any-tool.md#glaipnir).
+Yes: `status` reports the agents and images that exist, and the roster is fixed, so the set is small and fully known by construction. Enumeration is easy for the same reason [an agent outside the roster cannot run](./per-tool-credentials.md#glaipnir).
 
 ## podman
 

@@ -11,6 +11,6 @@ No: running something inside is `viv exec -- <command>` or `viv shell`, so the s
 
 ## glaipnir
 
-No: `glaipnir run claude` names the sandbox, the same as vivarium's does, and one word shorter is not a different answer. What glaipnir does buy with that word is a roster the invocation can be checked against, which is [the next row](./any-tool.md) and where the two tools part company.
+No: `glaipnir run claude` names the sandbox, the same as vivarium's does, and one word shorter is not a different answer. What glaipnir does buy with that word is a roster the invocation can be checked against — the built-in opinion [the credential-scoping row](./per-tool-credentials.md#glaipnir) measures from both ends, and where the two tools part company.
 
 [^read]: Read at `vivarium` `ceb0027` and `glaipnir` `21ef389` on 2026-08-18.
