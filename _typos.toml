@@ -27,3 +27,9 @@ inh = "inh"
 # named in the slice's revisions and the networking design. The dictionary maps
 # it to `passed`/`past`, which would rewrite a program's name into prose.
 passt = "passt"
+
+# The crun `krun` annotation that swaps libkrun's transparent socket
+# impersonation for a virtio-net interface, named verbatim in the comparison's
+# podman rows. `passt` above does not cover it: typos scopes an identifier
+# exception to the whole token, and this one is `use_passt`.
+use_passt = "use_passt"

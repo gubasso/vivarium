@@ -23,6 +23,16 @@ tracked:
       - docs/explanation/resources-and-capacity.md
       - docs/plan/slices/003-guest-agent-and-credential-relay/README.md
       - docs/plan/slices/010-repair-the-host-runbooks/README.md
+  - path: docs/reference/comparison/sources.md
+    last_checked: 2026-08-20
+    cadence: 30d, the shortest of the per-subject cadences that page names
+    why: Every verdict is pinned to a commit, a release, or a dated document in a project this repository does not control, and a subject that renames, releases, or gains an engine invalidates rows without touching anything here.
+    revalidate: Re-read each subject at a new revision and update the `Verified:` line above its table, then re-derive any row in docs/reference/comparison/README.md the reading moved. Never edit a revision without re-reading; a false date is worse than a stale one.
+    dependents:
+      - docs/reference/comparison/README.md
+      - docs/reference/comparison/feature-sweep.md
+      - docs/reference/comparison/scenarios.md
+      - docs/reference/comparison/walkthroughs.md
   - path: docs/reference/testing-lanes.md
     last_checked: 2026-07-31
     cadence: 90d

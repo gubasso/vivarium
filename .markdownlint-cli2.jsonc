@@ -63,6 +63,12 @@
     "MD050": false, // strong-style          (dprint owns)
     "MD051": false, // link-fragments        (would auto-edit)
     "MD054": false, // link/image-style      (would auto-edit content)
+    // table-column-style. dprint owns table padding, and the two measure a
+    // cell differently: dprint pads by display width, MD060 compares pipes by
+    // character index. Any table containing a wide character — the comparison
+    // set's ✅ / ⚠️ / ❌ / ➖ verdicts are the repository's only ones — makes
+    // them disagree permanently, and neither hook can be re-run into agreement.
+    "MD060": false, // table-column-style    (dprint owns table padding)
     // --- end fixable-OFF block ---
 
     // --- structural rules kept ON via default: MD001 (heading-increment),
