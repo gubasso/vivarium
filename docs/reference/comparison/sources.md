@@ -6,7 +6,7 @@ What every verdict in [`README.md`](./README.md) rests on. Each subject is pinne
 
 ### `vivarium`
 
-Verified: 2026-08-18 — this repository, branch `initial-implementation` at `ceb0027`.
+This repository, branch `initial-implementation` at `ceb0027`.[^vivarium]
 
 | What it establishes                                                   | Where                                                                                                            |
 | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
@@ -47,7 +47,7 @@ Rules cited by name, and what each fixes:
 
 ### `flake-pilot`
 
-Verified: 2026-08-18 — <https://github.com/OSInside/flake-pilot> at `main`. Rust, MIT licensed. Partially re-read 2026-08-20 against a fresh clone at `44e3ab2`: the boundary, engine-selection, and firecracker-networking rows, which are the ones that had rested on a non-public source, and later the same day the `Guest environment` rows added for packages, the inner environment, and setup hooks. The rest of this subject still carries its 2026-08-18 reading.
+<https://github.com/OSInside/flake-pilot> at `main`. Rust, MIT licensed.[^flake-pilot]
 
 | What it establishes                                                            | Where                                                                                                                |
 | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
@@ -65,7 +65,7 @@ Every row above is public and linkable at <https://github.com/OSInside/flake-pil
 
 ### `glaipnir`
 
-Verified: 2026-08-18 — <https://github.com/val4oss/ai-agents-sandbox> at commit `21ef389`. POSIX shell, AGPL-3.0. The tool is `glaipnir`; its images and containers keep the older name `ai-agents-sandbox`. Partially re-read 2026-08-20 against a fresh clone at the same commit: the image, its hooks, and its package mechanism only, for the three `Guest environment` rows added that day. Every other row still carries its 2026-08-18 reading.
+<https://github.com/val4oss/ai-agents-sandbox> at commit `21ef389`. POSIX shell, AGPL-3.0. The tool is `glaipnir`; its images and containers keep the older name `ai-agents-sandbox`.[^glaipnir]
 
 | What it establishes                                                  | Where                         |
 | -------------------------------------------------------------------- | ----------------------------- |
@@ -81,7 +81,7 @@ Verified: 2026-08-18 — <https://github.com/val4oss/ai-agents-sandbox> at commi
 
 ### `podman`
 
-Verified: 2026-08-19 — plain rootless podman 5.x with no wrapper, read at `podman run --runtime krun` per the methodology in [`README.md`](./README.md). Prerequisites at that setup: libkrun installed and `/dev/kvm` accessible.
+Plain rootless podman 5.x with no wrapper, read at `podman run --runtime krun` per the methodology in [`README.md`](./README.md). Prerequisites at that setup: libkrun installed and `/dev/kvm` accessible.[^podman]
 
 | What it establishes                                                                                  | Where                                                                                                                                      |
 | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -98,7 +98,7 @@ It is in the tables because it is the baseline most readers arrive from, and bec
 
 ## Re-verification
 
-Verified: 2026-08-18 — cadence set against the release rhythm of each subject named above.
+Cadence set against the release rhythm of each subject named above.[^cadence]
 
 | Subject       | Cadence                 | What moves                                                                 |
 | ------------- | ----------------------- | -------------------------------------------------------------------------- |
@@ -110,3 +110,13 @@ Verified: 2026-08-18 — cadence set against the release rhythm of each subject 
 The cadence above is the reading; [`tracking.yaml`](../tracking.yaml) is what schedules it, and that file's `last_checked` date for this set is the one a reader should trust when the two disagree. The table stays here because it names what moves for each subject, which a `revalidate` line cannot carry per-subject.
 
 A refresh re-reads the material at a new commit and updates the `Verified:` line above each table. Editing a version number without re-reading produces a false date, which is worse than no refresh because it resets the reader's suspicion.
+
+[^vivarium]: Verified 2026-08-18.
+
+[^flake-pilot]: Verified 2026-08-18. Partially re-read 2026-08-20 against a fresh clone at `44e3ab2`: the boundary, engine-selection, and firecracker-networking rows, which are the ones that had rested on a non-public source, and later the same day the `Guest environment` rows added for packages, the inner environment, and setup hooks. The rest of this subject still carries its 2026-08-18 reading.
+
+[^glaipnir]: Verified 2026-08-18. Partially re-read 2026-08-20 against a fresh clone at the same commit: the image, its hooks, and its package mechanism only, for the three `Guest environment` rows added that day. Every other row still carries its 2026-08-18 reading.
+
+[^podman]: Verified 2026-08-19.
+
+[^cadence]: Verified 2026-08-18.

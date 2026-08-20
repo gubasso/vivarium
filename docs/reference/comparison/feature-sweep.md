@@ -228,9 +228,7 @@ Cells are then filled at one fixed setup per subject — the microVM backend for
 3. `glaipnir` — the libkrun microVM.
 4. `podman` — rootless `podman run --runtime krun`.
 
-A capability a subject has only at another backend is not credited. Backend availability and selection are not capability rows: the seven entries themed `Backends` below fill the `Isolation backends` matrix in [`README.md`](./README.md) instead of a capability table. Filling a cell from whichever backend answers best would compare a tool with two modes against a tool with one, and every such mismatch found in review is listed below.
-
-Verified: 2026-08-18 — merged from the four inventories above, at the commits `sources.md` pins.
+A capability a subject has only at another backend is not credited. Backend availability and selection are not capability rows: the seven entries themed `Backends` below fill the `Isolation backends` matrix in [`README.md`](./README.md) instead of a capability table. Filling a cell from whichever backend answers best would compare a tool with two modes against a tool with one, and every such mismatch found in review is listed below.[^merge]
 
 | Merged capability                                                        | Theme             | First seen in                                   |
 | ------------------------------------------------------------------------ | ----------------- | ----------------------------------------------- |
@@ -283,7 +281,7 @@ Twenty-one of the forty-four entries were first seen in a project other than viv
 
 ### Verdicts corrected to the microVM boundary
 
-Found by re-reading each filled row against the rule above.
+Found by re-reading each filled row against the rule above.[^microvm-boundary]
 
 | Row                                                | Was                   | Now                   | Why                                                                     |
 | -------------------------------------------------- | --------------------- | --------------------- | ----------------------------------------------------------------------- |
@@ -302,13 +300,11 @@ Found by re-reading each filled row against the rule above.
 | Nothing downgrades the boundary for you            | `flake-pilot` no      | `flake-pilot` partial | Registration fixes the engine; only a drop-in file rewrites it          |
 | Nothing downgrades the boundary for you            | `podman` n/a          | `podman` yes          | One boundary and nothing beneath it is stability, whatever its strength |
 
-Verified: 2026-08-19 — re-read against the sources `sources.md` pins.
-
 Eight of the fourteen moved in an alternative's favour, which is the check that the rule was applied to the comparison rather than to the competitors. Six came from re-reading the table, four from writing [`walkthroughs.md`](./walkthroughs.md), two more from re-reading [`scenarios/`](./scenarios/README.md), and the last two from the row-label audit below — each pass found what the previous one could not, because a verdict, a worked example, a method, and a label fail in different ways. The walkthrough exposes a cell filled from the rung with the better answer; the method exposes a verdict resting on a mechanism the method never runs; the label exposes a question only one design was ever going to answer well.
 
 ### Verdicts corrected by fixing podman's setup
 
-Until 2026-08-19 the `podman` column was read at its container boundary as the baseline. That was the last hidden cross-backend comparison in the set, so the column now reads at `podman run --runtime krun` like every other subject. Three verdicts moved, all against podman:
+Until 2026-08-19 the `podman` column was read at its container boundary as the baseline. That was the last hidden cross-backend comparison in the set, so the column now reads at `podman run --runtime krun` like every other subject. Three verdicts moved, all against podman:[^podman-setup]
 
 | Row                                       | Was          | Now              | Why                                                                                         |
 | ----------------------------------------- | ------------ | ---------------- | ------------------------------------------------------------------------------------------- |
@@ -316,34 +312,24 @@ Until 2026-08-19 the `podman` column was read at its container boundary as the b
 | Nothing downgrades the boundary for you   | `podman` yes | `podman` no      | The boundary is a per-invocation flag; omitting it silently runs the default runtime        |
 | Something outside reaches a guest service | `podman` yes | `podman` partial | Publish is documented at the default runtime; under `krun` the path is TSI and undocumented |
 
-Verified: 2026-08-19 — podman manual pages plus the libkrun project README. The third row is superseded the same day by `Verdicts corrected against upstream documentation` below: the publish path under `krun` is documented, in the README's networking section, and reading it moved the cell to yes.
-
 ### Verdicts reclassified as refusals
 
-A gap and a refusal read the same in a table and mean opposite things to a reader deciding. One row moved once its design position was stated rather than assumed.
+A gap and a refusal read the same in a table and mean opposite things to a reader deciding. One row moved once its design position was stated rather than assumed.[^refusals]
 
 | Row                         | Was           | Now            | Why                                                                                                                                          |
 | --------------------------- | ------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Credentials scoped per tool | `vivarium` no | `vivarium` no† | Automatic scoping needs a built-in table of application names; vivarium is application-agnostic and every path that crosses is user-declared |
 
-Verified: 2026-08-19 — against `08-invariants-and-guarantees.md`, which carries no invariant stating application-agnosticism. That absence is the reason the cell is the set's only `†` citing a design position instead of a rule, and it is logged as `Q-031` in [`open-questions.md`](../../plan/open-questions.md). Two evidence sections were added in the same pass, so no cell in the row is a bare symbol.
-
 ### Labels corrected
 
 `The boundary cannot be switched off` stated vivarium's property as the question, and asking it that way had already produced a wrong verdict: `flake-pilot` was marked `❌ no` when nothing at run time revisits a registered engine. The row is about a boundary changing underneath the user, which is `glaipnir`'s probe fallback and not `flake-pilot`'s registration. Its first rewrite, `Boundary
-stays fixed once chosen`, still carried a presupposition: `once chosen` implies a choice was offered, which is why `podman` had been parked at `➖ n/a` while `vivarium` — with exactly as little choice — was answered `✅ yes`. `Nothing downgrades the boundary for you` names the event instead of the choice, and both single-mode subjects then answer the same way for opposite reasons. Three further labels ran past the six-word guidance and were shortened without changing what they ask.
+stays fixed once chosen`, still carried a presupposition: `once chosen` implies a choice was offered, which is why `podman` had been parked at `➖ n/a` while `vivarium` — with exactly as little choice — was answered `✅ yes`. `Nothing downgrades the boundary for you` names the event instead of the choice, and both single-mode subjects then answer the same way for opposite reasons. Three further labels ran past the six-word guidance and were shortened without changing what they ask.[^labels]
 
-Verified: 2026-08-19 — audited against the two row rules this document set follows: a label states an observable behavior, and a label is at most six words.
-
-`Default-deny egress` failed the first of those two rules in the other direction: it reads as a statement of what a tool does, and vivarium's binding rule is that egress defaults to open, with one knob to switch. A reader taking the `✅ yes` as a default came away with the opposite of the specification. The method under the row had always asked the reachability question — its first step configures the most restrictive documented posture — so `Egress can be default-deny` names what was already being measured, and no verdict moved. The correction rows above keep the old label, because they record a reading made under it.
-
-Verified: 2026-08-19 — against the egress-defaults-open rule in [`08-invariants-and-guarantees.md`](../spec/08-invariants-and-guarantees.md) and the two egress modes in [`05-networking-and-egress.md`](../spec/05-networking-and-egress.md). Two evidence sections were added in the same pass: the `vivarium` cells in both network-policy rows were the set's only unlinked `✅ yes` on rows where the other subjects carry evidence, and they were the cells where the surprise lived.
+`Default-deny egress` failed the first of those two rules in the other direction: it reads as a statement of what a tool does, and vivarium's binding rule is that egress defaults to open, with one knob to switch. A reader taking the `✅ yes` as a default came away with the opposite of the specification. The method under the row had always asked the reachability question — its first step configures the most restrictive documented posture — so `Egress can be default-deny` names what was already being measured, and no verdict moved. The correction rows above keep the old label, because they record a reading made under it.[^egress-label]
 
 `Roll back to an older environment` named an action with no situation attached, so nothing in it could be verdicted. Both projects that own this idea upstream phrase it as booting a previous state because the current one failed: the NixOS manual's "Rolling Back Configuration Changes" describes booting any previous configuration not yet garbage-collected and says it is especially useful when the new configuration fails to boot, and openSUSE's reference titles the section "System rollback by booting from snapshots" and frames it as recovering a misconfigured system. `Boot a previous build when the new one is broken` says that in the set's own voice; the evidence keeps vivarium's own noun, generation. No verdict moved.
 
-That retitle, and the three before it, retire the second of the two label rules above. A label is now required to state a claim a reader can verdict from the table alone, and length yields to that: `The same definition rebuilds the same environment` replaced a six-word label that said less. The first rule stands unchanged — a label states an observable behavior — and it is the one that was ever doing the work. The correction rows above keep the labels they were recorded under.
-
-Verified: 2026-08-19 — the two upstream phrasings read at <https://nlewo.github.io/nixos-manual-sphinx/administration/rollback.xml.html> and <https://doc.opensuse.org/documentation/leap/reference/html/book-reference/cha-snapper.html>.
+That retitle, and the three before it, retire the second of the two label rules above. A label is now required to state a claim a reader can verdict from the table alone, and length yields to that: `The same definition rebuilds the same environment` replaced a six-word label that said less. The first rule stands unchanged — a label states an observable behavior — and it is the one that was ever doing the work. The correction rows above keep the labels they were recorded under.[^rollback-label]
 
 ### Citations corrected
 
@@ -355,9 +341,7 @@ Three `vivarium` cells cited [`open-questions.md`](../../plan/open-questions.md)
 | Stays off a corporate VPN                 | `vivarium` no  | prose, no entry           | `Q-032` |
 | Something outside reaches a guest service | `vivarium` no  | prose, no entry           | `Q-033` |
 
-Two of the three evidence sections were rewritten in the same pass, because reading the code to write the question showed the cells had been stating absence where the behavior is something more specific. The VPN cell is the sharper one: the uplink keeps its sockets on the host side, so guest flows are re-originated as host sockets and follow the host routing table, which means a sandbox on a VPN-connected host is on the VPN, and its name lookups go to the host's resolver. Namespace, tap, uplink, and resolver are all per-VM; route selection is the one part the guest does not get its own copy of. The inbound cell moved the other way: nothing is arranged in either direction, and the specification names neither the capability nor a non-goal foreclosing it. No verdict moved — both were already `❌ no`, and both are better supported now.
-
-Verified: 2026-08-19 — read against [`spec/05-networking-and-egress.md`](../spec/05-networking-and-egress.md), [`spec/00-goals-and-non-goals.md`](../spec/00-goals-and-non-goals.md), and the uplink the launcher builds in [`src/launch/policy.rs`](../../../src/launch/policy.rs).
+Two of the three evidence sections were rewritten in the same pass, because reading the code to write the question showed the cells had been stating absence where the behavior is something more specific. The VPN cell is the sharper one: the uplink keeps its sockets on the host side, so guest flows are re-originated as host sockets and follow the host routing table, which means a sandbox on a VPN-connected host is on the VPN, and its name lookups go to the host's resolver. Namespace, tap, uplink, and resolver are all per-VM; route selection is the one part the guest does not get its own copy of. The inbound cell moved the other way: nothing is arranged in either direction, and the specification names neither the capability nor a non-goal foreclosing it. No verdict moved — both were already `❌ no`, and both are better supported now.[^citations]
 
 ### Verdicts corrected against upstream documentation
 
@@ -369,9 +353,7 @@ One cell in the previous round was marked partial for a reason that names the re
 
 The correction is worth stating as a rule. Reading the runtime's own documentation showed the mechanism is not a gap in the publish path but the thing that makes it work unchanged: because a guest listener is a host socket owned by the VMM process, `-p` needs no krun-specific handling, which is the same property that lets a sidecar reach the workload. Two conditions and one unsettled report bound the cell, and [`scenarios/inbound.md`](./scenarios/inbound.md#podman) carries all three rather than the verdict absorbing them.
 
-This also sharpens the row's spread. It is now the one network row where the two microVM tools built as agent sandboxes both say no and the general-purpose runtime says yes, which reads as a posture rather than a shortfall — except that neither sandbox states it as one, and vivarium's silence is [`Q-033`](../../plan/open-questions.md).
-
-Verified: 2026-08-19 — read, not run, against the libkrun project README's networking section, the `krun` manual page in `crun` for the `krun.use_passt` annotation, podman issue `25494` for the `AF_INET6` report, and a published `--annotation=run.oci.handler=krun -dp 8080:8080` run load-tested from the host.
+This also sharpens the row's spread. It is now the one network row where the two microVM tools built as agent sandboxes both say no and the general-purpose runtime says yes, which reads as a posture rather than a shortfall — except that neither sandbox states it as one, and vivarium's silence is [`Q-033`](../../plan/open-questions.md).[^upstream-docs]
 
 ### Rows added on a later pass
 
@@ -387,9 +369,7 @@ Five capabilities present in the inventories above had no row. Each was read bac
 
 The three `Guest environment` rows are deliberately non-overlapping: same input gives the same output is `The same definition rebuilds the same environment`, the input set is pinned and portable is `Everyone building it gets the versions you got`, and the pin moves only when someone moves it is `Update on purpose`.
 
-One of the five originates outside vivarium, which is worse than the set's running ratio and is recorded rather than smoothed over: adding rows a tool was built to answer is the failure mode this document exists to catch. The counterweight is that no new row is a one-column win — `glaipnir` takes the credential-stance row outright, and the composition and sharing rows are `⚠️ partial` for three subjects rather than `❌ no`.
-
-Verified: 2026-08-19 — derived from §1 to §4 above, at the commits `sources.md` pins.
+One of the five originates outside vivarium, which is worse than the set's running ratio and is recorded rather than smoothed over: adding rows a tool was built to answer is the failure mode this document exists to catch. The counterweight is that no new row is a one-column win — `glaipnir` takes the credential-stance row outright, and the composition and sharing rows are `⚠️ partial` for three subjects rather than `❌ no`.[^rows-added]
 
 ### A row added for shipping a secret with the definition
 
@@ -401,9 +381,7 @@ Adding the row exposed a gap in §4 above. vivarium's sweep already carried the 
 | ----------------------------------------------- | ----- | -------------------------------------------------------------------------------------------- |
 | Commit an encrypted secret alongside the config | Data  | Two subjects supply a seam and neither supplies the scheme, which no other row distinguishes |
 
-This is the second added row that originates in vivarium's own sweep, and the counterweight is the same one the section above names: it is not a one-column win. vivarium and podman both land `⚠️ partial` for unrelated reasons — one refuses the integration by rule, the other defaults to an unencrypted driver — and the row's value is that it separates supplying a seam from supplying a scheme.
-
-Verified: 2026-08-20 — vivarium against [`spec/07-secrets-and-config-sharing.md`](../spec/07-secrets-and-config-sharing.md) and `ADR-0072`; flake-pilot against a fresh clone at `44e3ab2`; glaipnir against a fresh clone at `8c7420e`, a later revision than this document's pin, recorded as such in the evidence; podman against the `podman-secret-create` manual page. No existing verdict moved.
+This is the second added row that originates in vivarium's own sweep, and the counterweight is the same one the section above names: it is not a one-column win. vivarium and podman both land `⚠️ partial` for unrelated reasons — one refuses the integration by rule, the other defaults to an unencrypted driver — and the row's value is that it separates supplying a seam from supplying a scheme.[^shipping-a-secret]
 
 ### A row added for where the crossing set is written
 
@@ -415,9 +393,7 @@ Relabelling `Credentials scoped per tool` to `Scopes credentials per app out of 
 | ------------------------------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------ |
 | Choose which host paths cross, in a project file | Data  | The four record the same decision in four places: a merged project file, a registration, a script, and a call site |
 
-The row is read out of the inventories rather than invented: `[[mounts]]` and module merge are in vivarium's sweep, `include.tar` / `include.path` in flake-pilot's, and `-v` in podman's. The spread is genuine — one `n/a` at the compared boundary, one `no` that is a hardcoded script, and a `partial` that turns on Quadlet recording in a file what the command line otherwise holds.
-
-Verified: 2026-08-20 — vivarium against [`spec/07-secrets-and-config-sharing.md`](../spec/07-secrets-and-config-sharing.md) and [`spec/08-invariants-and-guarantees.md`](../spec/08-invariants-and-guarantees.md); flake-pilot against a fresh clone at `44e3ab2`; glaipnir against `_bind_agent_mounts` in a fresh clone at `8c7420e`; podman against the `podman-systemd.unit` manual page for `Volume=`. No existing verdict moved.
+The row is read out of the inventories rather than invented: `[[mounts]]` and module merge are in vivarium's sweep, `include.tar` / `include.path` in flake-pilot's, and `-v` in podman's. The spread is genuine — one `n/a` at the compared boundary, one `no` that is a hardcoded script, and a `partial` that turns on Quadlet recording in a file what the command line otherwise holds.[^crossing-set]
 
 ### Three rows added for what goes inside
 
@@ -433,9 +409,7 @@ Three separate capabilities were hiding in that gap, and they separate the subje
 
 Two of the three were first seen elsewhere. `PACKAGES=(…)` is in glaipnir's sweep and `Containerfile` build steps are in podman's, while vivarium's sweep recorded module merge without ever recording that a module is where packages are named. The build-and-start hook pair is glaipnir's alone. Only the inner-environment row originates with vivarium, and it too was missing from that sweep — [`spec/06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md) fixes the two-layer design in normative terms and no bullet carried it, so no row could be derived from it. Both gaps were filled in section 1 before any row here was written.
 
-The hook row is placed beside `The build runs no user-supplied commands as root` on purpose. The two are the same question asked from opposite sides, and reading them together is what keeps vivarium's `partial` from looking like a shortfall: the missing half is the arbitrary root build step the next row reports as refused.
-
-Verified: 2026-08-20 — vivarium against [`spec/03-artifact-model.md`](../spec/03-artifact-model.md) for the manifest key table and [`spec/06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md) for the inner layer, and against [`implementation-status.md`](../implementation-status.md) and the shipped guest module for the `*`; flake-pilot against the `sci` and `flake-ctl-firecracker-register` manual pages in a fresh clone at `44e3ab2`; glaipnir against `image/Containerfile`, `image/scripts/entrypoint.sh`, and `docs/overview.md` at `21ef389`; podman against its manual pages. No existing verdict moved.
+The hook row is placed beside `The build runs no user-supplied commands as root` on purpose. The two are the same question asked from opposite sides, and reading them together is what keeps vivarium's `partial` from looking like a shortfall: the missing half is the arbitrary root build step the next row reports as refused.[^guest-environment]
 
 ### Rows split so one cell states one claim
 
@@ -472,9 +446,7 @@ Nine hedges were left standing on the test. `Defined by a project file` splits c
 
 Seven of those eleven moved in an alternative's favour and none of the four remaining moved in vivarium's: vivarium gains `‡` on one cell, loses `Run your own setup at build time` outright as a `†`, and picks up a `partial` on `Keeping secrets out of the build is enforced` that its old cell had absorbed. Twenty-four hedged cells became seven.
 
-The `‡` mark is what made the promotions honest rather than generous. It says the tool provides the mechanism and arranges nothing, and it applies only when the user invokes something the tool offers — not when the user builds the mechanism themselves. That line is why `Something outside reaches a guest service` stays a hedge for flake-pilot: `ip_forward`, a MASQUERADE rule, and a hand-edited `boot_args` are host plumbing an operator assembles, not a flag anyone passes. A mark that turned every no into a qualified yes would be worth nothing.
-
-Verified: 2026-08-20 — every split and every promotion re-read against the evidence already recorded in [`scenarios/`](./scenarios/README.md) at the revisions [`sources.md`](./sources.md) pins, with no subject re-read for this pass. The correction tables above keep the row labels they were written with; a label frozen in a dated record is what makes the record readable later, and the inventory above is where the current set lives.
+The `‡` mark is what made the promotions honest rather than generous. It says the tool provides the mechanism and arranges nothing, and it applies only when the user invokes something the tool offers — not when the user builds the mechanism themselves. That line is why `Something outside reaches a guest service` stays a hedge for flake-pilot: `ip_forward`, a MASQUERADE rule, and a hand-edited `boot_args` are host plumbing an operator assembles, not a flag anyone passes. A mark that turned every no into a qualified yes would be worth nothing.[^rows-split]
 
 ### Cut, and why
 
@@ -483,3 +455,31 @@ Verified: 2026-08-20 — every split and every promotion re-read against the evi
 - Snapshot and saved machine state — no subject in this set offers it.
 - Systemd unit generation and Quadlet — `podman`-only, and about host integration rather than the sandbox.
 - Cache policy per share, PTY sizing, exit-code propagation — implementation detail below the level a reader decides at.
+
+[^merge]: Verified: 2026-08-18 — merged from the four inventories above, at the commits `sources.md` pins.
+
+[^microvm-boundary]: Verified: 2026-08-19 — re-read against the sources `sources.md` pins.
+
+[^podman-setup]: Verified: 2026-08-19 — podman manual pages plus the libkrun project README. The third row is superseded the same day by `Verdicts corrected against upstream documentation` below: the publish path under `krun` is documented, in the README's networking section, and reading it moved the cell to yes.
+
+[^refusals]: Verified: 2026-08-19 — against `08-invariants-and-guarantees.md`, which carries no invariant stating application-agnosticism. That absence is the reason the cell is the set's only `†` citing a design position instead of a rule, and it is logged as `Q-031` in [`open-questions.md`](../../plan/open-questions.md). Two evidence sections were added in the same pass, so no cell in the row is a bare symbol.
+
+[^labels]: Verified: 2026-08-19 — audited against the two row rules this document set follows: a label states an observable behavior, and a label is at most six words.
+
+[^egress-label]: Verified: 2026-08-19 — against the egress-defaults-open rule in [`08-invariants-and-guarantees.md`](../spec/08-invariants-and-guarantees.md) and the two egress modes in [`05-networking-and-egress.md`](../spec/05-networking-and-egress.md). Two evidence sections were added in the same pass: the `vivarium` cells in both network-policy rows were the set's only unlinked `✅ yes` on rows where the other subjects carry evidence, and they were the cells where the surprise lived.
+
+[^rollback-label]: Verified: 2026-08-19 — the two upstream phrasings read at <https://nlewo.github.io/nixos-manual-sphinx/administration/rollback.xml.html> and <https://doc.opensuse.org/documentation/leap/reference/html/book-reference/cha-snapper.html>.
+
+[^citations]: Verified: 2026-08-19 — read against [`spec/05-networking-and-egress.md`](../spec/05-networking-and-egress.md), [`spec/00-goals-and-non-goals.md`](../spec/00-goals-and-non-goals.md), and the uplink the launcher builds in [`src/launch/policy.rs`](../../../src/launch/policy.rs).
+
+[^upstream-docs]: Verified: 2026-08-19 — read, not run, against the libkrun project README's networking section, the `krun` manual page in `crun` for the `krun.use_passt` annotation, podman issue `25494` for the `AF_INET6` report, and a published `--annotation=run.oci.handler=krun -dp 8080:8080` run load-tested from the host.
+
+[^rows-added]: Verified: 2026-08-19 — derived from §1 to §4 above, at the commits `sources.md` pins.
+
+[^shipping-a-secret]: Verified: 2026-08-20 — vivarium against [`spec/07-secrets-and-config-sharing.md`](../spec/07-secrets-and-config-sharing.md) and `ADR-0072`; flake-pilot against a fresh clone at `44e3ab2`; glaipnir against a fresh clone at `8c7420e`, a later revision than this document's pin, recorded as such in the evidence; podman against the `podman-secret-create` manual page. No existing verdict moved.
+
+[^crossing-set]: Verified: 2026-08-20 — vivarium against [`spec/07-secrets-and-config-sharing.md`](../spec/07-secrets-and-config-sharing.md) and [`spec/08-invariants-and-guarantees.md`](../spec/08-invariants-and-guarantees.md); flake-pilot against a fresh clone at `44e3ab2`; glaipnir against `_bind_agent_mounts` in a fresh clone at `8c7420e`; podman against the `podman-systemd.unit` manual page for `Volume=`. No existing verdict moved.
+
+[^guest-environment]: Verified: 2026-08-20 — vivarium against [`spec/03-artifact-model.md`](../spec/03-artifact-model.md) for the manifest key table and [`spec/06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md) for the inner layer, and against [`implementation-status.md`](../implementation-status.md) and the shipped guest module for the `*`; flake-pilot against the `sci` and `flake-ctl-firecracker-register` manual pages in a fresh clone at `44e3ab2`; glaipnir against `image/Containerfile`, `image/scripts/entrypoint.sh`, and `docs/overview.md` at `21ef389`; podman against its manual pages. No existing verdict moved.
+
+[^rows-split]: Verified: 2026-08-20 — every split and every promotion re-read against the evidence already recorded in [`scenarios/`](./scenarios/README.md) at the revisions [`sources.md`](./sources.md) pins, with no subject re-read for this pass. The correction tables above keep the row labels they were written with; a label frozen in a dated record is what makes the record readable later, and the inventory above is where the current set lives.

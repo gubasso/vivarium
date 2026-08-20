@@ -13,6 +13,8 @@ Every capability row is read at the same backend for every tool: the microVM, th
 | `glaipnir`    | the libkrun microVM                                        |
 | `podman`      | `podman run --runtime krun`                                |
 
+Every page in this directory carries the revision and date it was read at in a footnote at the foot of the file, so a verdict opens on the verdict rather than on its provenance.
+
 One row asks one thing. Where a cell would have to hedge because two capabilities sat under one label, the row is split until each verdict is a single claim, and the two halves link to each other. That is why several rows come in pairs, and why `⚠️ partial` is rare: a hedge here means the answer really is in between, not that the question was two questions.
 
 Legend: ✅ yes · ⚠️ partial · ❌ no · ➖ n/a
@@ -141,7 +143,7 @@ It moves both ways. A weaker boundary buys re-entry, bind mounts, and a second o
 
 ## Verified
 
-Every table above was read at one date, at these revisions:
+Every table above was read at one date, at these revisions:[^read]
 
 | subject       | at        |
 | ------------- | --------- |
@@ -150,4 +152,4 @@ Every table above was read at one date, at these revisions:
 | `glaipnir`    | `21ef389` |
 | `podman`      | 5.x       |
 
-Verified: 2026-08-19. Four `flake-pilot` cells — the two kernel rows, engine selection, and default-deny egress — were re-read at `main` on 2026-08-20 against a fresh clone, which removed an engine this table had named on the authority of a source no reader can reach. [`sources.md`](./sources.md) records that, and carries the provenance for each subject and the re-verification cadence a stale table is caught by.
+[^read]: Verified: 2026-08-19. Four `flake-pilot` cells — the two kernel rows, engine selection, and default-deny egress — were re-read at `main` on 2026-08-20 against a fresh clone, which removed an engine this table had named on the authority of a source no reader can reach. [`sources.md`](./sources.md) records that, and carries the provenance for each subject and the re-verification cadence a stale table is caught by.
