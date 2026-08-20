@@ -139,7 +139,7 @@ viv config sources       # which layer set what
 
 The manifest plus the lockfile the first evaluation writes is the unit, and the [pure-build rule](../spec/08-invariants-and-guarantees.md) fixes that the same closure and lock evaluate to the same store output on any machine at any later time. Updating is a verb rather than a default.
 
-Getting an older environment back is specified and not built: `viv generations list`\*, `viv generations rollback`\*, and `viv start --generation <n>`\* are what [`spec/11`](../spec/11-generations-and-build-history.md) fixes, with each retained generation pinned by a GC root so an ordinary store collection cannot eat the history. No alternative in this set has any answer to this at all.
+Getting an older environment back is specified and not built: `viv generations list`\*, `viv generations rollback`\*, and `viv start --generation <n>`\* are what [`spec/11`](../spec/11-generations-and-build-history.md) fixes, with each retained generation pinned by a GC root so an ordinary store collection cannot eat the history. The one alternative that answers at all is podman, and it answers by not collecting: the image the old tag pointed at is still on disk, untagged, until [a prune removes it](./scenarios/rollback.md#podman).
 
 ### What the difference costs
 

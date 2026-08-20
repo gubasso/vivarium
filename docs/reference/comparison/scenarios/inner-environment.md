@@ -16,10 +16,10 @@ No: there is no project to enter. A registration is per application, and at the 
 
 ## glaipnir
 
-Partial: the workspace is mounted, so the project's own files — including its `flake.nix` or version-manager config — are visible inside. What is missing is anything that reads them. The base is openSUSE Tumbleweed fixed in the `Containerfile`, and it carries no Nix, no direnv, and no version manager, so entering the sandbox leaves the project's declared toolchain inert. A run hook is where a user would add one, at their own expense.
+Reachable, nothing arranges it: the workspace is mounted, so the project's own files — including its `flake.nix` or version-manager config — are visible inside, and the base fixed in the `Containerfile` carries no Nix, no direnv, and no version manager to read them. What closes the gap is the extension surface glaipnir already provides: a build hook installs the loader, a run hook starts it on every start. Both are the user's to write, nothing asks for them, and a project whose toolchain is declared and never activated looks exactly like one that has none.
 
 ## podman
 
-Partial: bind-mount the project and its files are there, and an image that happens to ship direnv or a version manager will load them. Nothing in podman asks for that, so whether the project's toolchain activates is a property of the image someone chose rather than of the tool — the same file works for one colleague and not another.
+Reachable, nothing arranges it: bind-mount the project and its files are there, and an image that ships direnv or a version manager loads them — building that image and pointing `ENTRYPOINT` at a login shell are both ordinary. Nothing in podman asks for any of it, so whether a project's declared toolchain activates is a property of the image someone chose, and the same repository works for one colleague and not another.
 
 [^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `44e3ab2`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-20.
