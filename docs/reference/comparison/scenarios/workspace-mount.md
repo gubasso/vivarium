@@ -21,3 +21,10 @@ glaipnir `21ef389`, read 2026-08-18. Yes: the invocation's workspace crosses wit
 ## podman
 
 podman 5.x, read 2026-08-19. No: `-v` is the only route and it is typed at the call site every time. Nothing reads the current directory, and a run that omits the flag starts a container that cannot see the project at all.
+
+Both halves are typed at every start, and a run that omits them starts a guest with no project in it:
+
+```bash
+cd ~/projects/my-thing
+podman run --rm -it --runtime krun -v "$PWD:$PWD" -w "$PWD" docker.io/library/node:22 bash
+```

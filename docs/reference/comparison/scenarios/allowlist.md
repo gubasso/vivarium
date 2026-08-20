@@ -10,3 +10,11 @@ Record whether destinations can be permitted by name rather than by address, and
 ## vivarium
 
 vivarium `ceb0027`, 2026-08-18. Yes: `egress.allow` names destinations as an exact name, `*.example.com` for exactly one further label, `**.example.com` for one or more, or a literal address or CIDR block, concatenating across composed pieces. vivarium's resolver is the only DNS the guest is given and is the enforcement point: an unmatched name is answered `REFUSED` and never forwarded, so it does not even leak upstream, and a matched name's addresses enter the filter before the reply reaches the guest. A denial is therefore distinguishable from a name that does not exist, which answers `NXDOMAIN`. An entry carries no port: the policy limits where data can go, not which port it leaves by. No other subject in this set has a name-level mechanism to compare.
+
+An entry is a name, a wildcard, or a literal address, and the whole policy is four lines of the manifest:
+
+```toml
+[egress]
+mode  = "allowlist"
+allow = ["api.anthropic.com", "*.crates.io", "10.0.0.0/8"]
+```

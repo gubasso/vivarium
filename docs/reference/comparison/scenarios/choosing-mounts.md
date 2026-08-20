@@ -10,6 +10,15 @@ Every subject decides what crosses. This row asks where that decision is written
 
 vivarium `ceb0027`, 2026-08-18. Yes: `[[mounts]]` is a table in the manifest, so the set is part of the project's definition rather than of an invocation, and no command adds a path the manifest does not show. Because layers merge as NixOS modules and lists concatenate, a piece contributes mounts to the same list without editing the manifest that imported it, and a shared layer may only reach the host through portable variables — `${HOME}` and the four durable XDG directories — with a literal personal path failing evaluation with `65`. Two floors bound the choice rather than the user: a mount whose source resolves to a session directory is refused before boot, and what does cross carries the [host-symmetric](../../spec/08-invariants-and-guarantees.md) target rather than one the declaration invents.
 
+What crosses is a table in the project's own file, so reading the manifest is reading the crossing set:
+
+```toml
+[[mounts]]
+source   = "${HOME}/.config/gcloud"   # portable variable, not a literal personal path
+target   = "~/.config/gcloud"
+readonly = true
+```
+
 ## flake-pilot
 
 flake-pilot `44e3ab2`, read 2026-08-20. n/a: there is no bind-mount mechanism at the firecracker boundary, so there is no set to choose from — the same reason the [session-directory row](./session-sockets.md) reads `n/a` here. What the registration can carry is `include.tar` / `include.path`, which copies material into the artifact at registration time rather than selecting what crosses at run time. Under the container backend the choice is podman's `-v`, which is the shared-kernel answer.
@@ -21,3 +30,9 @@ glaipnir `8c7420e`, read 2026-08-20 — a later revision than the `21ef389` the 
 ## podman
 
 podman 5.x, read 2026-08-20. Reachable, nothing arranges it: the documented answer is `-v` on the command line, and a Quadlet unit does record the same decision in a file — `Volume=` is "equivalent to the Podman `--volume` option" and takes the same argument form. What the unit is not is the path anyone is sent down: the manual pages teach `-v`, and a project that wants the file writes it itself. Where that file lives, and what happens when two concerns want to edit it, are the two rows this one defers to.
+
+The same decision, made where the run is typed rather than where the project is described:
+
+```bash
+podman run --runtime krun -v "$HOME/.config/gcloud:$HOME/.config/gcloud:ro" ...
+```

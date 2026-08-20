@@ -10,6 +10,14 @@ Record what has to cross the boundary before a tool inside can authenticate with
 
 vivarium `ceb0027`, 2026-08-18. Yes: neither. The host agent's socket is relayed on a dedicated credential port of the same vsock-class transport the control plane uses, and the guest talks to `/run/vivarium/ssh-agent.sock`. What may be forwarded is a closed allowlist of two, `ssh` and `gpg`, declared through a typed option that names no host path — which is what lets a shareable piece declare it — and the GPG side takes the agent's restricted extra socket rather than the ordinary one. A mount could not do this at all: a socket's endpoint is an object in the kernel that owns the listener, so a guest with its own kernel finds a name with nothing behind it. Two limits are stated rather than engineered away: a compromised guest can use the key for as long as the session lasts, and a byte relay does not carry the signal an agent uses to recognise a forwarded connection.
 
+The declaration names a member of the closed enum and carries no host path, which is what lets a distributable piece hold it:
+
+```nix
+# pieces/ssh-agent/default.nix
+{ ... }:
+{ vivarium.credentials.agents = [ "ssh" ]; }
+```
+
 ## flake-pilot
 
 flake-pilot `main`, read 2026-08-18. No: the firecracker boundary has neither a share nor a relay. A key reaches the guest only by being written into the image or into an `include.tar` / `include.path` payload, which is the material itself rather than its use.

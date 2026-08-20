@@ -22,6 +22,15 @@ glaipnir `21ef389`, read 2026-08-18. Yes: `_bind_agent_mounts` holds a table map
 
 What it costs is the reason vivarium answers the other way. The table is seven hardcoded names, so an agent glaipnir does not know gets no scoping, and a user who wants a different mapping edits the tool rather than a file they own. The same built-in opinion is what loses glaipnir [Defined by a project file](./project-file.md#glaipnir) and [Choose the guest operating system](./guest-os.md#glaipnir).
 
+Naming the agent is what scopes the mounts; nothing else is passed:
+
+```bash
+glaipnir run claude
+#   -> claude auth login, inside the sandbox
+#   -> persists to ~/.cache/glaipnir/agents-mount/.claude/
+#   -> the gh token is not mounted at all
+```
+
 ## podman
 
 podman 5.x, read 2026-08-19. No: `-v` is a flat list assembled at the call site and podman has no notion of which process inside needs which mount, so everything passed is visible to everything in the guest. Launching one container per tool with a different `-v` set reproduces the effect, and that is the user doing it per invocation rather than the tool providing it.

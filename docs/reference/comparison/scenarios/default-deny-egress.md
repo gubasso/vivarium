@@ -12,6 +12,14 @@ vivarium `ceb0027`, 2026-08-18. Yes, and open is the default: the [egress-defaul
 
 The deny posture is enforced host-side, in the VM's own network namespace, because a guest holding root could tear down any ruleset it can see; denials are rejected rather than dropped, so a blocked attempt fails in milliseconds instead of hanging. Both modes run today: a denied name answered `REFUSED` in 9 ms and a denied literal connect reset in 15 ms, measured 2026-08-14 and recorded in [`implementation-status.md`](../../implementation-status.md). Details in [`spec/05-networking-and-egress.md`](../../spec/05-networking-and-egress.md).
 
+The most restrictive posture the manifest can state is that same mode with nothing admitted, which is an air-gapped run:
+
+```toml
+[egress]
+mode  = "allowlist"
+allow = [ ]
+```
+
 ## flake-pilot
 
 flake-pilot `main`, read 2026-08-18, re-read 2026-08-20. Yes, by absence rather than by policy, and the absence is the shipped state. Upstream states that firecracker "supports networking only through TUN/TAP devices" and that "it is the user's responsibility to set up the routing on the host from the TUN/TAP device to the outside world", then walks a static-IP NAT setup: `ip_forward`, a MASQUERADE rule, a `tap-<app>` device per registration, and `boot_args` edited from `ip=dhcp` to a static triple. Until an operator does that work a microVM reaches nothing, and `flake-ctl firecracker register --no-net` keeps it that way deliberately, which is the documented restrictive posture this row asks for.
@@ -19,3 +27,9 @@ flake-pilot `main`, read 2026-08-18, re-read 2026-08-20. Yes, by absence rather 
 ## podman
 
 podman 5.x, read 2026-08-19. Yes: `--network none` is genuinely default-deny, and the network posture is podman's rather than the OCI runtime's, so it applies at the krun setup too.
+
+The posture is one flag, and it composes with the runtime flag rather than replacing it:
+
+```bash
+podman run --runtime krun --network none docker.io/library/node:22 bash
+```
