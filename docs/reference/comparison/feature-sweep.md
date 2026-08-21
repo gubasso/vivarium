@@ -224,14 +224,15 @@ Plain rootless podman with no wrapper.
 
 Entries that name the same capability under different vocabularies were collapsed. An entry survived into the matrix when at least two subjects have a distinguishable answer to it, and when the answer is something a reader has to decide about rather than an implementation detail.
 
-Cells are then filled at one fixed setup per subject — the microVM backend for all four, apples to apples:
+Cells are then filled at one fixed isolation class for every subject — a microVM with its own guest kernel — with the engine inside that class left to be whatever each subject reaches it by:
 
 1. `vivarium` — its one microVM.
-2. `flake-pilot` — `firecracker-pilot`, at the upstream `claude` firecracker registration.
-3. `glaipnir` — the libkrun microVM.
-4. `podman` — rootless `podman run --runtime krun`.
+2. `flake-pilot` firecracker — `firecracker-pilot`, at the upstream `claude` firecracker registration.
+3. `flake-pilot` krun — `podman-pilot` at `--runtime krun`, at the upstream `claude` `krun` registration.
+4. `glaipnir` — the libkrun microVM.
+5. `podman` — rootless `podman run --runtime krun`.
 
-A capability a subject has only at another backend is not credited. Backend availability and selection are not capability rows: the seven entries themed `Backends` below fill the `Isolation backends` matrix in [`README.md`](./README.md) instead of a capability table. Filling a cell from whichever backend answers best would compare a tool with two modes against a tool with one, and every such mismatch found in review is listed below.[^merge]
+Five columns for four subjects, because flake-pilot reaches the class two ways and electing one of them would be a selection the phrase "the microVM" does not make. A capability a subject has only outside the class is not credited. Backend availability and selection are not capability rows: the seven entries themed `Backends` below fill the `Isolation backends` matrix in [`README.md`](./README.md) instead of a capability table. Filling a cell from whichever backend answers best would compare a tool with two modes against a tool with one, and every such mismatch found in review is listed below.[^merge]
 
 | Merged capability                                                        | Theme             | First seen in                                   |
 | ------------------------------------------------------------------------ | ----------------- | ----------------------------------------------- |
@@ -242,7 +243,7 @@ A capability a subject has only at another backend is not credited. Backend avai
 | Runs on a host without KVM                                               | Backends          | `flake-pilot`, `glaipnir`, `podman`             |
 | Choose the engine or hypervisor                                          | Backends          | `flake-pilot`                                   |
 | Runs on macOS                                                            | Backends          | `glaipnir`, `podman`                            |
-| The tool arranges the workspace mount                                    | Data              | `vivarium`, `glaipnir`                          |
+| The tool derives the workspace mount, with no host path named            | Data              | `vivarium`, `glaipnir`                          |
 | Work stays at its host path                                              | Data              | `vivarium`, `glaipnir`                          |
 | Choose which host paths cross, in a file rather than on the command line | Data              | `vivarium`                                      |
 | The caller chooses which host environment variables cross                | Data              | `vivarium`, `podman`                            |
@@ -303,6 +304,29 @@ Found by re-reading each filled row against the rule above.[^microvm-boundary]
 
 Eight of the fourteen moved in an alternative's favour, which is the check that the rule was applied to the comparison rather than to the competitors. Six came from re-reading the table, four from writing [`walkthroughs.md`](./walkthroughs.md), two more from re-reading [`scenarios/`](./scenarios/README.md), and the last two from the row-label audit below — each pass found what the previous one could not, because a verdict, a worked example, a method, and a label fail in different ways. The walkthrough exposes a cell filled from the rung with the better answer; the method exposes a verdict resting on a mechanism the method never runs; the label exposes a question only one design was ever going to answer well.
 
+### Verdicts corrected by reading flake-pilot at both routes
+
+Until 2026-08-21 the `flake-pilot` column was read at `firecracker-pilot` alone. That was the last hidden single-route selection in the set: upstream reaches the microVM class two ways, publishes a `claude` registration for each, and states the two are not equivalent, so naming the class did not name a setup. The subject now carries two columns. No verdict at the firecracker route moved; these are the twelve rows where the second route answers differently — eleven of them changing the mark, and one reaching the same mark by another mechanism — and they run both ways.[^both-routes]
+
+| Row                                                                      | firecracker | krun    | Why                                                                                                          |
+| ------------------------------------------------------------------------ | ----------- | ------- | ------------------------------------------------------------------------------------------------------------ |
+| Work stays at its host path                                              | n/a         | yes‡    | A registered `--volume` mirroring a path crosses as virtio-fs                                                |
+| Choose which host paths cross, in a file rather than on the command line | n/a         | yes‡    | The registration is a file, and a drop-in adds to it                                                         |
+| Refuses a mount that would expose the host session                       | n/a         | no      | There is now a mount to refuse, and nothing refuses it                                                       |
+| The project's own dev environment loads when you enter                   | no          | yes‡    | A mounted directory and a shell target; whether a toolchain loads is the image's property                    |
+| Something outside reaches a guest service                                | partial     | yes     | Impersonated listeners reach podman's ordinary publish path                                                  |
+| Stays off a corporate VPN                                                | partial     | no      | Both libkrun networking modes leave through the host's routing table                                         |
+| A later command reaches the instance already running                     | yes         | no      | The engine has no `exec`, so a registration cannot use `--resume`                                            |
+| The same definition gives everyone the same environment                  | partial     | no      | The unit is a `:latest` tag on a registry rebuilt nightly                                                    |
+| Update on purpose                                                        | yes         | no      | The same moving tag, moving without being asked                                                              |
+| Reclaim disk without a teardown                                          | no          | partial | `%remove` drops the container's writable layer without touching the registration                             |
+| Egress can be default-deny                                               | yes         | yes‡    | Deny is the shipped state at one route and an option to write into the registration at the other             |
+| Boot a previous build when the new one is broken                         | no          | no      | Same verdict, opposite reason: firecracker overwrites the bytes, `krun` keeps bytes no registration can name |
+
+Five move toward the second route and six away from it, which is the check that adding a column was a correction rather than a concession. The row that stayed put is the instructive one: two routes reaching the same `❌` by opposite mechanisms is what a single column had been hiding, and it is the shape [the workspace row](./scenarios/workspace-mount.md#flake-pilot) has too.
+
+One neighbouring claim was tested and rejected in the same pass. `overlay_size` at the firecracker route was put to us as a host mount, in the same breath as the registered `--volume` at the `krun` route. The engine schema carries no mount key of any kind, and the overlay is a sparse ext2 image attached as a second virtio-blk drive, so that verdict did not move — but the row's label had let the two readings coexist, which is the label correction below.
+
 ### Verdicts corrected by fixing podman's setup
 
 Until 2026-08-19 the `podman` column was read at its container boundary as the baseline. That was the last hidden cross-backend comparison in the set, so the column now reads at `podman run --runtime krun` like every other subject. Three verdicts moved, all against podman:[^podman-setup]
@@ -330,7 +354,9 @@ stays fixed once chosen`, still carried a presupposition: `once chosen` implies 
 
 `Roll back to an older environment` named an action with no situation attached, so nothing in it could be verdicted. Both projects that own this idea upstream phrase it as booting a previous state because the current one failed: the NixOS manual's "Rolling Back Configuration Changes" describes booting any previous configuration not yet garbage-collected and says it is especially useful when the new configuration fails to boot, and openSUSE's reference titles the section "System rollback by booting from snapshots" and frames it as recovering a misconfigured system. `Boot a previous build when the new one is broken` says that in the set's own voice; the evidence keeps vivarium's own noun, generation. No verdict moved.
 
-That retitle, and the three before it, retire the second of the two label rules above. A label is now required to state a claim a reader can verdict from the table alone, and length yields to that: `The same definition rebuilds the same environment` replaced a six-word label that said less. The first rule stands unchanged — a label states an observable behavior — and it is the one that was ever doing the work. The correction rows above keep the labels they were recorded under.[^rollback-label]
+`The tool arranges the workspace mount` was the label that let a reader and the subject's own author reach opposite readings from the same cell. `Arranges` is satisfied by a decision recorded once at registration and replayed at every start, which is exactly what a `krun` registration does; the property the row was built to measure is narrower, that the tool works out which project it is looking at with no host path named by anyone. Those are two capabilities, and the set already had a row for the first — `Choose which host paths cross, in a file rather than on the command line` asks precisely where the decision was written down. `The tool derives the workspace mount, with no host path named` states the second without borrowing the first, and the method under it now registers the subject before it starts it, so registration-time configuration is inside the test rather than ambiguously outside it. No verdict moved at any subject; two of them now say why they are a `❌` where before they only said that they were.
+
+That retitle, and the four before it, retire the second of the two label rules above. A label is now required to state a claim a reader can verdict from the table alone, and length yields to that: `The same definition rebuilds the same environment` replaced a six-word label that said less. The first rule stands unchanged — a label states an observable behavior — and it is the one that was ever doing the work. The correction rows above keep the labels they were recorded under.[^rollback-label]
 
 ### Citations corrected
 
@@ -483,3 +509,5 @@ The `‡` mark is what made the promotions honest rather than generous. It says 
 [^guest-environment]: Verified: 2026-08-20 — vivarium against [`spec/03-artifact-model.md`](../spec/03-artifact-model.md) for the manifest key table and [`spec/06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md) for the inner layer, and against [`implementation-status.md`](../implementation-status.md) and the shipped guest module for the `*`; flake-pilot against the `sci` and `flake-ctl-firecracker-register` manual pages in a fresh clone at `44e3ab2`; glaipnir against `image/Containerfile`, `image/scripts/entrypoint.sh`, and `docs/overview.md` at `21ef389`; podman against its manual pages. No existing verdict moved.
 
 [^rows-split]: Verified: 2026-08-20 — every split and every promotion re-read against the evidence already recorded in [`scenarios/`](./scenarios/README.md) at the revisions [`sources.md`](./sources.md) pins, with no subject re-read for this pass. The correction tables above keep the row labels they were written with; a label frozen in a dated record is what makes the record readable later, and the inventory above is where the current set lives.
+
+[^both-routes]: Verified 2026-08-21, against a fresh clone at `920f41e` and the upstream libkrun, `crun`, and passt documentation named in [`sources.md`](./sources.md).

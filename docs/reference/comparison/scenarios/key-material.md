@@ -22,6 +22,8 @@ The declaration names a member of the closed enum and carries no host path, whic
 
 No: the firecracker boundary has neither a share nor a relay. A key reaches the guest only by being written into the image or into an `include.tar` / `include.path` payload, which is the material itself rather than its use.
 
+The `krun` route has a share and still has no relay. Mounting the agent socket — `--opt "\-v $SSH_AUTH_SOCK ..."` — is the shared-kernel answer, and the guest here runs its own kernel, so the carried path arrives with no listener behind it: [the shape podman's cell records](#podman). Nothing forwards an agent by any other route at either engine.
+
 ## glaipnir
 
 No, by a different route: nothing is forwarded, and the design instead authenticates inside the sandbox and persists the result to a host cache directory the user owns. What ends up in the guest is a token rather than a private key, which is better than copying one — but an existing host key still cannot be used from inside.

@@ -21,7 +21,9 @@ readonly = true
 
 ## flake-pilot
 
-n/a: there is no bind-mount mechanism at the firecracker boundary, so there is no set to choose from — the same reason the [session-directory row](./session-sockets.md) reads `n/a` here. What the registration can carry is `include.tar` / `include.path`, which copies material into the artifact at registration time rather than selecting what crosses at run time. Under the container backend the choice is podman's `-v`, which is the shared-kernel answer.
+At the firecracker route, n/a: there is no bind-mount mechanism, so there is no set to choose from — the same reason [the session-directory row](./session-sockets.md) reads `n/a` for it. What the registration can carry is `include.tar` / `include.path`, which copies material into the artifact at registration time rather than selecting what crosses at run time.
+
+At the `krun` route, reachable and recorded in a file: what crosses is a list of `--opt "\--volume ..."` lines, and `flake-ctl podman register` writes them into `/usr/share/flakes/<app>.yaml`, where a second concern can add to them through an `<app>.d/` drop-in without editing the first. So the decision is written down rather than typed at each start, which is what this row asks. What the file is not is a file that travels with the project — it lives in a system directory and is keyed by the registered command name, which is [Defined by a project file](./project-file.md#flake-pilot). And nothing arranges the list: a path nobody names does not cross, and nothing notices that the one you meant is missing.
 
 ## glaipnir
 

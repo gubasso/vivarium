@@ -14,6 +14,8 @@ Yes: images and pieces are the shared class and the manifest is the personal one
 
 Yes: an `<app>.d/*.yaml` drop-in is smaller than the registration and carries one concern's options, and a colleague adopts it by copying it into place. The image is the other unit and it is the whole environment; the drop-in is the small one.
 
+This holds at both routes, the drop-in being a property of the registration rather than of the engine.
+
 ## glaipnir
 
 No: configuration is one `glaipnir.conf`, in the checkout or under `$XDG_CONFIG_HOME`, per user rather than per concern — there is no unit smaller than that file, and it is the user's own machine-local settings. The hooks directory can be copied by hand, which is file transfer rather than adoption.

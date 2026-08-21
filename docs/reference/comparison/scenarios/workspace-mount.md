@@ -1,10 +1,11 @@
 # Workspace mount
 
-Two questions hide in "can I see my project inside". This one asks whether the tool puts the project there without being asked; [the next](./host-path.md) asks whether the path it lands on is the one it had outside.[^read]
+Three questions hide in "can I see my project inside". This one asks the narrowest of them: whether the tool works out which project it is looking at, with no host path named anywhere. [The next](./host-path.md) asks whether the path it lands on is the one it had outside, and [the mount-choice row](./choosing-mounts.md) asks whether the decision, however it was made, was recorded in a file or retyped at each start. A tool can pass that last one and fail this one, and one of the subjects here does.[^read]
 
-1. Put a project at a known absolute path on the host.
-2. Start the tool for that project with no mount argument.
-3. Record whether the project is visible inside, and what named it.
+1. Register or configure the tool as its own documentation intends, and stop before starting it.
+2. Put a project at a known absolute path on the host.
+3. Start the tool for that project with no mount argument.
+4. Record whether the project is visible inside, what named it, and whether anything in what was named is a host path a person wrote.
 
 ## vivarium
 
@@ -12,7 +13,13 @@ Yes: the workspace is the project the manifest belongs to, so binding the projec
 
 ## flake-pilot
 
-No: the firecracker schema has no bind mount, so nothing is arranged and nothing can be. `include.tar` and `include.path` copy a payload into the artifact at provisioning time — work is copied, not seen through.
+No at both routes, for opposite reasons — which is the distinction this row exists to draw.
+
+At the firecracker route there is no mount at all: the schema has no bind-mount key, and `include.tar` and `include.path` copy a payload into the artifact at provisioning time, so work is copied rather than seen through. Nothing derives the workspace because nothing carries one.
+
+At the `krun` route the mount is real, arranged by the tool, and still not derived. The upstream registration freezes `--opt "\--volume %HOME/ai:%HOME/ai"` and `--opt "\--workdir %HOME/ai"` into `/usr/share/flakes/<app>.yaml`, and `podman-pilot` replays both on every `podman create`, so step 2 finds the directory there with no argument typed. What named it is a host path a person wrote at registration, and the registration is per application rather than per project: a registered `claude` mounts whatever was named when it was registered and does not follow you into a different project tree. Two projects wanting two workspaces are two registered command names.
+
+That the decision was recorded once rather than retyped is a real property and it is credited, on [the row that asks where the decision is written down](./choosing-mounts.md#flake-pilot). This row asks the other half — whether the tool needed to be told at all.
 
 ## glaipnir
 
@@ -29,4 +36,4 @@ cd ~/projects/my-thing
 podman run --rm -it --runtime krun -v "$PWD:$PWD" -w "$PWD" docker.io/library/node:22 bash
 ```
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19. The `flake-pilot` `krun` route and the protocol's registration step were added at `920f41e` on 2026-08-21.

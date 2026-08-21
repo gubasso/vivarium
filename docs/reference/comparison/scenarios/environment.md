@@ -12,7 +12,11 @@ Yes: the host environment is deny-by-default against a fixed allowlist, and `--e
 
 ## flake-pilot
 
-Yes: at the firecracker boundary there is no environment passthrough at all, so nothing crosses until the registration says so. What it lacks is a policy of its own — at the container backend the set is whatever the registration froze into `--opt` lines, and a `%VAR` placeholder with no matching variable becomes the literal name rather than failing.
+Yes at both routes, and by absence of a policy rather than by one.
+
+At the firecracker route there is no environment passthrough at all, so nothing crosses until the registration names it. At the `krun` route the set is whatever the registration froze into `--opt` lines — the upstream one carries a single `--opt "\-e HOME=%HOME"` — so the same holds, decided once rather than at each start.
+
+What both lack is a policy of their own. A `%VAR` placeholder with no matching variable in the environment becomes the literal name rather than failing, so a registration that expects a variable a colleague does not have carries the string `%VAR` into the guest and reports nothing, which is one of the shapes [the portability row](./portability-enforced.md#flake-pilot) charges for.
 
 ## glaipnir
 

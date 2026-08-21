@@ -12,7 +12,11 @@ Yes: there is no weaker boundary for a file to select, so no key in a manifest, 
 
 ## flake-pilot
 
-No: the drop-in directory `<app>.d/*.yaml` is read in alpha order with the last key winning, and rewrites an existing registration's options. A file dropped in beside a registration reaches what the registration fixed, and no merge stage reports that it did — the same mechanism that loses flake-pilot the [collision row](./collision.md).
+No, and the `krun` route has a second lever the firecracker route does not.
+
+Common to both: the drop-in directory `<app>.d/*.yaml` is read in alpha order with the last key winning, and rewrites an existing registration's options. A file dropped in beside a registration reaches what the registration fixed, and no merge stage reports that it did — the same mechanism that loses flake-pilot the [collision row](./collision.md).
+
+At the `krun` route that reaches the boundary itself. The engine is an option rather than a binary: the registration carries `--opt "\--runtime=krun"`, so a drop-in that rewrites the option list can drop the workload onto `crun` and its shared kernel with nothing announcing the change. Upstream documents a second path to the same place — `runtime = "krun"` under `[engine]` in `/etc/containers/containers.conf` or its per-user counterpart — which sets the engine for every registration from outside every registration, and unsets it the same way. At the firecracker route the engine is the pilot binary the registered symlink points at, so a drop-in can weaken much about a registration but not which kernel it boots.
 
 ## glaipnir
 

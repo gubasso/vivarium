@@ -13,6 +13,8 @@ Yes, nothing does: the [pure-build rule](../../spec/08-invariants-and-guarantees
 
 No: the guest is built by KIWI from a description the user maintains, and its `config.sh` is an arbitrary root shell script — upstream's own example VM pipes a vendor installer into `bash` there. flake-pilot does not run that build, which is exactly the problem this row records: the commands ran as root, and the registration that results names neither them nor the file they came from.
 
+The `krun` route is the same shape at a different builder: its guest is an OCI image whose `RUN` steps are the image author's and run as root, flake-pilot does not run that build either, and the registration names the resulting tag rather than what produced it.
+
 ## glaipnir
 
 No: build hooks execute as root during the image build, and the base image installs agents from npm and from vendor scripts piped to `bash`. The generality is the point; the cost is that the image is not reproducible from the declaration alone.

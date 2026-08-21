@@ -12,7 +12,9 @@ Yes, specified and not yet built: [`06-workspace-and-project-environment.md`](..
 
 ## flake-pilot
 
-No: there is no project to enter. A registration is per application, and at the firecracker rung the guest's init is `sci`, which evaluates the single `run=` command from the kernel command line, executes it, and reboots. Nothing mounts a project tree and nothing runs a login shell in it, so a repository's own toolchain has neither a place to be nor a moment to load.
+At the firecracker route, no: there is no project to enter. A registration is per application, and the guest's init is `sci`, which evaluates the single `run=` command from the kernel command line, executes it, and reboots. Nothing mounts a project tree and nothing runs a login shell in it, so a repository's own toolchain has neither a place to be nor a moment to load.
+
+At the `krun` route, reachable and nothing arranges it: the registration mounts a host directory and sets `--workdir` to it, and its target is `/bin/bash`, so a project living under that directory is entered with a shell in it. Whether the project's declared toolchain then activates is a property of the image somebody chose — an image shipping direnv or a version manager loads it, an image without one does not — which is [the same answer podman gets, for the same reason](#podman). What flake-pilot adds is that the choice was made once at registration rather than at each start; what it does not add is any notion that a project has a toolchain to load.
 
 ## glaipnir
 

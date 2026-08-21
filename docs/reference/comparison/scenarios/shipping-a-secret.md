@@ -14,6 +14,8 @@ Reachable, nothing arranges it: encrypted-at-rest is one of the two shapes the [
 
 No: the repository has no secrets mechanism of any kind, encrypted or otherwise — the only matches for the word are a CI workflow's own credentials. Material a registration needs reaches the guest as image content or as an `include.tar` / `include.path` payload, both of which carry it in clear inside the artifact, which is the shape the row above already records.
 
+This is a property of the repository rather than of an engine, so it holds identically at both routes.
+
 ## glaipnir
 
 No: the stance is that the image holds no secret at all, stated as a documented guarantee, and nothing ships one beside the definition either. Authentication happens at runtime inside the container and the result persists to a host cache directory the user owns, which is a per-machine step by construction: the second person authenticates again rather than receiving anything.

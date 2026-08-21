@@ -12,7 +12,7 @@ Yes: one boundary and no second mode beneath it, so there is no flag to pass. A 
 
 ## flake-pilot
 
-Yes: the engine is written into `/usr/share/flakes/<app>.yaml` at registration, and no call-time pseudo-argument revisits it. The set the pilot consumes — `@NAME`, `%remove`, `%interactive`, `%ignore_sync_error`, `%ignore_missing_volume_path`, `%progress`, `%port:number` — contains nothing that names an engine.
+Yes, at both routes: the engine is written into `/usr/share/flakes/<app>.yaml` at registration, and no call-time pseudo-argument revisits it. The set the pilot consumes — `@NAME`, `%remove`, `%interactive`, `%ignore_sync_error`, `%ignore_missing_volume_path`, `%progress`, `%port:number` — contains nothing that names an engine. At the `krun` route the engine is one frozen `--opt "\--runtime=krun"` line among the others, which puts it equally out of reach of an argument typed at the call site. What that same line is within reach of is [a file](./boundary-file.md#flake-pilot).
 
 ## glaipnir
 

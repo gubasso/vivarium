@@ -12,7 +12,9 @@ Specified in part: the [pure-build rule](../../spec/08-invariants-and-guarantees
 
 ## flake-pilot
 
-Yes: the registration names a local rootfs and kernel, so nothing can move on its own, and a newer image takes `flake-ctl firecracker pull --force`. The `:latest` tag rebuilt daily is the container backend — which is why this row is read at the boundary.
+At the firecracker route, yes: the registration names a local rootfs and kernel, so nothing can move on its own, and a newer image takes `flake-ctl firecracker pull --force`.
+
+At the `krun` route, no: the registration names a `:latest` tag on a registry that rebuilds nightly, so what a fresh machine or a re-pulled image gets is whatever was published that day. Nothing in the registration pins a version, nothing reports which build is running, and the moment of change is the registry's rather than the user's — the inverse of what this row asks for. Which is [the same reason the definition does not repeat](./same-definition.md#flake-pilot).
 
 ## podman
 

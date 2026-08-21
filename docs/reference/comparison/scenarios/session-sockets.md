@@ -12,7 +12,9 @@ Yes: the [session-directories-never-cross rule](../../spec/08-invariants-and-gua
 
 ## flake-pilot
 
-n/a: there is no bind-mount mechanism at the firecracker boundary, so there is nothing to refuse. Under the container backend a session socket is an ordinary `--opt "\-v ..."` and nothing objects — the shared-kernel answer, not this one.
+At the firecracker route, n/a: there is no bind-mount mechanism, so there is nothing to refuse.
+
+At the `krun` route there is something to refuse and nothing refuses it: a session directory is an ordinary `--opt "\-v /tmp:/tmp"` line in the registration, and the only inspection `podman-pilot` performs on a `--volume` argument is the existence check behind `%ignore_missing_volume_path`. What the boundary does instead of refusing is make the mount useless in the usual case: the guest runs its own kernel, so a carried socket path arrives as a name with no listener behind it — a failure at use rather than a refusal at start, which is [the same shape podman has](#podman). libkrun states the limit on its own passthrough in the same terms, warning that it "does not provide any protection against the guest attempting to access other directories in the same filesystem, or even other filesystems in the host", and directing users to arrange isolation host-side. A directory that is not a socket — `/var/tmp`, or an ancestor of a session directory — crosses and is readable.
 
 ## glaipnir
 

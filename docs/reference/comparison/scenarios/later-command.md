@@ -12,7 +12,11 @@ Yes: the VM outlives the command, and `start` is idempotent — on a fresh, alre
 
 ## flake-pilot
 
-Yes: `--resume` keeps the instance, and with `--force-vsock` the VM stays alive host-side so the next call reaches it over the vsock rather than booting a second one. The registration is where that is fixed, and it is fixed for firecracker: upstream states the `krun` handler does not support `exec`, so a `krun` registration cannot use `--resume` either.
+At the firecracker route, yes: `--resume` keeps the instance, and with `--force-vsock` the VM stays alive host-side so the next call reaches it over the vsock rather than booting a second one.
+
+At the `krun` route, no, and upstream says so in the note that publishes the registration. The `krun` OCI handler "does not support the exec command", because "libkrun runs workloads inside isolated microVMs, and there is no built-in mechanism or agent inside the lightweight virtual machine to spawn and inject new secondary processes", and "because of this a `krun` based app registration cannot use the resume feature". The upstream `krun` registration accordingly carries no `--resume`, and without it `podman-pilot` points the container's entry point at the registered target rather than at a sleep, so the container ends when the command does. The next call creates another.
+
+The route with the weaker in-guest story is the one that wins this row, and the reason is symmetrical: firecracker keeps a VM alive and talks to it over a vsock channel flake-pilot built, while `krun` inherits podman's re-entry model and podman's re-entry model is `exec`.
 
 ## glaipnir
 

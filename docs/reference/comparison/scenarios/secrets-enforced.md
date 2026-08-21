@@ -14,6 +14,8 @@ Partial: the prohibition is a binding rule rather than a practice, and the pure 
 
 No: nothing reads an image before it is registered, and nothing reads an `--include-path` payload before it is copied. There is no check to bypass because there is no stage that inspects — a credential in either place is registered and used exactly like anything else.
 
+Neither route inspects anything: the `krun` route adds an image and a mount to the ways material arrives, and no stage reads either.
+
 ## glaipnir
 
 No: it is practice rather than a rule. Build hooks run arbitrary commands as root at build time, so a user who puts a credential there gets it in the image, and nothing objects — no check reads the hooks, and the `security.credentials="runtime-only"` label keeps saying what it said.

@@ -12,7 +12,11 @@ Specified, not built: `spec/11` fixes per-project generations, each pinned by a 
 
 ## flake-pilot
 
-No: `pull --force` writes the new rootfs and kernel over the old ones in `/var/lib/firecracker/images/<name>/`, and the registration names those paths rather than a version. Nothing keeps the bytes that were there, so the earlier environment stops existing at the moment the new one arrives.
+No at both routes.
+
+At the firecracker route, `pull --force` writes the new rootfs and kernel over the old ones in `/var/lib/firecracker/images/<name>/`, and the registration names those paths rather than a version. Nothing keeps the bytes that were there, so the earlier environment stops existing at the moment the new one arrives.
+
+At the `krun` route the earlier bytes usually do survive — a re-pulled tag leaves the previous image on the machine, untagged — but nothing a registration can name reaches them. The registration holds a tag, the old image now answers only to an id nobody wrote down, and re-registering the command against that id is building a second registration rather than booting a previous build. The mechanism [podman's own column credits as an arrangement](#podman) is out of reach here precisely because the registration is the thing that made the tool convenient.
 
 ## glaipnir
 

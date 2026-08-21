@@ -14,6 +14,8 @@ Yes: scalars resolve by priority rather than by position — a shared piece prop
 
 No: `<app>.d/*.yaml` is read in alpha order and the last key wins. Two drop-ins setting one key is neither a conflict nor a merge — the later filename wins — so adopting a second author's file can undo the first's without saying so, and the deciding fact is a filename. The same mechanism is what loses flake-pilot the [boundary-file row](./boundary-file.md#flake-pilot).
 
+Both routes share that mechanism, because the drop-in directory belongs to the registration rather than to the engine.
+
 ## glaipnir
 
 n/a: hooks compose the way shell does, by running one after another, and `PACKAGES=(...)` is one array in one file. There is no declaration for two parts to disagree over, so there is no stage at which a disagreement could be reported. Not a gap — a different shape of extension, whose cost is paid in [the row above](./composition.md#glaipnir) rather than here.

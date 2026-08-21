@@ -14,6 +14,8 @@ Yes: a shared layer reaches the host only through portable variables — `${HOME
 
 No: the firecracker registration names local file paths under `/var/lib/firecracker/images/`, and a drop-in carrying a host path carries it literally. Nothing checks, so the failure arrives on the colleague's machine at run time rather than on the author's at build time.
 
+The `krun` route has a placeholder where the firecracker route has a literal — `%HOME/ai:%HOME/ai` resolves per user rather than baking one person's home directory in — and it is still not enforcement. Nothing checks a registration before it is written or before it is replayed, and [a `%VAR` with no matching variable becomes the literal name rather than failing](./environment.md#flake-pilot), so the mechanism that would carry portability is also the one that hides its absence.
+
 ## glaipnir
 
 No: there is no shared unit for a check to apply to, and the hooks that can be copied by hand are shell scripts that may name anything. `shellcheck` validates them as shell, which is not the same question.

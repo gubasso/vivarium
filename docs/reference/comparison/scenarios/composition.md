@@ -14,6 +14,8 @@ Yes: an image and an ordered list of pieces are imported as NixOS modules and me
 
 Yes, at the registration: `<app>.d/*.yaml` drop-ins are read in alpha order, so a second author's file is adopted by dropping it in with nothing edited. Inside the guest there is no second level — the image is one artifact, and composing what goes into it belongs to the builder that produced it rather than to flake-pilot.
 
+Both routes compose the same way and stop at the same place, because `<app>.d/` belongs to the registration. What differs is only what the one artifact underneath is: a KIS tarball at the firecracker route, a container image at the `krun` route.
+
 ## glaipnir
 
 Yes: the extension surface is ordered `NN-*.sh` drop-in hooks, run as root at build and as `aiuser` on every start, `shellcheck`-validated before use, plus a `PACKAGES=(...)` array interpolated into the base install line. A second concern is a second file in the hooks directory.

@@ -13,6 +13,8 @@ No, by rule: the [pure-build rule](../../spec/08-invariants-and-guarantees.md) f
 
 Yes: `flake-ctl firecracker pull --kis-image <url>` fetches a finished tarball into the local image store, and the first run of a registered application boots it. Nothing is built on the machine at all.
 
+The `krun` route is the same answer at podman's own path: the registration names a registry tag and the first call pulls it. Upstream publishes both stores, and neither route builds anything on the machine.
+
 ## glaipnir
 
 Yes: the agent image starts `FROM` a published per-agent image on an OBS registry, so the first run pulls rather than builds — what is built locally is the thin layer `PACKAGES` and the hooks add.

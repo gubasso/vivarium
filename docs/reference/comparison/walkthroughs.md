@@ -4,7 +4,7 @@ Two jobs, done four ways, start to finish. Every other question these tools answ
 
 Commands are transcribed from each project's own material; see [`sources.md`](./sources.md). Where vivarium's answer is specified rather than built it is marked `*`, and no command is shown that would refuse.
 
-Both jobs run at the fixed setup [`README.md`](./README.md)'s methodology names: vivarium's one microVM, flake-pilot's firecracker rung, glaipnir's libkrun microVM, and `podman run --runtime krun`. Container rungs appear only where they teach something, and are named as container rungs when they do, because most of what these tools do comfortably they do with the host kernel.
+Both jobs run at the fixed setups [`README.md`](./README.md)'s methodology names: vivarium's one microVM, both of flake-pilot's microVM rungs, glaipnir's libkrun microVM, and `podman run --runtime krun`. Container rungs appear only where they teach something, and are named as container rungs when they do, because most of what these tools do comfortably they do with the host kernel.
 
 ## W1 — Point an agent at a real project
 
@@ -62,7 +62,7 @@ flake-ctl firecracker --user register --vm claude \
     --overlay-size 20GiB --force-vsock --resume
 ```
 
-Note what rung 3 does not carry: there is no `--volume`, because the firecracker schema has no bind mount. The guest is the image plus a 20 GiB ext2 overlay, and host files reach it only as `--include-path` or `--include-tar` copies made at provisioning. The rung with its own kernel is also the rung where the agent stops looking at your project and starts looking at [a copy of it](./scenarios/workspace-mount.md#flake-pilot).
+Note what rung 3 does not carry: there is no `--volume`, because the firecracker schema has no bind mount. The guest is the image plus a 20 GiB ext2 overlay, and host files reach it only as `--include-path` or `--include-tar` copies made at provisioning. The strongest rung is also the one where the agent stops looking at your project and starts looking at [a copy of it](./scenarios/workspace-mount.md#flake-pilot) — while rung 2, with a kernel of its own too, keeps the directory in view and gives back re-entry instead. Rungs 2 and 3 are the two this comparison reads, and choosing between them is choosing what to lose.
 
 Afterwards the user types `claude`. The sandbox is invisible: the registered app is a symlink to a pilot binary that reads its own `argv[0]`.
 
@@ -107,10 +107,10 @@ The project tree is at the absolute path it occupies on the host, so `git`, edit
 
 ### What the difference costs
 
-- flake-pilot: most flexible, least self-describing — three registrations per agent, and the isolation strength lives in shell history rather than in the project.
+- flake-pilot: most flexible, least self-describing — three registrations per agent, two of them behind a kernel of their own, and the isolation strength lives in shell history rather than in the project.
 - glaipnir: fastest path to a working sandbox, bought by deciding the boundary for you.
 - podman: everything is possible, nothing is remembered.
-- vivarium: slowest to first run, and the only one where "what is this environment" is a file you can read. Against the firecracker rung it is a fair fight — both boot a kernel, and only one still has the project tree at its own path afterwards.
+- vivarium: slowest to first run, and the only one where "what is this environment" is a file you can read. Against either microVM rung it is a fair fight, and the two rungs lose it differently: rung 3 boots a kernel and leaves the work behind as a copy, rung 2 boots a kernel and keeps the work in view but at a directory somebody typed once, which does not follow the next project.
 
 ## W2 — Get the same environment back next month
 
@@ -118,7 +118,7 @@ Four rows touch this — [the same definition](./scenarios/same-definition.md), 
 
 ### flake-pilot
 
-At the container rung the unit is a `:latest` tag on a public ECR registry rebuilt daily, and `%remove` makes the next call re-check it, so the enclosure moves by default. At the firecracker rung it cannot: `pull` fetches a versioned artifact by URL — `claude.x86_64-1.15.6-0.tar.xz` — into `/var/lib/firecracker/images/<name>/`, and the registration then names local file paths for the rootfs and kernel. There is no registry left to re-check.
+At both podman rungs — rung 1 and the `krun` rung this comparison reads — the unit is a `:latest` tag on a public ECR registry rebuilt daily, and `%remove` makes the next call re-check it, so the enclosure moves by default. At the firecracker rung it cannot: `pull` fetches a versioned artifact by URL — `claude.x86_64-1.15.6-0.tar.xz` — into `/var/lib/firecracker/images/<name>/`, and the registration then names local file paths for the rootfs and kernel. There is no registry left to re-check. So the two rungs with their own kernel answer this walkthrough oppositely, and the stronger-sounding one is the one that holds still.
 
 What it does not have is a way back or a way to re-derive. A description can exist — upstream's example VM is a KIWI file anyone can copy and rebuild — but it does not pin: its `config.sh` installs the agent through `npm install -g` and a piped vendor installer, against repository URLs that carry no version, so the same file rebuilt next month produces a different system. The tarball is therefore the unit, a second machine gets the same environment only by fetching the same URL and trusting it, and yesterday's image is gone once you overwrite it.
 

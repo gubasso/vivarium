@@ -13,7 +13,9 @@ Yes: the [host-symmetric mount rule](../../spec/08-invariants-and-guarantees.md)
 
 ## flake-pilot
 
-n/a: nothing crosses at the firecracker boundary, so there is no inside path to compare — the same reason the [mount-choice row](./choosing-mounts.md) and the [session-directory row](./session-sockets.md) read `n/a` here. The published `--volume %HOME/ai:%HOME/ai` that does mirror a path is the `crun` container backend, and it mirrors a quarantine directory rather than the project tree.
+At the firecracker route, n/a: nothing crosses, so there is no inside path to compare — the same reason [the mount-choice row](./choosing-mounts.md) and [the session-directory row](./session-sockets.md) read `n/a` for it.
+
+At the `krun` route, reachable and nothing checks it: the upstream registration's `--opt "\--volume %HOME/ai:%HOME/ai"` names the same path on both sides, and under `krun` the mount crosses as virtio-fs, so a file's path inside is the path it had outside. Two things keep it an arrangement rather than an answer. The mirroring is a property of how the person who wrote the registration happened to write it — `%HOME/ai:/work` would have been accepted identically, and nothing reports a mismatch — and what mirrors is `~/ai`, a quarantine directory the upstream flow tells you to create, rather than the project tree wherever it already lives.
 
 ## glaipnir
 

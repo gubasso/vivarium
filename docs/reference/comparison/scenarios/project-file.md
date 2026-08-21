@@ -14,6 +14,8 @@ Yes: the manifest is a project's own file, and the binding from a project direct
 
 No: a registration writes `/usr/share/flakes/<app>.yaml`, plus an `<app>.d/` drop-in directory. The unit is the application, not the project — two projects wanting different environments for the same tool need two registered command names.
 
+This holds at both routes: the registration is written where the pilot looks for it, keyed by the command name, and no engine changes that.
+
 ## glaipnir
 
 No: one `glaipnir.conf`, in the checkout or under `$XDG_CONFIG_HOME`, per user rather than per project — and `_parse_conf` runs after the argument loop, so a value in the file overwrites the same value given on the command line.

@@ -50,6 +50,8 @@ Then rebuild and re-pull. Both commands, with the boxed KIWI invocation in full,
 
 The cost is that the description is a separate artifact from the registration, and nothing records which one produced a registered image — what [the same-definition row](./same-definition.md#flake-pilot) charges for.
 
+The `krun` route relocates the same answer into an OCI build: packages are lines in a `Containerfile` and setup is its `RUN` steps, run as root by whatever built the image, and the registration names neither. The cost is the same cost in a sharper form, because at that route the registration names a tag rather than an artifact, so nothing records which build the setup ran in.
+
 ## glaipnir
 
 Yes, and this is the subject that has it most directly: a `PACKAGES=(…)` array is interpolated into the image's `zypper install` line, and `--build-hook` runs the user's script as root inside the build context — which is how a package outside the default Tumbleweed repositories gets its repository added first. The cost is [the no-root-build row](./build-steps.md#glaipnir) and [the same-definition row](./same-definition.md#glaipnir), where the same generality reads as a loss.

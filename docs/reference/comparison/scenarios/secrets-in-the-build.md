@@ -14,6 +14,8 @@ Yes: a build-time secret is prohibited outright, and the reach of one is why the
 
 No: there is no secrets mechanism to use, so credential material reaches the guest the only ways anything does — written into the image, or copied by `--include-path` / `--include-tar` at provisioning — and both carry it in clear inside the artifact that gets registered and shared. [The shipping row](./shipping-a-secret.md#flake-pilot) records the absence itself: the word does not appear in the repository outside a CI workflow's own credentials.
 
+The `krun` route adds a third way in and no mechanism with it — a mounted host path, which carries credential material at run time rather than baking it, and which nothing scopes, records, or refuses.
+
 ## glaipnir
 
 Yes: the stance is stated up front and holds in the code — nothing is baked into the image, authentication happens at runtime inside the container, the token lands in a host cache directory the user owns, and the image carries the label `security.credentials="runtime-only"`. Whether anything holds a user to it is [the next row](./secrets-enforced.md#glaipnir), and there the answer changes.

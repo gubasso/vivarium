@@ -16,6 +16,8 @@ The position is consistent with the [config-read-only rule](../../spec/08-invari
 
 No: at the firecracker boundary a credential arrives as an `--include-path` copy fixed at registration time, so the payload is frozen per registered application rather than selected per run. One registration, one baked-in set, and no per-consumer view of it once the guest is up.
 
+The `krun` route is the same answer through the other mechanism: what crosses is the flat list of `--opt "\-v ..."` lines the registration froze, visible to everything in the guest, with no notion of which process inside needs which. Two scopes are two registered command names.
+
 ## glaipnir
 
 Yes: `_bind_agent_mounts` holds a table mapping seven agent names to the credential directories each one owns, and emits only the volumes the selected agents need, so `run claude` never mounts the `gh` token — it is absent from the guest rather than hidden inside it. The volumes cross into the krun guest as virtiofs, so the scoping holds at the compared setup.

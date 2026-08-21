@@ -12,14 +12,18 @@ Yes: `control.sock` is a listening socket, and each `viv exec` and each `viv she
 
 ## flake-pilot
 
-No: the guest init is `sci`, which executes the one command named by `run=` and reboots, so nothing is left inside to hand out a second shell. Two concurrent sessions are therefore two VMs, separated by a call-time suffix that for firecracker also names the TAP device:
+No at both routes, and neither has a supervisor inside to hand out a second shell.
+
+At the firecracker route the guest init is `sci`, which executes the one command named by `run=` and reboots, so nothing is left inside to hand out a second one. Two concurrent sessions are therefore two VMs, separated by a call-time suffix that for firecracker also names the TAP device:
 
 ```bash
 claude @projA        # one VM: instance projA, tap-claude@projA
 claude @projB        # a second VM: its own overlay, memory, and TAP device
 ```
 
-Two VMs is not the same capability as two shells: the sessions share no working tree, no running process, and no warm state. Registering the app as a multiplexer or an `sshd` would buy that back, at the cost of building the in-guest supervisor flake-pilot does not ship. The `--attach` flag that would join a running instance exists only in `flake-ctl podman register`; the firecracker registration has no such flag, and the full `exec` and `attach` ergonomics belong to the `crun` container backend.
+Two VMs is not the same capability as two shells: the sessions share no working tree, no running process, and no warm state. Registering the app as a multiplexer or an `sshd` would buy that back, at the cost of building the in-guest supervisor flake-pilot does not ship.
+
+At the `krun` route the answer is the same and the reason is the engine's. `podman exec` is what would open a second session and the `krun` handler does not support it, for want of an in-guest agent to inject a process. `flake-ctl podman register` does carry an `--attach` flag, which is a different code path — `podman attach` rather than `podman exec` — and it is not this capability: attaching connects a second terminal to the primary process's existing stream rather than starting a session of its own, and podman's own report of two clients on one container is that output reaches only one of them. It is also mutually exclusive with `--resume` in the registration parser, and the upstream `krun` registration carries neither.
 
 ## glaipnir
 
