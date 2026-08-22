@@ -9,7 +9,7 @@ $ viv destroy --yes
 $ viv start
 ```
 
-After teardown, confirm the binding with `viv config --json`. Destroy removes the vivarium-owned marker while leaving the manifest binding untouched, so the next start is a clean first run — see the [project identity specification](../reference/spec/15-project-identity.md) for what the marker is and which verbs write and remove it, and [why the marker's lifecycle belongs to the lifecycle verbs rather than to `init`](../decisions/ADR-0043-identity-marker-lifecycle.md) for the reasoning behind that split.
+After teardown, confirm workspace resolution with `viv config --json`. Destroy removes vivarium-owned state and data for the selected manifest while leaving the manifest and workspace untouched, so the next start is a clean first run. [Config and XDG layout](../reference/spec/02-config-and-xdg-layout.md) owns the manifest-keyed paths, and [VM lifecycle](../reference/spec/10-vm-lifecycle.md) owns the teardown boundary.
 
 ## Choose warm teardown
 
@@ -22,4 +22,4 @@ Use the keep-volumes form when the next VM should reattach persistent data. A la
 
 ## Acceptance coverage
 
-Two gated trials in [`user_workflows.rs`](../../tests/user_workflows.rs) cover this: `workflow_08_destroy_usage_surface` checks the confirmation requirement and that garbage collection needs no project binding, and `workflow_08_destroy_cold_rebuild` checks the cold and warm variants, marker removal, and the surviving binding.
+Two gated trials in [`user_workflows.rs`](../../tests/user_workflows.rs) cover this: `workflow_08_destroy_usage_surface` checks the confirmation requirement and manifest-keyed scope, and `workflow_08_destroy_cold_rebuild` checks the cold and warm variants, clean workspace, and surviving derived resolution.

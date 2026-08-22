@@ -24,14 +24,16 @@ The four durable roots — the durability split ADR-0005 draws. The runtime root
 
 - Config root — the user's source of truth. Holds the global config file, the `images/` library, the `pieces/` library, and the `manifests/` library. Everything here is hand-authored and may be version-controlled by the user. vivarium only reads the config root; it never writes, creates, or scaffolds anything here (N13 in [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md) — config is read-only to the tool). The tool's own writes go to state, data, or cache only.
 - Data root — pinned inputs: the per-target lockfile that pins what a project's build resolves to (see below), including the nodes for any external module library a shared artifact declares ([`03-artifact-model.md`](./03-artifact-model.md)). The lock carries nodes for `nixpkgs`, `microvm`, and the artifact-declared inputs — never a node for vivarium itself, because the installation supplies the tool and its product tree ([`../../decisions/ADR-0102-the-installation-supplies-vivarium.md`](../../decisions/ADR-0102-the-installation-supplies-vivarium.md)). What the data root holds is the pin, never the fetched source — that lives in the Nix store like every other build input.
-- State root — per-project runtime state the tool writes: the built VM's store output reference, a stable VM identity that survives restarts, the project registry (`registry.toml` — the project→manifest binding — see below), the per-project build generations (see below), and the diagnostic log (`logs/vivarium.log`, written by default — see [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)).
-- Cache root — derived, regenerable artifacts: the generated flake compiled from each manifest (see below), the Nix evaluation cache, and built VM images. Safe to delete; the tool rebuilds it.
+- State root — per-sandbox runtime state the tool writes: build records, persistent volumes, and the diagnostic log (`logs/vivarium.log`, written by default — see [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)). Each sandbox directory is keyed by its manifest name.
+- Cache root — derived, regenerable artifacts: the workspace-owner index, the generated flake compiled from each manifest (see below), the Nix evaluation cache, and built VM images. Safe to delete; the tool rebuilds it.
 
 The config, data, state, and cache roots hold, respectively, what the user edits, what is pinned as input, what a run produces, and what can be rebuilt. Any new artifact is placed by asking which of those four it is — and because config is read-only to the tool, anything the tool must write is by definition state, data, or cache, never config.
 
 ## The runtime root
 
-`$XDG_RUNTIME_DIR/vivarium/<project-id>/<target>/` holds the files that exist only while a VM is running — the per-target `flock`, the control socket, the pid file, and the boot record. Their names and the ensure-running protocol that reads them are owned by [`12-exec-and-shell.md`](./12-exec-and-shell.md); the layout mirrors the state root's `projects/<project-id>/<target>/` component for component, for the reason [`15-project-identity.md`](./15-project-identity.md) gives.
+`$XDG_RUNTIME_DIR/vivarium/<manifest>/<target>/` holds the files that exist only while a VM is running — the per-target `flock`, the control socket, the pid file, and the boot record. `<manifest>` is the selected manifest's artifact name and therefore the sandbox key. The layout mirrors the state root's `projects/<manifest>/<target>/` component for component. Their names and the ensure-running protocol that reads them are owned by [`12-exec-and-shell.md`](./12-exec-and-shell.md).
+
+The control socket's rendered path MUST fit a Unix socket address, whose `sun_path` holds 108 bytes. Two rules bound it, and they are two rules for one failure because only one of them can be fixed in advance. A manifest name used as a sandbox key is refused at resolution when it exceeds 48 bytes, which is a bound on what a user declares; `$XDG_RUNTIME_DIR` is host-variable, so the rendered path is computed and refused at `host.runtime-socket-path-too-long` when it does not fit. A host with a long runtime directory can therefore refuse a name the byte rule accepts, and a green length check is not coverage of the socket path.
 
 Nothing here is durable, so nothing here is ever swept: the directory is tmpfs-backed and torn down with the session that owns it. That is also why a VM does not outlive the user's final logout — the boundary is stated in [`10-vm-lifecycle.md`](./10-vm-lifecycle.md) and decided in [`../../decisions/ADR-0056-vm-lifetime-bounded-by-user-session.md`](../../decisions/ADR-0056-vm-lifetime-bounded-by-user-session.md).
 
@@ -41,88 +43,45 @@ The config root holds one global config file, `config.toml`, carrying user-wide 
 
 It carries defaults for cross-cutting concerns — the settings that apply to every command rather than to one project. Today that is the logging family specified in [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md); each later cross-cutting knob joins the same chain. It sits one rung below the environment in the precedence standard, which is flag > environment variable > global config file > built-in default ([`../../decisions/ADR-0046-global-config-file-and-precedence.md`](../../decisions/ADR-0046-global-config-file-and-precedence.md), amending [`../../decisions/ADR-0026-global-flags-and-config-precedence.md`](../../decisions/ADR-0026-global-flags-and-config-precedence.md)).
 
-Two things it deliberately does not carry. It does not hold the project→manifest binding: that binding is machine-specific, non-portable runtime state, so it lives in the state root, not here — and manifest selection keeps its own chain (below), because a per-project binding has no meaningful user-wide default. It does not hold a colour setting: colour follows the environment-only chain `NO_COLOR > FORCE_COLOR > isatty` with no flag and no file key ([`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md)).
+Two things it deliberately does not carry. It does not bind a working directory to a manifest: explicit `[[workspaces]]` declarations and the resolution chain below own that relationship. It does not hold a colour setting: colour follows the environment-only chain `NO_COLOR > FORCE_COLOR > isatty` with no flag and no file key ([`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md)).
 
-## Project registry (state)
+## Workspace ownership index (cache)
 
-The project registry is the single home for project→manifest bindings: a map from a project directory to the manifest it resolves to. It lives under the state root because it is machine-local, tool-managed, and not portable — a record of what the tool has bound on this machine, keyed by the project's absolute path. The tool writes it only on an explicit, user-directed action (`viv init --write`, see [`01-command-surface.md`](./01-command-surface.md)), never as a side effect of a normal command.
+Manifest selection has three precedence rungs: `--manifest`, then `VIVARIUM_MANIFEST`, then ownership derived from the manifest library. The derived rung parses each manifest's explicit `[[workspaces]]` rows and selects the one whose expanded source contains the invoking directory. `[[mounts]]` never establish ownership. No owner and more than one owner both fail closed at `78`; two owners are named together. See N7 in [`08-invariants-and-guarantees.md`](./08-invariants-and-guarantees.md) and [`../../decisions/ADR-0107-the-sandbox-keys-on-the-manifest.md`](../../decisions/ADR-0107-the-sandbox-keys-on-the-manifest.md).
 
-The manifest binding has no file inside the repository: a project is bound by a registry entry, not by a committed or gitignored pointer. The one thing vivarium does write into a project's own tree is its self-ignored `.vivarium/` identity marker — which carries the `<project-id>` only, never the binding (N9, N21; [`15-project-identity.md`](./15-project-identity.md)). Identity is tracked in a separate state-root index, `identity.toml`, distinct from this `--write`-gated binding — a different key, a different write gate, and a different lifetime, which is why the two are separate files.
+Scanning is accelerated by `$XDG_CACHE_HOME/vivarium/workspace-index.json`. The index stores only manifest names, resolved manifest paths and modification times, and unexpanded workspace source tokens. Every field is recomputable from the manifest library. A missing, malformed, or stale index is a cache miss: vivarium rebuilds it before resolving ownership. A changed library snapshot invalidates it. The selected manifest's current text is checked again before its ownership is trusted, so the cache narrows candidates and never becomes authority.
 
-### On-disk shape
+The old state-root `registry.toml` has no role in selection. If one remains from an older version, vivarium neither reads, writes, nor deletes it. There is no project-local binding or identity file, and no command writes inside a workspace (N9 and N13).
 
-The registry is `registry.toml` under the state root, a TOML array of tables:
+### Lockless publication
 
-```toml
-[[projects]]
-path = "/home/alice/backend"
-manifest = "rust-web"
-```
+The index has no lock. Concurrent writers derive the same library snapshot and each publishes a complete value: create a same-directory temporary file, write and flush it, rename it over the cache, then fsync the parent directory. A reader sees an old complete index, a new complete index, or a cache miss it rebuilds — never a partial file. The cache directory is `0700` and the index is `0600`.
 
-`path` is the project directory's canonical, symlink-resolved absolute path — canonicalized exactly as identity resolution canonicalizes it ([`15-project-identity.md`](./15-project-identity.md)), so one directory can never acquire two bindings. `manifest` is the bare kebab-case name, never a resolved file path: resolution is a config-root function (below) and the config root is user-mutable behind the tool's back (N13), so a stored path would be a stale pointer for no gain.
+The first surviving mutable lock is the per-target `flock` ([`12-exec-and-shell.md`](./12-exec-and-shell.md)); a future Nix profile lock follows it. Locks are acquired in that order, released in reverse, and never held across a VM boot or Nix build. [`../../decisions/ADR-0053-state-file-atomicity-and-lock-ordering.md`](../../decisions/ADR-0053-state-file-atomicity-and-lock-ordering.md) records the historical order and its amendments.
 
-Those two keys are a supported interface. `viv init` prints exactly this block for the user to paste ([`01-command-surface.md`](./01-command-surface.md)), and vivarium accepts a hand-written entry. Nothing else about the state root is specified — no other file name, and no other schema; the supported readers for the rest are `viv config --json` and `viv status -g --json`. Decided in [`../../decisions/ADR-0052-state-root-file-layout-and-schema-visibility.md`](../../decisions/ADR-0052-state-root-file-layout-and-schema-visibility.md).
+### Retained state without a manifest
 
-The registry carries no schema version, and an unknown key fails closed. Because there is no version field to read, that failure's message is the whole compatibility signal — what it must say is fixed once, in [`14-exit-codes.md`](./14-exit-codes.md), and applies here and to the manifest alike. The grammar evolves additively; a genuinely breaking change would signal out of band through a new filename rather than through a field the incompatible parser must already understand. This is the manifest's rule ([`../../decisions/ADR-0047-manifest-carries-no-schema-version.md`](../../decisions/ADR-0047-manifest-carries-no-schema-version.md)) applied to the other file a user writes into.
-
-### Writing and concurrency
-
-Both state files are written atomically: serialize to a temp file in the same directory, flush it, rename it over the target, then fsync the parent directory. A concurrent reader sees the old file or the new one, never a partial one. Both files are `0600` and the state root is `0700`. The same permissions cover everything else vivarium writes under that root, the diagnostic log included ([`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)): the state root is a private directory, not a shared one.
-
-A writer takes an exclusive `flock(2)` on a sidecar `<file>.lock`; read-only diagnostics take a shared one. Every lock vivarium takes obeys one total order — registry → identity index → per-target `flock` ([`12-exec-and-shell.md`](./12-exec-and-shell.md)) → Nix profile — acquired in that order, released in reverse, and never held across a VM boot or a Nix build. A lock that cannot be taken promptly is `75` rather than a hang ([`14-exit-codes.md`](./14-exit-codes.md)). Decided in [`../../decisions/ADR-0053-state-file-atomicity-and-lock-ordering.md`](../../decisions/ADR-0053-state-file-atomicity-and-lock-ordering.md).
-
-### When a state file cannot be read
-
-Absent is not corrupt, and vivarium never silently rebuilds one:
-
-| On disk                       | Behavior                                              | Exit |
-| ----------------------------- | ----------------------------------------------------- | ---- |
-| absent                        | empty collection                                      | `0`  |
-| zero-length                   | empty collection                                      | `0`  |
-| unreadable (permissions, I/O) | fail closed                                           | `74` |
-| malformed TOML                | fail closed, naming the file and the failing line     | `78` |
-| unknown key                   | fail closed, naming the accepted keys and CLI version | `78` |
-
-A malformed registry is a configuration defect rather than an I/O failure, because a user may have written the entry by hand; `74` is reserved for the channel genuinely failing. The two need different messages: a user who never wrote `identity.toml` cannot be told to go fix their typo. Both faults also surface ahead of the command that would hit them, as the soft `state-files-parse` check in [`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md). Wholesale self-repair is never attempted — an identity entry is re-adopted one project at a time from its `.vivarium/id` marker ([`15-project-identity.md`](./15-project-identity.md)), and a lost binding is re-created by `viv init --write`.
-
-A registry entry whose project directory has vanished is warned about, never removed automatically; see `viv status -g` and `viv unbind` in [`01-command-surface.md`](./01-command-surface.md) and [`../../decisions/ADR-0054-stale-bindings-surfaced-not-reaped.md`](../../decisions/ADR-0054-stale-bindings-surfaced-not-reaped.md).
+Deleting or renaming a manifest can leave state and data under `projects/<manifest>/`. vivarium reports these retained paths through the soft `state-manifest-orphans` doctor probe and never deletes them automatically. This carries forward ADR-0054's report-rather-than-reap judgment; cleanup remains an explicit operator decision.
 
 ### State diagnostic ids
 
-The `state.` namespace is documented here, which is where [`14-exit-codes.md`](./14-exit-codes.md) places it. Read failures follow the table above; write failures return `77` when a permission denies them and `74` otherwise, and a lock that cannot be taken promptly returns `75`.
+The `state.` namespace is documented here, which is where [`14-exit-codes.md`](./14-exit-codes.md) places it. `state.no-manifest` and `state.workspace-owner-ambiguous` are selection refusals at `78`. The two refusals a selected manifest can raise about itself carry the `manifest.` namespace and are documented with it in [`03-artifact-model.md`](./03-artifact-model.md). Tool-owned volume-record failures use `state.unreadable`, `state.syntax`, `state.type`, `state.write`, `state.write-temporary`, and `state.write-sync`. Build and volume provisioning use `state.build-record` and `state.volume-directory`.
 
-| Id                          | Condition                                                           |
-| --------------------------- | ------------------------------------------------------------------- |
-| `state.unreadable`          | a state file exists but its contents cannot be read                 |
-| `state.syntax`              | a state file is not valid TOML                                      |
-| `state.unknown-key`         | a state file carries a key outside the grammar                      |
-| `state.missing-key`         | a record omits a key the grammar requires                           |
-| `state.wrong-type`          | a known key holds the wrong TOML type                               |
-| `state.invalid-value`       | a known key holds a value outside its domain                        |
-| `state.lock-open`           | the sidecar lock file cannot be opened or locked                    |
-| `state.lock-unavailable`    | another process holds the lock and it cannot be taken promptly      |
-| `state.unconfirmed-write`   | a `--write` was requested without the confirmation spec/01 requires |
-| `state.no-manifest`         | no manifest resolves for a command that requires one                |
-| `state.write-parent`        | the state root cannot be created or inspected                       |
-| `state.write-permissions`   | the state root cannot be made private                               |
-| `state.write-temporary`     | a same-directory staged replacement cannot be created               |
-| `state.temporary-collision` | bounded unique-file allocation is exhausted                         |
-| `state.write`               | staged bytes cannot be written                                      |
-| `state.write-sync`          | staged bytes cannot be flushed                                      |
-| `state.publish`             | the staged replacement cannot be renamed over the target            |
-| `state.directory-sync`      | the state root cannot be flushed after publication                  |
+The derived index uses `state.index-source-unreadable`, `state.index-unreadable`, `state.index-encode`, `state.index-parent`, `state.index-permissions`, `state.index-stage`, `state.index-temporary-collision`, `state.index-write`, `state.index-sync`, `state.index-publish`, and `state.index-directory-sync`. A malformed cache has no diagnostic id because it is rebuilt rather than reported as an authored defect. Permission-denied writes return `77`; other owned-channel I/O failures return `74`.
 
-## Per-project VM state
+## Per-sandbox VM state
 
-Each project's runtime VM state lives under the state root at `projects/<project-id>/<target>/`, where `<project-id>` is the project-identity key that scopes all of a project's state and `<target>` names the VM instance within that project — both defined in [`15-project-identity.md`](./15-project-identity.md), which also explains why `<target>` is always `default` today. This holds the project's build generations — a per-project Nix profile whose numbered symlinks pin retained build outputs as garbage-collector roots — and its persistent volumes (`volumes/<name>.img`, always including `default`). Volumes live under state, not cache, because their contents are user data and not regenerable. Generation layout and lifecycle are specified in [`11-generations-and-build-history.md`](./11-generations-and-build-history.md); the volume model in [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md) and [`../../decisions/ADR-0019-volume-model.md`](../../decisions/ADR-0019-volume-model.md).
+Each sandbox's runtime VM state lives under the state root at `projects/<manifest>/<target>/`. `<manifest>` is the selected manifest name. `<target>` reserves the named VM instance within that sandbox and is always `default` today: no flag selects another and no manifest key declares one.
+
+The target component exists now so adding another target later does not relocate state. State and runtime layouts use it symmetrically, and the reason is that the two are read together: the ensure-running protocol resolves a runtime directory and its state directory from one pair of components, so a layout that spelled the pair differently on the two sides would make every such resolution carry a translation nobody can verify from either path alone. Multiple `exec` or `shell` sessions attach to one target rather than creating targets ([`12-exec-and-shell.md`](./12-exec-and-shell.md)). This directory holds build records and persistent volumes (`volumes/<name>.img`, always including `default`). Volumes live under state, not cache, because their contents are user data and not regenerable. Generation layout and lifecycle are specified in [`11-generations-and-build-history.md`](./11-generations-and-build-history.md); the volume model in [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md) and [`../../decisions/ADR-0019-volume-model.md`](../../decisions/ADR-0019-volume-model.md).
 
 ## The generated flake and the lockfile
 
 Building a project produces two tool-owned artifacts outside the state root, and a team may add a third the tool only ever reads. They sit in different roots because they have different durability, and the split is the whole point: one is regenerable, one is the pin that makes regeneration mean the same thing twice, and one is a team's own artifact.
 
 ```text
-$XDG_CACHE_HOME/vivarium/flakes/<project-id>/<target>/     # generated flake — regenerable
-$XDG_DATA_HOME/vivarium/projects/<project-id>/<target>/flake.lock   # pinned inputs — not regenerable
+$XDG_CACHE_HOME/vivarium/flakes/<manifest>/<target>/     # generated flake — regenerable
+$XDG_DATA_HOME/vivarium/projects/<manifest>/<target>/flake.lock   # pinned inputs — not regenerable
 $XDG_CONFIG_HOME/vivarium/manifests/<name>/flake.lock      # optional team override — read-only to the tool
 ```
 
@@ -195,8 +154,8 @@ The effective manifest is resolved highest-wins, per [`../../decisions/ADR-0011-
 
 1. `--manifest` command-line flag — a single-invocation override, never persisted.
 2. `VIVARIUM_MANIFEST` environment variable — a runtime override, never persisted.
-3. Project-registry entry (in the state root) for the project's path.
-4. Otherwise, fail closed with a copy-pasteable snippet to bind the project.
+3. The unique manifest whose explicit `[[workspaces]]` set contains the invoking directory, accelerated by the derived cache-root index.
+4. Otherwise, fail closed naming the directory and the exact `[[workspaces]]` block to add. Two owners fail closed naming both manifests.
 
 ## The libraries
 

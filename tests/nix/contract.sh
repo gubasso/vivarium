@@ -15,7 +15,7 @@ trap 'echo "contract failed at line $LINENO" >&2' ERR
 launcher_json=$VIVARIUM_RUNNER/share/vivarium/launch-arguments.json
 test -r "$launcher_json"
 grep -qF "$(readlink -f "$launcher_json")" "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"
-test "$(jq -r .schemaVersion "$launcher_json")" = 10
+test "$(jq -r .schemaVersion "$launcher_json")" = 11
 test "$(jq -r .descriptorBudget.limit "$launcher_json")" = 524288
 test "$(jq -r .descriptorBudget.workerPoolSize "$launcher_json")" = "$VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE"
 test "$(jq -r .socketLegs.api "$launcher_json")" = '@API_SOCKET@'

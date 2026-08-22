@@ -359,7 +359,7 @@ mod tests {
         BootMetadata {
             schema_version: SCHEMA_VERSION,
             boot_identity: identity.to_owned(),
-            project_id: "p".to_owned(),
+            sandbox_id: "p".to_owned(),
             target: "t".to_owned(),
             backend: "cloud-hypervisor".to_owned(),
             workspace_host_paths: std::collections::BTreeMap::from([(

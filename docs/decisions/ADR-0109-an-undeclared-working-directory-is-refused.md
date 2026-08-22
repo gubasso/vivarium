@@ -27,6 +27,6 @@ The message is the deliverable, not a footnote to the code. It names the manifes
 
 ## Status
 
-Proposed
+Implemented
 
-Enacted by [slice 020](../plan/slices/020-many-workspaces-in-one-sandbox/README.md) for the undeclared directory, and by [slice 021](../plan/slices/021-the-manifest-is-the-sandbox/README.md) for the second claimant.
+Enacted by [slice 020](../plan/slices/020-many-workspaces-in-one-sandbox/README.md) for the undeclared directory and [slice 021](../plan/slices/021-the-manifest-is-the-sandbox/README.md) for derived ownership and the second-claimant refusal.

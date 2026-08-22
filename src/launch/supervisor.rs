@@ -703,7 +703,7 @@ impl Supervisor {
             // side, and this is the version the reader's envelope compares against its own.
             schema_version: crate::launch::LAUNCH_SCHEMA_VERSION,
             boot_identity: boot_identity.to_owned(),
-            project_id: self.spec.project_id.clone(),
+            sandbox_id: self.spec.sandbox_id.clone(),
             target: self.spec.target.clone(),
             backend: crate::launch::BACKEND.to_owned(),
             workspace_host_paths,

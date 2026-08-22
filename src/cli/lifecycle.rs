@@ -2,7 +2,7 @@
 //!
 //! What is new here is small on purpose. The supervisor, the confinement policy, and the transient
 //! unit already exist and are host-proven; the generated flake already publishes the same runner
-//! the diagnostic path executes. So `start` resolves, builds, mints an identity, and executes that
+//! the diagnostic path executes. So `start` resolves, builds, and executes that
 //! runner to render the specification, then re-invokes this binary as `start --spec` — the
 //! handoff slice 002 built, now driven from the running installation (ADR-0102). Nothing here
 //! supervises anything.
@@ -11,6 +11,7 @@
 //! readers. They share the `Context`, the failure vocabulary, and the resolution front half.
 
 use std::fs::{self, File};
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -117,13 +118,36 @@ pub(super) struct Runtime {
 }
 
 impl Runtime {
-    pub(super) fn locate(runtime_root: &Path, project_id: &str, target: &str) -> Self {
-        Self {
-            directory: runtime_root.join(project_id).join(target),
+    pub(super) fn locate(
+        runtime_root: &Path,
+        sandbox_id: &str,
+        target: &str,
+    ) -> Result<Self, Failure> {
+        let runtime = Self {
+            directory: runtime_root.join(sandbox_id).join(target),
             // The same name `nix/runner.sh` hands `systemd-run --unit`, because `stop` and
             // `status` have to name the unit `start` created and neither can ask it.
-            unit: format!("vivarium-{project_id}-{target}.service"),
+            unit: format!("vivarium-{sandbox_id}-{target}.service"),
+        };
+        let control = runtime.control_socket();
+        if control.as_os_str().as_bytes().len() >= 108 {
+            return Err(diagnosed(
+                Namespace::Host,
+                "runtime-socket-path-too-long",
+                "the sandbox control socket does not fit in a Unix socket path",
+                Locus::File(control.clone()),
+                format!(
+                    concat!(
+                        "the rendered path is {} bytes; Linux `sun_path` permits at most ",
+                        "107 path bytes"
+                    ),
+                    control.as_os_str().as_bytes().len()
+                ),
+                ExitKind::Config,
+            )
+            .with_hint("use a shorter `XDG_RUNTIME_DIR` or a shorter manifest name"));
         }
+        Ok(runtime)
     }
 
     fn boot_json(&self) -> PathBuf {
@@ -155,10 +179,9 @@ impl Runtime {
 
 /// The per-target `flock`, held across a reuse-or-boot decision and dropped before the session.
 ///
-/// ADR-0053 fixes one total order for every lock vivarium takes — registry, identity index, this
-/// one, then the Nix profile. It is taken after `mint_identity` has released the first two, which
-/// is that order, and it is the reason a second `viv exec` racing a cold start waits for the boot
-/// rather than starting a second one.
+/// ADR-0053's surviving lock order starts here, before the not-yet-implemented Nix profile lock.
+/// It is the reason a second `viv exec` racing a cold start waits for the boot rather than starting
+/// a second one.
 pub(super) struct TargetLock(File);
 
 impl TargetLock {
@@ -229,8 +252,8 @@ impl Drop for TargetLock {
 /// Deliberately not a generation: spec/11's generation record, its retention, and its GC roots are
 /// out of this slice's scope. This is one path, written after a successful build, and it is what
 /// makes `built` distinguishable from `absent` after a clean stop.
-fn last_build_path(roots: &config::XdgRoots, project_id: &str, target: &str) -> PathBuf {
-    build_record(roots, project_id, target, "last-build")
+fn last_build_path(roots: &config::XdgRoots, sandbox_id: &str, target: &str) -> PathBuf {
+    build_record(roots, sandbox_id, target, "last-build")
 }
 
 /// The build the currently running VM was launched from, written just before the launcher runs.
@@ -238,15 +261,15 @@ fn last_build_path(roots: &config::XdgRoots, project_id: &str, target: &str) -> 
 /// Under the data root rather than in the runtime directory, and deliberately: the supervisor's
 /// cleanup sweep removes only its own allowlist and aborts on anything else, so a freshness record
 /// written beside the sockets would make every teardown fail with an unknown-artifact refusal.
-fn running_build_path(roots: &config::XdgRoots, project_id: &str, target: &str) -> PathBuf {
-    build_record(roots, project_id, target, "running-build")
+fn running_build_path(roots: &config::XdgRoots, sandbox_id: &str, target: &str) -> PathBuf {
+    build_record(roots, sandbox_id, target, "running-build")
 }
 
-fn build_record(roots: &config::XdgRoots, project_id: &str, target: &str, name: &str) -> PathBuf {
+fn build_record(roots: &config::XdgRoots, sandbox_id: &str, target: &str, name: &str) -> PathBuf {
     roots
         .data
         .join("projects")
-        .join(project_id)
+        .join(sandbox_id)
         .join(target)
         .join(name)
 }
@@ -258,15 +281,15 @@ fn build_record(roots: &config::XdgRoots, project_id: &str, target: &str, name: 
 /// be acted on.
 pub(super) fn last_build(
     roots: &config::XdgRoots,
-    project_id: &str,
+    sandbox_id: &str,
     target: &str,
 ) -> Option<String> {
-    read_build_record(&last_build_path(roots, project_id, target))
+    read_build_record(&last_build_path(roots, sandbox_id, target))
 }
 
 /// The same read for the running VM's own build, used only to answer freshness.
-fn running_build(roots: &config::XdgRoots, project_id: &str, target: &str) -> Option<String> {
-    read_build_record(&running_build_path(roots, project_id, target))
+fn running_build(roots: &config::XdgRoots, sandbox_id: &str, target: &str) -> Option<String> {
+    read_build_record(&running_build_path(roots, sandbox_id, target))
 }
 
 fn read_build_record(path: &Path) -> Option<String> {
@@ -387,7 +410,7 @@ fn unit_active_state(unit: &str) -> Option<String> {
 
 /// ADR-0030's discriminator, as a pure function of what the runtime directory and the store say.
 ///
-/// The marker-teardown invariant is what makes it work: a clean `stop` removes the runtime records,
+/// The record-teardown invariant is what makes it work: a clean `stop` removes the runtime records,
 /// so "records present and the process is dead" is `failed` rather than `built`. ADR-0030 names
 /// that dependency as the cost of this design, and `stop` below is the half that has to hold it.
 pub(super) fn discriminate(runtime: &Runtime, has_build: bool) -> State {
@@ -519,6 +542,12 @@ pub fn start<E: Environment>(
     // answers `78` on every host — including one that would fail preflight — and so nothing is
     // written for a project that never reaches step 5.
     let resolved = super::resolve_manifest_for_launch(context)?;
+    debug_assert!(
+        resolved
+            .matched_workspace
+            .as_ref()
+            .is_some_and(|workspace| context.project.starts_with(workspace))
+    );
     // The manifest's own table, kept for the one path that cannot read the merged
     // one: `--no-rebuild`
     // evaluates nothing by definition (spec/10), so a piece's `vivarium.resources` is not available
@@ -531,31 +560,20 @@ pub fn start<E: Environment>(
     // Step 2.
     let runtime_root = preflight(context)?;
 
-    // Minted here, and once. spec/10 places identity persistence in ensure-running, but every
-    // artifact from this point on is keyed by the id — the generated tree and its lock, the build
-    // records, the runtime directory, the volumes, the unit name — and spec/15 is explicit that a
-    // resolved-but-unpersisted suffix is deterministic rather than stable: a concurrent first start
-    // can take the suffix this one resolved. Minting before the first keyed write is what makes all
-    // of them name one project. It is still after steps 1 and 2, so an unbound project or an
-    // unusable host writes nothing.
-    //
-    // Minting also repairs a marker the user deleted, which is why it precedes the already-running
-    // return below rather than sitting behind it.
-    let project_id = config::mint_identity(&context.roots.state, &context.project)
-        .map_err(|error| super::registry_failure(&error))?;
-    let runtime = Runtime::locate(&runtime_root, &project_id, DEFAULT_TARGET);
+    let sandbox_id = resolved.selected.name.clone();
+    let runtime = Runtime::locate(&runtime_root, &sandbox_id, DEFAULT_TARGET)?;
     // The same per-target lock a session takes (spec/12 step 1), because the two verbs perform the
     // same routine and a lock only one of them respects would guard nothing. Held to the end of
     // this function, which is the end of the boot.
     let _lock = TargetLock::acquire(&runtime)?;
-    // The gutter opens once the boot is really this project's to run: identity minted, lock held.
+    // The gutter opens once the boot is really this project's to run: target lock held.
     // Every return below either reaches the outro or carries a note, and a note closes an open
     // gutter itself — so the frame never ends mid-air.
-    context.ui.intro(&project_id);
+    context.ui.intro(&sandbox_id);
     let running = matches!(
         discriminate(
             &runtime,
-            last_build(&context.roots, &project_id, DEFAULT_TARGET).is_some()
+            last_build(&context.roots, &sandbox_id, DEFAULT_TARGET).is_some()
         ),
         State::Running
     );
@@ -568,10 +586,10 @@ pub fn start<E: Environment>(
         if running {
             return Ok(Success {
                 stdout: String::new(),
-                notes: format!("`{project_id}` is already running\n"),
+                notes: format!("`{sandbox_id}` is already running\n"),
             });
         }
-        last_build(&context.roots, &project_id, DEFAULT_TARGET).ok_or_else(|| {
+        last_build(&context.roots, &sandbox_id, DEFAULT_TARGET).ok_or_else(|| {
             diagnosed(
                 Namespace::State,
                 "no-build",
@@ -584,7 +602,7 @@ pub fn start<E: Environment>(
             .with_hint("run `viv start` without `--no-rebuild` to evaluate and build first")
         })?
     } else {
-        let (built, evaluated) = evaluate_and_build(context, &project_id, resolved)?;
+        let (built, evaluated) = evaluate_and_build(context, &sandbox_id, resolved)?;
         // spec/04: the launch channel is read by pure evaluation of the *merged* configuration, so
         // a `vivarium.resources` a piece proposes is as binding as the manifest's own table. Taken
         // only on this path, because it is the only one that evaluated anything.
@@ -598,18 +616,18 @@ pub fn start<E: Environment>(
     // than before it — a `start` that returned early would never produce the output it is meant to
     // build, and would leave the drift it is meant to report invisible to the next `status`.
     if running && !rebuild {
-        let launched = running_build(&context.roots, &project_id, DEFAULT_TARGET);
+        let launched = running_build(&context.roots, &sandbox_id, DEFAULT_TARGET);
         let stale = launched.is_some_and(|launched| launched != store_path);
         return Ok(Success {
             stdout: String::new(),
             notes: if stale {
                 format!(
-                    "`{project_id}` is running an older build and was left alone\n\
+                    "`{sandbox_id}` is running an older build and was left alone\n\
                     the new build is ready; `viv start --rebuild` replaces the \
                     running VM with it\n"
                 )
             } else {
-                format!("`{project_id}` is already running\n")
+                format!("`{sandbox_id}` is already running\n")
             },
         });
     }
@@ -623,9 +641,9 @@ pub fn start<E: Environment>(
         stop_unit(&runtime, false, None, context.ui)?;
     }
 
-    // Step 5, ensure running. The identity minted above is the one every artifact below names.
+    // Step 5, ensure running. The selected manifest name keys every artifact below.
     let resources = effective_resources(merged.or(leaf_resources).as_ref());
-    launch(context, &project_id, &runtime, &store_path, resources)?;
+    launch(context, &sandbox_id, &runtime, &store_path, resources)?;
 
     context.ui.outro(&format!(
         "running · {} MiB · {} vcpu",
@@ -640,14 +658,14 @@ pub fn start<E: Environment>(
 /// step of the same routine, and a second spelling of it would be a second product.
 fn evaluate_and_build<E: Environment>(
     context: &Context<'_, E>,
-    project_id: &str,
+    sandbox_id: &str,
     resolved: ResolvedForLaunch,
 ) -> Result<(String, Option<config::Resources>), Failure> {
     let composition = config::volumes::Composition::of(&resolved.manifest);
-    let evaluated = super::evaluate_resolved_for_launch(context, project_id, resolved)?;
+    let evaluated = super::evaluate_resolved_for_launch(context, sandbox_id, resolved)?;
     let built = build_runner(&evaluated.flake_directory, context.ui)?;
     write_build_record(
-        &last_build_path(&context.roots, project_id, DEFAULT_TARGET),
+        &last_build_path(&context.roots, sandbox_id, DEFAULT_TARGET),
         &built,
     )?;
     // Written on this path only. `--no-rebuild` evaluates nothing, so it has no provenance to
@@ -656,7 +674,7 @@ fn evaluate_and_build<E: Environment>(
     // Under the per-target lock this function already runs beneath (ADR-0053).
     config::volumes::write(
         &context.roots.state,
-        project_id,
+        sandbox_id,
         DEFAULT_TARGET,
         &config::volumes::Record {
             composition,
@@ -673,7 +691,7 @@ fn evaluate_and_build<E: Environment>(
 /// a build it was not launched from.
 fn launch<E: Environment>(
     context: &Context<'_, E>,
-    project_id: &str,
+    sandbox_id: &str,
     runtime: &Runtime,
     store_path: &str,
     resources: Resources,
@@ -682,10 +700,10 @@ fn launch<E: Environment>(
     // ran, which `status` would then read as this VM's provenance.
     require_current_contract(store_path)?;
     write_build_record(
-        &running_build_path(&context.roots, project_id, DEFAULT_TARGET),
+        &running_build_path(&context.roots, sandbox_id, DEFAULT_TARGET),
         store_path,
     )?;
-    execute_runner(context, store_path, runtime, project_id, resources)
+    execute_runner(context, store_path, runtime, sandbox_id, resources)
 }
 
 /// spec/10's pre-boot refusal: the selected build must speak this binary's launch contract.
@@ -766,11 +784,17 @@ pub(super) async fn ensure_running<E: Environment + Sync>(
     // spec/10 step 1, before anything else and on every host: an unbound project answers `78`
     // whether or not this machine could have booted a VM.
     let resolved = super::resolve_manifest_for_launch(context)?;
+    debug_assert!(
+        resolved
+            .matched_workspace
+            .as_ref()
+            .is_some_and(|workspace| context.project.starts_with(workspace))
+    );
+    let workspace_host_paths = resolved.workspace_host_paths.clone();
     let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
         .map_err(|error| super::resolution_failure(&error))?;
-    let project_id = config::mint_identity(&context.roots.state, &context.project)
-        .map_err(|error| super::registry_failure(&error))?;
-    let runtime = Runtime::locate(&runtime_root, &project_id, DEFAULT_TARGET);
+    let sandbox_id = resolved.selected.name.clone();
+    let runtime = Runtime::locate(&runtime_root, &sandbox_id, DEFAULT_TARGET)?;
 
     // Step 1. Everything from here to the end of the boot is exclusive per target.
     let _lock = TargetLock::acquire(&runtime)?;
@@ -778,7 +802,7 @@ pub(super) async fn ensure_running<E: Environment + Sync>(
     // Steps 2 and 3: when the socket is there, the agent answered for this boot, and the record
     // names this project, nothing is preflighted, evaluated, built, or booted.
     let boot = if let Some(boot) =
-        reusable(&runtime, &project_id, &context.project, context.ui).await?
+        reusable(&runtime, &sandbox_id, &workspace_host_paths, context.ui).await?
     {
         boot
     } else {
@@ -786,10 +810,10 @@ pub(super) async fn ensure_running<E: Environment + Sync>(
         // same evaluation, the same launcher. The preflight runs only here, because spec/12 step 3
         // says a reused VM skips it: the host already held one.
         preflight(context)?;
-        let (store_path, merged) = evaluate_and_build(context, &project_id, resolved)?;
+        let (store_path, merged) = evaluate_and_build(context, &sandbox_id, resolved)?;
         launch(
             context,
-            &project_id,
+            &sandbox_id,
             &runtime,
             &store_path,
             effective_resources(merged.as_ref()),
@@ -814,7 +838,7 @@ pub(super) async fn ensure_running<E: Environment + Sync>(
             }
         }
     };
-    prepared(&runtime, boot)
+    prepared(&runtime, boot, &context.project)
     // `_lock` falls out of scope here, which is what puts the release before the session's own
     // connection rather than after it.
 }
@@ -826,8 +850,8 @@ pub(super) async fn ensure_running<E: Environment + Sync>(
 /// repair.
 async fn reusable(
     runtime: &Runtime,
-    project_id: &str,
-    workspace: &Path,
+    sandbox_id: &str,
+    workspace_host_paths: &std::collections::BTreeMap<String, PathBuf>,
     ui: &Ui,
 ) -> Result<Option<BootMetadata>, Failure> {
     // Step 2. A socket that is not there at all is the ordinary cold case — but only once step 4's
@@ -881,24 +905,22 @@ async fn reusable(
     // Step 3, the half `Ping` cannot answer. The identity comparison in the handshake proves which
     // *boot* replied; this proves the boot is the one this invocation meant.
     //
-    // A record naming another project or target refuses outright, live or dead: this invocation
-    // has no standing to repair another project's records, and the hint says who does.
-    if boot.project_id != project_id || boot.target != DEFAULT_TARGET {
-        return Err(foreign(runtime, "it names another project or target"));
+    // A record naming another sandbox or target refuses outright, live or dead: this invocation
+    // has no standing to repair another manifest's records, and the hint says who does.
+    if boot.sandbox_id != sandbox_id || boot.target != DEFAULT_TARGET {
+        return Err(foreign(runtime, "it names another sandbox or target"));
     }
     // The other two fields spec/12 step 3 can decide. These name the same project, so a mismatch is
-    // this project's own record to act on, and which action depends on step 4's question rather
+    // this sandbox's own record to act on, and which action depends on step 4's question rather
     // than on the mismatch: a live VM is refused because replacing it is not a repair, and a dead
-    // one is stale state that must be cleared or the project could never start again. Project
-    // identity deliberately survives a directory move (spec/15), so the workspace path is the field
-    // that notices one — and a moved project meeting its own crashed VM's record has to be able to
-    // cold-start at the new path.
-    let mismatch = if !boot
-        .workspace_host_paths
-        .values()
-        .any(|path| path == workspace)
-    {
-        Some("it names another workspace host path")
+    // one is stale state that must be cleared or the project could never start again.
+    //
+    // The manifest was already selected and parsed before this routine, so comparing its complete
+    // tag-to-path set costs no preflight, evaluation, or build. Membership of the invoking cwd was
+    // the singleton-era identity only while the project directory was necessarily `ws0`; using it
+    // now would reject a valid owner whose declared trees deliberately exclude the binding anchor.
+    let mismatch = if boot.workspace_host_paths != *workspace_host_paths {
+        Some("it names another declared workspace set")
     } else if boot.backend != crate::launch::BACKEND {
         Some("it names another backend")
     } else {
@@ -1088,7 +1110,11 @@ fn boot_record_skew(runtime: &Runtime, theirs: u32) -> Failure {
 }
 
 /// Reads out of the launch specification what a session needs and the boot record does not carry.
-fn prepared(runtime: &Runtime, boot: BootMetadata) -> Result<Prepared, Failure> {
+fn prepared(
+    runtime: &Runtime,
+    boot: BootMetadata,
+    invoking_cwd: &Path,
+) -> Result<Prepared, Failure> {
     let path = runtime.launch_spec();
     let unreadable = |why: &str| {
         diagnosed(
@@ -1124,14 +1150,18 @@ fn prepared(runtime: &Runtime, boot: BootMetadata) -> Result<Prepared, Failure> 
     // were true when the VM was launched, and a session has no business re-litigating them.
     let spec: LaunchSpec = serde_json::from_slice(&bytes)
         .map_err(|_| unreadable("it does not match the launch schema this version understands"))?;
-    // The share's `source`, not its `mount_point`: since ADR-0100 the guest binds the workspace at
-    // the host's own path, so that is where a session starts and the fstab entry is the internal
-    // mount the bind was made from. `LAUNCH_SCHEMA_VERSION` is what stops an older launcher's JSON
-    // reaching this line, since both shapes parse.
-    let workspace_cwd = spec
-        .workspace_guest_path()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| unreadable("it declares no workspace share to start a session in"))?;
+    // ADR-0108 privileges no declaration. Every workspace is mirrored at its host path, so the
+    // exact invoking cwd is already its guest path after ownership was proved during resolution.
+    if !boot
+        .workspace_host_paths
+        .values()
+        .any(|workspace| invoking_cwd.starts_with(workspace))
+    {
+        return Err(unreadable(
+            "the invoking directory is outside the workspace set recorded for this boot",
+        ));
+    }
+    let workspace_cwd = invoking_cwd.to_path_buf();
     Ok(Prepared {
         control_socket: runtime.control_socket(),
         boot,
@@ -1505,15 +1535,16 @@ fn source_failure(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn execute_runner<E: Environment>(
     context: &Context<'_, E>,
     store_path: &str,
     runtime: &Runtime,
-    project_id: &str,
+    sandbox_id: &str,
     resources: Resources,
 ) -> Result<(), Failure> {
     // spec/02 and ADR-0019 fix the location: a project's volumes are part of its per-project state
-    // at `projects/<project-id>/<target>/volumes/<name>.img`, under the same two components the
+    // at `projects/<sandbox-id>/<target>/volumes/<name>.img`, under the same two components the
     // runtime root mirrors. Anywhere else and `viv volume list`, `viv volume rm`, and `viv destroy`
     // could not find the user's own data, because each of them looks under the project's subtree.
     // The directory is all this passes: which images go in it, and under what names, is decided by
@@ -1578,7 +1609,7 @@ fn execute_runner<E: Environment>(
     // evaluates nothing.
     let declared_mounts = resolve_declared_mounts(context, store_path)?;
 
-    let volumes = volume_directory(&context.roots, project_id, DEFAULT_TARGET);
+    let volumes = volume_directory(&context.roots, sandbox_id, DEFAULT_TARGET);
     std::fs::create_dir_all(&volumes).map_err(|source| {
         diagnosed(
             Namespace::State,
@@ -1612,8 +1643,8 @@ fn execute_runner<E: Environment>(
         .arg(resources.mem_mib.to_string())
         .arg("--vcpu")
         .arg(resources.vcpu.to_string())
-        .arg("--project-id")
-        .arg(project_id)
+        .arg("--sandbox-id")
+        .arg(sandbox_id)
         .arg("--target")
         .arg(DEFAULT_TARGET);
     for workspace in &declared_workspaces {
@@ -1746,13 +1777,13 @@ fn installation_programs() -> Result<(PathBuf, PathBuf), Failure> {
 /// Where one project's persistent volumes live (spec/02, ADR-0019).
 pub(super) fn volume_directory(
     roots: &config::XdgRoots,
-    project_id: &str,
+    sandbox_id: &str,
     target: &str,
 ) -> PathBuf {
     roots
         .state
         .join("projects")
-        .join(project_id)
+        .join(sandbox_id)
         .join(target)
         .join("volumes")
 }
@@ -1858,24 +1889,16 @@ pub fn status<E: Environment>(context: &Context<'_, E>, global: bool) -> Result<
 
     let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
         .map_err(|error| super::resolution_failure(&error))?;
-    let registry = config::registry::read(&context.roots.state)
-        .map_err(|error| super::registry_failure(&error))?;
-    let binding = config::resolve_binding(None, context.environment, &registry, &context.project);
-    let Some(binding) = binding else {
-        return Err(super::unbound(context));
-    };
+    let resolved = super::resolve_manifest_for_launch(context)?;
 
-    // Resolved, never minted: spec/15 makes persistence the minting commands' alone, which is what
-    // keeps spec/14's read-only guarantee literally true.
-    let project_id = config::resolve_identity(&context.roots.state, &context.project)
-        .map_err(|error| super::registry_failure(&error))?;
-    let runtime = Runtime::locate(&runtime_root, &project_id, DEFAULT_TARGET);
-    let recorded = last_build(&context.roots, &project_id, DEFAULT_TARGET);
+    let sandbox_id = resolved.selected.name.clone();
+    let runtime = Runtime::locate(&runtime_root, &sandbox_id, DEFAULT_TARGET)?;
+    let recorded = last_build(&context.roots, &sandbox_id, DEFAULT_TARGET);
     let state = discriminate(&runtime, recorded.is_some());
 
     let running = matches!(state, State::Running | State::Stopping);
     Ok(Report {
-        manifest: Some(binding.manifest),
+        manifest: Some(resolved.binding.manifest),
         state,
         // The one cause this slice can distinguish: `discriminate` reaches `failed` from runtime
         // records whose process is gone, which is spec/10's `crashed`. `boot-timeout` needs the
@@ -1888,7 +1911,7 @@ pub fn status<E: Environment>(context: &Context<'_, E>, global: bool) -> Result<
         // question and always says "drifted". An unknown pairing reads as not stale rather than as
         // drifted, since the flag carries a remedy the user would act on.
         stale: matches!(state, State::Running)
-            && running_build(&context.roots, &project_id, DEFAULT_TARGET).is_some_and(|launched| {
+            && running_build(&context.roots, &sandbox_id, DEFAULT_TARGET).is_some_and(|launched| {
                 recorded
                     .as_ref()
                     .is_some_and(|current| *current != launched)
@@ -1936,18 +1959,13 @@ pub fn stop<E: Environment>(
 
     let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
         .map_err(|error| super::resolution_failure(&error))?;
-    let registry = config::registry::read(&context.roots.state)
-        .map_err(|error| super::registry_failure(&error))?;
-    if config::resolve_binding(None, context.environment, &registry, &context.project).is_none() {
-        return Err(super::unbound(context));
-    }
-    let project_id = config::resolve_identity(&context.roots.state, &context.project)
-        .map_err(|error| super::registry_failure(&error))?;
-    let runtime = Runtime::locate(&runtime_root, &project_id, DEFAULT_TARGET);
+    let resolved = super::resolve_manifest_for_launch(context)?;
+    let sandbox_id = resolved.selected.name;
+    let runtime = Runtime::locate(&runtime_root, &sandbox_id, DEFAULT_TARGET)?;
 
     // Idempotent (spec/10): nothing running is a `0` no-op. Checked against the discriminator
     // rather than against the unit, so a `failed` VM with dead records still reaches the sweep.
-    let has_build = last_build(&context.roots, &project_id, DEFAULT_TARGET).is_some();
+    let has_build = last_build(&context.roots, &sandbox_id, DEFAULT_TARGET).is_some();
     if matches!(
         discriminate(&runtime, has_build),
         State::Absent | State::Built
@@ -2159,12 +2177,46 @@ mod tests {
     use crate::test_support::ScratchDirectory;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SHORT_RUNTIME_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    /// A short runtime root for tests that exercise the real Unix-socket layout.
+    ///
+    /// Heavy test runs deliberately place `TMPDIR` on the external drive. That path can exceed
+    /// `sun_path` before the sandbox component is involved, while the production runtime root is
+    /// the short, writable `XDG_RUNTIME_DIR`. These tests care about records and discrimination,
+    /// not the separately asserted 107-byte socket boundary, so their fixture mirrors the
+    /// production root instead of inheriting `TMPDIR`.
+    struct ShortRuntimeRoot(PathBuf);
+
+    impl ShortRuntimeRoot {
+        fn new() -> Self {
+            let sequence = SHORT_RUNTIME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::var_os("XDG_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .unwrap()
+                .join(format!("viv-test-{}-{sequence}", std::process::id()));
+            fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for ShortRuntimeRoot {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).ok();
+        }
+    }
 
     /// The resting states, each reachable from what the filesystem says and nothing else.
     #[test]
     fn the_resting_states_are_decided_by_records_and_build_output() {
-        let scratch = ScratchDirectory::new().unwrap();
-        let runtime = Runtime::locate(scratch.path(), "api", "default");
+        let runtime_root = ShortRuntimeRoot::new();
+        let runtime = Runtime::locate(runtime_root.path(), "api", "default").unwrap();
         fs::create_dir_all(&runtime.directory).ok();
 
         // Neither records nor a build.
@@ -2217,8 +2269,8 @@ mod tests {
     /// merely misreporting it.
     #[test]
     fn a_pid_record_that_names_no_process_is_not_alive() {
-        let scratch = ScratchDirectory::new().unwrap();
-        let runtime = Runtime::locate(scratch.path(), "api", "default");
+        let runtime_root = ShortRuntimeRoot::new();
+        let runtime = Runtime::locate(runtime_root.path(), "api", "default").unwrap();
         fs::create_dir_all(&runtime.directory).ok();
 
         for raw in ["0", "0\n", "-1", "", "  ", "not-a-pid"] {
@@ -2299,8 +2351,8 @@ mod tests {
     /// The gathering half still reads the two files the pure half is told about.
     #[test]
     fn the_records_the_discriminator_reads_are_the_ones_the_supervisor_writes() {
-        let scratch = ScratchDirectory::new().unwrap();
-        let runtime = Runtime::locate(scratch.path(), "api", "default");
+        let runtime_root = ShortRuntimeRoot::new();
+        let runtime = Runtime::locate(runtime_root.path(), "api", "default").unwrap();
         fs::create_dir_all(&runtime.directory).ok();
 
         // No unit exists for this scratch id, so a live pid can only reach `failed` — which is
@@ -2351,8 +2403,8 @@ mod tests {
     /// Item 3 of slice 015: skew is told apart from corruption, and both from absence.
     #[test]
     fn a_record_from_another_version_reads_as_skew_not_corruption() {
-        let scratch = ScratchDirectory::new().unwrap();
-        let runtime = Runtime::locate(scratch.path(), "envelope", "default");
+        let runtime_root = ShortRuntimeRoot::new();
+        let runtime = Runtime::locate(runtime_root.path(), "envelope", "default").unwrap();
         fs::create_dir_all(&runtime.directory).ok();
 
         assert!(matches!(read_boot_record(&runtime), BootRecord::Absent));
@@ -2382,7 +2434,7 @@ mod tests {
         let own = BootMetadata {
             schema_version: LAUNCH_SCHEMA_VERSION,
             boot_identity: "b".into(),
-            project_id: "envelope".into(),
+            sandbox_id: "envelope".into(),
             target: "default".into(),
             backend: crate::launch::BACKEND.into(),
             workspace_host_paths: std::collections::BTreeMap::from([(
@@ -2435,12 +2487,28 @@ mod tests {
             std::path::Path::new("/run/user/1000/vivarium"),
             "api",
             "default",
-        );
+        )
+        .unwrap();
         assert_eq!(runtime.unit, "vivarium-api-default.service");
         assert_eq!(
             runtime.directory,
             std::path::Path::new("/run/user/1000/vivarium/api/default")
         );
+    }
+
+    #[test]
+    fn control_socket_path_enforces_the_linux_sun_path_limit() {
+        const SUFFIX: &str = "/api/default/control.sock";
+        let root_of = |total: usize| {
+            let root_len = total - SUFFIX.len();
+            PathBuf::from(format!("/{}", "r".repeat(root_len - 1)))
+        };
+        assert!(Runtime::locate(&root_of(107), "api", "default").is_ok());
+        let failure = Runtime::locate(&root_of(108), "api", "default")
+            .err()
+            .unwrap();
+        assert_eq!(failure.code(), crate::exit::ExitKind::Config);
+        assert!(format!("{failure:?}").contains("runtime-socket-path-too-long"));
     }
 
     /// spec/17: a declared ceiling always wins, and an undeclared one resolves from the host.

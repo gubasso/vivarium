@@ -5,8 +5,8 @@
 # floor. That is also why nothing secret belongs here: the manifest's own text
 # is compiled into the generated flake and lands in the Nix store (N10).
 #
-# Copy it into `$XDG_CONFIG_HOME/vivarium/manifests/` and bind a project to it
-# with `viv init --manifest rust-web --write`.
+# Copy it into `$XDG_CONFIG_HOME/vivarium/manifests/`, then declare each tree
+# this sandbox owns with a `[[workspaces]]` row.
 
 image = "base"
 pieces = ["rust-toolchain"]

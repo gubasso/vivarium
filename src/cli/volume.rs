@@ -106,11 +106,11 @@ pub(super) fn prune<E: Environment>(
     yes: bool,
     output: Output,
 ) -> Result<Success, Failure> {
-    let (rows, project_id) = survey(context)?;
+    let (rows, sandbox_id) = survey(context)?;
 
     let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
         .map_err(|error| super::resolution_failure(&error))?;
-    let runtime = lifecycle::Runtime::locate(&runtime_root, &project_id, super::DEFAULT_TARGET);
+    let runtime = lifecycle::Runtime::locate(&runtime_root, &sandbox_id, super::DEFAULT_TARGET)?;
 
     // The lock comes first, before the state is read rather than after (ADR-0053). `viv start`
     // takes this same lock to boot and releases it once the guest is up, so a check made outside
@@ -122,7 +122,7 @@ pub(super) fn prune<E: Environment>(
     // spec/01 and ADR-0067: removal refuses while the VM runs, and the user clears it in one step.
     // Checked before the candidates are computed so a running VM is refused even when there is
     // nothing to remove — the answer is about the project's state, not about this run's luck.
-    let built = lifecycle::last_build(&context.roots, &project_id, super::DEFAULT_TARGET).is_some();
+    let built = lifecycle::last_build(&context.roots, &sandbox_id, super::DEFAULT_TARGET).is_some();
     if !matches!(
         lifecycle::discriminate(&runtime, built),
         lifecycle::State::Absent | lifecycle::State::Built
@@ -167,19 +167,16 @@ pub(super) fn prune<E: Environment>(
     record(&candidates, reclaimed)
 }
 
-/// The binding, the identity, and the rows — the part `list` and `prune` share exactly.
+/// The binding and rows — the part `list` and `prune` share exactly.
 fn survey<E: Environment>(context: &Context<'_, E>) -> Result<(Vec<Row>, String), Failure> {
     // spec/01: both read the project's own state and both need a bound manifest, failing closed
     // with `78` when none resolves. No Nix runs, which is what keeps that the only failure.
     let resolved = super::resolve_manifest_for_launch(context)?;
-    // Resolve, never mint. spec/14 promises these verbs persist neither the marker nor an index
-    // entry, and `expect_no_volume_images` in the acceptance harness asserts the same shape.
-    let project_id = config::resolve_identity(&context.roots.state, &context.project)
-        .map_err(|error| super::registry_failure(&error))?;
+    let sandbox_id = resolved.selected.name.clone();
 
-    let record = config::volumes::read(&context.roots.state, &project_id, super::DEFAULT_TARGET)
+    let record = config::volumes::read(&context.roots.state, &sandbox_id, super::DEFAULT_TARGET)
         .map_err(|error| super::registry_failure(&error))?;
-    let directory = lifecycle::volume_directory(&context.roots, &project_id, super::DEFAULT_TARGET);
+    let directory = lifecycle::volume_directory(&context.roots, &sandbox_id, super::DEFAULT_TARGET);
     // The manifest's own artifact name, which is the identity `src/config/flake.rs` gives the
     // manifest layer in the generated `layers` list — so a volume this reader attributes to the
     // manifest carries the same string the record would carry after the next `viv start`.
@@ -189,7 +186,7 @@ fn survey<E: Environment>(context: &Context<'_, E>) -> Result<(Vec<Row>, String)
         &resolved.manifest,
         &resolved.selected.name,
     )?;
-    Ok((rows, project_id))
+    Ok((rows, sandbox_id))
 }
 
 /// Every volume this project has, in three arms whose order is the whole reserved exclusion.

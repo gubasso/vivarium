@@ -28,7 +28,7 @@ const STAGED_FILE_MODE: u32 = 0o666;
 /// cannot be prepared, flushed, published, or cleaned up safely.
 pub fn prepare_generated_flake(
     roots: &XdgRoots,
-    project_id: &str,
+    sandbox_id: &str,
     target: &str,
     selected_manifest: &ResolvedArtifact,
     manifest_source: &str,
@@ -37,7 +37,7 @@ pub fn prepare_generated_flake(
 ) -> Result<PreparedFlake, GeneratedFlakeError> {
     let composition = ResolvedComposition::resolve(
         roots,
-        project_id,
+        sandbox_id,
         target,
         selected_manifest,
         manifest_source,
@@ -581,7 +581,7 @@ fn create_temp_file(parent: &Path, stem: &str) -> Result<(PathBuf, File), Genera
 /// Names a shared staging failure in this module's own vocabulary.
 ///
 /// The mechanics live in `atomic` and the two frozen id strings live here, which is the split that
-/// lets the registry reuse the same steps without inheriting `store.` and `lock.` ids.
+/// lets the derived index reuse the same steps without inheriting `store.` and `lock.` ids.
 fn staged(
     fault: StageFault,
     namespace: Namespace,

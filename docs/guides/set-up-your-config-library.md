@@ -19,11 +19,11 @@ $XDG_CONFIG_HOME/vivarium/
 │   ├── main-repo.nix
 │   └── egress-crates.nix
 └── manifests/
-    ├── rust-web.toml        # what one project binds to
+    ├── rust-web.toml        # one sandbox and its declared workspaces
     └── rust-web-offline.toml
 ```
 
-`config.toml` carries the settings that apply to every command rather than to one project — today the logging family ([`../reference/spec/16-logging-and-diagnostics.md`](../reference/spec/16-logging-and-diagnostics.md), precedence in [ADR-0046](../decisions/ADR-0046-global-config-file-and-precedence.md)). It carries nothing about a project: the project→manifest binding is machine-local state that `viv init --write` records, not config.
+`config.toml` carries the settings that apply to every command rather than to one sandbox — today the logging family ([`../reference/spec/16-logging-and-diagnostics.md`](../reference/spec/16-logging-and-diagnostics.md), precedence in [ADR-0046](../decisions/ADR-0046-global-config-file-and-precedence.md)). Workspace ownership belongs in each personal manifest, while the derived cache remains machine-local and rebuildable.
 
 Each library resolves a bare name to one file, flat form first and directory form second — `pieces/git-identity.nix`, or `pieces/git-identity/default.nix` when the piece grows a directory ([ADR-0045](../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md)). Reach for the directory form when a piece needs an `inputs.toml` or files beside it; nothing else changes.
 
@@ -98,20 +98,16 @@ A regular-file source serves that file and nothing else: the launcher stages it 
 
 A linked git worktree records an absolute path back to its main repository, so the main repository has to be reachable at that same path or `git` resolves it from one side only:
 
-```nix
-# pieces/main-repo.nix
-{
-  vivarium.mounts = [
-    {
-      source = "\${HOME}/src/api";
-      target = "/workspaces/api";
-      readonly = false;
-    }
-  ];
-}
+```toml
+# manifests/api-worktree.toml
+[[workspaces]]
+source = "${HOME}/src/api"
+
+[[workspaces]]
+source = "${HOME}/src/api-feature"
 ```
 
-Read-write is the point here — this one is a working tree, not identity. Every declared share gets its own confined virtiofsd process with only that share's host path in its view, so this mount cannot reach the git one and neither can reach the rest of your home.
+Workspace ownership is the point here — both trees select the same sandbox, mirror at their host paths, and are read-write. Every declared share gets its own confined virtiofsd process with only that share's host path in its view, so neither can reach the other or the rest of your home through its share.
 
 ### A piece with no mounts at all
 
@@ -144,6 +140,9 @@ vcpu    = 4
 [env]
 RUST_BACKTRACE = "1"
 
+[[workspaces]]
+source = "/home/alice/src/rust-web"
+
 # A literal host path is legal here — a manifest is yours and travels nowhere.
 [[mounts]]
 source   = "/srv/fixtures/large-corpus"
@@ -173,7 +172,7 @@ A cache belongs in a volume rather than a mount, as `cargo-cache` above is. A sh
 ## Step 4 — Read the merge before booting
 
 ```console
-$ viv init --manifest rust-web --write
+$ cd /home/alice/src/rust-web
 $ viv config eval
 $ viv config sources
 ```

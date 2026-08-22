@@ -28,15 +28,15 @@ Defined terms used across the vivarium documentation. Each term is defined once 
 
 - Leaf — the highest-specificity layer in a composition: the manifest's own settings, which use normal priority and so override image and piece defaults. Because the manifest is the personal layer ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)), the leaf is where one user's own choices win. See [`04-composition-and-determinism.md`](./04-composition-and-determinism.md).
 
-- Binding — the association between a project and its manifest, recorded in the per-user project registry (state) and resolved by a fixed precedence. See [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md).
+- Workspace ownership — the association declared by a manifest's `[[workspaces]]` rows and used by the derived resolution rung to select one sandbox for an invoking directory. See [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md).
 
 - Workspace — the user's working directory, mounted read-write into the guest at a fixed location. See [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md).
 
 - Session — one active `exec` command or interactive `shell` attached through the guest agent.
 
-- Project identity key — the stable key that scopes per-project state and runtime directories; the `<project-id>` component of every per-project path. Its derivation is defined in [`15-project-identity.md`](./15-project-identity.md).
+- Sandbox key — the selected manifest name, which scopes per-sandbox state, data, cache, runtime directories, volumes, and systemd unit names. See [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md).
 
-- Target — the named VM instance within a project, the `<target>` component of every per-project state and runtime path. A project has exactly one target, named `default`, in this version. See [`15-project-identity.md`](./15-project-identity.md).
+- Target — the named VM instance within a sandbox, the `<target>` component of every per-sandbox state and runtime path. A sandbox has exactly one target, named `default`, in this version. See [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md).
 
 - Inner environment — the project's own development environment, owned by the repository and run inside the sandbox, independent of vivarium.
 

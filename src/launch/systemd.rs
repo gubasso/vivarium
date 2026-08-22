@@ -13,7 +13,7 @@ impl TransientUnitSpec {
     pub fn new(spec: &LaunchSpec) -> Self {
         let unit_name = format!(
             "vivarium-{}-{}.service",
-            escape_component(&spec.project_id),
+            escape_component(&spec.sandbox_id),
             escape_component(&spec.target)
         );
         let args = vec![

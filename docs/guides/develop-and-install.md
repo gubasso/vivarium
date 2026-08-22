@@ -39,7 +39,7 @@ That waives the drive and not the capacity check: the store and the scratch file
 
 ## Outside the repository: `just install`
 
-A sandbox is bound to a project directory, so exercising one means running `viv` somewhere other than here. Install it:
+A sandbox is selected through a manifest's declared workspaces, so exercising one means running `viv` from a directory declared by a test manifest rather than from this repository. Install it:
 
 ```console
 $ just install

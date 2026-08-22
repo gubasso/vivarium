@@ -166,7 +166,7 @@ else
       spec_log=$("$runner" --workspace ws0 "$REPO_ROOT" --runtime-dir "$spec_root/rt" \
         --volume-dir "$spec_root/volumes" --supervisor "$(command -v env)" \
         --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 \
-        --project-id p --target default --print-static-arguments 2>&1)
+        --sandbox-id p --target default --print-static-arguments 2>&1)
       spec_status=$?
       if ((spec_status == 0)); then
         missing_fields=()

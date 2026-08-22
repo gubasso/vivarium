@@ -2,7 +2,7 @@
 
 This page describes the accepted design rather than implemented behavior; see [implementation status](../reference/implementation-status.md) for what runs today.
 
-One project resolves to one manifest through a fixed precedence chain, the one [ADR-0011](../decisions/ADR-0011-config-read-only-binding-in-state.md) settled when it superseded [ADR-0006](../decisions/ADR-0006-manifest-binding-and-precedence.md). The manifest is personal configuration: it selects an image, an ordered set of pieces, and launch declarations. Images establish reusable guest bases; pieces add small concerns; a manifest unifies them without introducing another merge language.
+A working directory resolves to one manifest through a fixed precedence chain: flag, environment, then the unique owner derived from explicit workspace declarations ([ADR-0107](../decisions/ADR-0107-the-sandbox-keys-on-the-manifest.md)). The manifest is personal configuration: it selects an image, an ordered set of pieces, and launch declarations. Images establish reusable guest bases; pieces add small concerns; a manifest unifies them without introducing another merge language.
 
 The CLI resolves names from the user's configuration libraries, validates the closed manifest grammar, and generates a flake that imports the chosen modules. The NixOS module system performs the merge. Build-channel values become module inputs; launch-channel values are evaluated and carried to the runner without making host-specific values build inputs. Content defects fail at the evaluation boundary rather than surfacing during launch.
 
@@ -25,7 +25,7 @@ Exact layouts, key tables, defaults, precedence, and failure codes live in [conf
 - [ADR-0004](../decisions/ADR-0004-toml-manifest-compiles-to-flake.md) — fixes the TOML manifest that compiles to a generated flake.
 - [ADR-0005](../decisions/ADR-0005-xdg-user-config-layout.md) — fixes the config root this chain resolves against.
 - [ADR-0008](../decisions/ADR-0008-two-layer-separation.md) — separates the sandbox layer from the project's own environment.
-- [ADR-0011](../decisions/ADR-0011-config-read-only-binding-in-state.md) — makes the config root read-only to the tool and moves the binding into state, superseding [ADR-0006](../decisions/ADR-0006-manifest-binding-and-precedence.md).
+- [ADR-0107](../decisions/ADR-0107-the-sandbox-keys-on-the-manifest.md) — keeps the config root read-only, derives workspace ownership from manifests, and keys the sandbox on the selected manifest.
 - [ADR-0012](../decisions/ADR-0012-generate-config-examples-from-types.md) — derives schema and examples from the config types instead of scaffolding files.
 - [ADR-0020](../decisions/ADR-0020-mount-and-config-mirroring-schema.md) — fixes one declarative schema for extra mounts and host-config mirroring.
 - [ADR-0021](../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md) — keeps launch-channel options typed inside the module system.

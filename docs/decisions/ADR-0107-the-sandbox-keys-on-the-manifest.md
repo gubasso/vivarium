@@ -2,7 +2,7 @@
 
 ## Context and Problem Statement
 
-A sandbox is keyed by `<project-id>`, the sanitized project-directory name anchored in a `.vivarium/` marker ([`../reference/spec/15-project-identity.md`](../reference/spec/15-project-identity.md)), and a project resolves to one manifest through the state registry (N7). One directory therefore gets one VM, so a family of related repositories cannot share a sandbox however alike their environments are. The key also costs a derivation nothing else needs: sanitization, a length cap, collision suffixes, a mint lock, and a move-versus-copy resolution table.
+A sandbox is keyed by `<project-id>`, the sanitized project-directory name anchored in a `.vivarium/` marker (`../reference/spec/15-project-identity.md`), and a project resolves to one manifest through the state registry (N7). One directory therefore gets one VM, so a family of related repositories cannot share a sandbox however alike their environments are. The key also costs a derivation nothing else needs: sanitization, a length cap, collision suffixes, a mint lock, and a move-versus-copy resolution table.
 
 ## Considered Options
 
@@ -27,7 +27,7 @@ The hash was rejected because it names the sandbox after a set the user may edit
 
 ## Status
 
-Proposed
+Implemented
 
 Supersedes [`./ADR-0011-config-read-only-binding-in-state.md`](./ADR-0011-config-read-only-binding-in-state.md), [`./ADR-0029-project-identity-and-marker.md`](./ADR-0029-project-identity-and-marker.md), [`./ADR-0043-identity-marker-lifecycle.md`](./ADR-0043-identity-marker-lifecycle.md), and [`./ADR-0054-stale-bindings-surfaced-not-reaped.md`](./ADR-0054-stale-bindings-surfaced-not-reaped.md).
 

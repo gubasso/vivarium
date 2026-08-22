@@ -772,7 +772,7 @@ layout: default
 
 <div class="story-tag">Step 2 · Monday, ten past nine</div>
 
-# Bind it, boot it
+# Declare it, boot it
 
 <div class="story-grid">
 
@@ -781,8 +781,8 @@ layout: default
 <div class="cmd-step">
   <div class="cmd-num">1</div>
   <div>
-    <div class="cmd-name"><code>viv init --write</code> — pair project with manifest</div>
-    <div class="cmd-note">This directory now means <code>snackbar-api</code>. Every later command reads that pairing to know what to build.</div>
+    <div class="cmd-name"><code>[[workspaces]]</code> — declare the project tree</div>
+    <div class="cmd-note">The personal <code>snackbar-api</code> manifest owns this directory. Every later command derives what to build.</div>
   </div>
 </div>
 
@@ -808,7 +808,6 @@ layout: default
 
 ```console
 $ cd ~/projects/snackbar-api
-$ viv init --write
 $ viv start
 $ viv shell
 
@@ -816,40 +815,34 @@ $ pwd        # now inside the VM
 /home/ana/projects/snackbar-api
 ```
 
-<div class="code-label">the pairing <code>init</code> recorded</div>
+<div class="code-label">in the personal manifest</div>
 
 ```toml
-[[projects]]
-path = "/home/ana/projects/snackbar-api"
-manifest = "snackbar-api"
+[[workspaces]]
+source = "/home/ana/projects/snackbar-api"
 ```
 
 </div>
 
 </div>
 
-<div class="story-note">Nothing was committed to the repo. Binding, build, and state live under vivarium's own directories.</div>
+<div class="story-note">Nothing was committed to the repo. The manifest is personal; derived cache, build, and state live under vivarium's own directories.</div>
 
 <!--
-Three commands, and the transcript on the right is the whole of them. Land the
-first one properly, because it is the concept and not just a setup step: a
-manifest describes a sandbox, and a project is a directory, and viv init is the
-one command that says which manifest this directory uses. Nothing else in the
-deck binds them. Every later command — start, shell, exec, status — begins by
-resolving that pairing, which is why they all take no arguments.
+The declaration is the concept and not just a setup step: a manifest describes
+a sandbox and explicitly owns one or more project trees. Every later command —
+start, shell, exec, status — derives the unique owner from the invoking path,
+which is why they all take no manifest argument in ordinary use.
 
-The second block is exactly what got recorded, and it is worth reading aloud as
-a sentence: this path, that manifest. Two keys, and it is a supported interface
-— init prints this block for a human to paste, and a hand-written entry is
-equally valid, so --write is the convenience rather than the mechanism. It lands
-in a registry in vivarium's state root, keyed by the project's canonical path.
+The second block is worth reading aloud as a sentence: this manifest owns this
+path. The cache that accelerates the reverse lookup is derived and disposable;
+the declaration remains the source of truth.
 
 The repo gains no config file, deliberately: a teammate who does not run
-vivarium clones a repo with nothing to ignore, and one who does binds it in one
-command. The one thing start writes into the tree is a tiny self-ignored
-.vivarium identity marker — an id, never the binding.
+vivarium clones a repo with nothing to ignore. vivarium writes nothing into the
+workspace.
 
-If asked how one project gets two sandboxes: --manifest overrides the binding
+If asked how one project gets two sandboxes: --manifest overrides selection
 for a single run, and VIVARIUM_MANIFEST for a shell, neither persisted.
 
 The pwd is the teaching moment: the project is not mounted "somewhere in the
@@ -860,9 +853,9 @@ resolving on both sides of the boundary.
 The first build takes minutes and the costs slide owns that honestly; every
 later start reuses it.
 
-Sources: spec/01 (init, start, shell), ADR-0011 (the binding lives in state),
-spec/15 (the identity marker), ADR-0100 (the workspace mirrors its host
-path), spec/12 (ensure-running and the PTY contract).
+Sources: spec/01 (selection, start, shell), ADR-0107 (the manifest is the
+sandbox key), ADR-0100 (the workspace mirrors its host path), spec/12
+(ensure-running and the PTY contract).
 -->
 
 ---
@@ -1053,7 +1046,6 @@ bruno $ git clone snackbar/vivarium-config \
     ~/.config/vivarium
 
 bruno $ cd ~/projects/snackbar-api
-bruno $ viv init --write
 bruno $ viv start
 ```
 

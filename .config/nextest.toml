@@ -55,7 +55,7 @@
 # `1` narrows this failure and does not close it, which is worth stating here
 # rather than leaving the paragraph above to read as a fix. Measured 2026-08-13
 # on the same host, same profile, same commit: five runs, four green at 409s to
-# 456s and one that lost `workflow_01_first_time_bind_boot` to `viv start`
+# 456s and one that lost `workflow_01_manifest_workspace_resolution_boot` to `viv start`
 # answering `69`. The supervisor's own journal named the rung —
 # `timed out waiting for guest agent`, so the VM was up and the agent had not
 # answered inside its budget — and the host was at a load average of 5.9 with
@@ -104,7 +104,7 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # `cargo nextest show-config test-groups --profile <name>` rather than
 # assumed.
 [[profile.default.overrides]]
-filter = 'test(=workflow_01_first_time_bind_boot) + test(=workflow_02_identity_collision_suffix) + test(=workflow_05_restrict_egress_allowlist) + test(=workflow_06_exec_exit_code_propagation) + test(=workflow_06_shell_interactive_session) + test(=workflow_07_stop_restart_preserving_volumes) + test(=workflow_07_stop_completes_within_budget) + test(=workflow_08_destroy_cold_rebuild) + test(=workflow_09_workspace_round_trip) + test(=workflow_17_declared_mounts_refusals) + test(=workflow_17_declared_mounts_round_trip) + test(=workflow_17_linked_worktree_reaches_main) + test(=workflow_22_file_mount_serves_only_its_file) + test(=workflow_15_contract_skew_refusal) + test(=workflow_15_contract_skew_live)'
+filter = 'test(=workflow_01_manifest_workspace_resolution_boot) + test(=workflow_05_restrict_egress_allowlist) + test(=workflow_06_exec_exit_code_propagation) + test(=workflow_06_shell_interactive_session) + test(=workflow_07_stop_restart_preserving_volumes) + test(=workflow_07_stop_completes_within_budget) + test(=workflow_08_destroy_cold_rebuild) + test(=workflow_09_workspace_round_trip) + test(=workflow_17_declared_mounts_refusals) + test(=workflow_17_declared_mounts_round_trip) + test(=workflow_17_linked_worktree_reaches_main) + test(=workflow_20_many_workspaces_one_sandbox) + test(=workflow_22_file_mount_serves_only_its_file) + test(=workflow_15_contract_skew_refusal) + test(=workflow_15_contract_skew_live)'
 test-group = "boot"
 
 # The acceptance binary's own clock. Its trials evaluate a manifest through Nix, build a guest

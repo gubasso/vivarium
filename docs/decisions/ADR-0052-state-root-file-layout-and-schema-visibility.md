@@ -2,7 +2,7 @@
 
 ## Context and Problem Statement
 
-[`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md) names a "project registry" and [`../reference/spec/15-project-identity.md`](../reference/spec/15-project-identity.md) an "identity index", but neither says what either is on disk — the file names and shapes existed only as an implementation's private choice. They cannot stay private: [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md) has `viv init` print "the exact registry snippet it would record" for a user to paste, so the registry's shape is already half-published, and a snippet nobody has specified is a contract nobody can keep.
+[`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md) names a "project registry" and `../reference/spec/15-project-identity.md` an "identity index", but neither says what either is on disk — the file names and shapes existed only as an implementation's private choice. They cannot stay private: [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md) has `viv init` print "the exact registry snippet it would record" for a user to paste, so the registry's shape is already half-published, and a snippet nobody has specified is a contract nobody can keep.
 
 ## Considered Options
 
@@ -35,4 +35,4 @@ Amended by [`ADR-0068-human-error-presentation-and-diagnostic-ids.md`](./ADR-006
 
 Amended by [`ADR-0107-the-sandbox-keys-on-the-manifest.md`](./ADR-0107-the-sandbox-keys-on-the-manifest.md) — 2026-08-20, on which shapes are supported interfaces. The registry stops being hand-writable and becomes a derived index, so it leaves the published class this record put it in and joins the tool-managed class alongside the identity index it replaces; the visibility rule itself is unchanged, and a state file vivarium reads but cannot make sense of is still `78`.
 
-Specified in [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md) and [`../reference/spec/15-project-identity.md`](../reference/spec/15-project-identity.md). Extends the visibility rule of [`ADR-0045-config-root-library-layout-and-name-resolution.md`](./ADR-0045-config-root-library-layout-and-name-resolution.md) to the state root, and the compatibility rule of [`ADR-0047-manifest-carries-no-schema-version.md`](./ADR-0047-manifest-carries-no-schema-version.md) to the registry.
+Specified in [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md) and `../reference/spec/15-project-identity.md`. Extends the visibility rule of [`ADR-0045-config-root-library-layout-and-name-resolution.md`](./ADR-0045-config-root-library-layout-and-name-resolution.md) to the state root, and the compatibility rule of [`ADR-0047-manifest-carries-no-schema-version.md`](./ADR-0047-manifest-carries-no-schema-version.md) to the registry.

@@ -1,7 +1,7 @@
 //! The mechanics of publishing a file without ever exposing a partial one.
 //!
 //! Two callers need the same steps — the generated flake and its pin in `materialize`, and the
-//! state registry in `registry` — and ADR-0053 and ADR-0058 fix those steps identically for both:
+//! derived workspace index in `registry` — and ADR-0053 and ADR-0058 fix those steps identically:
 //! stage a same-directory temporary, flush it, rename it over the target, then flush the parent.
 //! What the two do not share is how a failure is named. Their diagnostic ids come from different
 //! namespaces and their conditions are frozen strings in different spec tables, so a shared error
@@ -27,10 +27,10 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 /// exhausting this many is evidence of something wrong with the directory rather than of bad luck.
 const MAX_TEMP_ATTEMPTS: u64 = 64;
 
-/// The mode every file vivarium writes under the state root carries (ADR-0053).
+/// The private mode for generated state and cache files.
 pub(super) const PRIVATE_FILE_MODE: u32 = 0o600;
 
-/// The mode the state root itself carries (ADR-0053).
+/// The private mode for generated state and cache directories.
 pub(super) const PRIVATE_DIR_MODE: u32 = 0o700;
 
 /// A failed step, carrying what it was touching and why it failed, but not what to call it.
@@ -72,8 +72,8 @@ pub(super) fn create_temp_directory(parent: &Path) -> Result<PathBuf, StageFault
 /// Allocates and opens a uniquely named sibling file beside `parent`, at `mode`.
 ///
 /// The mode is set at creation rather than afterwards, so the file is never briefly readable by
-/// anyone the final mode excludes — the registry holds absolute paths, which ADR-0053 calls weak
-/// but real information about a user's filesystem.
+/// anyone the final mode excludes — derived workspace data still carries weak but real information
+/// about a user's filesystem.
 pub(super) fn create_temp_file(
     parent: &Path,
     stem: &str,

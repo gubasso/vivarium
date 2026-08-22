@@ -9,7 +9,7 @@ uid=""
 gid=""
 memory_mib=""
 vcpu=""
-project_id=first-microvm
+sandbox_id=first-microvm
 target=default
 ssh_agent_socket=""
 gpg_agent_socket=""
@@ -17,7 +17,7 @@ console_log=true
 print_only=false
 mounts_json='{}'
 usage() {
-  echo "usage: $0 --workspace TAG ABS... --runtime-dir ABS --volume-dir ABS --supervisor ABS --uid N --gid N --memory-mib N --vcpu N [--project-id ID] [--target NAME] [--ssh-agent-socket ABS] [--gpg-agent-socket ABS] [--mount TAG dir|file ABS ENTRY]... [--no-console-log] [--print-static-arguments]" >&2
+  echo "usage: $0 --workspace TAG ABS... --runtime-dir ABS --volume-dir ABS --supervisor ABS --uid N --gid N --memory-mib N --vcpu N [--sandbox-id ID] [--target NAME] [--ssh-agent-socket ABS] [--gpg-agent-socket ABS] [--mount TAG dir|file ABS ENTRY]... [--no-console-log] [--print-static-arguments]" >&2
   # The belt for a hand-invoked runner. `viv` refuses a build whose contract
   # schema differs from its own before executing this script, but a runner from
   # an old generation can still be run by hand, and its argument names differ —
@@ -40,7 +40,7 @@ while (($#)); do
         '. + {($tag): $source}' <<<"$workspaces_json")
       shift 3
       ;;
-    --runtime-dir | --volume-dir | --supervisor | --uid | --gid | --memory-mib | --vcpu | --project-id | --target | --ssh-agent-socket | --gpg-agent-socket)
+    --runtime-dir | --volume-dir | --supervisor | --uid | --gid | --memory-mib | --vcpu | --sandbox-id | --target | --ssh-agent-socket | --gpg-agent-socket)
       (($# >= 2)) || usage
       name=${1#--}
       name=${name//-/_}
@@ -93,7 +93,7 @@ done
 # only holds it to the shape every other program already has.
 [[ -x $supervisor ]] || usage
 for value in uid gid memory_mib vcpu; do [[ ${!value:-} =~ ^[0-9]+$ ]] || usage; done
-[[ -n $project_id && -n $target ]] || usage
+[[ -n $sandbox_id && -n $target ]] || usage
 for value in ssh_agent_socket gpg_agent_socket; do
   candidate=${!value}
   [[ -z $candidate || $candidate = /* ]] || usage
@@ -143,7 +143,7 @@ else
   mkdir -p "$runtime_dir"
 fi
 jq \
-  --arg project "$project_id" --arg target "$target" --arg runtime "$runtime_dir" \
+  --arg sandbox "$sandbox_id" --arg target "$target" --arg runtime "$runtime_dir" \
   --arg volumeDir "$volume_dir" \
   --arg api "$api" --arg console "$console" --arg control "$control" --arg ready "$ready" \
   --arg supervisor "$supervisor" \
@@ -165,7 +165,7 @@ jq \
   . as $c |
   {
     schemaVersion: .schemaVersion,
-    projectId: $project,
+    sandboxId: $sandbox,
     target: $target,
     runtimePaths: { root: $runtime, launchSpec: ($runtime + "/launch.json"), lock: ($runtime + "/lock"),
       readySocket: $ready,

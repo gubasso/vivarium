@@ -43,6 +43,10 @@ pub fn declared_shares(store_path: &str) -> Result<Vec<BuiltShare>, std::io::Err
 }
 
 /// Workspace shares of a built contract, in declaration order.
+///
+/// # Errors
+///
+/// Returns the read or parse error verbatim; the caller owns the diagnostic.
 pub fn workspace_shares(store_path: &str) -> Result<Vec<BuiltShare>, std::io::Error> {
     shares_by_origin(store_path, "workspace")
 }

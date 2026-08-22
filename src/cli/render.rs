@@ -387,30 +387,6 @@ fn scalar(value: &Value) -> String {
     value.to_string()
 }
 
-/// `viv init --json`, read-only: what would be recorded, having recorded nothing.
-pub fn init_preview_json(manifest: &str, project: &Path, path: &Path) -> String {
-    init_json(manifest, project, path, false)
-}
-
-/// `viv init --write --json`: what was recorded.
-pub fn init_written_json(manifest: &str, project: &Path, path: &Path) -> String {
-    init_json(manifest, project, path, true)
-}
-
-/// One shape for both, because the two differ in exactly one field.
-///
-/// `written` is that field, and it is a fact rather than a formality: spec/01 makes the read-only
-/// form and the `--write` form equally supported, so a consumer has to be able to tell which one
-/// it just ran without inferring it from the flags it passed.
-fn init_json(manifest: &str, project: &Path, path: &Path, written: bool) -> String {
-    line(&json!({
-        "manifest": manifest,
-        "path": display(path),
-        "project": display(project),
-        "written": written,
-    }))
-}
-
 /// `viv manifest list --json` — one row per defined manifest, wrapped in a named key.
 ///
 /// Wrapped rather than a bare array so later metadata can join it without a breaking re-wrap, which
@@ -788,7 +764,7 @@ pub fn doctor_human(
 fn doctor_message(finding: &crate::doctor::Finding) -> String {
     if finding.status == crate::doctor::Status::Skipped && finding.message.is_empty() {
         return match finding.reason {
-            Some("no-manifest-bound") => "no manifest bound - run `viv init`".to_owned(),
+            Some("no-manifest-bound") => "no manifest declares this workspace".to_owned(),
             Some("offline-mode") => "offline - run with `--online`".to_owned(),
             Some(reason) => reason.to_owned(),
             None => String::new(),

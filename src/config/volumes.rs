@@ -1,6 +1,6 @@
 //! What the last successful `start` knew about a project's volumes.
 //!
-//! `volumes.toml` under the state root at `projects/<project-id>/<target>/`, beside the images it
+//! `volumes.toml` under the state root at `projects/<sandbox-id>/<target>/`, beside the images it
 //! describes. spec/02 fixes two state-root keys as a supported interface and leaves every other
 //! file there unspecified (ADR-0052), so this shape is the tool's own and may change with it.
 //!
@@ -131,10 +131,10 @@ impl Record {
 
 /// Where one project target's record lives.
 #[must_use]
-pub fn record_path(state_root: &Path, project_id: &str, target: &str) -> PathBuf {
+pub fn record_path(state_root: &Path, sandbox_id: &str, target: &str) -> PathBuf {
     state_root
         .join("projects")
-        .join(project_id)
+        .join(sandbox_id)
         .join(target)
         .join(VOLUMES_FILE)
 }
@@ -145,8 +145,8 @@ pub fn record_path(state_root: &Path, project_id: &str, target: &str) -> PathBuf
 ///
 /// Returns [`RegistryError`] when the file cannot be read (`74`) or does not parse (`78`). Absent
 /// is neither: a project that has never started has no record and that is not a defect.
-pub fn read(state_root: &Path, project_id: &str, target: &str) -> Result<Record, RegistryError> {
-    let path = record_path(state_root, project_id, target);
+pub fn read(state_root: &Path, sandbox_id: &str, target: &str) -> Result<Record, RegistryError> {
+    let path = record_path(state_root, sandbox_id, target);
     let source = match fs::read_to_string(&path) {
         Ok(source) => source,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Record::default()),
@@ -278,11 +278,11 @@ pub fn parse(source: &str, path: &Path) -> Result<Record, RegistryError> {
 /// staged, flushed, or published.
 pub fn write(
     state_root: &Path,
-    project_id: &str,
+    sandbox_id: &str,
     target: &str,
     record: &Record,
 ) -> Result<(), RegistryError> {
-    let destination = record_path(state_root, project_id, target);
+    let destination = record_path(state_root, sandbox_id, target);
     let directory = destination
         .parent()
         .ok_or_else(|| {

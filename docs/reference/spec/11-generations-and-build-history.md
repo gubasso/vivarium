@@ -15,14 +15,14 @@ Generations are held in a per-project Nix profile under the state root. A Nix pr
 Under the state root ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)):
 
 ```text
-$XDG_STATE_HOME/vivarium/projects/<project-id>/<target>/
+$XDG_STATE_HOME/vivarium/projects/<manifest>/<target>/
   current            -> generations/<n>
   generations/<n>    -> /nix/store/…-vivarium-vm   # GC root; survives garbage collection
   metadata/<n>.json                                 # store path, lock digest, manifest, backend, built_at
   metadata/<n>.lock                                 # the lockfile this generation was built against
 ```
 
-`<project-id>` is the project-identity key that also scopes the project's other state; its form is defined in [`15-project-identity.md`](./15-project-identity.md).
+`<manifest>` is the selected manifest name and therefore the sandbox key; `<target>` is the reserved component defined in [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md).
 
 Each generation retains the whole lockfile it was built against, not merely a revision. A revision names where one input pointed; reproducing an evaluation needs the pinned graph, and the live lock under the data root has moved on by then ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), [`../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md)). What is retained is the lock that was in force — a team's override lock when one was present, otherwise the per-target lock — so a generation reproduces even after the team's pin is withdrawn. The `lock_digest` in the metadata is the content digest of that snapshot, which is what `viv generations list` reports and what makes two generations comparable at a glance.
 

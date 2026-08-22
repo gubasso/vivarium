@@ -60,14 +60,6 @@ impl Output {
 /// decides how far execution gets before a missing binding stops it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Invocation {
-    /// The binding assistant. Read-only unless `write`.
-    Init {
-        manifest: Option<String>,
-        write: bool,
-        yes: bool,
-        no_input: bool,
-        output: Output,
-    },
     /// The binding record.
     Config {
         manifest: Option<String>,
@@ -258,7 +250,6 @@ where
     let rest = &tokens[1..];
 
     let invocation = match verb.to_str() {
-        Some("init") => init(rest),
         Some("config") => config(rest),
         Some("manifest") => manifest(rest),
         Some("start") => start(rest),
@@ -294,7 +285,7 @@ struct Globals {
 /// Which flags take a value, per verb: the tokens the lift must never read past.
 fn takes_value(verb: Option<&str>, flag: &str) -> bool {
     match verb {
-        Some("init" | "config") => flag == "--manifest",
+        Some("config") => flag == "--manifest",
         Some("start") => flag == "--spec",
         Some("exec") => flag == "--env",
         Some("stop") => matches!(flag, "-t" | "--timeout"),
@@ -361,8 +352,7 @@ fn lift_globals(argv: impl Iterator<Item = OsString>) -> Globals {
 }
 
 const TOP_USAGE: &str =
-    "viv <init|config|manifest|start|status|shell|exec|stop|volume|destroy|gc|doctor> [options]";
-const INIT_USAGE: &str = "viv init [--manifest <name>] [--write] [--yes] [--json] [--no-input]";
+    "viv <config|manifest|start|status|shell|exec|stop|volume|destroy|gc|doctor> [options]";
 const CONFIG_USAGE: &str = "viv config [--manifest <name>] [--json]";
 const CONFIG_EVAL_USAGE: &str = "viv config eval [--json]";
 const CONFIG_SOURCES_USAGE: &str = "viv config sources [--json]";
@@ -411,7 +401,6 @@ pub const fn top_usage() -> &'static str {
 /// `--help` renders from this table, beside the dispatch in [`parse`] rather than inside it, so
 /// the summary and the dispatch can only drift through a diff that touches this file.
 pub const COMMANDS: &[(&str, &str, &str)] = &[
-    ("init", INIT_USAGE, "bind this project to a manifest"),
     (
         "config",
         CONFIG_USAGE,
@@ -444,30 +433,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "diagnose the host and project setup",
     ),
 ];
-
-fn init(rest: &[OsString]) -> Result<Invocation, UsageError> {
-    let mut manifest = None;
-    let (mut write, mut yes, mut no_input) = (false, false, false);
-    let mut output = Output::Human;
-    let mut tokens = rest.iter();
-    while let Some(token) = tokens.next() {
-        match token.to_str() {
-            Some("--manifest") => manifest = Some(value(&mut tokens, "--manifest", INIT_USAGE)?),
-            Some("--write") => write = true,
-            Some("--yes" | "-y") => yes = true,
-            Some("--no-input") => no_input = true,
-            Some("--json") => output = Output::Json,
-            _ => return Err(unknown(token, INIT_USAGE)),
-        }
-    }
-    Ok(Invocation::Init {
-        manifest,
-        write,
-        yes,
-        no_input,
-        output,
-    })
-}
 
 fn config(rest: &[OsString]) -> Result<Invocation, UsageError> {
     // spec/01's other two `config` forms. Neither takes `--manifest`: they read the binding in
@@ -936,7 +901,6 @@ mod tests {
             | Invocation::ConfigSources { output }
             | Invocation::ManifestList { output }
             | Invocation::ManifestShow { output, .. }
-            | Invocation::Init { output, .. }
             | Invocation::Start { output, .. }
             | Invocation::Status { output, .. }
             | Invocation::Stop { output, .. }
@@ -1145,7 +1109,6 @@ mod tests {
         for rejected in [
             vec!["shell", "--unknown"],
             vec!["config", "--unknown"],
-            vec!["init", "--unknown"],
             vec!["manifest", "list", "--unknown"],
             vec!["gc", "--unknown"],
         ] {
@@ -1245,7 +1208,6 @@ mod tests {
         for rest in [
             vec!["config", "--json"],
             vec!["manifest", "list", "--json"],
-            vec!["init", "--json"],
             vec!["volume", "list", "--json"],
             vec!["stop", "--json"],
         ] {

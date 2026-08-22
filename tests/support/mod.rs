@@ -201,20 +201,6 @@ fn probe_evaluation(viv: &Path, tp: &TempProject) -> Result<(), String> {
             )
         })
         .map_err(|error| format!("cannot write the evaluation probe fixture: {error}"))?;
-    let bind = run_viv(
-        viv,
-        tp,
-        tp.project(),
-        &["init", "--manifest", "probe", "--write", "--yes"],
-    )
-    .map_err(|error| format!("cannot execute {}: {error}", viv.display()))?;
-    if bind.status.code() != Some(0) {
-        return Err(format!(
-            "the evaluation probe could not bind its manifest (exited {:?}): {}",
-            bind.status.code(),
-            String::from_utf8_lossy(&bind.stderr).trim()
-        ));
-    }
     let evaluated = run_viv(viv, tp, tp.project(), &["config", "eval", "--json"])
         .map_err(|error| format!("cannot execute {}: {error}", viv.display()))?;
     if evaluated.status.code() == Some(0) {
@@ -294,7 +280,6 @@ fn fixture_base() -> io::Result<PathBuf> {
 pub struct TempProject {
     root: PathBuf,
     project: PathBuf,
-    basename: String,
     token: String,
     home: PathBuf,
     config: PathBuf,
@@ -315,27 +300,10 @@ impl TempProject {
             "vivarium-user-workflows-{}-{sequence}",
             std::process::id()
         ));
-        // The project's own basename carries the fixture token, because the project id derived from
-        // it reaches a namespace no temporary root can isolate. Every other root here is a path
-        // this fixture chooses, but `vivarium-<project-id>-<target>.service` is a name in the
-        // session's systemd user manager, shared by every trial in the run. Two fixtures built from
-        // the same name mint the same id in their own state roots, believe it unique, and then
-        // collide on that one unit name — so a parallel run fails with "already loaded" for a
-        // reason that has nothing to do with the product. Isolating the durable roots and leaving
-        // the basename fixed is isolation that is total everywhere except the one place it is
-        // observable from outside.
+        // The basename carries a per-process token so fixture paths remain distinct even when two
+        // trials request the same descriptive stem.
         let token = format!("t{}x{sequence}", std::process::id());
         let basename = format!("{name}-{token}");
-        // The token is only load-bearing if it survives into the id, and spec/15 truncates a
-        // sanitized name to 48 characters. Checked through the product's own sanitizer rather than
-        // by respelling the cap, so a fixture whose name grew too long fails here by name instead
-        // of silently sharing a truncated prefix with its neighbour.
-        if !vivarium::config::sanitize_project_name(&basename).ends_with(&token) {
-            return Err(io::Error::other(format!(
-                "the fixture name `{basename}` is too long to carry its uniqueness token into the \
-                project id"
-            )));
-        }
         let project = root.join(&basename);
         let home = root.join("home");
         let config = root.join("xdg-config");
@@ -345,7 +313,7 @@ impl TempProject {
         // The runtime root sits under the session's real runtime directory rather than beside the
         // durable roots, and the reason is a hard limit rather than tidiness. A Unix socket path
         // cannot exceed 108 bytes, and the runtime layout spec/02 fixes already spends
-        // `vivarium/<project-id>/<target>/workspace.sock` of it. Under `std::env::temp_dir()` the
+        // `vivarium/<manifest>/<target>/workspace.sock` of it. Under `std::env::temp_dir()` the
         // remaining budget is whatever `TMPDIR` happens to be — and a `TMPDIR` on an external
         // drive, which is exactly what a disk-heavy lane sets, overruns it and fails the bind.
         // Measured: the failure reads as `vm.start-failed … path must be shorter than SUN_LEN`,
@@ -369,7 +337,6 @@ impl TempProject {
         Ok(Self {
             root,
             project,
-            basename,
             token,
             home,
             config,
@@ -388,29 +355,9 @@ impl TempProject {
         &self.project
     }
 
-    /// The project directory's own name, which is what identity sanitizes into the project id.
-    ///
-    /// A trial that builds a second project meant to collide with this one takes its name from
-    /// here: sharing the token is what makes the two resolve the same base and exercise the
-    /// smallest-free-suffix rule.
-    pub fn basename(&self) -> &str {
-        &self.basename
-    }
-
-    /// The project id vivarium derives from this fixture's directory name.
-    ///
-    /// For locating an artifact whose path contains the id, never for asserting the id itself: it
-    /// is computed with the product's own sanitizer, so an assertion written against it would hold
-    /// for any sanitizer at all. A trial checking what the id came out to spells the stem it
-    /// expects and appends [`TempProject::token`].
-    pub fn project_id(&self) -> String {
-        vivarium::config::sanitize_project_name(&self.basename)
-    }
-
     /// The per-fixture token appended to the project name.
     ///
-    /// A trial asserting a derived id spells the stem it expects and appends this, so the
-    /// sanitizer's own mapping stays asserted rather than recomputed from the product.
+    /// Used when a trial needs a second fixture path derived from the first.
     pub fn token(&self) -> &str {
         &self.token
     }
@@ -500,7 +447,7 @@ impl Drop for TempProject {
 ///
 /// Two things go wrong when it is left. The VM survives the trial, holding memory and a store
 /// volume for as long as the session lives; and the next run of the same trial resolves the same
-/// `<project-id>`, so `systemd-run` refuses the name with "already loaded" and the trial fails for
+/// manifest name, so `systemd-run` refuses the name with "already loaded" and the trial fails for
 /// a reason that has nothing to do with the product. Measured: the first run passed and every run
 /// after it failed until the units were stopped by hand.
 ///
@@ -979,43 +926,7 @@ pub fn expect_tree_unchanged(root: &Path, before: &TreeSnapshot) -> Result<(), S
     }
 }
 
-pub fn expect_no_project_binding_files(project: &Path) -> Result<(), String> {
-    for name in [".vivarium.toml", ".vivarium.local.toml"] {
-        if project.join(name).exists() {
-            return Err(format!(
-                "obsolete project binding file exists: {}",
-                project.join(name).display()
-            ));
-        }
-    }
-    Ok(())
-}
-
-pub fn expect_marker_id(project: &Path, expected: &str) -> Result<(), String> {
-    let marker = project.join(".vivarium");
-    let ignore =
-        fs::read_to_string(marker.join(".gitignore")).map_err(|error| error.to_string())?;
-    let id = fs::read_to_string(marker.join("id")).map_err(|error| error.to_string())?;
-    if ignore.trim_end() != "*" || id != format!("{expected}\n") {
-        return Err(format!(
-            "invalid marker: .gitignore={ignore:?}, id={id:?}, expected id={expected:?}"
-        ));
-    }
-    Ok(())
-}
-
-pub fn expect_marker_absent(project: &Path) -> Result<(), String> {
-    if project.join(".vivarium").exists() {
-        Err(format!(
-            "identity marker still exists: {}",
-            project.join(".vivarium").display()
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-pub fn expect_registry_binding_visible(out: &VivOutput, manifest: &str) -> Result<(), String> {
+pub fn expect_derived_manifest_visible(out: &VivOutput, manifest: &str) -> Result<(), String> {
     expect_code(out, 0)?;
     // spec/01 "Config inspection output" nests the four roots under `paths`, so only
     // three keys are top-level. Asserting all seven at the top level would demand that
@@ -1024,10 +935,9 @@ pub fn expect_registry_binding_visible(out: &VivOutput, manifest: &str) -> Resul
     expect_json_keys(out, &["manifest", "source", "paths"])?;
     expect_json_fields_at(out, "paths", &["config", "state", "data", "cache"])?;
     expect_stdout_mentions(out, manifest)?;
-    // Every call site reaches this through `bind()`, which writes the registry and then
-    // reads it back with no `--manifest` override and a cleared environment, so the
-    // structural assertion is provable here and strictly stronger than a substring scan.
-    expect_json_string(out, "source", "registry")
+    // Every call site reads with no override and a cleared environment, so explicit workspace
+    // ownership is the only source that can produce this result.
+    expect_json_string(out, "source", "derived")
 }
 
 pub fn expect_no_volume_images(tp: &TempProject) -> Result<(), String> {
@@ -1053,23 +963,19 @@ pub fn expect_no_volume_images(tp: &TempProject) -> Result<(), String> {
     Ok(())
 }
 
-/// Where a volume image of this fixture's own project lands under its state root.
-///
-/// The id comes from the fixture rather than from a caller-supplied literal, because the fixture
-/// decorates its project name with a uniqueness token and a restated name would silently point at
-/// a directory nothing ever writes — reported as an absent image rather than as a stale path.
-pub fn volume_image(tp: &TempProject, name: &str) -> PathBuf {
+/// Where a volume image of this manifest-keyed sandbox lands under its state root.
+pub fn volume_image(tp: &TempProject, manifest: &str, name: &str) -> PathBuf {
     tp.state()
         .join("vivarium")
         .join("projects")
-        .join(tp.project_id())
+        .join(manifest)
         .join("default")
         .join("volumes")
         .join(format!("{name}.img"))
 }
 
-pub fn expect_volume_image(tp: &TempProject, name: &str) -> Result<(), String> {
-    let path = volume_image(tp, name);
+pub fn expect_volume_image(tp: &TempProject, manifest: &str, name: &str) -> Result<(), String> {
+    let path = volume_image(tp, manifest, name);
     if path.is_file() {
         Ok(())
     } else {

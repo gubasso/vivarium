@@ -2,7 +2,7 @@
 
 > Design-intent walkthrough — not yet working. This guide describes the target experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
 
-Your project is mounted read-write inside the sandbox at the same absolute path it has on the host. One path string names it on both sides, so an editor on the host and a build inside the guest work on the same bytes and refer to them the same way. The mount and its confinement are specified in [workspace and project environment](../reference/spec/06-workspace-and-project-environment.md), and [the decision to mirror the host path](../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md) explains what that buys and what it costs.
+Every tree the manifest declares with `[[workspaces]]` is mounted read-write inside the same sandbox at the absolute path it has on the host. One path string names each tree on both sides, so an editor on the host and a build inside the guest work on the same bytes and refer to them the same way. The mount set and its confinement are specified in [workspace and project environment](../reference/spec/06-workspace-and-project-environment.md), and [the decision to mirror the host path](../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md) explains what that buys and what it costs.
 
 ## Confirm where the project is
 
@@ -33,7 +33,7 @@ A file the guest creates belongs to you on the host, so you can edit, commit, an
 
 Git records absolute paths when you add a linked worktree — one pointer under the main repository and one back-pointer in the worktree itself — and it writes the back-pointer from whatever repository your working directory resolves to. A worktree created where the project answers to a sandbox-only path is therefore valid from one side and broken from the other, and it fails quietly: `git worktree list` reports it healthy from both sides while `git worktree remove` fails from one. Matching paths remove that failure rather than detecting it.
 
-One piece is still missing, and it is worth knowing before you rely on this. When the project you bind is itself a linked worktree, its git directory lives under the main repository, which is outside the single directory vivarium shares — so git inside the guest cannot resolve it yet. Declaring that directory as an extra mount is the intended route; see [`../plan/open-questions.md`](../plan/open-questions.md).
+When a linked worktree and its main repository both belong to the sandbox, declare both as workspaces. Their absolute pointers then resolve on both sides without assigning either tree a guest-only target. Workspace paths must be disjoint: declaring one inside another is refused before boot and names both paths.
 
 ## What not to keep on the mount
 
@@ -41,4 +41,4 @@ Keep regenerable caches off it. Dependency trees, package-manager caches, and bu
 
 ## Acceptance coverage
 
-`workflow_09_workspace_round_trip` in [`user_workflows.rs`](../../tests/user_workflows.rs) covers this: it starts a sandbox, checks that the session's working directory is the project's own host path, carries an edit across the boundary in each direction, and reads back from the host that a file the guest created is owned by the invoking user. [`../../tests/host/first-microvm-check`](../../tests/host/first-microvm-check) covers the guest half independently, comparing what the mirror unit reported against the guest's own mount table so the two can be seen to disagree.
+`workflow_09_workspace_round_trip` in [`user_workflows.rs`](../../tests/user_workflows.rs) covers one tree and host ownership. `workflow_20_many_workspaces_one_sandbox` covers two trees in one VM, round-trips an edit through both, and proves `exec` and `shell` preserve the exact invoking tree or subdirectory. [`../../tests/host/first-microvm-check`](../../tests/host/first-microvm-check) covers the guest half independently, comparing what the mirror unit reported against the guest's own mount table so the two can be seen to disagree.

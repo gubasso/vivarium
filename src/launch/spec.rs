@@ -50,7 +50,7 @@ use std::path::{Component, Path, PathBuf};
 /// `origin` is classified by tag family rather than against one reserved tag. An older record
 /// paired with this code parses differently in all three places, which is the skew this constant
 /// refuses rather than discovers at boot.
-pub const LAUNCH_SCHEMA_VERSION: u32 = 10;
+pub const LAUNCH_SCHEMA_VERSION: u32 = 11;
 pub const VIRTIOFSD_RLIMIT_NOFILE: u64 = 524_288;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -256,7 +256,7 @@ impl VersionEnvelope {
 pub struct BootMetadata {
     pub schema_version: u32,
     pub boot_identity: String,
-    pub project_id: String,
+    pub sandbox_id: String,
     pub target: String,
     pub backend: String,
     pub workspace_host_paths: BTreeMap<String, PathBuf>,
@@ -392,7 +392,7 @@ pub struct GuestSession {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct LaunchSpec {
     pub schema_version: u32,
-    pub project_id: String,
+    pub sandbox_id: String,
     pub target: String,
     pub runtime_paths: RuntimePaths,
     pub backend_programs: BackendPrograms,
@@ -473,9 +473,9 @@ impl LaunchSpec {
                 current: LAUNCH_SCHEMA_VERSION,
             });
         }
-        if self.project_id.is_empty() || self.target.is_empty() || self.shares.is_empty() {
+        if self.sandbox_id.is_empty() || self.target.is_empty() || self.shares.is_empty() {
             return Err(LaunchError::InvalidSpec(
-                "project, target, and shares are required",
+                "sandbox id, target, and shares are required",
             ));
         }
         self.descriptor_budget.guest_allowance()?;
@@ -997,7 +997,7 @@ pub mod tests {
         let child = |name: &str| root.join(name);
         LaunchSpec {
             schema_version: LAUNCH_SCHEMA_VERSION,
-            project_id: "p".into(),
+            sandbox_id: "p".into(),
             target: "t".into(),
             runtime_paths: RuntimePaths {
                 root: root.clone(),

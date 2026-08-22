@@ -4,7 +4,7 @@
 
 Use this flow to review the declared manifest, effective merge, and value provenance without booting a VM. The [command surface](../reference/spec/01-command-surface.md) distinguishes these views; [the decision that gathered them into one inspection namespace](../decisions/ADR-0022-config-inspection-namespace.md) explains why they are three commands rather than flags on one.
 
-## Inspect the library and binding
+## Inspect the library and selection
 
 ```console
 $ viv manifest list --json
@@ -12,7 +12,7 @@ $ viv manifest show inspect-dev --json
 $ viv config --json
 ```
 
-If the project is not bound yet, preview or write the binding before continuing.
+If the directory is not declared yet, add its `[[workspaces]]` row to the owning personal manifest before continuing. An explicit `--manifest` override is useful for inspection but does not establish ownership.
 
 ## Evaluate and trace the configuration
 

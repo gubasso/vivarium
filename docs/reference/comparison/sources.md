@@ -23,27 +23,27 @@ This repository, branch `initial-implementation` at `ceb0027`.[^vivarium]
 
 Rules cited by name, and what each fixes:
 
-| Name used here                       | What it fixes                                                                              |
-| ------------------------------------ | ------------------------------------------------------------------------------------------ |
-| separate-kernel rule                 | A hardware-virtualization boundary with its own guest kernel, and no shared-kernel mode    |
-| class-not-tool rule                  | The boundary is a capability class; no named hypervisor is part of the contract            |
-| pure-build rule                      | The build takes no host-specific input: same manifest closure and lock, same output        |
-| NixOS-module composition rule        | Layers merge through the NixOS module system, not a bespoke engine                         |
-| one-manifest-per-project rule        | Exactly one manifest resolves per project, failing closed when none applies                |
-| egress-defaults-open rule            | Egress is unrestricted by default, with one knob for a default-deny allowlist              |
-| never-touch-user-files rule          | vivarium does not modify a project's own user-authored files                               |
-| no-secrets-in-the-store rule         | A secret never enters the build or the store; runtime-injected or encrypted-at-rest only   |
-| personal-data-free-artifact rule     | A shared image or piece carries no literal personal path or plaintext secret               |
-| host-symmetric mount rule            | The workspace mounts inside the guest at its host absolute path                            |
-| deny-by-default environment rule     | Host environment crosses only by allowlist or explicit `--env`                             |
-| non-destructive stop rule            | `viv stop` removes no volume, generation, or state                                         |
-| sandboxed-VMM rule                   | The monitor and every host-side helper run under a seccomp and capability sandbox          |
-| marker-anchored identity rule        | Project identity is the marker-anchored directory name, surviving a rename                 |
-| ceilings-not-reservations rule       | Declared resources bound use rather than reserving it                                      |
-| pre-launch capacity check            | `viv start` refuses when the host cannot serve the free-memory reserve                     |
-| session-directories-never-cross rule | No mount source resolves to a host session directory or an ancestor                        |
-| no-decryption-identity rule          | vivarium decrypts nothing and holds no identity                                            |
-| agent-channel allowlist              | Only `ssh` and `gpg` forward, over a credential port, with no host path in the declaration |
+| Name used here                       | What it fixes                                                                                  |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| separate-kernel rule                 | A hardware-virtualization boundary with its own guest kernel, and no shared-kernel mode        |
+| class-not-tool rule                  | The boundary is a capability class; no named hypervisor is part of the contract                |
+| pure-build rule                      | The build takes no host-specific input: same manifest closure and lock, same output            |
+| NixOS-module composition rule        | Layers merge through the NixOS module system, not a bespoke engine                             |
+| one-manifest-per-project rule        | Exactly one manifest resolves per project, failing closed when none applies                    |
+| egress-defaults-open rule            | Egress is unrestricted by default, with one knob for a default-deny allowlist                  |
+| never-touch-user-files rule          | vivarium does not modify a project's own user-authored files                                   |
+| no-secrets-in-the-store rule         | A secret never enters the build or the store; runtime-injected or encrypted-at-rest only       |
+| personal-data-free-artifact rule     | A shared image or piece carries no literal personal path or plaintext secret                   |
+| host-symmetric mount rule            | The workspace mounts inside the guest at its host absolute path                                |
+| deny-by-default environment rule     | Host environment crosses only by allowlist or explicit `--env`                                 |
+| non-destructive stop rule            | `viv stop` removes no volume, generation, or state                                             |
+| sandboxed-VMM rule                   | The monitor and every host-side helper run under a seccomp and capability sandbox              |
+| manifest-keyed sandbox rule          | A sandbox is keyed by its manifest name, and every workspace that manifest declares reaches it |
+| ceilings-not-reservations rule       | Declared resources bound use rather than reserving it                                          |
+| pre-launch capacity check            | `viv start` refuses when the host cannot serve the free-memory reserve                         |
+| session-directories-never-cross rule | No mount source resolves to a host session directory or an ancestor                            |
+| no-decryption-identity rule          | vivarium decrypts nothing and holds no identity                                                |
+| agent-channel allowlist              | Only `ssh` and `gpg` forward, over a credential port, with no host path in the declaration     |
 
 ### `flake-pilot`
 

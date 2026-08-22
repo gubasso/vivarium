@@ -37,7 +37,7 @@ Ordered, because each item is the input to the next and a later item cannot be j
 - [`../../../reference/spec/02-config-and-xdg-layout.md`](../../../reference/spec/02-config-and-xdg-layout.md) — defines the config, data, and state roots and the registry record.
 - [`../../../reference/spec/03-artifact-model.md`](../../../reference/spec/03-artifact-model.md) — defines images, pieces, and manifests.
 - [`../../../reference/spec/04-composition-and-determinism.md`](../../../reference/spec/04-composition-and-determinism.md) — defines the merge and determinism contract.
-- [`../../../reference/spec/15-project-identity.md`](../../../reference/spec/15-project-identity.md) — defines how a project resolves to a name.
+- [`../../../reference/spec/02-config-and-xdg-layout.md`](../../../reference/spec/02-config-and-xdg-layout.md) — now owns how a working directory resolves to a manifest name.
 - [`../../../explanation/configuration-and-composition.md`](../../../explanation/configuration-and-composition.md) — owns the resolution and composition topology.
 - [`../../../explanation/state-and-lifecycle.md`](../../../explanation/state-and-lifecycle.md) — owns the state-root layout this slice writes to.
 - [`../../../decisions/ADR-0002-module-system-as-composition-engine.md`](../../../decisions/ADR-0002-module-system-as-composition-engine.md) — fixes the merge engine as the module system, not a bespoke one.
@@ -60,15 +60,15 @@ Ordered, because each item is the input to the next and a later item cannot be j
 
 ## Acceptance
 
-When a project is bound to a shipped example manifest, `viv init` SHALL persist the binding and `workflow_01_first_time_bind_usage` SHALL pass unskipped.
+When a project is declared by a manifest, `viv config` SHALL derive that owner and `workflow_01_manifest_workspace_resolution_usage` SHALL pass unskipped.
 
-Where no project-local config exists, resolution SHALL fall back to the global registry and `workflow_02_clean_repo_global_registry_only` SHALL pass unskipped.
+Where no override exists, resolution SHALL derive the unique owner from manifest workspace declarations and `workflow_02_derived_workspace_index` SHALL pass unskipped.
 
 When a shared manifest and a personal override are both present, evaluation SHALL apply the fixed precedence and `workflow_03_team_shared_and_personal_override` SHALL pass unskipped.
 
 When the bound manifest is evaluated, `viv config eval` SHALL produce a guest system derivation path and `workflow_04_inspect_before_run` SHALL pass unskipped.
 
-While a command is invoked with usage errors only, `workflow_04_inspect_before_run_usage`, `workflow_06_exec_usage_surface`, `workflow_07_volume_list_requires_binding`, and `workflow_08_destroy_usage_surface` SHALL pass unskipped at the `Cli` gate.
+While a command is invoked with usage errors only, `workflow_04_inspect_before_run_usage`, `workflow_06_exec_usage_surface`, `workflow_07_volume_list_requires_manifest`, and `workflow_08_destroy_usage_surface` SHALL pass unskipped at the `Cli` gate.
 
 If the manifest carries an unknown key, then the failure SHALL carry all five parts the compatibility message fixes.
 

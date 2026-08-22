@@ -94,16 +94,15 @@ podman run --rm -it --runtime krun \
 
 `--runtime krun` is what makes it a microVM, and it is also the first flag forgotten. Nothing here is wrong, and nothing here is remembered. The next project is another line of shell.
 
-### vivarium: bind the project once
+### vivarium: declare the workspace once
 
 ```bash
 cd ~/projects/my-thing
-viv init --manifest rust-web --write
 viv start
 viv shell
 ```
 
-The project tree is at the absolute path it occupies on the host, so `git`, editors, and linked worktrees resolve from either side. There is no quarantine directory to copy work into, and no level to choose: vivarium's [separate-kernel rule](../spec/08-invariants-and-guarantees.md) fixes one boundary and no other.
+The personal `rust-web` manifest declares this directory in `[[workspaces]]`. The project tree is at the absolute path it occupies on the host, so `git`, editors, and linked worktrees resolve from either side. There is no quarantine directory to copy work into, and no level to choose: vivarium's [separate-kernel rule](../spec/08-invariants-and-guarantees.md) fixes one boundary and no other.
 
 ### What the difference costs
 

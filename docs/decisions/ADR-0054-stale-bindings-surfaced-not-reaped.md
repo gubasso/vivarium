@@ -2,7 +2,7 @@
 
 ## Context and Problem Statement
 
-A registry entry can point at a directory that no longer exists, and nothing said who removes it. Removing it automatically is not merely cautious to avoid — it is unsafe. [`../reference/spec/15-project-identity.md`](../reference/spec/15-project-identity.md) tells a move from a copy by whether a recorded path still exists, so a reaper destroys exactly the evidence that makes a move a move, and a moved project returns as a first-time mint with a fresh suffix and orphaned state. A vanished path may also be nothing worse than an unmounted filesystem.
+A registry entry can point at a directory that no longer exists, and nothing said who removes it. Removing it automatically is not merely cautious to avoid — it is unsafe. `../reference/spec/15-project-identity.md` tells a move from a copy by whether a recorded path still exists, so a reaper destroys exactly the evidence that makes a move a move, and a moved project returns as a first-time mint with a fresh suffix and orphaned state. A vanished path may also be nothing worse than an unmounted filesystem.
 
 ## Considered Options
 

@@ -34,7 +34,7 @@ Unit tests get the same XDG isolation the acceptance harness has — a temporary
 
 Snapshots of the generated flake tree, of each `--json` record, and of `config eval` output.
 
-Four classes of value are nondeterministic and are filtered before comparison: absolute XDG paths, `<project-id>`, store hashes, and timestamps. A snapshot that still contains one of them is a defect in the test, not a reason to re-record.
+Four classes of value are nondeterministic and are filtered before comparison: absolute XDG paths, fixture manifest names, store hashes, and timestamps. A snapshot that still contains one of them is a defect in the test, not a reason to re-record.
 
 CI fails on a missing or changed snapshot rather than writing one. Re-recording is an explicit local act, reviewed like any other change.
 
@@ -59,7 +59,7 @@ The derivation-inspection format this lane reads is documented upstream as exper
 
 ### 6 — Non-invasion
 
-Every command runs against a fixture project whose complete tree and version-control status are captured before and after. The only permitted difference is the vivarium-owned `.vivarium/` marker, N9's sole exception ([`spec/08-invariants-and-guarantees.md`](spec/08-invariants-and-guarantees.md)); a read-only command must show no difference at all.
+Every command runs against a fixture project whose complete tree and version-control status are captured before and after. No vivarium-owned file is permitted inside that tree (N9, [`spec/08-invariants-and-guarantees.md`](spec/08-invariants-and-guarantees.md)); every command must leave it byte-identical.
 
 The comparison is automatic in the fixture, not an opt-in helper. An opt-in invariant check is the one a new trial forgets to call.
 

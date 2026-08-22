@@ -46,6 +46,10 @@ impl Environment for ProcessEnvironment {
     fn variable(&self, name: &'static str) -> Option<OsString> {
         std::env::var_os(name)
     }
+
+    fn dynamic_variable(&self, name: &str) -> Option<OsString> {
+        std::env::var_os(name)
+    }
 }
 
 #[tokio::main]
@@ -197,8 +201,7 @@ fn fail(failure: &Failure, output: Output, palette: &Palette) -> ExitCode {
 /// that asked one verb for JSON has not asked the next one.
 const fn requested_output(invocation: &Invocation) -> Output {
     match invocation {
-        Invocation::Init { output, .. }
-        | Invocation::Config { output, .. }
+        Invocation::Config { output, .. }
         | Invocation::ConfigEval { output }
         | Invocation::ConfigSources { output }
         | Invocation::ManifestList { output }

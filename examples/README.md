@@ -5,8 +5,7 @@ Artifacts to copy into your config root. vivarium never installs them and never 
 ```console
 $ cp -r examples/images examples/pieces examples/manifests "${XDG_CONFIG_HOME:-$HOME/.config}/vivarium/"
 $ viv manifest list
-$ viv init --manifest rust-web --write
-$ viv config eval
+$ viv config --manifest rust-web eval
 ```
 
 Each file explains the convention it demonstrates in its own comments, because the convention is the reason to copy it: an image proposes with `mkDefault`, a shared piece either proposes or forces and carries no personal data, and the manifest is where your own decisions go. The rules behind all three are in [`../docs/reference/spec/04-composition-and-determinism.md`](../docs/reference/spec/04-composition-and-determinism.md).

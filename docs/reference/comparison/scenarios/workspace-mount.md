@@ -8,7 +8,7 @@ Two questions hide in "can I see my project inside". This one asks whether the t
 
 ## vivarium
 
-Yes: the workspace is the project the manifest belongs to, so binding the project once is what names it, and no argument repeats the decision at each start. Project identity is anchored by a marker rather than by the path, so the mount survives a rename.
+Yes: the manifest declares its workspaces, so declaring them once is what names them, and no argument repeats the decision at each start. A sandbox is keyed by its manifest name rather than by a path, and ownership of a workspace is derived from the declaration, so a rename of the manifest library entry is the only thing that moves the key.
 
 ## flake-pilot
 

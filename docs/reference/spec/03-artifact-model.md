@@ -173,19 +173,23 @@ Two mount-source faults sit below this table because neither is decidable from d
 
 Each parse-stage defect above, including the closed `inputs.toml` grammar, carries a stable `manifest.*` id, documented here because that is where the condition lives ([`14-exit-codes.md`](./14-exit-codes.md)). The id is greppable and never reassigned; a consumer that must branch still branches on the exit code. Authored defects return `78`; an artifact-inspection channel may instead return `74` or `77`.
 
-| Id                             | Condition                                                               |
-| ------------------------------ | ----------------------------------------------------------------------- |
-| `manifest.syntax`              | manifest or `inputs.toml` bytes are not TOML                            |
-| `manifest.unknown-key`         | a key outside the manifest or `inputs.toml` grammar                     |
-| `manifest.missing-key`         | a required key is absent                                                |
-| `manifest.wrong-type`          | a known manifest or `inputs.toml` key holds the wrong TOML type         |
-| `manifest.invalid-value`       | a known manifest or `inputs.toml` value is outside its domain           |
-| `manifest.extends-form`        | `extends` in a flat manifest, which has nowhere to put the module       |
-| `manifest.reserved-input`      | an artifact declares the generated flake's `nixpkgs` or `microvm` input |
-| `manifest.input-conflict`      | two resolved artifacts declare different values for one input name      |
-| `manifest.inputs-read`         | a directory artifact's `inputs.toml` cannot be read                     |
-| `manifest.artifact-resolution` | a named image or piece cannot be resolved                               |
-| `manifest.extends-inspect`     | permission prevents inspection of the selected `extends` target         |
+| Id                                        | Condition                                                                     |
+| ----------------------------------------- | ----------------------------------------------------------------------------- |
+| `manifest.syntax`                         | manifest or `inputs.toml` bytes are not TOML                                  |
+| `manifest.unknown-key`                    | a key outside the manifest or `inputs.toml` grammar                           |
+| `manifest.missing-key`                    | a required key is absent                                                      |
+| `manifest.wrong-type`                     | a known manifest or `inputs.toml` key holds the wrong TOML type               |
+| `manifest.invalid-value`                  | a known manifest or `inputs.toml` value is outside its domain                 |
+| `manifest.extends-form`                   | `extends` in a flat manifest, which has nowhere to put the module             |
+| `manifest.reserved-input`                 | an artifact declares the generated flake's `nixpkgs` or `microvm` input       |
+| `manifest.input-conflict`                 | two resolved artifacts declare different values for one input name            |
+| `manifest.inputs-read`                    | a directory artifact's `inputs.toml` cannot be read                           |
+| `manifest.artifact-resolution`            | a named image or piece cannot be resolved                                     |
+| `manifest.extends-inspect`                | permission prevents inspection of the selected `extends` target               |
+| `manifest.name-too-long`                  | the selected manifest name is too long to key a sandbox                       |
+| `manifest.workspace-undeclared-directory` | the working directory is not declared as a workspace by the selected manifest |
+
+`manifest.workspace-undeclared-directory` is the refusal every manifest-resolving command shares, and its message is the deliverable rather than a footnote to it: it names the resolved manifest file, the undeclared directory, and the exact `[[workspaces]]` block to add, in the what, where, why, and hint shape. One routine raises it, so every verb refuses identically; [`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md) owns the second consumer, which reports the same finding without refusing.
 
 Only `manifest.unknown-key` carries the `accepted here:` slot for a key; `manifest.invalid-value` carries it when the domain is a closed set, such as `egress.mode`.
 

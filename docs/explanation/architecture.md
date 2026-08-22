@@ -10,8 +10,8 @@ vivarium owns manifest resolution, state, orchestration, confinement constructio
 
 ## Subsystems
 
-- [Configuration and composition](./configuration-and-composition.md) covers binding, artifacts, module merging, generated flakes, locks, and validation.
-- [State and lifecycle](./state-and-lifecycle.md) covers XDG state, identity, generations, runtime state, and teardown.
+- [Configuration and composition](./configuration-and-composition.md) covers selection, artifacts, module merging, generated flakes, locks, and validation.
+- [State and lifecycle](./state-and-lifecycle.md) covers XDG state, sandbox keys, generations, runtime state, and teardown.
 - [Launch and supervision](./launch-and-supervision.md) covers the build-to-launch handoff, confinement, helpers, and console ownership.
 - [Shared filesystems](./shared-filesystems.md) covers workspace, configuration, and host-store shares.
 - [Guest store and volumes](./guest-store-and-volumes.md) covers persistent volumes and the overlay guest store.

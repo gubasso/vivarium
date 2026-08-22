@@ -264,7 +264,21 @@ fn view_of(
 /// path, where `/home/<name>` is the ordinary shape of a home directory rather than one person's
 /// machine.
 fn literal_path_conflicts(report: &Report) -> Vec<Conflict> {
-    mount_source_conflicts(report, ConflictKind::LiteralPath, true, is_personal_path)
+    let mut conflicts = source_conflicts(
+        report,
+        "mounts",
+        ConflictKind::LiteralPath,
+        true,
+        is_personal_path,
+    );
+    conflicts.extend(source_conflicts(
+        report,
+        "workspaces",
+        ConflictKind::LiteralPath,
+        true,
+        is_personal_path,
+    ));
+    conflicts
 }
 
 fn is_personal_path(value: &str) -> bool {
@@ -273,12 +287,13 @@ fn is_personal_path(value: &str) -> bool {
         .any(|prefix| value.starts_with(prefix))
 }
 
-/// Collect one conflict over every layer whose mount `source`s the predicate flags.
+/// Collect one conflict over every layer whose declaration `source`s the predicate flags.
 ///
 /// The shape `literal_path_conflicts` established, factored because N24 and the portable-variable
 /// rule walk the same field with a different test and a different layer filter.
-fn mount_source_conflicts(
+fn source_conflicts(
     report: &Report,
+    key: &str,
     kind: ConflictKind,
     shared_only: bool,
     flagged: impl Fn(&str) -> bool,
@@ -289,7 +304,7 @@ fn mount_source_conflicts(
         if shared_only && !layer.kind.is_shared() {
             continue;
         }
-        let Some(definition) = layer.defines.get("mounts") else {
+        let Some(definition) = layer.defines.get(key) else {
             continue;
         };
         let offending: Vec<String> = definition
@@ -297,7 +312,7 @@ fn mount_source_conflicts(
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|mount| mount.get("source").and_then(Value::as_str))
+            .filter_map(|declaration| declaration.get("source").and_then(Value::as_str))
             .filter(|source| flagged(source))
             .map(str::to_owned)
             .collect();
@@ -311,7 +326,7 @@ fn mount_source_conflicts(
     }
     vec![Conflict {
         kind,
-        key: "mounts".to_owned(),
+        key: key.to_owned(),
         layers,
         evidence,
     }]
@@ -322,7 +337,13 @@ fn mount_source_conflicts(
 /// manifest too. A source a variable hides is not decidable here; the launch-time refusal in
 /// `src/launch/mounts.rs` owns it, which is the two-tier shape spec/06 names.
 fn session_path_conflicts(report: &Report) -> Vec<Conflict> {
-    mount_source_conflicts(report, ConflictKind::SessionPath, false, is_session_path)
+    source_conflicts(
+        report,
+        "mounts",
+        ConflictKind::SessionPath,
+        false,
+        is_session_path,
+    )
 }
 
 fn is_session_path(value: &str) -> bool {
@@ -357,16 +378,26 @@ const PORTABLE_VARIABLES: [&str; 5] = [
 /// variable outside the portable set. The personal manifest is exempt — a literal path is legal
 /// there, so a private variable is too.
 fn non_portable_variable_conflicts(report: &Report) -> Vec<Conflict> {
-    mount_source_conflicts(
+    let flagged = |source: &str| {
+        variable_references(source)
+            .iter()
+            .any(|name| !PORTABLE_VARIABLES.contains(&name.as_str()))
+    };
+    let mut conflicts = source_conflicts(
         report,
+        "mounts",
         ConflictKind::NonPortableVariable,
         true,
-        |source: &str| {
-            variable_references(source)
-                .iter()
-                .any(|name| !PORTABLE_VARIABLES.contains(&name.as_str()))
-        },
-    )
+        flagged,
+    );
+    conflicts.extend(source_conflicts(
+        report,
+        "workspaces",
+        ConflictKind::NonPortableVariable,
+        true,
+        flagged,
+    ));
+    conflicts
 }
 
 /// Every `${NAME}` reference in a source, by the same grammar the launch-time expander reads:
@@ -394,6 +425,7 @@ fn variable_references(source: &str) -> Vec<String> {
 fn irreconcilable_merges(report: &Report) -> Vec<Irreconcilable> {
     let mut found = duplicate_volume_mounts(report);
     found.extend(duplicate_mount_targets(report));
+    found.extend(overlapping_workspace_sources(report));
     found
 }
 
@@ -446,6 +478,35 @@ fn duplicate_mount_targets(report: &Report) -> Vec<Irreconcilable> {
             });
         }
         seen.push(target);
+    }
+    found
+}
+
+/// ADR-0108: workspace declarations concatenate across layers, but two equal or nested host
+/// trees cannot both be mirrored at their own paths. This is the decidable textual tier; source
+/// expansion and canonicalization run again at launch and catch aliases hidden by variables or
+/// symlinks before the first bind.
+fn overlapping_workspace_sources(report: &Report) -> Vec<Irreconcilable> {
+    let Some(entry) = report.keys.get("workspaces") else {
+        return Vec::new();
+    };
+    let mut seen: Vec<&str> = Vec::new();
+    let mut found = Vec::new();
+    for workspace in entry.value.as_array().into_iter().flatten() {
+        let Some(source) = workspace.get("source").and_then(Value::as_str) else {
+            continue;
+        };
+        for other in &seen {
+            let source_path = std::path::Path::new(source);
+            let other_path = std::path::Path::new(other);
+            if source_path.starts_with(other_path) || other_path.starts_with(source_path) {
+                found.push(Irreconcilable {
+                    what: "two declared workspaces overlap".to_owned(),
+                    why: format!("`{other}` and `{source}` are equal or nested (ADR-0108)"),
+                });
+            }
+        }
+        seen.push(source);
     }
     found
 }
@@ -629,6 +690,38 @@ mod tests {
     }
 
     #[test]
+    fn workspace_sources_share_the_decidable_path_rules_except_n24() {
+        let workspace = |source: &str| format!(r#"[ {{ "source": "{source}" }} ]"#);
+        let fixture = |kind: &str, source: &str| {
+            report(
+                &[key("workspaces", "list", "[]")],
+                &[layer(
+                    "owner",
+                    kind,
+                    &[defines("workspaces", 100, workspace(source).as_str())],
+                )],
+            )
+        };
+
+        let literal = analyze(&fixture("piece", "/home/ana/project"));
+        assert_eq!(literal.conflicts[0].kind, ConflictKind::LiteralPath);
+        assert_eq!(literal.conflicts[0].key, "workspaces");
+        assert!(!analyze(&fixture("manifest", "/home/ana/project")).is_defective());
+
+        let variable = analyze(&fixture("piece", "${PROJECTS_DIR}/project"));
+        assert_eq!(
+            variable.conflicts[0].kind,
+            ConflictKind::NonPortableVariable
+        );
+        assert_eq!(variable.conflicts[0].key, "workspaces");
+        assert!(!analyze(&fixture("piece", "${HOME}/project")).is_defective());
+
+        // N24 belongs only to mounts. Workspaces refuse these paths once through ADR-0108's
+        // guest-owned-path rule, without making ownership depend on `${XDG_RUNTIME_DIR}`.
+        assert!(!analyze(&fixture("manifest", "/tmp/project")).is_defective());
+    }
+
+    #[test]
     fn a_session_path_source_is_a_defect_in_every_layer() {
         let fixture = |kind: &str, source: &str| {
             let mounts =
@@ -721,6 +814,32 @@ mod tests {
         assert!(colliding.is_defective());
         assert!(colliding.irreconcilable[0].what.contains("~/.config/x"));
         assert!(!analyze(&fixture(["~/.config/x", "~/.config/y"])).is_defective());
+    }
+
+    #[test]
+    fn textually_overlapping_workspaces_are_irreconcilable() {
+        let fixture = |sources: [&str; 2]| {
+            let value = format!(
+                r#"[ {{ "source": "{}" }}, {{ "source": "{}" }} ]"#,
+                sources[0], sources[1]
+            );
+            report(
+                &[key("workspaces", "list", value.as_str())],
+                &[layer("m", "manifest", &[])],
+            )
+        };
+        for sources in [
+            ["${HOME}/code", "${HOME}/code"],
+            ["${HOME}/code", "${HOME}/code/api"],
+            ["${HOME}/code/api", "${HOME}/code"],
+        ] {
+            let analysis = analyze(&fixture(sources));
+            assert!(analysis.is_defective(), "{sources:?}");
+            assert!(analysis.irreconcilable[0].what.contains("workspaces"));
+            assert!(analysis.irreconcilable[0].why.contains(sources[0]));
+            assert!(analysis.irreconcilable[0].why.contains(sources[1]));
+        }
+        assert!(!analyze(&fixture(["${HOME}/code/api", "${HOME}/code/web"])).is_defective());
     }
 
     #[test]

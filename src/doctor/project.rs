@@ -21,6 +21,7 @@ pub(super) fn run<E: Environment>(
     match probe.id {
         "config-parses" => config_parses(probe, project),
         "manifest-resolves" => manifest_resolves(probe, project),
+        "working-directory-declared" => working_directory_declared(probe, project),
         "shared-layer-paths-portable" => shared_layer_paths(probe, project, inputs),
         "manifest-no-inline-secret" => manifest_no_inline_secret(probe, project),
         "mount-source-not-session-dir" => mount_sources(probe, project),
@@ -28,6 +29,18 @@ pub(super) fn run<E: Environment>(
         "agent-source-usable" => agent_source_usable(probe),
         _ => Finding::skipped(probe, "not-applicable", "not a project probe"),
     }
+}
+
+fn working_directory_declared(probe: &'static Probe, project: &ProjectInputs) -> Finding {
+    project.workspace_refusal.as_ref().map_or_else(
+        || {
+            Finding::pass(
+                probe,
+                "the working directory belongs to a declared workspace",
+            )
+        },
+        |(message, hint)| Finding::tripped(probe, message, hint),
+    )
 }
 
 fn config_parses(probe: &'static Probe, project: &ProjectInputs) -> Finding {
@@ -53,9 +66,8 @@ fn manifest_resolves(probe: &'static Probe, project: &ProjectInputs) -> Finding 
         ),
         Err(why) => Finding::tripped(
             probe,
-            format!("the binding does not resolve: {why}"),
-            "define the manifest in the library, or rebind with \
-            `viv init --manifest <name> --write`",
+            format!("the selected manifest does not resolve: {why}"),
+            "define the manifest in the library and declare this directory in `[[workspaces]]`",
         ),
     }
 }

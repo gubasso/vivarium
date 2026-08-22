@@ -6,7 +6,8 @@
 //! `skipped` / `not-applicable` with the fault named, never a fabricated pass: an assumption-shaped
 //! check that cannot observe must say so rather than answer.
 
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::{self, Environment};
@@ -52,7 +53,7 @@ pub(super) fn run<E: Environment>(probe: &'static Probe, inputs: &Inputs<'_, E>)
         "kernel-version-supported" => kernel_version_supported(probe),
         "host-landlock-available" => host_landlock_available(probe),
         "state-dir-writable" => directory_writable(probe, &inputs.roots.state, "state"),
-        "state-files-parse" => state_files_parse(probe, inputs),
+        "state-manifest-orphans" => state_manifest_orphans(probe, inputs),
         "cache-dir-writable" => directory_writable(probe, &inputs.roots.cache, "cache"),
         "data-dir-writable" => directory_writable(probe, &inputs.roots.data, "data"),
         "store-roots-intact" => store_roots_intact(probe, inputs),
@@ -521,22 +522,85 @@ fn directory_writable(probe: &'static Probe, root: &Path, name: &str) -> Finding
     }
 }
 
-fn state_files_parse<E: Environment>(probe: &'static Probe, inputs: &Inputs<'_, E>) -> Finding {
-    if let Err(error) = config::registry::read(&inputs.roots.state) {
-        return Finding::tripped(
-            probe,
-            format!("the project registry cannot be read: {error}"),
-            "an I/O fault wants `chmod`; malformed content wants an editor",
-        );
+fn state_manifest_orphans<E: Environment>(
+    probe: &'static Probe,
+    inputs: &Inputs<'_, E>,
+) -> Finding {
+    let orphans = match manifest_orphans(inputs.roots) {
+        Ok(orphans) => orphans,
+        Err(why) => {
+            return Finding::skipped(probe, "not-applicable", why);
+        }
+    };
+    if orphans.is_empty() {
+        return Finding::pass(probe, "every retained sandbox key has a manifest");
     }
-    if let Err(error) = config::read_identity_index(&inputs.roots.state) {
-        return Finding::tripped(
-            probe,
-            format!("the identity index cannot be read: {error}"),
-            "an I/O fault wants `chmod`; malformed content wants an editor",
-        );
+    let retained = orphans
+        .iter()
+        .map(|(name, paths)| {
+            format!(
+                "`{name}` at {}",
+                paths
+                    .iter()
+                    .map(|path| format!("`{}`", path.display()))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Finding::tripped(
+        probe,
+        format!("retained sandbox state has no manifest: {retained}"),
+        concat!(
+            "restore the named manifest or inspect and remove the retained state deliberately; ",
+            "vivarium did not delete it",
+        ),
+    )
+}
+
+/// Sandbox directories whose manifest-name key is absent from the current manifest library.
+///
+/// Both durable roots are observations only. A caller can show the retained paths, but nothing in
+/// this probe removes them: ADR-0054 keeps that judgment with the operator.
+fn manifest_orphans(roots: &config::XdgRoots) -> Result<Vec<(String, Vec<PathBuf>)>, String> {
+    let manifests = config::artifact_names(&roots.config, config::ArtifactKind::Manifest)
+        .map_err(|error| format!("the manifest library cannot be enumerated: {error}"))?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut retained = BTreeMap::<String, Vec<PathBuf>>::new();
+    for root in [&roots.state, &roots.data] {
+        let projects = root.join("projects");
+        let entries = match std::fs::read_dir(&projects) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "retained sandbox state cannot be enumerated at `{}`: {error}",
+                    projects.display()
+                ));
+            }
+        };
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "retained sandbox state cannot be enumerated at `{}`: {error}",
+                    projects.display()
+                )
+            })?;
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if !manifests.contains(&name) {
+                retained.entry(name).or_default().push(path);
+            }
+        }
     }
-    Finding::pass(probe, "the registry and the identity index read and parse")
+    Ok(retained.into_iter().collect())
 }
 
 /// The running VMs' identities, from live pid records under the runtime root.
@@ -578,12 +642,12 @@ fn store_roots_intact<E: Environment>(probe: &'static Probe, inputs: &Inputs<'_,
         // Conditioned on a running VM (spec/13): with nothing running there is nothing to corrupt.
         return Finding::pass(probe, "no VM is running");
     }
-    for project_id in &running {
+    for sandbox_id in &running {
         let record = inputs
             .roots
             .data
             .join("projects")
-            .join(project_id)
+            .join(sandbox_id)
             .join("default")
             .join("running-build");
         let Ok(store_path) = std::fs::read_to_string(&record) else {
@@ -600,7 +664,7 @@ fn store_roots_intact<E: Environment>(probe: &'static Probe, inputs: &Inputs<'_,
             return Finding::tripped(
                 probe,
                 format!(
-                    "`{project_id}` is running and its closure could not be queried from \
+                    "`{sandbox_id}` is running and its closure could not be queried from \
                     `{store_path}` — the root itself may be gone"
                 ),
                 "stop the VM and start it again; something outside a root's reach removed \
@@ -617,7 +681,7 @@ fn store_roots_intact<E: Environment>(probe: &'static Probe, inputs: &Inputs<'_,
             return Finding::tripped(
                 probe,
                 format!(
-                    "`{project_id}` is running and {} of its closure paths are gone, \
+                    "`{sandbox_id}` is running and {} of its closure paths are gone, \
                     first `{}`",
                     missing.len(),
                     missing[0]
@@ -714,6 +778,39 @@ fn gigabytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ScratchDirectory;
+
+    #[test]
+    fn orphaned_state_is_named_and_never_deleted() -> Result<(), Box<dyn std::error::Error>> {
+        let scratch = ScratchDirectory::new()?;
+        let config = scratch.path().join("config");
+        let state = scratch.path().join("state");
+        let data = scratch.path().join("data");
+        let cache = scratch.path().join("cache");
+        std::fs::create_dir_all(config.join("manifests"))?;
+        std::fs::write(config.join("manifests/current.toml"), "")?;
+        let current = state.join("projects/current/default");
+        let orphan_state = state.join("projects/gone/default");
+        let orphan_data = data.join("projects/gone/default");
+        for path in [&current, &orphan_state, &orphan_data] {
+            std::fs::create_dir_all(path)?;
+        }
+        let roots = config::XdgRoots {
+            config,
+            data,
+            state,
+            cache,
+        };
+
+        let orphans = manifest_orphans(&roots)?;
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].0, "gone");
+        assert_eq!(orphans[0].1.len(), 2);
+        assert!(orphan_state.is_dir());
+        assert!(orphan_data.is_dir());
+        assert!(current.is_dir());
+        Ok(())
+    }
 
     #[test]
     fn the_version_floor_is_a_pair_comparison_not_a_string_one() {

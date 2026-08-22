@@ -23,4 +23,4 @@ Use a path under a persistent volume for data that must survive the stop/restart
 
 ## Acceptance coverage
 
-Two gated trials in [`user_workflows.rs`](../../tests/user_workflows.rs) cover this: `workflow_07_volume_list_requires_binding` checks the pre-binding and conflicting-flag surface, and `workflow_07_stop_restart_preserving_volumes` checks the default and named images, stop idempotence, the stopped state, and a warm restart.
+Two gated trials in [`user_workflows.rs`](../../tests/user_workflows.rs) cover this: `workflow_07_volume_list_requires_manifest` checks the missing-manifest and conflicting-flag surface, and `workflow_07_stop_restart_preserving_volumes` checks the default and named images, stop idempotence, the stopped state, and a warm restart.

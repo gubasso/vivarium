@@ -38,4 +38,8 @@ impl Environment for TestEnvironment {
     fn variable(&self, name: &'static str) -> Option<OsString> {
         self.variables.get(name).cloned()
     }
+
+    fn dynamic_variable(&self, name: &str) -> Option<OsString> {
+        self.variables.get(name).cloned()
+    }
 }

@@ -528,7 +528,7 @@ else
   image_allocated() { stat -c '%b*%B=%s' -- "$1" 2>/dev/null || echo unavailable; }
   store_alloc_before=$(image_allocated "$store_volume")
 
-  launch_args=(--workspace ws0 "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 --project-id first-microvm --target "$run_id")
+  launch_args=(--workspace ws0 "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 --sandbox-id first-microvm --target "$run_id")
   unit_name="vivarium-first-microvm-$run_id.service"
 
   launch_attempt=0

@@ -8,7 +8,7 @@ Record where the definition of the environment lives relative to the project it 
 
 ## vivarium
 
-Yes: the manifest is a project's own file, and the binding from a project directory to it is recorded once and resolved on entry, so two projects needing different environments are two manifests and no argument at either start. The binding itself is machine-local state rather than a committed pointer, written only by an explicit `viv init --write` ([`02-config-and-xdg-layout.md`](../../spec/02-config-and-xdg-layout.md)), which is what keeps a project's tree free of a file that would mean nothing on another machine.
+Yes: a personal manifest declares the workspace trees its sandbox owns, so two projects needing different environments are two manifests and no argument at either start. Selection is derived from those declarations and cached outside the project ([`02-config-and-xdg-layout.md`](../../spec/02-config-and-xdg-layout.md)), which keeps the project tree free of a machine-local pointer.
 
 ## flake-pilot
 

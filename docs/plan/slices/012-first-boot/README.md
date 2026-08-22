@@ -60,9 +60,9 @@ Ordered, because the first item decides whether the rest is wiring or repair. Do
 
 ## Acceptance
 
-When a bound project is started, `viv start` SHALL boot the guest system derivation slice 011 built and `workflow_01_first_time_bind_boot` SHALL pass unskipped.
+When a declared workspace is started, `viv start` SHALL boot the guest system derivation slice 011 built and `workflow_01_manifest_workspace_resolution_boot` SHALL pass unskipped.
 
-When two projects resolve to the same identity, the second SHALL take the specified suffix and `workflow_02_identity_collision_suffix` SHALL pass unskipped.
+When a second manifest claims a workspace another manifest owns, resolution SHALL refuse it at `78`; `workflow_02_derived_workspace_index` SHALL pass unskipped.
 
 When `viv stop` completes, the runtime directory SHALL contain no entry the allowlisted cleanup is required to remove.
 

@@ -67,7 +67,7 @@ const MINIMUM_MEM_MIB: i64 = 256;
 /// the directory form.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestOrigin {
-    /// The bare kebab-case manifest name, as a user wrote it in the registry.
+    /// The bare kebab-case manifest name selected from the library.
     pub name: String,
     /// The file the text came from, used for the `-->` slot.
     pub path: PathBuf,

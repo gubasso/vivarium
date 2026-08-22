@@ -1,15 +1,14 @@
 //! The teardown boundary: what `viv destroy` removes, and what it spares.
 //!
 //! Held apart from `lifecycle`, whose job is the three verbs that bring a VM up, report on it, and
-//! bring it down. This one removes data across four roots and then clears an identity, and the
-//! spared list below is a contract in its own right — a file whose whole job is that boundary can
+//! bring it down. This one removes data across four roots, and the spared list below is a contract
+//! in its own right — a file whose whole job is that boundary can
 //! state it once, where the next edit has to read it.
 //!
 //! spec/10 fixes the order and it is not incidental: the VM comes down first, because unlinking a
 //! generation's GC root beside a running guest would expose that guest's own closure to the next
-//! collection. The removals then run under the per-target lock, and the identity teardown after it
-//! is released — never both at once, which is how ADR-0053's lock order is kept without this file
-//! becoming a link in it.
+//! collection. The removals then run under the per-target lock, the first surviving rung of
+//! ADR-0053's order.
 
 use std::path::{Path, PathBuf};
 
@@ -26,26 +25,17 @@ pub(super) fn destroy<E: Environment>(
     yes: bool,
     output: Output,
 ) -> Result<Success, Failure> {
-    // No binding is required, and that is deliberate rather than an omission. spec/14's `destroy`
-    // row says so in its notes while the neighbouring `volume prune` row makes an unresolved
-    // binding its own `78`; spec/15 leaves the binding untouched, which makes it irrelevant to
-    // teardown; and everything removed below is keyed by `<project-id>`, which resolves from the
-    // marker and the index with no manifest at all. A project whose manifest was deleted is
-    // exactly one that still needs destroying. The `78` this verb can answer is the other kind —
-    // a malformed identity index, which is a state defect rather than a missing manifest.
-    //
-    // Resolved, never minted: spec/14 keeps persistence to `start` and a cold-starting session,
-    // and a `destroy` that minted an identity in order to erase it would leave a marker behind on
-    // a project that never had one.
-    let project_id = config::resolve_identity(&context.roots.state, &context.project)
-        .map_err(|error| super::registry_failure(&error))?;
+    // ADR-0109 makes manifest resolution and workspace ownership the common front half of every
+    // project-local verb.
+    let resolved = super::resolve_manifest_for_launch(context)?;
+    let sandbox_id = resolved.selected.name;
     let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
         .map_err(|error| super::resolution_failure(&error))?;
-    let runtime = lifecycle::Runtime::locate(&runtime_root, &project_id, super::DEFAULT_TARGET);
+    let runtime = lifecycle::Runtime::locate(&runtime_root, &sandbox_id, super::DEFAULT_TARGET)?;
 
-    let plan = Plan::new(&context.roots, &project_id, keep_volumes);
+    let plan = Plan::new(&context.roots, &sandbox_id, keep_volumes);
 
-    if !yes && !confirm(context, &project_id, &plan)? {
+    if !yes && !confirm(context, &sandbox_id, &plan)? {
         return Ok(Success {
             stdout: String::new(),
             notes: "nothing was destroyed\n".to_owned(),
@@ -55,7 +45,7 @@ pub(super) fn destroy<E: Environment>(
     // The VM comes down before anything is unlinked (spec/10), and only when there is one: a
     // project that never started, or one already stopped, skips straight to the removals and the
     // whole verb is a no-op that exits `0`.
-    let built = lifecycle::last_build(&context.roots, &project_id, super::DEFAULT_TARGET).is_some();
+    let built = lifecycle::last_build(&context.roots, &sandbox_id, super::DEFAULT_TARGET).is_some();
     let lock = lifecycle::TargetLock::acquire(&runtime)?;
     if !matches!(
         lifecycle::discriminate(&runtime, built),
@@ -83,13 +73,6 @@ pub(super) fn destroy<E: Environment>(
     // zero-byte mutex — which the next `start` reuses rather than notices.
     clear_runtime(&runtime)?;
     drop(lock);
-
-    // Last, and outside the per-target lock: ADR-0053 orders identity ahead of the per-target
-    // `flock`, so taking the identity guard while still holding that one would acquire upward.
-    // Every acquisition in this program is `try_lock` and nothing waits on one while holding the
-    // other, so releasing first is sufficient and no cycle can form.
-    config::forget_identity(&context.roots.state, &context.project)
-        .map_err(|error| super::registry_failure(&error))?;
 
     // spec/10 gives `destroy` empty stdout on success and one record under `--json`. The record is
     // not written: no page fixes its shape, and `stop` — which spec/10 binds by the same sentence —
@@ -133,7 +116,7 @@ struct Plan {
     remove: Vec<PathBuf>,
     /// Directories whose children are removed except for one name kept by `--keep-volumes`.
     ///
-    /// Two levels rather than one because spec/15 removes the project's state, not one target's:
+    /// Two levels rather than one because destroy removes the sandbox's state, not one target's:
     /// with volumes kept, every other target still goes and so does everything beside `volumes/`
     /// in this one. Enumerating the children at run time rather than naming them is what keeps
     /// this correct when a later slice adds a per-project Nix profile beside them — an
@@ -144,13 +127,13 @@ struct Plan {
 }
 
 impl Plan {
-    fn new(roots: &config::XdgRoots, project_id: &str, keep_volumes: bool) -> Self {
-        let project_state = roots.state.join("projects").join(project_id);
+    fn new(roots: &config::XdgRoots, sandbox_id: &str, keep_volumes: bool) -> Self {
+        let project_state = roots.state.join("projects").join(sandbox_id);
         let target_state = project_state.join(super::DEFAULT_TARGET);
         let data_target = roots
             .data
             .join("projects")
-            .join(project_id)
+            .join(sandbox_id)
             .join(super::DEFAULT_TARGET);
 
         // The build records go individually rather than with their directory, because their
@@ -173,10 +156,7 @@ impl Plan {
             // determinism failure N3 forbids — and `destroy` promises at most a rebuild.
             data_target.join("flake.lock"),
             // ADR-0058 makes the generated tree cache, regenerable from the manifest.
-            roots.cache.join("flakes").join(project_id),
-            // spec/15: the binding survives, which is what makes the next `viv start` a rebuild
-            // rather than a re-bind.
-            config::registry_path(&roots.state),
+            roots.cache.join("flakes").join(sandbox_id),
         ];
         if keep_volumes {
             spared.push(target_state.join("volumes"));
@@ -230,16 +210,12 @@ impl Plan {
 
 fn confirm<E: Environment>(
     context: &Context<'_, E>,
-    project_id: &str,
+    sandbox_id: &str,
     plan: &Plan,
 ) -> Result<bool, Failure> {
-    let mut scope = plan.scope();
-    scope.push(format!(
-        "the identity marker in {}",
-        context.project.display()
-    ));
+    let scope = plan.scope();
     let question = super::prompt::Question {
-        headline: &format!("destroy `{project_id}` and everything above?"),
+        headline: &format!("destroy `{sandbox_id}` and everything above?"),
         scope,
         spared: plan
             .spared
@@ -325,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn the_state_subtree_goes_and_the_pin_the_binding_and_the_cache_stay() {
+    fn the_state_subtree_goes_and_the_pin_and_cache_stay() {
         // The highest-value assertion in this file: the spared list is what a future edit breaks
         // silently, because removing one of these three fails no test that does not name it.
         let plan = Plan::new(&roots(), "demo", false);
@@ -358,11 +334,6 @@ mod tests {
             "{spared:?}"
         );
         assert!(spared.contains(&"/k/flakes/demo".to_owned()), "{spared:?}");
-        assert!(
-            spared.contains(&"/s/registry.toml".to_owned()),
-            "{spared:?}"
-        );
-
         // And nothing spared may also be removed. A prefix test rather than equality, because the
         // way this breaks is a plan that removes a spared path's parent: `/d/projects/demo` would
         // take the lockfile with it and no equality check would notice.

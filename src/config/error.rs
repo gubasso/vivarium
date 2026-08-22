@@ -242,14 +242,11 @@ impl GeneratedFlakeError {
     }
 }
 
-/// A failure while reading, locking, or writing the state registry.
+/// A failure while reading or publishing tool-owned state and cache records.
 ///
-/// Separate from [`ManifestError`] despite the near-identical shape, because the two files have
-/// different accepted key sets, different loci, and different I/O classifications: spec/02 makes a
-/// registry a user's own defect at `78` when it parses wrong but the channel's failure at `74` when
-/// it cannot be read at all, and spec/14's command matrix adds `77` for a write a permission
-/// denies.
-/// One type spanning both would have to carry the distinction anyway, in a field.
+/// Separate from [`ManifestError`] because these files are derived or tool-owned rather than
+/// authored configuration. Their channel failures retain the I/O and permission classifications
+/// callers need, while malformed rebuildable cache content is handled by rebuilding it.
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub struct RegistryError(Box<RegistryFault>);
@@ -275,8 +272,6 @@ pub(super) enum RegistryErrorKind {
     Io,
     /// A host permission denied a write.
     Permission,
-    /// The exclusive lock could not be taken promptly.
-    Contended,
 }
 
 impl RegistryError {
@@ -298,21 +293,12 @@ impl RegistryError {
         }))
     }
 
-    /// Fills the conditional `accepted here:` slot, which an unknown key must carry.
-    pub(super) fn with_accepted(
-        mut self,
-        accepted: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        self.0.accepted = accepted.into_iter().map(Into::into).collect();
-        self
-    }
-
     /// Records an I/O failure, classifying a denied permission apart from a failing channel.
     ///
     /// `deny_is_permission` is the caller's, because the two directions differ: spec/02's read
     /// table
     /// answers `74` for an unreadable file however it became unreadable, while spec/14's command
-    /// matrix gives `viv init --write` a separate `77`. Deciding it here would need this
+    /// matrix gives owned-channel writes a separate `77`. Deciding it here would need this
     /// function to
     /// know which it was serving.
     pub(super) fn io(
@@ -345,7 +331,6 @@ impl RegistryError {
             RegistryErrorKind::Config => ExitKind::Config,
             RegistryErrorKind::Io => ExitKind::IoErr,
             RegistryErrorKind::Permission => ExitKind::NoPerm,
-            RegistryErrorKind::Contended => ExitKind::TempFail,
         }
     }
 

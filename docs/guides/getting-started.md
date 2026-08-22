@@ -9,19 +9,18 @@ This walkthrough follows a developer who wants to run a Rust project inside a vi
 - A host with hardware virtualization available (required by the isolation boundary; see [`../reference/spec/00-goals-and-non-goals.md`](../reference/spec/00-goals-and-non-goals.md)).
 - A Nix toolchain on the host.
 - A `viv` on your `PATH`. There is no release yet, so today that means building it from this repository; [`develop-and-install.md`](./develop-and-install.md) is the runbook.
-- A `rust-web` manifest in your config library that names a Rust image plus a few pieces (for example git, ssh-agent, direnv, and open egress). [`set-up-your-config-library.md`](./set-up-your-config-library.md) walks one worked library end to end; the manifest shape is specified in [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md), and how each bare name resolves to a file is decided in [the library-layout ADR](../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md).
+- A `rust-web` manifest in your config library that names a Rust image, its pieces, and the project trees it owns with `[[workspaces]]`. [`set-up-your-config-library.md`](./set-up-your-config-library.md) walks one worked library end to end; the manifest shape is specified in [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md), and how each bare name resolves to a file is decided in [the library-layout ADR](../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md).
 
-## 1. Bind the project to a manifest
+## 1. Declare the project as a workspace
 
-From the project directory:
+In `manifests/rust-web.toml`, declare the project directory:
 
-```console
-$ cd ~/src/my-rust-api
-$ viv init --manifest rust-web         # preview the registry entry it would write
-$ viv init --manifest rust-web --write # record the binding
+```toml
+[[workspaces]]
+source = "/home/alice/src/my-rust-api"
 ```
 
-`viv init` records the binding in your per-user project registry (state); it writes nothing into the project's own tree or into your config. Run it without `--write` to preview the exact entry first. How the binding resolves later is specified in [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md), and [the decision that made your config read-only to the tool](../decisions/ADR-0011-config-read-only-binding-in-state.md) explains why there is no file to commit or gitignore.
+Then enter the project. vivarium derives its manifest from that declaration and caches only a rebuildable index outside the project. A `--manifest rust-web` flag or `VIVARIUM_MANIFEST=rust-web` overrides derived selection for one invocation. Resolution is specified in [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md); there is no file to commit or ignore in the workspace.
 
 ## 2. Inspect what will be built
 
@@ -38,7 +37,7 @@ $ viv config eval
 $ viv start
 ```
 
-This compiles the manifest to a flake ([the decision to make TOML compile rather than be interpreted](../decisions/ADR-0004-toml-manifest-compiles-to-flake.md)), builds the VM with Nix, and boots it — mounting your current project read-write inside the guest at the same absolute path it has on the host. One path string names the project on both sides, which is what keeps git's linked worktrees resolvable either way ([the decision to mirror the host path](../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md)). The path is supplied at this launch step and applied at boot, never built in, which is why the same manifest still builds the same guest on every machine ([`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md)).
+This compiles the manifest to a flake ([the decision to make TOML compile rather than be interpreted](../decisions/ADR-0004-toml-manifest-compiles-to-flake.md)), builds the VM with Nix, and boots it — mounting every declared workspace read-write inside the guest at the same absolute path it has on the host. One path string names each tree on both sides, which is what keeps git's linked-worktree pointers resolvable either way ([the decision to mirror the host path](../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md)). The paths are supplied at launch and applied at boot, never built in, which is why the same manifest still builds the same guest on every machine ([`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md)).
 
 `start` boots the sandbox in the background and returns; running it again on an unchanged project is a no-op, because [the lifecycle decision](../decisions/ADR-0013-vm-lifecycle-and-up.md) made starting detached, idempotent, and non-destructive. Each successful build is kept as a numbered generation you can list with `viv generations list` and boot with `viv start --generation <n>` — see [`../reference/spec/10-vm-lifecycle.md`](../reference/spec/10-vm-lifecycle.md) and [`../reference/spec/11-generations-and-build-history.md`](../reference/spec/11-generations-and-build-history.md), and [the decision pinning each generation as a garbage-collector root](../decisions/ADR-0014-build-generations-and-gc-roots.md) for why an old build survives until you prune it.
 
@@ -52,7 +51,7 @@ $ viv shell
 
 `exec` runs one command with transparent stdio and returns the guest status. It defaults to no PTY, so use `-t` for interactive terminal behavior.
 
-`shell` opens a login-interactive PTY shell. Multiple `exec`/`shell` sessions for the same project share the same VM and see the repository at the path it occupies on the host, so a path you copy out of the guest is one you can paste on the host.
+`shell` opens a login-interactive PTY shell. Multiple `exec`/`shell` sessions from any workspace declared by the manifest share the same VM and start in the exact directory from which they were invoked, so a path you copy out of the guest is one you can paste on the host.
 
 Inside the workspace, your project's own development environment loads independently of vivarium — the inner layer described in [`../reference/spec/06-workspace-and-project-environment.md`](../reference/spec/06-workspace-and-project-environment.md). Detailed `exec`/`shell` behavior is specified in [`../reference/spec/12-exec-and-shell.md`](../reference/spec/12-exec-and-shell.md), and [the decision fixing the control transport and exec contract](../decisions/ADR-0016-guest-control-transport-and-exec-contract.md) explains where the status boundary falls.
 
@@ -60,7 +59,7 @@ By default the sandbox has open network access, so `cargo` can fetch crates with
 
 ## 5. Run several projects at once
 
-Nothing about the above is one-project-at-a-time. Repeat steps 1 and 3 in another repository and you have a second sandbox; each has its own kernel, its own home volume, and as many attached terminals as you care to open. `viv status -g` shows them all:
+Nothing about the above is one-project-at-a-time. Put related disjoint trees in one manifest's `[[workspaces]]` set and they share one kernel and home volume; select another manifest for a separate sandbox. Each sandbox accepts as many attached terminals as you care to open. `viv status -g` shows them all:
 
 ```console
 $ viv status -g

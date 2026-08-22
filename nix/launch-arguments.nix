@@ -215,7 +215,7 @@ in
   # parameter `vivarium.workspace=` became one `vivarium.workspace.<tag>=` per
   # declared tree. `LAUNCH_SCHEMA_VERSION` in `src/launch/spec.rs` carries the
   # same number and the same paragraph.
-  schemaVersion = 10;
+  schemaVersion = 11;
   inherit guestSession;
   # The launch half of `sandbox.egress` (spec/05): carried across so host-side
   # enforcement needs no evaluation at start. `or`-defaulted because the shipped

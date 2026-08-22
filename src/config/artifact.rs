@@ -94,6 +94,51 @@ pub fn resolve_artifact(
     }
 }
 
+/// Enumerates the names that have one of ADR-0045's two library shapes.
+///
+/// This reads directory structure only. Callers still resolve each name before treating it as a
+/// usable artifact, so ambiguous pairs and invalid names keep their ordinary diagnostics.
+///
+/// # Errors
+///
+/// Returns [`ResolutionError::InspectArtifact`] when an existing library cannot be enumerated.
+pub fn artifact_names(
+    config_root: &Path,
+    kind: ArtifactKind,
+) -> Result<Vec<String>, ResolutionError> {
+    let library = config_root.join(kind.library());
+    let entries = match std::fs::read_dir(&library) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(ResolutionError::InspectArtifact {
+                path: library,
+                source,
+            });
+        }
+    };
+    let extension = format!(".{}", kind.extension());
+    let mut names = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_dir() {
+                return entry
+                    .path()
+                    .join(format!("default.{}", kind.extension()))
+                    .is_file()
+                    .then(|| name.to_owned());
+            }
+            name.strip_suffix(&extension).map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
 /// The kebab-case grammar shared by every name the config libraries resolve.
 ///
 /// The manifest grammar means the same thing by "a name" (spec/03), so it reads this rather than

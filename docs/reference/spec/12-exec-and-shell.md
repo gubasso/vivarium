@@ -29,7 +29,7 @@ Guest stdout maps raw to host stdout, guest stderr maps raw to host stderr, and 
 
 ## Guest process environment
 
-`exec` runs the argv directly with `execve`; `shell` opens the configured user shell as a login-interactive shell. Both start in the workspace cwd: the primary workspace mount, or the corresponding guest subdirectory when invoked from a subdirectory of the host workspace. Because that mount is host-symmetric (N16), the correspondence is identity — the guest cwd is the host cwd, spelled the same way.
+`exec` runs the argv directly with `execve`; `shell` opens the configured user shell as a login-interactive shell. Both start in the exact directory from which `viv` was invoked after that directory has been proved to lie inside one declared workspace. Every workspace is host-symmetric (N16), so the correspondence is identity — the guest cwd is the host cwd, including its subdirectory, spelled the same way. No first declaration is privileged.
 
 The default guest user is non-root `vivarium`; root is allowed only when an image or piece explicitly opts in. The workspace mount is writable for that user.
 
@@ -39,19 +39,19 @@ Agent forwarding is not an exception to that rule, and naming `--env SSH_AUTH_SO
 
 ## Workspace mounts
 
-Mount semantics are owned by [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md). The primary workspace is mounted read-write at the absolute path it occupies on the host, and additional mounts may be declared for other guest paths. All host paths for primary and extra mounts are launch-time inputs or personal/machine-local config and must never enter the Nix build output or a shared image or piece — which is why the mirrored path is applied at boot rather than declared as the share's own mount point.
+Mount semantics are owned by [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md). Every declared workspace is mounted read-write at the absolute path it occupies on the host, and additional mounts may be declared for chosen guest paths. All host paths for workspaces and extra mounts are launch-time inputs or personal/machine-local config and must never enter the Nix build output or a shared image or piece — which is why each mirrored path is applied at boot rather than declared as the share's own mount point.
 
 ## Ensure running and control socket
 
-1. Take the per-target `flock` under `$XDG_RUNTIME_DIR/vivarium/<project-id>/<target>/lock`.
+1. Take the per-target `flock` under `$XDG_RUNTIME_DIR/vivarium/<manifest>/<target>/lock`.
 2. If `control.sock` exists, send the guest agent a cheap `Ping` over an authorized connection (below).
-3. If `Ping` succeeds and `boot.json` matches the project identity, running generation/store path, backend, and workspace host path expected for this invocation, reuse the running VM and skip preflight/build/boot.
+3. If `Ping` succeeds and `boot.json` matches the manifest sandbox key, running generation/store path, backend, and complete tag-to-host-path workspace map expected for this invocation, reuse the running VM and skip preflight/build/boot.
 4. If the socket exists but ping fails, check `vm.pid` only as diagnostic/staleness evidence: dead process means remove stale runtime files; live process with unreachable agent means wait within the boot timeout or fail EX_UNAVAILABLE (69).
 5. If no live VM is found, run the same hard preflight subset used by `viv start`, build or select the requested generation as needed, launch the VM, inject mounts, and wait for the guest agent readiness ping before releasing the lock.
 6. After startup, concurrent `exec` and `shell` sessions do not hold the startup lock; they multiplex over the control socket.
 
 ```text
-$XDG_RUNTIME_DIR/vivarium/<project-id>/<target>/
+$XDG_RUNTIME_DIR/vivarium/<manifest>/<target>/
   lock
   vm.pid
   control.sock
@@ -59,7 +59,7 @@ $XDG_RUNTIME_DIR/vivarium/<project-id>/<target>/
   console.log
 ```
 
-`console.log` is present whenever a VM is running, unless `--no-console-log` is set; it holds the guest's raw serial output under the capture contract in [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md). `<project-id>` is the project-identity key and `<target>` the VM instance within the project, both defined in [`15-project-identity.md`](./15-project-identity.md); the runtime layout mirrors the state layout in [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md) component for component. `$XDG_RUNTIME_DIR` is required and never synthesized — how it resolves and what a missing or unusable one costs are owned by [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), and none of the files above outlive the session that root belongs to ([`10-vm-lifecycle.md`](./10-vm-lifecycle.md)). The control transport is vsock-class, host-local, and network-independent, bridged to a host Unix socket; the concrete device/backend is below this contract per N2. SSH is not the primary control plane, though it may exist as a debug fallback.
+`console.log` is present whenever a VM is running, unless `--no-console-log` is set; it holds the guest's raw serial output under the capture contract in [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md). `<manifest>` is the sandbox key and `<target>` the VM instance within it; the runtime layout mirrors the state layout in [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md) component for component. `$XDG_RUNTIME_DIR` is required and never synthesized — how it resolves and what a missing or unusable one costs are owned by that page, and none of the files above outlive the session that root belongs to ([`10-vm-lifecycle.md`](./10-vm-lifecycle.md)). The control transport is vsock-class, host-local, and network-independent, bridged to a host Unix socket; the concrete device/backend is below this contract per N2. SSH is not the primary control plane, though it may exist as a debug fallback.
 
 ### One connection per session
 

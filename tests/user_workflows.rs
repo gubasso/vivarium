@@ -8,10 +8,9 @@ use std::time::{Duration, Instant};
 use libtest_mimic::{Arguments, Failed, Trial};
 use support::{
     EX_CONFIG, EX_DATAERR, EX_IOERR, EX_USAGE, GateLevel, TempProject, VivOutput, expect_code,
-    expect_json_array_items, expect_json_array_nonempty, expect_json_fields_at, expect_json_keys,
-    expect_json_map_entries, expect_json_string, expect_marker_absent, expect_marker_id,
-    expect_no_project_binding_files, expect_no_volume_images, expect_nonzero,
-    expect_registry_binding_visible, expect_stderr_mentions, expect_stdout_lacks,
+    expect_derived_manifest_visible, expect_json_array_items, expect_json_array_nonempty,
+    expect_json_fields_at, expect_json_keys, expect_json_map_entries, expect_json_string,
+    expect_no_volume_images, expect_nonzero, expect_stderr_mentions, expect_stdout_lacks,
     expect_stdout_mentions, expect_tree_unchanged, expect_volume_image, gate, json, run_viv,
     snapshot_tree, volume_image, write_file,
 };
@@ -26,24 +25,19 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// survives the split.
 const WORKFLOWS: [WorkflowSpec; 26] = [
     (
-        "workflow_01_first_time_bind_usage",
+        "workflow_01_manifest_workspace_resolution_usage",
         GateLevel::Cli,
         workflow_01_usage,
     ),
     (
-        "workflow_01_first_time_bind_boot",
+        "workflow_01_manifest_workspace_resolution_boot",
         GateLevel::Virtualization,
         workflow_01_boot,
     ),
     (
-        "workflow_02_clean_repo_global_registry_only",
+        "workflow_02_derived_workspace_index",
         GateLevel::Cli,
-        workflow_02_registry,
-    ),
-    (
-        "workflow_02_identity_collision_suffix",
-        GateLevel::Virtualization,
-        workflow_02_identity,
+        workflow_02_index,
     ),
     (
         "workflow_03_team_shared_and_personal_override",
@@ -86,7 +80,7 @@ const WORKFLOWS: [WorkflowSpec; 26] = [
         workflow_06_shell,
     ),
     (
-        "workflow_07_volume_list_requires_binding",
+        "workflow_07_volume_list_requires_manifest",
         GateLevel::Cli,
         workflow_07_usage,
     ),
@@ -139,6 +133,11 @@ const WORKFLOWS: [WorkflowSpec; 26] = [
         "workflow_17_linked_worktree_reaches_main",
         GateLevel::Virtualization,
         workflow_17_worktree,
+    ),
+    (
+        "workflow_20_many_workspaces_one_sandbox",
+        GateLevel::Virtualization,
+        workflow_20_many_workspaces,
     ),
     (
         "workflow_22_file_mount_serves_only_its_file",
@@ -278,22 +277,10 @@ fn harness_self_check() -> Result<(), Failed> {
     let leak = run_viv(Path::new("sh"), &tp, tp.project(), &["-c", "env"]).map_err(io_failed)?;
     check(expect_injected_vivarium_variables_only(&leak))?;
 
-    // The one isolation the temporary roots cannot provide, asserted here because it is the only
-    // vantage point that does not need `/dev/kvm`. A project id reaches the
-    // `vivarium-<project-id>-<target>.service` unit name, which lives in the session's systemd user
-    // manager and is shared by every trial in the run — so two fixtures asking for the same project
-    // name must still resolve different ids, or a parallel run fails with "already loaded" for a
-    // reason that has nothing to do with the product. Checked through `project_id` rather than by
-    // booting, so the property is verified on a host that cannot boot anything.
+    // Fixture paths and tokens remain distinct for callers that create two trees in one trial.
     let sibling = TempProject::with_project_name("project").map_err(io_failed)?;
-    if tp.project_id() == sibling.project_id() {
-        return fail(format!(
-            "two fixtures resolved the same project id `{}`, so their units would collide",
-            tp.project_id()
-        ));
-    }
-    if !tp.project_id().ends_with(tp.token()) || tp.token() == sibling.token() {
-        return fail("the fixture token did not reach the project id uniquely");
+    if tp.project() == sibling.project() || tp.token() == sibling.token() {
+        return fail("two fixtures did not receive distinct paths and tokens");
     }
 
     if !gate().is_well_formed() {
@@ -479,24 +466,15 @@ fn harness_nested_json_self_check() -> Result<(), String> {
     Ok(())
 }
 
-// Guide: docs/guides/first-time-bind-boot.md
+// Guide: docs/guides/first-time-workspace-boot.md
 fn workflow_01_usage() -> Result<(), Failed> {
     let tp = TempProject::new().map_err(io_failed)?;
     arrange_manifest(&tp, "rust-web", "", "")?;
     let before = snapshot_tree(tp.project()).map_err(io_failed)?;
 
-    let preview = viv(&tp, &["init", "--manifest", "rust-web", "--no-input"])?;
-    check(expect_code(&preview, 0))?;
+    let selection = viv(&tp, &["config", "--json"])?;
+    check(expect_derived_manifest_visible(&selection, "rust-web"))?;
     check(expect_tree_unchanged(tp.project(), &before))?;
-    check(expect_no_project_binding_files(tp.project()))?;
-    check(expect_code(&viv(&tp, &["config", "--json"])?, EX_CONFIG))?;
-
-    let write = viv(&tp, &["init", "--manifest", "rust-web", "--write", "--yes"])?;
-    check(expect_code(&write, 0))?;
-    let binding = viv(&tp, &["config", "--json"])?;
-    check(expect_registry_binding_visible(&binding, "rust-web"))?;
-    check(expect_tree_unchanged(tp.project(), &before))?;
-
     check(expect_code(
         &viv(&tp, &["start", "--rebuild", "--no-rebuild"])?,
         EX_USAGE,
@@ -507,21 +485,16 @@ fn workflow_01_usage() -> Result<(), Failed> {
     check(expect_code(&viv(&tp, &["shell", "--unknown"])?, EX_USAGE))
 }
 
-// Guide: docs/guides/first-time-bind-boot.md
+// Guide: docs/guides/first-time-workspace-boot.md
 fn workflow_01_boot() -> Result<(), Failed> {
     let tp = TempProject::new().map_err(io_failed)?;
     arrange_manifest(&tp, "rust-web", "", "")?;
-    bind(&tp, "rust-web")?;
+    let before = snapshot_tree(tp.project()).map_err(io_failed)?;
 
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
-    // Marker assertions stay behind the virtualization gate permanently: `start` is
-    // the cheapest verb that mints one, because every read-only command resolves the
-    // identity in memory and persists nothing (spec/15, ADR-0043). There is no
-    // CLI-only vantage point from which to check this.
-    check(expect_marker_id(
-        tp.project(),
-        &format!("project-{}", tp.token()),
-    ))?;
+    // N9 is absolute: even the first command that boots a sandbox leaves the complete user tree,
+    // including the absence of `.vivarium`, byte-for-byte unchanged.
+    check(expect_tree_unchanged(tp.project(), &before))?;
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
 
     let status = viv(&tp, &["status", "--json"])?;
@@ -543,66 +516,83 @@ fn workflow_01_boot() -> Result<(), Failed> {
     check(support::egress::expect_open_mode_absence(vm_pid))
 }
 
-// Guide: docs/guides/clean-repo-global-registry.md
-fn workflow_02_registry() -> Result<(), Failed> {
+// Guide: docs/guides/clean-repo-derived-resolution.md
+fn workflow_02_index() -> Result<(), Failed> {
     let tp = TempProject::with_project_name("API").map_err(io_failed)?;
     arrange_manifest(&tp, "clean-registry", "", "")?;
     let before = snapshot_tree(tp.project()).map_err(io_failed)?;
-    check(expect_code(
-        &viv(&tp, &["init", "--manifest", "clean-registry", "--no-input"])?,
-        0,
-    ))?;
+
+    // A leftover authored registry is inert: the derived index has a new cache-root name and
+    // neither reads, rewrites, nor deletes the old state-root file.
+    let old_registry = tp.state().join("vivarium").join("registry.toml");
+    write_file(&old_registry, "this is deliberately not registry TOML\n").map_err(io_failed)?;
+    let old_bytes = fs::read(&old_registry).map_err(io_failed)?;
+
+    let first = viv(&tp, &["config", "--json"])?;
+    check(expect_derived_manifest_visible(&first, "clean-registry"))?;
     check(expect_tree_unchanged(tp.project(), &before))?;
-    check(expect_no_project_binding_files(tp.project()))?;
-    check(expect_code(
-        &viv(
-            &tp,
-            &["init", "--manifest", "clean-registry", "--write", "--yes"],
-        )?,
-        0,
-    ))?;
-    check(expect_registry_binding_visible(
+    if fs::read(&old_registry).map_err(io_failed)? != old_bytes {
+        return fail("the derived resolver touched the leftover authored registry");
+    }
+
+    let index = tp.cache().join("vivarium").join("workspace-index.json");
+    if !index.is_file() {
+        return fail("the first derived resolution did not publish its cache");
+    }
+    fs::remove_file(&index).map_err(io_failed)?;
+    let rebuilt = viv(&tp, &["config", "--json"])?;
+    check(expect_derived_manifest_visible(&rebuilt, "clean-registry"))?;
+    if !index.is_file() || first.stdout != rebuilt.stdout {
+        return fail("deleting the derived index changed the selected sandbox");
+    }
+    let prior_index = fs::read(&index).map_err(io_failed)?;
+    arrange_manifest(
+        &tp,
+        "clean-registry",
+        "\n[env]\nCACHE_GENERATION = \"two\"\n",
+        "",
+    )?;
+    check(expect_derived_manifest_visible(
         &viv(&tp, &["config", "--json"])?,
         "clean-registry",
     ))?;
-    check(expect_tree_unchanged(tp.project(), &before))
-}
+    if fs::read(&index).map_err(io_failed)? == prior_index {
+        return fail("changing a manifest did not invalidate the derived index");
+    }
 
-// Guide: docs/guides/clean-repo-global-registry.md
-fn workflow_02_identity() -> Result<(), Failed> {
-    let first = TempProject::with_project_name("API").map_err(io_failed)?;
-    arrange_manifest(&first, "clean-registry", "", "")?;
-    bind(&first, "clean-registry")?;
-    check(expect_code(&viv(&first, &["start"])?, 0))?;
-    check(expect_marker_id(
-        first.project(),
-        &format!("api-{}", first.token()),
+    // A mount is never an ownership candidate.
+    let mounted = tp.root().join("mount-only");
+    let elsewhere = tp.root().join("elsewhere");
+    fs::create_dir_all(&mounted).map_err(io_failed)?;
+    fs::create_dir_all(&elsewhere).map_err(io_failed)?;
+    arrange_manifest(
+        &tp,
+        "mount-only",
+        &format!(
+            "\n[[workspaces]]\nsource = '{}'\n\n[[mounts]]\nsource = '{}'\ntarget = '/mnt/only'\n",
+            elsewhere.display(),
+            mounted.display()
+        ),
+        "",
+    )?;
+    check(expect_code(
+        &viv_at(&tp, &mounted, &["config", "--json"])?,
+        EX_CONFIG,
     ))?;
 
-    // The colliding project takes the fixture's own basename, not the bare name: the token the
-    // fixture appends is what keeps this pair's unit names clear of every other trial's, and two
-    // projects only collide if they sanitize to the same base.
-    let second_project = first.root().join("collision").join(first.basename());
-    fs::create_dir_all(&second_project).map_err(io_failed)?;
-    let second_project = second_project.canonicalize().map_err(io_failed)?;
-    check(expect_code(
-        &viv_at(
-            &first,
-            &second_project,
-            &["init", "--manifest", "clean-registry", "--write", "--yes"],
-        )?,
-        0,
-    ))?;
-    check(expect_code(
-        &viv_at(&first, &second_project, &["start"])?,
-        0,
-    ))?;
-    // The smallest-free-integer rule: the first holder keeps the bare name, the
-    // second gets `-2`. There is deliberately no `api-1`.
-    check(expect_marker_id(
-        &second_project,
-        &format!("api-{}-2", first.token()),
-    ))
+    // Two explicit owners fail closed and name both claimants.
+    for name in ["owner-one", "owner-two"] {
+        arrange_manifest(
+            &tp,
+            name,
+            &format!("\n[[workspaces]]\nsource = '{}'\n", mounted.display()),
+            "",
+        )?;
+    }
+    let ambiguous = viv_at(&tp, &mounted, &["config", "--json"])?;
+    check(expect_code(&ambiguous, EX_CONFIG))?;
+    check(expect_stderr_mentions(&ambiguous, "owner-one"))?;
+    check(expect_stderr_mentions(&ambiguous, "owner-two"))
 }
 
 /// Guide: docs/guides/team-shared-personal-overrides.md
@@ -662,8 +652,11 @@ fn workflow_03() -> Result<(), Failed> {
     check(expect_stdout_mentions(&library, "ana-api"))?;
     check(expect_stdout_mentions(&library, "bruno-api"))?;
 
-    bind(&tp, "ana-api")?;
-    let ana = viv(&tp, &["config", "eval", "--json"])?;
+    let ana = viv_with_env(
+        &tp,
+        &["config", "eval", "--json"],
+        &[("VIVARIUM_MANIFEST", "ana-api")],
+    )?;
     check(expect_code(&ana, 0))?;
     check(expect_json_keys(
         &ana,
@@ -678,7 +671,11 @@ fn workflow_03() -> Result<(), Failed> {
     // evaluation — which is what keeps that piece portable between the two of them.
     check(expect_stdout_mentions(&ana, "${HOME}"))?;
 
-    let sources = viv(&tp, &["config", "sources", "--json"])?;
+    let sources = viv_with_env(
+        &tp,
+        &["config", "sources", "--json"],
+        &[("VIVARIUM_MANIFEST", "ana-api")],
+    )?;
     check(expect_code(&sources, 0))?;
     check(expect_json_keys(
         &sources,
@@ -697,10 +694,13 @@ fn workflow_03() -> Result<(), Failed> {
     check(expect_stdout_mentions(&sources, "ana-decides"))?;
     check(expect_stdout_mentions(&sources, "team-proposed"))?;
 
-    // Rebinding to the other person's manifest changes the result without any edit to
-    // the shared artifact.
-    bind(&tp, "bruno-api")?;
-    let bruno = viv(&tp, &["config", "eval", "--json"])?;
+    // Selecting the other person's manifest for this invocation changes the result without any
+    // edit to the shared artifact.
+    let bruno = viv_with_env(
+        &tp,
+        &["config", "eval", "--json"],
+        &[("VIVARIUM_MANIFEST", "bruno-api")],
+    )?;
     check(expect_code(&bruno, 0))?;
     check(expect_stdout_mentions(&bruno, "bruno-decides"))?;
     check(expect_stdout_lacks(&bruno, "ana-decides"))?;
@@ -732,11 +732,19 @@ fn workflow_03_literal_path(tp: &TempProject) -> Result<(), Failed> {
 }
 "#,
     )?;
-    let invalid = viv(tp, &["config", "eval", "--json"])?;
+    let invalid = viv_with_env(
+        tp,
+        &["config", "eval", "--json"],
+        &[("VIVARIUM_MANIFEST", "ana-api")],
+    )?;
     check(expect_code(&invalid, EX_DATAERR))?;
     check(expect_stderr_mentions(&invalid, "/home/ana"))?;
 
-    let still_readable = viv(tp, &["config", "sources", "--json"])?;
+    let still_readable = viv_with_env(
+        tp,
+        &["config", "sources", "--json"],
+        &[("VIVARIUM_MANIFEST", "ana-api")],
+    )?;
     check(expect_code(&still_readable, 0))?;
     // The defect must be *encoded*, not merely alluded to: `conflicts` carries a record
     // naming the class, the key, and the declaring layers (spec/01). Checking only that
@@ -768,14 +776,21 @@ fn workflow_03_tie(tp: &TempProject) -> Result<(), Failed> {
         "tie-b",
         "{ ... }: { vivarium.resources.mem_mib = 8192; }\n",
     )?;
-    bind(tp, "tie-demo")?;
 
     check(expect_code(
-        &viv(tp, &["config", "eval", "--json"])?,
+        &viv_with_env(
+            tp,
+            &["config", "eval", "--json"],
+            &[("VIVARIUM_MANIFEST", "tie-demo")],
+        )?,
         EX_DATAERR,
     ))?;
 
-    let tie = viv(tp, &["config", "sources", "--json"])?;
+    let tie = viv_with_env(
+        tp,
+        &["config", "sources", "--json"],
+        &[("VIVARIUM_MANIFEST", "tie-demo")],
+    )?;
     check(expect_code(&tie, 0))?;
     check(expect_json_array_nonempty(
         &tie,
@@ -844,10 +859,8 @@ fn workflow_04_usage() -> Result<(), Failed> {
     check(expect_code(&empty_list, 0))?;
     check(expect_json_keys(&empty_list, &["manifests"]))?;
 
-    // `config` fails closed before a binding exists; it never renders an empty record.
-    check(expect_code(&viv(&tp, &["config", "--json"])?, EX_CONFIG))?;
-    bind(&tp, "inspect-dev")?;
-    check(expect_registry_binding_visible(
+    // Explicit workspace ownership makes the manifest available without another write.
+    check(expect_derived_manifest_visible(
         &viv(&tp, &["config", "--json"])?,
         "inspect-dev",
     ))
@@ -863,7 +876,6 @@ fn workflow_04_eval() -> Result<(), Failed> {
         "\n[resources]\nmem_mib = 2048\nvcpu = 2\n",
     )?;
     write_piece(&tp, "inspect", "{ ... }: { }\n")?;
-    bind(&tp, "inspect-dev")?;
 
     let evaluated = viv(&tp, &["config", "eval", "--json"])?;
     check(expect_code(&evaluated, 0))?;
@@ -887,9 +899,12 @@ fn workflow_04_eval() -> Result<(), Failed> {
         "\n[[volumes]]\nname = \"cache\"\nmount = \"/two\"\n"
     );
     arrange_manifest(&tp, "conflict", "", conflict_tail)?;
-    bind(&tp, "conflict")?;
     check(expect_code(
-        &viv(&tp, &["config", "eval", "--json"])?,
+        &viv_with_env(
+            &tp,
+            &["config", "eval", "--json"],
+            &[("VIVARIUM_MANIFEST", "conflict")],
+        )?,
         EX_DATAERR,
     ))
 }
@@ -1070,7 +1085,6 @@ fn arrange_egress_fixture() -> Result<TempProject, Failed> {
             support::egress::GHOST_NAME
         ),
     )?;
-    bind(&tp, "restricted")?;
     Ok(tp)
 }
 
@@ -1098,7 +1112,6 @@ fn workflow_06_usage() -> Result<(), Failed> {
 fn workflow_06_propagation() -> Result<(), Failed> {
     let tp = TempProject::new().map_err(io_failed)?;
     arrange_manifest(&tp, "agent-command", "", "")?;
-    bind(&tp, "agent-command")?;
     // No `viv start` first, on purpose: spec/12's ensure-running says a command that needs a VM
     // brings one up. This very invocation is the cold start, and it is also the first half of the
     // reuse assertion: the guest's own boot id, which the kernel mints once per boot, is read here
@@ -1251,7 +1264,6 @@ fn spawn_viv(tp: &TempProject, args: &[&str]) -> Result<std::process::Child, Fai
 fn workflow_06_shell() -> Result<(), Failed> {
     let tp = TempProject::with_project_name("shell-project").map_err(io_failed)?;
     arrange_manifest(&tp, "interactive", "", "")?;
-    bind(&tp, "interactive")?;
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
 
     let (mut pty, pts) = pty_process::blocking::open().map_err(|error| pty_failed(&error))?;
@@ -1448,6 +1460,7 @@ const SHELL_QUIET: Duration = Duration::from_millis(750);
 // Gate-safe on purpose: the report's exit code reflects this host's health, which the Cli gate
 // does not constrain, so the trial asserts the published shapes — the enumerated catalog, the
 // envelope, the skip reasons, the stderr note, bracketed word markers — and never the health.
+#[allow(clippy::too_many_lines)]
 fn workflow_16_doctor() -> Result<(), Failed> {
     let tp = TempProject::with_project_name("doctor-project").map_err(io_failed)?;
 
@@ -1484,13 +1497,106 @@ fn workflow_16_doctor() -> Result<(), Failed> {
     ))?;
     check(expect_stdout_mentions(&report, "no-manifest-bound"))?;
     check(expect_stdout_mentions(&report, "offline-mode"))?;
-    check(expect_stderr_mentions(&report, "no manifest bound"))?;
+    check(expect_stderr_mentions(
+        &report,
+        "no manifest declares this workspace",
+    ))?;
+
+    // Retained state whose manifest has gone is surfaced by name and path, never reaped.
+    let orphan_state_key = tp.state().join("vivarium/projects/removed-manifest");
+    let orphan_data_key = tp.data().join("vivarium/projects/removed-manifest");
+    let orphan_state = orphan_state_key.join("default");
+    let orphan_data = orphan_data_key.join("default");
+    fs::create_dir_all(&orphan_state).map_err(io_failed)?;
+    fs::create_dir_all(&orphan_data).map_err(io_failed)?;
+    let orphaned = viv(&tp, &["doctor", "--json"])?;
+    check(expect_stdout_mentions(&orphaned, "state-manifest-orphans"))?;
+    check(expect_stdout_mentions(&orphaned, "removed-manifest"))?;
+    check(expect_stdout_mentions(
+        &orphaned,
+        &orphan_state_key.display().to_string(),
+    ))?;
+    check(expect_stdout_mentions(
+        &orphaned,
+        &orphan_data_key.display().to_string(),
+    ))?;
+    if !orphan_state.is_dir() || !orphan_data.is_dir() {
+        return fail("viv doctor deleted retained state while reporting it");
+    }
 
     // The human report wears bracketed word markers — never glyphs — and closes with the summary
     // line naming the exit (spec/13).
     let human = viv(&tp, &["doctor"])?;
     check(expect_stdout_mentions(&human, "[skipped]"))?;
     check(expect_stdout_mentions(&human, "-> exit "))?;
+
+    // ADR-0109's finding is shared with refusing verbs, but doctor remains a report: it names the
+    // selected manifest, cwd, and exact declaration without turning the condition into exit 78.
+    let elsewhere = tp.root().join("declared-elsewhere");
+    fs::create_dir_all(&elsewhere).map_err(io_failed)?;
+    arrange_manifest(
+        &tp,
+        "doctor-ownership",
+        &format!("\n[[workspaces]]\nsource = '{}'\n", elsewhere.display()),
+        "",
+    )?;
+    let manifest_path = tp
+        .config()
+        .join("vivarium")
+        .join("manifests")
+        .join("doctor-ownership.toml");
+    let before = fs::read(&manifest_path).map_err(io_failed)?;
+    let refused = viv(&tp, &["config", "--manifest", "doctor-ownership", "--json"])?;
+    check(expect_code(&refused, EX_CONFIG))?;
+    check(expect_stderr_mentions(
+        &refused,
+        "manifest.workspace-undeclared-directory",
+    ))?;
+    check(expect_stderr_mentions(
+        &refused,
+        manifest_path.to_str().unwrap_or(""),
+    ))?;
+    check(expect_stderr_mentions(
+        &refused,
+        tp.project().to_str().unwrap_or(""),
+    ))?;
+    check(expect_stderr_mentions(&refused, "[[workspaces]]"))?;
+    if fs::read(&manifest_path).map_err(io_failed)? != before {
+        return fail("the undeclared-workspace refusal modified the selected manifest");
+    }
+    let ownership = viv_with_env(
+        &tp,
+        &["doctor", "--json"],
+        &[("VIVARIUM_MANIFEST", "doctor-ownership")],
+    )?;
+    if ownership.status.code() == Some(EX_CONFIG) {
+        return fail("doctor refused ADR-0109's ownership finding instead of reporting it");
+    }
+    check(expect_stdout_mentions(
+        &ownership,
+        "working-directory-declared",
+    ))?;
+    check(expect_stdout_mentions(&ownership, "doctor-ownership.toml"))?;
+    check(expect_stdout_mentions(
+        &ownership,
+        tp.project().to_str().unwrap_or(""),
+    ))?;
+    check(expect_stdout_mentions(&ownership, "[[workspaces]]"))?;
+
+    arrange_manifest(
+        &tp,
+        "doctor-second-owner",
+        &format!("\n[[workspaces]]\nsource = '{}'\n", elsewhere.display()),
+        "",
+    )?;
+    let ambiguous = viv_at(&tp, &elsewhere, &["config", "--json"])?;
+    check(expect_code(&ambiguous, EX_CONFIG))?;
+    check(expect_stderr_mentions(
+        &ambiguous,
+        "state.workspace-owner-ambiguous",
+    ))?;
+    check(expect_stderr_mentions(&ambiguous, "doctor-ownership"))?;
+    check(expect_stderr_mentions(&ambiguous, "doctor-second-owner"))?;
     Ok(())
 }
 
@@ -1498,11 +1604,7 @@ fn workflow_16_doctor() -> Result<(), Failed> {
 fn workflow_07_usage() -> Result<(), Failed> {
     let tp = TempProject::with_project_name("volume-project").map_err(io_failed)?;
     arrange_manifest(&tp, "volumes", "", VOLUME_TAIL)?;
-    check(expect_code(
-        &viv(&tp, &["volume", "list", "--json"])?,
-        EX_CONFIG,
-    ))?;
-    bind(&tp, "volumes")?;
+    check(expect_code(&viv(&tp, &["volume", "list", "--json"])?, 0))?;
     // `--force` conflicts with a nonzero `--timeout`; `--force --timeout 0` is fine.
     check(expect_code(
         &viv(&tp, &["stop", "--force", "--timeout", "5"])?,
@@ -1514,7 +1616,6 @@ fn workflow_07_usage() -> Result<(), Failed> {
 fn workflow_07_warmth() -> Result<(), Failed> {
     let tp = TempProject::with_project_name("volume-project").map_err(io_failed)?;
     arrange_manifest(&tp, "volumes", "", VOLUME_TAIL)?;
-    bind(&tp, "volumes")?;
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
     let volumes = viv(&tp, &["volume", "list", "--json"])?;
     check(expect_code(&volumes, 0))?;
@@ -1532,8 +1633,8 @@ fn workflow_07_warmth() -> Result<(), Failed> {
     ))?;
     check(expect_stdout_mentions(&volumes, "default"))?;
     check(expect_stdout_mentions(&volumes, "cache"))?;
-    check(expect_volume_image(&tp, "default"))?;
-    check(expect_volume_image(&tp, "cache"))?;
+    check(expect_volume_image(&tp, "volumes", "default"))?;
+    check(expect_volume_image(&tp, "volumes", "cache"))?;
 
     check(expect_code(&viv(&tp, &["stop"])?, 0))?;
     check(expect_code(&viv(&tp, &["stop"])?, 0))?;
@@ -1574,7 +1675,6 @@ const SHUTDOWN_BUDGET: Duration = Duration::from_secs(45);
 fn workflow_07_shutdown_bounded() -> Result<(), Failed> {
     let tp = TempProject::with_project_name("volume-project").map_err(io_failed)?;
     arrange_manifest(&tp, "volumes", "", VOLUME_TAIL)?;
-    bind(&tp, "volumes")?;
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
 
     let started = Instant::now();
@@ -1599,23 +1699,21 @@ const VOLUME_TAIL: &str = "\n[[volumes]]\nname = \"cache\"\nmount = \"/var/cache
 
 // Guide: docs/guides/destroy-cold-rebuild.md
 fn workflow_08_usage() -> Result<(), Failed> {
-    // The manifest name is deliberately unlike the project name: a binding assertion
-    // that matched the project id would pass on the state path alone.
+    // The manifest name is deliberately unlike the project name so the state key is observable.
     let tp = TempProject::with_project_name("destroy-project").map_err(io_failed)?;
     arrange_manifest(&tp, "teardown-demo", "", "")?;
-    bind(&tp, "teardown-demo")?;
-    check(expect_registry_binding_visible(
+    check(expect_derived_manifest_visible(
         &viv(&tp, &["config", "--json"])?,
         "teardown-demo",
     ))?;
     check(expect_code(&viv(&tp, &["destroy"])?, EX_USAGE))?;
 
-    // `gc` is a global whole-store sweep: it never requires a bound manifest, so it
-    // cannot answer `78` even from an unbound directory.
+    // `gc` is a global whole-store sweep: it never requires a selected manifest, so it
+    // cannot answer `78` even from an undeclared directory.
     let global = TempProject::new().map_err(io_failed)?;
     let gc = viv(&global, &["gc"])?;
     if gc.status.code() == Some(EX_CONFIG) {
-        return fail("viv gc incorrectly required a bound manifest");
+        return fail("viv gc incorrectly required a selected manifest");
     }
     Ok(())
 }
@@ -1624,7 +1722,6 @@ fn workflow_08_usage() -> Result<(), Failed> {
 fn workflow_08_rebuild() -> Result<(), Failed> {
     let tp = TempProject::with_project_name("destroy-project").map_err(io_failed)?;
     arrange_manifest(&tp, "teardown-demo", "", "")?;
-    bind(&tp, "teardown-demo")?;
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
     check(expect_code(
         &viv(
@@ -1634,9 +1731,8 @@ fn workflow_08_rebuild() -> Result<(), Failed> {
         0,
     ))?;
     check(expect_code(&viv(&tp, &["destroy", "--yes"])?, 0))?;
-    // The authoritative model: the marker is removed, the binding survives.
-    check(expect_marker_absent(tp.project()))?;
-    check(expect_registry_binding_visible(
+    // The derived owner survives teardown; no workspace-local identity artifact exists.
+    check(expect_derived_manifest_visible(
         &viv(&tp, &["config", "--json"])?,
         "teardown-demo",
     ))?;
@@ -1644,10 +1740,6 @@ fn workflow_08_rebuild() -> Result<(), Failed> {
 
     // Variant A — cold: the next start is a clean first run.
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
-    check(expect_marker_id(
-        tp.project(),
-        &format!("destroy-project-{}", tp.token()),
-    ))?;
     check(expect_code(
         &viv(&tp, &["exec", "--", "sh", "-lc", "test ! -e \"$HOME/old\""])?,
         0,
@@ -1661,7 +1753,7 @@ fn workflow_08_rebuild() -> Result<(), Failed> {
         )?,
         0,
     ))?;
-    let default_image = volume_image(&tp, "default");
+    let default_image = volume_image(&tp, "teardown-demo", "default");
     check(expect_code(
         &viv(&tp, &["destroy", "--keep-volumes", "--yes"])?,
         0,
@@ -1693,7 +1785,6 @@ fn workflow_15_contract_skew() -> Result<(), Failed> {
     let theirs = ours - 1;
     let tp = TempProject::with_project_name("skew-project").map_err(io_failed)?;
     arrange_manifest(&tp, "skew-demo", "", "")?;
-    bind(&tp, "skew-demo")?;
 
     // A stand-in for an old generation: a tree that publishes an older contract number at the
     // stable path. `last-build` is a store path as text, and `--no-rebuild` trusts it.
@@ -1708,7 +1799,7 @@ fn workflow_15_contract_skew() -> Result<(), Failed> {
         .data()
         .join("vivarium")
         .join("projects")
-        .join(tp.project_id())
+        .join("skew-demo")
         .join("default")
         .join("last-build");
     std::fs::create_dir_all(record.parent().unwrap_or(&build)).map_err(io_failed)?;
@@ -1748,7 +1839,6 @@ fn workflow_15_contract_skew_live() -> Result<(), Failed> {
     let foreign = ours + 1;
     let tp = TempProject::with_project_name("skew-live").map_err(io_failed)?;
     arrange_manifest(&tp, "skew-live", "", "")?;
-    bind(&tp, "skew-live")?;
 
     // A real build and boot of the current shape, then a clean stop so the refusal below is
     // about the selected build rather than about a running VM.
@@ -1759,7 +1849,7 @@ fn workflow_15_contract_skew_live() -> Result<(), Failed> {
         .data()
         .join("vivarium")
         .join("projects")
-        .join(tp.project_id())
+        .join("skew-live")
         .join("default")
         .join("last-build");
     let built = std::fs::read_to_string(&record).map_err(io_failed)?;
@@ -1824,7 +1914,6 @@ fn workflow_15_contract_skew_live() -> Result<(), Failed> {
 fn workflow_09_round_trip() -> Result<(), Failed> {
     let tp = TempProject::with_project_name("workspace-project").map_err(io_failed)?;
     arrange_manifest(&tp, "workspace-demo", "", "")?;
-    bind(&tp, "workspace-demo")?;
 
     // Written before the VM exists, so the guest cannot have observed the host's write through
     // some later synchronisation: the file is part of the tree at the moment the share is served.
@@ -1940,7 +2029,6 @@ fn workflow_17_eval() -> Result<(), Failed> {
         "\n[[mounts]]\nsource = \"/tmp/wf17-shared-tools\"\ntarget = \"/workspaces/tools\"\n",
         "",
     )?;
-    bind(&tp, "mounts-eval")?;
     let session = viv(&tp, &["config", "eval", "--json"])?;
     check(expect_code(&session, EX_DATAERR))?;
     check(expect_stderr_mentions(&session, "session-path"))?;
@@ -2017,6 +2105,7 @@ fn workflow_17_eval() -> Result<(), Failed> {
 /// Slice 019's launch tier: a declared source that is unset, missing, not a regular file or
 /// directory, or a session directory only expansion reveals refuses `viv start` with `78`
 /// before any boot, each under its own diagnostic id, and leaves no VM behind.
+#[allow(clippy::too_many_lines)]
 fn workflow_17_refusals() -> Result<(), Failed> {
     let tp = TempProject::with_project_name("mounts-refusals").map_err(io_failed)?;
     bind_after_arrange(
@@ -2094,7 +2183,78 @@ fn workflow_17_refusals() -> Result<(), Failed> {
         &hidden,
         "mount-source-session-directory",
     ))?;
-    check(expect_resting(&tp))
+    check(expect_resting(&tp))?;
+
+    // ADR-0100 generalized by ADR-0108: equality, containment, and descent against the
+    // guest-owned set are three distinct shapes. Each declaration includes the invocation so the
+    // refusal measured here is mirroring, not ADR-0109's earlier ownership precondition.
+    for (source, cwd) in [
+        ("/tmp", Path::new("/tmp")),
+        ("/", tp.project()),
+        ("/run/user/1000", Path::new("/run/user/1000")),
+    ] {
+        arrange_manifest(
+            &tp,
+            "mounts-refusals",
+            &format!("\n[[workspaces]]\nsource = '{source}'\n"),
+            "",
+        )?;
+        let refused = viv_at(&tp, cwd, &["start"])?;
+        check(expect_code(&refused, EX_CONFIG))?;
+        check(expect_stderr_mentions(
+            &refused,
+            "workspace-path-unmirrorable",
+        ))?;
+        check(expect_stderr_mentions(&refused, source))?;
+        let resting = viv_at(&tp, cwd, &["status", "--json"])?;
+        check(expect_code(&resting, 0))?;
+        check(expect_json_string(&resting, "state", "built"))?;
+    }
+
+    // Different variable spellings conceal the nesting from the decidable textual tier. Launch
+    // expansion must still refuse the complete pair before boot and name both resolved paths.
+    let parent = tp.home().join("wf20-overlap");
+    let child = parent.join("child");
+    fs::create_dir_all(&child).map_err(io_failed)?;
+    arrange_manifest(
+        &tp,
+        "mounts-refusals",
+        concat!(
+            "\n[[workspaces]]\nsource = '${VIVARIUM_WF20_PARENT}'\n",
+            "\n[[workspaces]]\nsource = '${VIVARIUM_WF20_CHILD}'\n"
+        ),
+        "",
+    )?;
+    let parent_value = parent.to_string_lossy().into_owned();
+    let child_value = child.to_string_lossy().into_owned();
+    let overlap = support::run_viv_with_env(
+        gate().viv(),
+        &tp,
+        &child,
+        &["start"],
+        &[
+            ("VIVARIUM_WF20_PARENT", &parent_value),
+            ("VIVARIUM_WF20_CHILD", &child_value),
+        ],
+    )
+    .map_err(io_failed)?;
+    check(expect_code(&overlap, EX_CONFIG))?;
+    check(expect_stderr_mentions(&overlap, "workspace-paths-overlap"))?;
+    check(expect_stderr_mentions(&overlap, &parent_value))?;
+    check(expect_stderr_mentions(&overlap, &child_value))?;
+    let resting = support::run_viv_with_env(
+        gate().viv(),
+        &tp,
+        &child,
+        &["status", "--json"],
+        &[
+            ("VIVARIUM_WF20_PARENT", &parent_value),
+            ("VIVARIUM_WF20_CHILD", &child_value),
+        ],
+    )
+    .map_err(io_failed)?;
+    check(expect_code(&resting, 0))?;
+    check(expect_json_string(&resting, "state", "built"))
 }
 
 /// Slice 019's acceptance heart: a piece-declared directory mount with a portable source is
@@ -2133,7 +2293,6 @@ fn workflow_17_round_trip() -> Result<(), Failed> {
         ),
         "",
     )?;
-    bind(&tp, "mounts-demo")?;
 
     // Written before the VM exists, like the workspace round trip: the files are part of the
     // trees at the moment the shares are served.
@@ -2288,15 +2447,6 @@ fn workflow_17_worktree() -> Result<(), Failed> {
         ),
         "",
     )?;
-    check(expect_code(
-        &viv_at(
-            &tp,
-            &worktree,
-            &["init", "--manifest", "wf17-worktree", "--write", "--yes"],
-        )?,
-        0,
-    ))?;
-
     // From inside the guest: resolve the worktree's own `.git` pointer and read HEAD through
     // it. No git in the guest image, and none needed — reachability of the named git directory
     // is exactly what Q-016 asks for. The worktree path is an argument rather than shell
@@ -2320,6 +2470,135 @@ fn workflow_17_worktree() -> Result<(), Failed> {
     check(expect_code(&reach, 0))?;
     check(expect_stdout_mentions(&reach, "ref:"))?;
     check(expect_code(&viv_at(&tp, &worktree, &["stop"])?, 0))
+}
+
+/// Slice 020's acceptance heart: two equal workspace declarations share one VM, round-trip
+/// independently, and map each invocation's exact directory into the guest session.
+///
+/// Neither declaration is privileged. The second `start` exercises the reuse predicate phase 2
+/// repaired against the complete recorded workspace set.
+fn workflow_20_many_workspaces() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("wf20-anchor").map_err(io_failed)?;
+    let first = tp.root().join("owned-first");
+    let second = tp.root().join("owned-second");
+    let second_subdir = second.join("nested");
+    fs::create_dir_all(&first).map_err(io_failed)?;
+    fs::create_dir_all(&second_subdir).map_err(io_failed)?;
+    arrange_manifest(
+        &tp,
+        "anchor-outside",
+        &format!(
+            "\n[[workspaces]]\nsource = '{}'\n\n[[workspaces]]\nsource = '{}'\n",
+            first.to_string_lossy(),
+            second.to_string_lossy()
+        ),
+        "",
+    )?;
+    write_file(&first.join("from-host.txt"), "first host\n").map_err(io_failed)?;
+    write_file(&second.join("from-host.txt"), "second host\n").map_err(io_failed)?;
+
+    check(expect_code(&viv_at(&tp, &first, &["start"])?, 0))?;
+    // The second call reaches `reusable()` from the other tree and must be N15's no-op against
+    // the same boot, without another preflight, evaluation, build, or VM.
+    check(expect_code(&viv_at(&tp, &second, &["start"])?, 0))?;
+    let status = viv_at(&tp, &second, &["status", "--json"])?;
+    check(expect_code(&status, 0))?;
+    check(expect_json_string(&status, "state", "running"))?;
+
+    for (tree, marker) in [(&first, "first"), (&second, "second")] {
+        let tree_arg = tree.to_string_lossy().into_owned();
+        let pwd = viv_at(&tp, tree, &["exec", "--", "sh", "-lc", "pwd"])?;
+        check(expect_code(&pwd, 0))?;
+        if String::from_utf8_lossy(&pwd.stdout).trim() != tree_arg {
+            return fail(format!(
+                "a session invoked from {} started at `{}`",
+                tree.display(),
+                String::from_utf8_lossy(&pwd.stdout).trim()
+            ));
+        }
+        let read = viv_at(
+            &tp,
+            tree,
+            &[
+                "exec",
+                "--",
+                "sh",
+                "-lc",
+                "cat \"$1\"/from-host.txt",
+                "sh",
+                &tree_arg,
+            ],
+        )?;
+        check(expect_code(&read, 0))?;
+        check(expect_stdout_mentions(&read, &format!("{marker} host")))?;
+        check(expect_code(
+            &viv_at(
+                &tp,
+                tree,
+                &[
+                    "exec",
+                    "--",
+                    "sh",
+                    "-lc",
+                    "printf '%s guest\\n' \"$2\" > \"$1\"/from-guest.txt",
+                    "sh",
+                    &tree_arg,
+                    marker,
+                ],
+            )?,
+            0,
+        ))?;
+        let landed = fs::read_to_string(tree.join("from-guest.txt")).map_err(io_failed)?;
+        if landed.trim() != format!("{marker} guest") {
+            return fail(format!(
+                "the guest write in {} landed as `{}`",
+                tree.display(),
+                landed.trim()
+            ));
+        }
+        shell_pwd_at(&tp, tree, tree)?;
+    }
+
+    let nested_pwd = viv_at(&tp, &second_subdir, &["exec", "--", "sh", "-lc", "pwd"])?;
+    check(expect_code(&nested_pwd, 0))?;
+    if String::from_utf8_lossy(&nested_pwd.stdout).trim() != second_subdir.to_string_lossy() {
+        return fail(format!(
+            "a subdirectory invocation started at `{}` instead of `{}`",
+            String::from_utf8_lossy(&nested_pwd.stdout).trim(),
+            second_subdir.display()
+        ));
+    }
+    check(expect_code(&viv_at(&tp, &second, &["stop"])?, 0))
+}
+
+/// Open a real interactive shell at `cwd` and prove its initial guest directory exactly.
+fn shell_pwd_at(tp: &TempProject, cwd: &Path, expected: &Path) -> Result<(), Failed> {
+    use std::io::Write as _;
+
+    let (mut pty, pts) = pty_process::blocking::open().map_err(|error| pty_failed(&error))?;
+    rustix::io::ioctl_fionbio(&pty, true).map_err(errno_failed)?;
+    pty.resize(pty_process::Size::new(40, 120))
+        .map_err(|error| pty_failed(&error))?;
+    let mut child = pty_process::blocking::Command::new(gate().viv())
+        .arg("shell")
+        .current_dir(cwd)
+        .env_clear()
+        .envs(support::viv_environment(tp))
+        .spawn(pts)
+        .map_err(|error| pty_failed(&error))?;
+    settle(&mut pty)?;
+    let observed = ask(&mut pty, "pwd")?;
+    let expected = expected.to_string_lossy();
+    if !observed.lines().any(|line| line.trim() == expected) {
+        let _ = child.kill();
+        return fail(format!(
+            "interactive shell from {expected} did not report that cwd: {observed:?}"
+        ));
+    }
+    write!(pty, "exit\r").map_err(io_failed)?;
+    pty.flush().map_err(io_failed)?;
+    child.wait().map_err(io_failed)?;
+    Ok(())
 }
 
 /// A declared file mount reaches the guest, and nothing beside it does (ADR-0105, spec/06).
@@ -2350,7 +2629,6 @@ fn workflow_22_file_mount_confinement() -> Result<(), Failed> {
         ),
         "",
     )?;
-    bind(&tp, "wf22-demo")?;
 
     let secrets = tp.home().join("wf22-secrets");
     write_file(&secrets.join("wf22 identity.toml"), "id = \"wf22-value\"\n").map_err(io_failed)?;
@@ -2509,10 +2787,9 @@ fn daemon_pid_serving(socket: &Path) -> Option<u32> {
     None
 }
 
-/// Rewrites the one manifest this trial binds and rebinds it, one defective declaration a leg.
+/// Rewrites the one manifest this trial derives, one defective declaration a leg.
 fn bind_after_arrange(tp: &TempProject, mounts: &str) -> Result<(), Failed> {
-    arrange_manifest(tp, "mounts-refusals", mounts, "")?;
-    bind(tp, "mounts-refusals")
+    arrange_manifest(tp, "mounts-refusals", mounts, "")
 }
 
 /// The resting assertion every refusal leg shares: the refusal left a build and no VM.
@@ -2606,13 +2883,6 @@ fn write_piece(tp: &TempProject, name: &str, contents: &str) -> Result<(), Faile
         contents,
     )
     .map_err(io_failed)
-}
-
-fn bind(tp: &TempProject, manifest: &str) -> Result<(), Failed> {
-    check(expect_code(
-        &viv(tp, &["init", "--manifest", manifest, "--write", "--yes"])?,
-        0,
-    ))
 }
 
 fn viv(tp: &TempProject, args: &[&str]) -> Result<VivOutput, Failed> {

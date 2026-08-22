@@ -318,7 +318,7 @@ async fn guest_agent_and_credential_relay(runner: &Path) {
     let root = std::env::temp_dir().join(format!("vivarium-agent-host-{nonce}"));
     // The runtime half does not, and the reason is a hard limit rather than tidiness. A Unix
     // socket path cannot exceed 108 bytes, and this directory is where the launcher binds
-    // `workspace.sock`, `store.sock`, `api.sock` and `ready.sock`. Under a drive-backed
+    // `ws0.sock`, `store.sock`, `api.sock` and `ready.sock`. Under a drive-backed
     // `TMPDIR` the longest of them measured 109 — one byte over — and the whole lane failed as
     // `child startup child exited unexpectedly with status Some(1)`, two seconds in, saying
     // nothing about a path length. `TempProject` in `tests/support/mod.rs` learned this in
@@ -374,9 +374,10 @@ async fn guest_agent_and_credential_relay(runner: &Path) {
     stop_unit().await;
 
     let boot_started = Instant::now();
-    let status = Command::new(runner)
+    let rendered = Command::new(runner)
         .args([
             "--workspace",
+            "ws0",
             std::env::current_dir().unwrap().to_str().unwrap(),
             "--runtime-dir",
             runtime.to_str().unwrap(),
@@ -385,6 +386,8 @@ async fn guest_agent_and_credential_relay(runner: &Path) {
             // not have.
             "--volume-dir",
             root.to_str().unwrap(),
+            "--supervisor",
+            env!("CARGO_BIN_EXE_vivarium-supervisor"),
             "--uid",
             "1000",
             "--gid",
@@ -393,7 +396,7 @@ async fn guest_agent_and_credential_relay(runner: &Path) {
             "2048",
             "--vcpu",
             "2",
-            "--project-id",
+            "--sandbox-id",
             "agent-check",
             "--target",
             "default",
@@ -403,10 +406,29 @@ async fn guest_agent_and_credential_relay(runner: &Path) {
         .status()
         .await
         .unwrap();
+    assert!(
+        rendered.success(),
+        "runner could not render the launch specification; diagnostics retained at {}",
+        root.display()
+    );
+
+    // ADR-0102 split the build-owned runner from the running installation's launch handoff. The
+    // runner renders `launch.json`; the current `viv` starts the transient supervisor and waits for
+    // its readiness report. Keeping both calls here makes this lane exercise the same boundary as
+    // lifecycle rather than treating a successfully rendered file as a booted guest.
+    let launched = Command::new(env!("CARGO_BIN_EXE_viv"))
+        .args([
+            "start",
+            "--spec",
+            runtime.join("launch.json").to_str().unwrap(),
+        ])
+        .status()
+        .await
+        .unwrap();
     let boot_elapsed = boot_started.elapsed();
     assert!(
-        status.success(),
-        "runner failed; diagnostics retained at {}",
+        launched.success(),
+        "launch handoff failed; diagnostics retained at {}",
         root.display()
     );
 

@@ -65,14 +65,14 @@ Marked `built` where [`implementation-status.md`](../implementation-status.md) s
 
 ### Lifecycle and operation
 
-- `built` — `viv init`, `viv start`, `viv stop`, `viv destroy`, `viv status`
+- `built` — `viv start`, `viv stop`, `viv destroy`, `viv status`, `viv config`
 - `built` — `viv exec` and `viv shell` against a running VM, over a private guest agent
 - `built` — an interactive PTY sized before it starts, job control, resize forwarding
-- `built` — project identity anchored by a marker, surviving a rename
+- `built` — a sandbox keyed by its manifest name, shared by every workspace that manifest declares
 - `built` — `viv volume list` and `viv volume prune`
 - `built` — `viv doctor`, 31 probes, `--json`, `--strict`, `--list`, `--online`
 - `built` — declared resources as ceilings, auto-sized from the host when undeclared
-- `spec` — `viv unbind`, `viv images list`, `viv update`, `viv trim`
+- `spec` — `viv images list`, `viv update`, `viv trim`
 - `spec` — `viv generations list` / `activate` / `rollback` / `prune`
 - `spec` — `viv start --generation <n>`, `--no-rebuild`, `--attach`
 - `spec` — `viv volume rm`, `viv volume trim`

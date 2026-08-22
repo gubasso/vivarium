@@ -235,11 +235,11 @@ pub static CATALOG: &[Probe] = &[
         code: None,
     },
     Probe {
-        id: "state-files-parse",
+        id: "state-manifest-orphans",
         category: Category::Config,
         scope: Scope::Host,
         severity: Severity::Soft,
-        title: "the project registry and the identity index read and parse",
+        title: "retained sandbox state still has a manifest",
         code: None,
     },
     Probe {
@@ -289,6 +289,14 @@ pub static CATALOG: &[Probe] = &[
         scope: Scope::Project,
         severity: Severity::Soft,
         title: "the binding resolves to exactly one defined manifest",
+        code: None,
+    },
+    Probe {
+        id: "working-directory-declared",
+        category: Category::Config,
+        scope: Scope::Project,
+        severity: Severity::Soft,
+        title: "the working directory is declared as a workspace",
         code: None,
     },
     Probe {
@@ -438,6 +446,8 @@ pub struct ProjectInputs {
     pub artifact: Result<ResolvedArtifact, String>,
     /// The parsed manifest, or why parsing refused.
     pub parsed: Result<Manifest, String>,
+    /// ADR-0109's one ownership finding, retained here so doctor reports instead of refusing.
+    pub workspace_refusal: Option<(String, String)>,
     /// The per-target lock in force, when one exists.
     pub lock_path: Option<PathBuf>,
 }

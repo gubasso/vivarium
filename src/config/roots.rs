@@ -8,6 +8,22 @@ use super::ResolutionError;
 /// An injected source of environment variables used during path resolution.
 pub trait Environment {
     fn variable(&self, name: &'static str) -> Option<OsString>;
+
+    /// A manifest-authored variable name, discovered at runtime rather than known by the caller.
+    /// Implementations backed by a real environment or a map can answer it; the closure adapter
+    /// intentionally keeps its older static-name contract for the many narrow test seams.
+    fn dynamic_variable(&self, name: &str) -> Option<OsString> {
+        match name {
+            "HOME" => self.variable("HOME"),
+            "XDG_CONFIG_HOME" => self.variable("XDG_CONFIG_HOME"),
+            "XDG_DATA_HOME" => self.variable("XDG_DATA_HOME"),
+            "XDG_STATE_HOME" => self.variable("XDG_STATE_HOME"),
+            "XDG_CACHE_HOME" => self.variable("XDG_CACHE_HOME"),
+            "XDG_RUNTIME_DIR" => self.variable("XDG_RUNTIME_DIR"),
+            "VIVARIUM_MANIFEST" => self.variable("VIVARIUM_MANIFEST"),
+            _ => None,
+        }
+    }
 }
 
 impl<F> Environment for F

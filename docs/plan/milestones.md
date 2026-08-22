@@ -4,12 +4,9 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
-- 020 many-workspaces-in-one-sandbox — active — 3 sessions — needs 019 (done) and 022 (done)
-
 ## later
 
-- 021 the-manifest-is-the-sandbox — later — 4 sessions — needs 020
-- 025 the-fleet-is-visible — later — 3 sessions — needs 021 (the rekey every row carries)
+- 025 the-fleet-is-visible — later — 3 sessions — needs 021 (done; the rekey every row carries)
 - 026 a-start-checks-the-room — later — 3 sessions — needs 025 (the fleet term admission reads)
 - 027 the-stop-ladder-is-whole — later — 3 sessions — needs 025 (the reader the sweep enumerates through)
 - 028 memory-comes-back-without-a-stop — later — 4 sessions — needs 025 (the readings its record joins)
@@ -23,6 +20,10 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 024 installing-vivarium-takes-one-command — later — 5 sessions
 
 ## closed
+
+- 021 the-manifest-is-the-sandbox — done — 4 sessions — phases 4 through 7 ran as one merged pass under the appetite, remainder included; the host evidence, gate timings, and deviations are in the slice `Revisions`
+
+- 020 many-workspaces-in-one-sandbox — done — 3 sessions — one merged pass under the appetite, remainder included; the host evidence, fixture repair, and timings are in the slice `Revisions`
 
 - 001 close-host-measurement-gaps — done — 3 sessions
 - 002 secure-launch-and-supervision — done — 4 sessions

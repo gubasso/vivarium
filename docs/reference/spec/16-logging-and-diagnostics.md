@@ -128,16 +128,16 @@ A cheap textual lint, `manifest-no-inline-secret`, warns when a manifest `[env]`
 
 The guest's serial console is a fourth channel, and deliberately not a fourth face: it is not a copy of stderr, not a structured record stream, and not tuned by `-v`/`-q` or any `--log-*` flag. It exists because when a guest never reaches the agent, the console is the only evidence a boot failure leaves. Decided in [`../../decisions/ADR-0070-guest-console-capture-and-rotation.md`](../../decisions/ADR-0070-guest-console-capture-and-rotation.md).
 
-| Property    | Contract                                                                                                         |
-| ----------- | ---------------------------------------------------------------------------------------------------------------- |
-| Default     | captured, whenever a VM is running                                                                               |
-| Destination | `$XDG_RUNTIME_DIR/vivarium/<project-id>/<target>/console.log` ([`12-exec-and-shell.md`](./12-exec-and-shell.md)) |
-| Class       | runtime, not state — session-scoped, torn down with the runtime root, never swept and never part of history      |
-| Content     | raw guest bytes, appended byte for byte. No timestamps, no level, no key/value framing, no ANSI interpretation   |
-| Bound       | rotates by size with a small file count, per target                                                              |
-| Permissions | `0600`, inside the `0700` runtime root                                                                           |
-| Control     | one switch, `--no-console-log` / `VIV_NO_CONSOLE_LOG`                                                            |
-| Redaction   | none, and none claimed                                                                                           |
+| Property    | Contract                                                                                                       |
+| ----------- | -------------------------------------------------------------------------------------------------------------- |
+| Default     | captured, whenever a VM is running                                                                             |
+| Destination | `$XDG_RUNTIME_DIR/vivarium/<manifest>/<target>/console.log` ([`12-exec-and-shell.md`](./12-exec-and-shell.md)) |
+| Class       | runtime, not state — session-scoped, torn down with the runtime root, never swept and never part of history    |
+| Content     | raw guest bytes, appended byte for byte. No timestamps, no level, no key/value framing, no ANSI interpretation |
+| Bound       | rotates by size with a small file count, per target                                                            |
+| Permissions | `0600`, inside the `0700` runtime root                                                                         |
+| Control     | one switch, `--no-console-log` / `VIV_NO_CONSOLE_LOG`                                                          |
+| Redaction   | none, and none claimed                                                                                         |
 
 Six consequences worth stating:
 

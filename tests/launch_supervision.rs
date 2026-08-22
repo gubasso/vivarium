@@ -45,7 +45,7 @@ fn fixture(name: &str) -> LaunchSpec {
     let child = |name: &str| root.join(name);
     LaunchSpec {
         schema_version: LAUNCH_SCHEMA_VERSION,
-        project_id: "project".into(),
+        sandbox_id: "project".into(),
         target: "target".into(),
         runtime_paths: RuntimePaths {
             root: root.clone(),

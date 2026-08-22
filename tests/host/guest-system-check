@@ -10,8 +10,8 @@
 #
 # Two tiers, and the split is cost, not topic:
 #
-#   Evaluation tier — copies the examples into an isolated config root, binds a
-#   project, and evaluates. Runs anywhere Nix is present and the inputs are
+#   Evaluation tier — copies the examples into an isolated config root, declares the
+#   fixture project as a workspace, and evaluates. Runs anywhere Nix is present and the inputs are
 #   reachable. Runs twice, because the first run resolves the flake inputs and
 #   installs the pin while the second must reuse that pin and touch the network
 #   for nothing — the two runs are the assertion, not a repetition of it.
@@ -155,6 +155,8 @@ fi
 
 mkdir -p "$ROOT/home/.config/vivarium" "$ROOT/project"
 cp -r "$EXAMPLES/images" "$EXAMPLES/pieces" "$EXAMPLES/manifests" "$ROOT/home/.config/vivarium/"
+printf "\n[[workspaces]]\nsource = '%s'\n" "$ROOT/project" >> \
+  "$ROOT/home/.config/vivarium/manifests/$MANIFEST.toml"
 
 # `env -i` for the same reason the trial harness clears the environment: an
 # ambient VIVARIUM_MANIFEST sits in the resolution order and would decide what
@@ -176,11 +178,6 @@ viv() {
     sh -c 'cd "$1" && shift && exec "$@"' _ "$ROOT/project" "$VIV" "$@"
 }
 
-if ! bind_log=$(viv init --manifest "$MANIFEST" --write --yes 2>&1); then
-  fail "bind the shipped example" "$bind_log"
-  verdict
-fi
-
 if first_log=$(viv config eval --json 2>&1); then
   pass "example evaluates: $MANIFEST"
 else
@@ -190,7 +187,7 @@ fi
 
 # The pin the first evaluation created. Its absence would mean every later
 # command re-resolves upstream, which is the unannounced input jump N3 forbids.
-pin="$ROOT/home/.local/share/vivarium/projects/project/default/flake.lock"
+pin="$ROOT/home/.local/share/vivarium/projects/$MANIFEST/default/flake.lock"
 if [[ -s $pin ]]; then
   pass "first evaluation installed the tool-owned pin"
 else

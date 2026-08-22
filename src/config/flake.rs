@@ -252,13 +252,15 @@ impl ResolvedComposition {
     #[allow(clippy::too_many_lines)]
     pub fn resolve(
         roots: &XdgRoots,
-        project_id: &str,
+        sandbox_id: &str,
         target: &str,
         selected_manifest: &ResolvedArtifact,
         manifest_source: &str,
         manifest: &Manifest,
     ) -> Result<Self, GeneratedFlakeError> {
-        validate_component(project_id, "project id")?;
+        // ADR-0107 keys every generated path on the selected manifest name. This remains a
+        // component backstop even though artifact resolution already enforces its public grammar.
+        validate_component(sandbox_id, "manifest name")?;
         validate_component(target, "target")?;
         let image = resolve_layer(&roots.config, ArtifactKind::Image, &manifest.image)?;
         let pieces = manifest
@@ -324,7 +326,7 @@ impl ResolvedComposition {
             .as_deref()
             .map(|value| resolve_extends(selected_manifest, value, manifest_source))
             .transpose()?;
-        let paths = target_paths(roots, project_id, target, selected_manifest)?;
+        let paths = target_paths(roots, sandbox_id, target, selected_manifest)?;
         let effective_lock = paths.select_lock()?;
 
         Ok(Self {
@@ -352,7 +354,7 @@ impl ResolvedComposition {
 /// with no parent directory.
 pub fn target_paths(
     roots: &XdgRoots,
-    project_id: &str,
+    sandbox_id: &str,
     target: &str,
     selected_manifest: &ResolvedArtifact,
 ) -> Result<GeneratedFlakePaths, GeneratedFlakeError> {
@@ -377,11 +379,11 @@ pub fn target_paths(
         None
     };
     Ok(GeneratedFlakePaths {
-        directory: roots.cache.join("flakes").join(project_id).join(target),
+        directory: roots.cache.join("flakes").join(sandbox_id).join(target),
         owned_lock: roots
             .data
             .join("projects")
-            .join(project_id)
+            .join(sandbox_id)
             .join(target)
             .join(LOCK_FILE),
         override_lock,

@@ -1,10 +1,9 @@
 //! The command surface: what each verb resolves, what it prints, and what it costs when it fails.
 //!
-//! The verbs that do real work here are the ones slice 011 owns: `init` binds a project, the
-//! `manifest` readers show the library as authored, `config` shows what is bound, and the two
-//! `config` readers evaluate it. The rest parse and fail closed, which is not a placeholder: an
-//! unbound project answering `78` and a malformed invocation answering `64` are contracts spec/14
-//! already fixes, and they are true before the work behind the verb exists.
+//! The manifest readers show the library as authored, `config` shows the uniquely selected
+//! manifest, and the two config readers evaluate it. Resolution derives ownership from explicit
+//! workspaces after the flag and environment overrides; malformed invocation grammar is decided
+//! before that filesystem work.
 //!
 //! Everything is a function of its inputs. The roots, the project directory, the environment, and
 //! the stream facts all arrive as parameters, so the whole surface is exercisable without a
@@ -20,11 +19,12 @@ mod render;
 pub mod session;
 mod volume;
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::{
-    self, ArtifactKind, Environment, EvaluationError, GeneratedFlakeError, ManifestError, Registry,
+    self, ArtifactKind, Environment, EvaluationError, GeneratedFlakeError, ManifestError,
     RegistryError, ResolutionError, ResolvedArtifact, XdgRoots,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticId, Locus, Namespace};
@@ -35,6 +35,7 @@ use grammar::{Deferred, Invocation, Output, UsageError};
 
 /// The only target a project has today (spec/15).
 const DEFAULT_TARGET: &str = "default";
+const MAX_SANDBOX_NAME_BYTES: usize = 48;
 
 /// Everything a command reads about the host it was invoked on, plus the face it speaks through.
 ///
@@ -129,7 +130,7 @@ impl Failure {
 }
 
 /// `viv --help`'s text, for `main` to render ahead of any context: help must answer on a host
-/// where nothing else — a missing `HOME`, an unreadable registry — does.
+/// where nothing else — a missing `HOME`, an unreadable manifest library — does.
 #[must_use]
 pub fn help_text(verb: Option<&str>, palette: &crate::ui::style::Palette) -> String {
     render::help_human(palette, verb)
@@ -145,13 +146,6 @@ pub fn run<E: Environment>(
     context: &Context<'_, E>,
 ) -> Result<Success, Failure> {
     match invocation {
-        Invocation::Init {
-            manifest,
-            write,
-            yes,
-            output,
-            ..
-        } => init(context, manifest.as_deref(), *write, *yes, *output),
         Invocation::Config { manifest, output } => {
             config_binding(context, manifest.as_deref(), *output)
         }
@@ -207,136 +201,30 @@ pub fn run<E: Environment>(
     }
 }
 
-/// The binding assistant. Read-only unless `--write`, which is the whole of ADR-0011's P2.
-fn init<E: Environment>(
-    context: &Context<'_, E>,
-    manifest_flag: Option<&str>,
-    write: bool,
-    yes: bool,
-    output: Output,
-) -> Result<Success, Failure> {
-    let registry = read_registry(context)?;
-    let resolved = config::resolve_binding(
-        manifest_flag,
-        context.environment,
-        &registry,
-        &context.project,
-    );
-    let Some(name) = manifest_flag
-        .map(ToOwned::to_owned)
-        .or_else(|| resolved.as_ref().map(|binding| binding.manifest.clone()))
-    else {
-        return Err(unbound(context));
-    };
-
-    // Resolved before anything is recorded, so `--write` cannot persist a binding to a manifest
-    // that does not exist. spec/14 gives an unknown `--manifest` the same `78` a missing binding
-    // gets, and writing first would turn that into a registry entry the next command rejects.
-    let selected = resolve_manifest(context, &name)?;
-
-    if !write {
-        let snippet = Registry::snippet(&context.project, &name);
-        if output.is_json() {
-            return Ok(Success::plain(render::init_preview_json(
-                &name,
-                &context.project,
-                &selected.path,
-            )));
-        }
-        let registry_file = config::registry_path(&context.roots.state);
-        let mut rendered = format!("manifest: {name}\npath: {}\n\n", selected.path.display());
-        let _ = write!(
-            rendered,
-            "not yet bound. add this to `{}`:\n\n",
-            registry_file.display()
-        );
-        rendered.push_str(&snippet);
-        let _ = write!(rendered, "\nor run `viv init --manifest {name} --write`\n");
-        return Ok(Success::plain(rendered));
-    }
-
-    // The confirmation spec/01 requires is `--yes`'s job to skip. Off a terminal there is nobody to
-    // prompt, and the grammar has already refused an unconfirmed destroy for that reason; here the
-    // write is reversible by `viv unbind`, so the missing consent is a diagnostic rather than a
-    // malformed invocation.
-    if !yes {
-        return Err(Failure::Diagnosed {
-            diagnostic: Box::new(
-                Diagnostic::new(
-                    DiagnosticId::new(Namespace::State, "unconfirmed-write"),
-                    "`viv init --write` needs confirmation",
-                    Locus::Named("state registry"),
-                    "recording a binding is an explicit act, never a side effect",
-                )
-                .with_hint(format!(
-                    "re-run with `--yes`, or paste the snippet into `{}`",
-                    config::registry_path(&context.roots.state).display()
-                )),
-            ),
-            code: ExitKind::Usage,
-        });
-    }
-
-    let project = context.project.clone();
-    let bound = name.clone();
-    config::registry::update(&context.roots.state, move |registry| {
-        registry.bind(project, bound);
-    })
-    .map_err(|error| registry_failure(&error))?;
-
-    if output.is_json() {
-        return Ok(Success::plain(render::init_written_json(
-            &name,
-            &context.project,
-            &selected.path,
-        )));
-    }
-    Ok(Success::plain(format!(
-        "bound `{}` to manifest `{name}`\nrecorded in `{}`\n",
-        context.project.display(),
-        config::registry_path(&context.roots.state).display(),
-    )))
-}
-
 /// The binding record: what is in force, which source said so, and where everything lives.
 fn config_binding<E: Environment>(
     context: &Context<'_, E>,
     manifest_flag: Option<&str>,
     output: Output,
 ) -> Result<Success, Failure> {
-    let registry = read_registry(context)?;
-    let Some(binding) = config::resolve_binding(
-        manifest_flag,
-        context.environment,
-        &registry,
-        &context.project,
-    ) else {
-        // Never an empty record. spec/01 is explicit: a `config` that rendered nulls would answer
-        // "there is no binding" in a shape a consumer would have to inspect to distinguish from
-        // "here is one", so it fails closed instead.
-        return Err(unbound(context));
-    };
-
-    let selected = resolve_manifest(context, &binding.manifest)?;
-    // The same resolved id the evaluating readers use: `viv config` prints the generated tree and
-    // the lock in force, and both are keyed by `<project-id>` (spec/02). Sanitizing the basename
-    // here would report the first `api`'s paths to a second project that holds `api-2`.
-    let project_id = config::resolve_identity(&context.roots.state, &context.project)
-        .map_err(|error| registry_failure(&error))?;
-    let paths = config::target_paths(&context.roots, &project_id, DEFAULT_TARGET, &selected)
+    let resolved = resolve_manifest_and_workspace(context, manifest_flag, false)?;
+    let binding = &resolved.binding;
+    let selected = &resolved.selected;
+    let sandbox_id = selected.name.clone();
+    let paths = config::target_paths(&context.roots, &sandbox_id, DEFAULT_TARGET, selected)
         .map_err(|error| flake_failure(&error))?;
     let lock = paths.select_lock().map_err(|error| flake_failure(&error))?;
 
     if output.is_json() {
         return Ok(Success::plain(render::binding_json(
-            &binding,
+            binding,
             &context.roots,
             &paths.directory,
             lock.path(),
         )));
     }
     Ok(Success::plain(render::binding_human(
-        &binding,
+        binding,
         &context.roots,
         &paths.directory,
         lock.path(),
@@ -406,19 +294,14 @@ struct Evaluated {
 /// the same tree, and the only way to guarantee that is for one function to produce both.
 fn evaluate_binding<E: Environment>(context: &Context<'_, E>) -> Result<Evaluated, Failure> {
     let resolved = resolve_manifest_for_launch(context)?;
-    // Resolved, never minted: these are the read-only readers, and spec/14's read-only guarantee
-    // is what stops them writing a marker. Resolved rather than re-sanitized because the generated
-    // tree and its lock are keyed by `<project-id>` (spec/02), and a second project named `api`
-    // holds `api-2` — sanitizing its basename would point it at the first project's tree.
-    let project_id = config::resolve_identity(&context.roots.state, &context.project)
-        .map_err(|error| registry_failure(&error))?;
-    evaluate_resolved(context, &project_id, resolved)
+    let sandbox_id = resolved.selected.name.clone();
+    evaluate_resolved(context, &sandbox_id, resolved)
 }
 
-/// The evaluating half, against a binding, manifest, and identity already resolved.
+/// The evaluating half, against a binding and manifest already resolved.
 fn evaluate_resolved<E: Environment>(
     context: &Context<'_, E>,
-    project_id: &str,
+    sandbox_id: &str,
     resolved: ResolvedForLaunch,
 ) -> Result<Evaluated, Failure> {
     let ResolvedForLaunch {
@@ -427,10 +310,11 @@ fn evaluate_resolved<E: Environment>(
         source,
         manifest,
         resources: _,
+        ..
     } = resolved;
     let prepared = config::prepare_generated_flake(
         &context.roots,
-        project_id,
+        sandbox_id,
         DEFAULT_TARGET,
         &selected,
         &source,
@@ -625,24 +509,94 @@ fn deferred<E: Environment>(context: &Context<'_, E>, verb: Deferred) -> Result<
     })
 }
 
-fn read_registry<E: Environment>(context: &Context<'_, E>) -> Result<Registry, Failure> {
-    config::registry::read(&context.roots.state).map_err(|error| registry_failure(&error))
-}
-
-/// The fail-closed answer, carrying the snippet that fixes it.
+/// The fail-closed answer when no override or uniquely declaring manifest applies.
 pub(super) fn unbound<E: Environment>(context: &Context<'_, E>) -> Failure {
-    let registry_file = config::registry_path(&context.roots.state);
     Failure::Diagnosed {
         diagnostic: Box::new(
             Diagnostic::new(
                 DiagnosticId::new(Namespace::State, "no-manifest"),
-                "no manifest is bound to this project",
-                Locus::Named("state registry"),
-                "nothing was given by `--manifest`, `VIVARIUM_MANIFEST`, or the project registry",
+                "no manifest owns the working directory",
+                Locus::File(context.roots.config.join("manifests")),
+                concat!(
+                    "nothing was given by `--manifest` or `VIVARIUM_MANIFEST`, and no manifest ",
+                    "declares this directory in `[[workspaces]]`"
+                ),
             )
-            .with_hint(config::unbound_hint(&context.project, &registry_file)),
+            .with_hint(config::unbound_hint(&context.project)),
         ),
         code: ExitKind::Config,
+    }
+}
+
+/// A stable snapshot of every uniquely resolvable manifest-library member.
+fn manifest_stamps<E: Environment>(
+    context: &Context<'_, E>,
+) -> Result<Vec<config::ManifestStamp>, Failure> {
+    let library = context.roots.config.join("manifests");
+    let entries = match std::fs::read_dir(&library) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(diagnosed(
+                Namespace::Manifest,
+                "library-unreadable",
+                "could not enumerate the manifest library",
+                Locus::File(library),
+                source.to_string(),
+                ExitKind::IoErr,
+            ));
+        }
+    };
+    let mut names = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| library_member(&entry))
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+
+    let mut stamps = Vec::new();
+    for name in names {
+        // An ambiguous or concurrently removed unrelated member cannot own this invocation. An
+        // explicitly selected name still fails through `resolve_manifest`; the derived scan skips
+        // it just as it skips unrelated broken text.
+        let Ok(selected) =
+            config::resolve_artifact(&context.roots.config, ArtifactKind::Manifest, &name)
+        else {
+            continue;
+        };
+        // `None` is the same concurrently-removed member the comment above describes, reaching
+        // this call instead of the one before it because the window spans both.
+        if let Some(stamp) = config::ManifestStamp::read(name, selected.path)
+            .map_err(|error| registry_failure(&error))?
+        {
+            stamps.push(stamp);
+        }
+    }
+    Ok(stamps)
+}
+
+/// Reads or rebuilds the cache-root owner index from explicit workspace declarations.
+fn workspace_index<E: Environment>(
+    context: &Context<'_, E>,
+    publish: bool,
+) -> Result<config::WorkspaceIndex, Failure> {
+    let stamps = manifest_stamps(context)?;
+    let derive = |stamp: &config::ManifestStamp| {
+        let selected = resolve_manifest(context, &stamp.name).ok()?;
+        let (_, manifest) = read_manifest(context, &selected).ok()?;
+        Some(
+            manifest
+                .workspaces
+                .into_iter()
+                .map(|workspace| workspace.source)
+                .collect(),
+        )
+    };
+    if publish {
+        config::registry::load_or_rebuild(&context.roots.cache, stamps, derive)
+            .map_err(|error| registry_failure(&error))
+    } else {
+        Ok(config::WorkspaceIndex::derive(stamps, derive))
     }
 }
 
@@ -748,6 +702,12 @@ pub(super) struct ResolvedForLaunch {
     selected: ResolvedArtifact,
     source: String,
     manifest: config::Manifest,
+    /// The declared workspace containing the exact invoking directory.
+    pub(super) matched_workspace: Option<PathBuf>,
+    /// The manifest's declared workspace set in the same tag order the launch contract uses.
+    pub(super) workspace_host_paths: BTreeMap<String, PathBuf>,
+    /// Present only for doctor's non-refusing view of ADR-0109's finding.
+    pub(super) workspace_refusal: Option<UndeclaredWorkspace>,
     pub(super) resources: Option<config::Resources>,
 }
 
@@ -770,21 +730,262 @@ pub(super) struct LaunchInputs {
 pub(super) fn resolve_manifest_for_launch<E: Environment>(
     context: &Context<'_, E>,
 ) -> Result<ResolvedForLaunch, Failure> {
-    let registry = read_registry(context)?;
-    let Some(binding) =
-        config::resolve_binding(None, context.environment, &registry, &context.project)
-    else {
-        return Err(unbound(context));
+    resolve_manifest_and_workspace(context, None, false)
+}
+
+pub(super) fn resolve_manifest_for_doctor<E: Environment>(
+    context: &Context<'_, E>,
+) -> Result<ResolvedForLaunch, Failure> {
+    resolve_manifest_and_workspace(context, None, true)
+}
+
+/// The one ADR-0109 resolution path: overrides, the derived index, and workspace ownership.
+fn resolve_manifest_and_workspace<E: Environment>(
+    context: &Context<'_, E>,
+    manifest_flag: Option<&str>,
+    allow_undeclared: bool,
+) -> Result<ResolvedForLaunch, Failure> {
+    let override_binding = config::resolve_binding(manifest_flag, context.environment, None);
+
+    let (binding, selected, source, manifest) = if let Some(binding) = override_binding {
+        let selected = resolve_manifest(context, &binding.manifest)?;
+        let (source, manifest) = read_manifest(context, &selected)?;
+        (binding, selected, source, manifest)
+    } else {
+        // `doctor` uses this same judgment but remains a pure checker, so it derives in memory
+        // rather than publishing the rebuildable cache.
+        let index = workspace_index(context, !allow_undeclared)?;
+        let mut matches = Vec::new();
+        for indexed in index.manifests() {
+            if containing_workspace(
+                &context.project,
+                expanded_workspace_sources(context, &indexed.workspace_sources).iter(),
+            )
+            .is_none()
+            {
+                continue;
+            }
+            let selected = match resolve_manifest(context, &indexed.name) {
+                Ok(selected) => selected,
+                Err(_) => continue,
+            };
+            let (source, manifest) = match read_manifest(context, &selected) {
+                Ok(read) => read,
+                Err(_) => continue,
+            };
+            // The cache narrows candidates; current manifest text remains the authority.
+            let owns = containing_workspace(
+                &context.project,
+                expanded_workspace_paths(context, &manifest).values(),
+            )
+            .is_some();
+            if owns {
+                matches.push((selected, source, manifest));
+            }
+        }
+        if matches.len() > 1 {
+            return Err(ambiguous_workspace_owner(
+                &context.project,
+                matches.iter().map(|(selected, _, _)| selected),
+            ));
+        }
+        let Some((selected, source, manifest)) = matches.pop() else {
+            return Err(unbound(context));
+        };
+        let binding =
+            config::resolve_binding(None, context.environment, Some(selected.name.as_str()))
+                .ok_or_else(|| unbound(context))?;
+        (binding, selected, source, manifest)
     };
-    let selected = resolve_manifest(context, &binding.manifest)?;
-    let (source, manifest) = read_manifest(context, &selected)?;
+
+    validate_sandbox_name(&selected)?;
+
+    let workspace_host_paths = expanded_workspace_paths(context, &manifest);
+    let matched_workspace = containing_workspace(&context.project, workspace_host_paths.values());
+    let workspace_refusal = matched_workspace
+        .is_none()
+        .then(|| undeclared_workspace(&selected, &context.project));
+    if !allow_undeclared && let Some(refusal) = &workspace_refusal {
+        return Err(refusal.failure());
+    }
     Ok(ResolvedForLaunch {
         binding,
         selected,
         source,
+        matched_workspace,
+        workspace_host_paths,
+        workspace_refusal,
         resources: manifest.resources,
         manifest,
     })
+}
+
+fn validate_sandbox_name(selected: &ResolvedArtifact) -> Result<(), Failure> {
+    if selected.name.len() <= MAX_SANDBOX_NAME_BYTES {
+        return Ok(());
+    }
+    Err(diagnosed(
+        Namespace::Manifest,
+        "name-too-long",
+        "the selected manifest name is too long to key a sandbox",
+        Locus::File(selected.path.clone()),
+        format!(
+            concat!(
+                "manifest name `{}` is {} bytes; sandbox names may be at most ",
+                "{} bytes"
+            ),
+            selected.name,
+            selected.name.len(),
+            MAX_SANDBOX_NAME_BYTES
+        ),
+        ExitKind::Config,
+    )
+    .with_hint("rename the manifest to 48 bytes or fewer"))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod sandbox_name_tests {
+    use super::*;
+    use crate::config::ArtifactForm;
+
+    fn manifest(name: &str) -> ResolvedArtifact {
+        ResolvedArtifact {
+            kind: ArtifactKind::Manifest,
+            name: name.to_owned(),
+            form: ArtifactForm::Flat,
+            path: PathBuf::from(format!("/config/manifests/{name}.toml")),
+        }
+    }
+
+    #[test]
+    fn manifest_sandbox_names_accept_48_bytes_and_refuse_49() {
+        assert!(validate_sandbox_name(&manifest(&"a".repeat(48))).is_ok());
+        let failure = validate_sandbox_name(&manifest(&"a".repeat(49))).unwrap_err();
+        assert_eq!(failure.code(), ExitKind::Config);
+        assert!(format!("{failure:?}").contains("name-too-long"));
+    }
+}
+
+fn ambiguous_workspace_owner<'a>(
+    cwd: &Path,
+    owners: impl Iterator<Item = &'a ResolvedArtifact>,
+) -> Failure {
+    let owners = owners
+        .map(|selected| format!("`{}` ({})", selected.name, selected.path.display()))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    diagnosed(
+        Namespace::State,
+        "workspace-owner-ambiguous",
+        "the working directory matches more than one manifest binding",
+        Locus::File(cwd.to_path_buf()),
+        format!("{owners} both claim this directory"),
+        ExitKind::Config,
+    )
+    .with_hint("remove one ownership claim so exactly one manifest declares this tree")
+}
+
+fn expanded_workspace_paths<E: Environment>(
+    context: &Context<'_, E>,
+    manifest: &config::Manifest,
+) -> BTreeMap<String, PathBuf> {
+    let lookup = |name: &str| {
+        context
+            .environment
+            .dynamic_variable(name)
+            .map(|value| value.to_string_lossy().into_owned())
+    };
+    manifest
+        .workspaces
+        .iter()
+        .enumerate()
+        .filter_map(|(index, workspace)| {
+            let expanded = crate::launch::mounts::expand_source(&workspace.source, &lookup).ok()?;
+            let path = PathBuf::from(expanded);
+            Some((format!("ws{index}"), path.canonicalize().unwrap_or(path)))
+        })
+        .collect()
+}
+
+fn expanded_workspace_sources<E: Environment>(
+    context: &Context<'_, E>,
+    sources: &[String],
+) -> Vec<PathBuf> {
+    let lookup = |name: &str| {
+        context
+            .environment
+            .dynamic_variable(name)
+            .map(|value| value.to_string_lossy().into_owned())
+    };
+    sources
+        .iter()
+        .filter_map(|source| {
+            let expanded = crate::launch::mounts::expand_source(source, &lookup).ok()?;
+            let path = PathBuf::from(expanded);
+            Some(path.canonicalize().unwrap_or(path))
+        })
+        .collect()
+}
+
+fn containing_workspace<'a>(
+    cwd: &Path,
+    workspaces: impl Iterator<Item = &'a PathBuf>,
+) -> Option<PathBuf> {
+    workspaces
+        .filter(|workspace| cwd.starts_with(workspace))
+        .max_by_key(|workspace| workspace.components().count())
+        .cloned()
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct UndeclaredWorkspace {
+    manifest: String,
+    manifest_path: PathBuf,
+    cwd: PathBuf,
+}
+
+fn undeclared_workspace(selected: &ResolvedArtifact, cwd: &Path) -> UndeclaredWorkspace {
+    UndeclaredWorkspace {
+        manifest: selected.name.clone(),
+        manifest_path: selected.path.clone(),
+        cwd: cwd.to_path_buf(),
+    }
+}
+
+impl UndeclaredWorkspace {
+    pub(super) fn block(&self) -> String {
+        let source = toml::Value::String(self.cwd.to_string_lossy().into_owned()).to_string();
+        format!("[[workspaces]]\nsource = {source}")
+    }
+
+    pub(super) fn message(&self) -> String {
+        format!(
+            concat!(
+                "manifest `{}` at `{}` does not declare the working directory `{}` in any ",
+                "`[[workspaces]]` block"
+            ),
+            self.manifest,
+            self.manifest_path.display(),
+            self.cwd.display()
+        )
+    }
+
+    pub(super) fn hint(&self) -> String {
+        format!("add this exact block to the manifest:\n\n{}", self.block())
+    }
+
+    fn failure(&self) -> Failure {
+        diagnosed(
+            Namespace::Manifest,
+            "workspace-undeclared-directory",
+            "the working directory is not declared as a workspace",
+            Locus::File(self.manifest_path.clone()),
+            self.message(),
+            ExitKind::Config,
+        )
+        .with_hint(self.hint())
+    }
 }
 
 /// The evaluate-refuse-defects half `start` shares with the config readers.
@@ -793,10 +994,10 @@ pub(super) fn resolve_manifest_for_launch<E: Environment>(
 /// tree the readers never saw would make `viv config eval` a report about something else.
 pub(super) fn evaluate_resolved_for_launch<E: Environment>(
     context: &Context<'_, E>,
-    project_id: &str,
+    sandbox_id: &str,
     resolved: ResolvedForLaunch,
 ) -> Result<LaunchInputs, Failure> {
-    let evaluated = evaluate_resolved(context, project_id, resolved)?;
+    let evaluated = evaluate_resolved(context, sandbox_id, resolved)?;
     // A content defect means the merge produced no answer, so there is nothing to build.
     if let Some(failure) = defect_failure(&evaluated.analysis) {
         return Err(failure);
