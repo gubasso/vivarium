@@ -15,7 +15,7 @@ Yes: the workspace is the project the manifest belongs to, so binding the projec
 
 No at both routes, for opposite reasons — which is the distinction this row exists to draw.
 
-At the firecracker route there is no mount at all: the schema has no bind-mount key, and `include.tar` and `include.path` copy a payload into the artifact at provisioning time, so work is copied rather than seen through. Nothing derives the workspace because nothing carries one.
+At the firecracker route there is no mount at all: the schema has no bind-mount key, and `include.tar` and `include.path` copy a payload onto the instance at provisioning time, so work is copied rather than seen through. Nothing derives the workspace because nothing carries one.
 
 At the `krun` route the mount is real, arranged by the tool, and still not derived. The upstream registration freezes `--opt "\--volume %HOME/ai:%HOME/ai"` and `--opt "\--workdir %HOME/ai"` into `/usr/share/flakes/<app>.yaml`, and `podman-pilot` replays both on every `podman create`, so step 2 finds the directory there with no argument typed. What named it is a host path a person wrote at registration, and the registration is per application rather than per project: a registered `claude` mounts whatever was named when it was registered and does not follow you into a different project tree. Two projects wanting two workspaces are two registered command names.
 

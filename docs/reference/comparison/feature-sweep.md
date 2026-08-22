@@ -327,6 +327,22 @@ Five move toward the second route and six away from it, which is the check that 
 
 One neighbouring claim was tested and rejected in the same pass. `overlay_size` at the firecracker route was put to us as a host mount, in the same breath as the registered `--volume` at the `krun` route. The engine schema carries no mount key of any kind, and the overlay is a sparse ext2 image attached as a second virtio-blk drive, so that verdict did not move — but the row's label had let the two readings coexist, which is the label correction below.
 
+### A verdict corrected by locating the include payload
+
+The `flake-pilot` author, reading these tables, rejected the `❌` on `Secrets are kept out of the built artifact`: no image the project ships carries a credential, and a token obtained after registration lands in instance storage rather than in the image. Reading the two provisioning paths at `920f41e` confirms it, and the cell's reasoning was wrong twice.[^include-destination]
+
+| Row                                        | Was                  | Now                    | Why                                                                              |
+| ------------------------------------------ | -------------------- | ---------------------- | -------------------------------------------------------------------------------- |
+| Secrets are kept out of the built artifact | `flake-pilot` no, no | `flake-pilot` yes, yes | An include payload lands on the instance, and the tool builds no artifact at all |
+
+The first error was mechanical. The cell had said an `include.tar` / `include.path` payload is carried "inside the artifact that gets registered and shared". It is not: at the firecracker route the payload is synced into a per-instance ext2 overlay layered over the image and unmounted before boot, and at the `krun` route into `podman mount <container-id>`, the created container's writable rootfs. Neither pilot calls `podman build` or `podman commit`, so nothing the payload touches is ever an artifact a second person receives. Three other pages carried the same phrasing and two more implied it; all five were corrected with it.
+
+The second error was the row applied to a subject that has no stage for it. flake-pilot registers an image built elsewhere — pulled as a KIS archive or named in a registry — so "does the tool's build put a credential in the artifact" has no subject here, and a credential baked into an image is the image builder's flow rather than this one's.
+
+What survives is the absence of a secrets mechanism, which is real and is already scored twice: `Keeping secrets out of the build is enforced` and `Commit an encrypted secret alongside the config` both read `❌` for flake-pilot and both keep it. Scoring it a third time under a question about the artifact was double-counting, and it is what let a factual claim about provisioning ride along unchecked.
+
+The row now reads yes in every column, which is the cost of the correction and is recorded rather than avoided. It keeps its place for two reasons: the marks still separate the subjects, since podman's `✅ yes‡` says the safe form is reachable while the ordinary `ENV TOKEN=…` is not it; and the row is one half of a pair whose other half discriminates sharply, vivarium alone reaching `⚠️ partial` where every alternative reads `❌`.
+
 ### Verdicts corrected by fixing podman's setup
 
 Until 2026-08-19 the `podman` column was read at its container boundary as the baseline. That was the last hidden cross-backend comparison in the set, so the column now reads at `podman run --runtime krun` like every other subject. Three verdicts moved, all against podman:[^podman-setup]
@@ -509,5 +525,7 @@ The `‡` mark is what made the promotions honest rather than generous. It says 
 [^guest-environment]: Verified: 2026-08-20 — vivarium against [`spec/03-artifact-model.md`](../spec/03-artifact-model.md) for the manifest key table and [`spec/06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md) for the inner layer, and against [`implementation-status.md`](../implementation-status.md) and the shipped guest module for the `*`; flake-pilot against the `sci` and `flake-ctl-firecracker-register` manual pages in a fresh clone at `44e3ab2`; glaipnir against `image/Containerfile`, `image/scripts/entrypoint.sh`, and `docs/overview.md` at `21ef389`; podman against its manual pages. No existing verdict moved.
 
 [^rows-split]: Verified: 2026-08-20 — every split and every promotion re-read against the evidence already recorded in [`scenarios/`](./scenarios/README.md) at the revisions [`sources.md`](./sources.md) pins, with no subject re-read for this pass. The correction tables above keep the row labels they were written with; a label frozen in a dated record is what makes the record readable later, and the inventory above is where the current set lives.
+
+[^include-destination]: Verified 2026-08-22, against a fresh clone at `920f41e`: `sync_includes` and the overlay assembly in `firecracker-pilot/src/firecracker.rs`, `sync_includes` and `mount_container` in `podman-pilot/src/podman.rs`, and the absence of any `build` or `commit` call in either pilot.
 
 [^both-routes]: Verified 2026-08-21, against a fresh clone at `920f41e` and the upstream libkrun, `crun`, and passt documentation named in [`sources.md`](./sources.md).

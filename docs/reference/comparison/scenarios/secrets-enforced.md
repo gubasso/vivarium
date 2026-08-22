@@ -12,7 +12,7 @@ Partial: the prohibition is a binding rule rather than a practice, and the pure 
 
 ## flake-pilot
 
-No: nothing reads an image before it is registered, and nothing reads an `--include-path` payload before it is copied. There is no check to bypass because there is no stage that inspects — a credential in either place is registered and used exactly like anything else.
+No: nothing reads an image before it is registered, and nothing reads an `--include-path` payload before it is synced onto the instance. There is no check to bypass because there is no stage that inspects — a credential in either place is registered and used exactly like anything else.
 
 Neither route inspects anything: the `krun` route adds an image and a mount to the ways material arrives, and no stage reads either.
 

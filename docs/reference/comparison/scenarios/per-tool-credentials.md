@@ -14,7 +14,7 @@ The position is consistent with the [config-read-only rule](../../spec/08-invari
 
 ## flake-pilot
 
-No: at the firecracker boundary a credential arrives as an `--include-path` copy fixed at registration time, so the payload is frozen per registered application rather than selected per run. One registration, one baked-in set, and no per-consumer view of it once the guest is up.
+No: at the firecracker boundary a credential arrives as an `--include-path` copy fixed at registration time, so the payload is frozen per registered application rather than selected per run. One registration, one fixed set copied onto the instance, and no per-consumer view of it once the guest is up.
 
 The `krun` route is the same answer through the other mechanism: what crosses is the flat list of `--opt "\-v ..."` lines the registration froze, visible to everything in the guest, with no notion of which process inside needs which. Two scopes are two registered command names.
 

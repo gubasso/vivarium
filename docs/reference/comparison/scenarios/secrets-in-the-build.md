@@ -12,9 +12,11 @@ Yes: a build-time secret is prohibited outright, and the reach of one is why the
 
 ## flake-pilot
 
-No: there is no secrets mechanism to use, so credential material reaches the guest the only ways anything does — written into the image, or copied by `--include-path` / `--include-tar` at provisioning — and both carry it in clear inside the artifact that gets registered and shared. [The shipping row](./shipping-a-secret.md#flake-pilot) records the absence itself: the word does not appear in the repository outside a CI workflow's own credentials.
+Yes at both routes, and not because a mechanism keeps a secret out — because there is no build here to put one in. flake-pilot registers an image it did not make: `flake-ctl firecracker pull` fetches a prebuilt KIS archive into a local store, and a podman registration names an image in a registry. Neither pilot builds nor commits one, so the artifact a registration refers to is upstream of the tool, and a credential inside it is the image builder's doing rather than a flow this subject documents.
 
-The `krun` route adds a third way in and no mechanism with it — a mounted host path, which carries credential material at run time rather than baking it, and which nothing scopes, records, or refuses.
+What a registration can carry is an `include.tar` / `include.path` payload, and that lands on the instance rather than in the image. At the firecracker route it is synced into a per-instance ext2 overlay mounted as the upper layer of an overlay whose lower layer is the image, then unmounted before boot; at the `krun` route it is synced into `podman mount <container-id>`, the created container's own writable rootfs. Credential material a registration needs therefore ends up where [glaipnir's stated stance](#glaipnir) puts it — authenticated at run time, persisted in instance storage, absent from the artifact a second person receives.
+
+The absence this subject does have is a secrets mechanism, and it is scored where it belongs rather than twice here: nothing inspects what a payload carries ([the next row](./secrets-enforced.md#flake-pilot)), and nothing lets a secret travel with the definition ([the shipping row](./shipping-a-secret.md#flake-pilot)), the word being absent from the repository outside a CI workflow's own credentials. This row asks only whether the documented flow puts one in the artifact, and it does not.
 
 ## glaipnir
 
@@ -30,4 +32,4 @@ The safe form is the longer one, and nothing pushes a user toward it:
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm install
 ```
 
-[^read]: Read at `vivarium` `ceb0027` and `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` `44e3ab2` on 2026-08-20, for the absence [the shipping row](./shipping-a-secret.md#flake-pilot) read at that revision; `podman` 5.x on 2026-08-20, from the `podman-build` manual page.
+[^read]: Read at `vivarium` `ceb0027` and `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` `44e3ab2` on 2026-08-20, for the absence [the shipping row](./shipping-a-secret.md#flake-pilot) read at that revision, and re-read at `920f41e` on 2026-08-22 for where an include payload lands and for the absence of any build step; `podman` 5.x on 2026-08-20, from the `podman-build` manual page.

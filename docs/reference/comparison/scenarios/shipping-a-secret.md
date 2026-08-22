@@ -12,7 +12,7 @@ Reachable, nothing arranges it: encrypted-at-rest is one of the two shapes the [
 
 ## flake-pilot
 
-No: the repository has no secrets mechanism of any kind, encrypted or otherwise — the only matches for the word are a CI workflow's own credentials. Material a registration needs reaches the guest as image content or as an `include.tar` / `include.path` payload, both of which carry it in clear inside the artifact, which is the shape the row above already records.
+No: the repository has no secrets mechanism of any kind, encrypted or otherwise — the only matches for the word are a CI workflow's own credentials. Material a registration needs reaches the guest as image content or as an `include.tar` / `include.path` payload, and it travels in clear either way — but neither is a way of shipping it beside the definition, because an include is a host path read at provisioning on the machine that registers, and the image is pulled rather than committed to. The second person registers with their own payload, and [the row above](./secrets-in-the-build.md#flake-pilot) records where that payload lands.
 
 This is a property of the repository rather than of an engine, so it holds identically at both routes.
 
