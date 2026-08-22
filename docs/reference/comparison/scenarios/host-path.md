@@ -9,7 +9,7 @@ Given that the project is visible inside — [the row above](./workspace-mount.m
 
 ## vivarium
 
-Yes: the [host-symmetric mount rule](../../spec/08-invariants-and-guarantees.md) fixes the workspace at the absolute path it occupies on the host, and a declared mount carries that same target rather than one the declaration invents.
+Yes: the [host-symmetric mount rule](../../spec/08-invariants-and-guarantees.md) fixes the workspace at the absolute path it occupies on the host, and a declared mount carries that same target rather than one the declaration invents. Since `162f230` that holds for a set rather than one tree — every declared workspace is mirrored at its own host path, and a pair where one contains the other is refused before boot, because two nesting trees cannot both be mirrored at their own paths ([ADR-0108](../../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md)).
 
 ## flake-pilot
 
@@ -25,4 +25,4 @@ No: since 1.0.0 a workspace under `$HOME` mounts at `/home/aiuser/<path relative
 
 Reachable, nothing arranges it: `-v /host/path:/host/path` mirrors any single path exactly, and under krun the mount crosses as virtiofs, so it holds at the compared setup. The user types the path twice at every invocation, nothing refuses a mismatch, and published examples usually pick a different target.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19. `vivarium` re-read at `162f230` on 2026-08-22, where mirroring generalized from one tree to a declared set.

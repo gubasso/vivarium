@@ -103,6 +103,8 @@ viv start
 viv shell
 ```
 
+The manifest names the tree, because a workspace is declared rather than inferred — `[[workspaces]] source = "${HOME}/projects/my-thing"` — and that declaration is also what lets one manifest carry a family of related repositories instead of one. Binding says which manifest applies here; the manifest says which trees it owns.
+
 The project tree is at the absolute path it occupies on the host, so `git`, editors, and linked worktrees resolve from either side. There is no quarantine directory to copy work into, and no level to choose: vivarium's [separate-kernel rule](../spec/08-invariants-and-guarantees.md) fixes one boundary and no other.
 
 ### What the difference costs
@@ -110,7 +112,7 @@ The project tree is at the absolute path it occupies on the host, so `git`, edit
 - flake-pilot: most flexible, least self-describing — three registrations per agent, two of them behind a kernel of their own, and the isolation strength lives in shell history rather than in the project.
 - glaipnir: fastest path to a working sandbox, bought by deciding the boundary for you.
 - podman: everything is possible, nothing is remembered.
-- vivarium: slowest to first run, and the only one where "what is this environment" is a file you can read. Against either microVM rung it is a fair fight, and the two rungs lose it differently: rung 3 boots a kernel and leaves the work behind as a copy, rung 2 boots a kernel and keeps the work in view but at a directory somebody typed once, which does not follow the next project.
+- vivarium: slowest to first run, and the only one where "what is this environment" is a file you can read. Against either microVM rung it is a fair fight, and the two rungs lose it differently: rung 3 boots a kernel and leaves the work behind as a copy, rung 2 boots a kernel and keeps the work in view but at a directory somebody typed once. vivarium types a directory too, and the difference is where: the tree is named in the project's own definition beside everything else the environment is made of, and one manifest may name several, rather than in a system file keyed by a registered command name.
 
 ## W2 — Get the same environment back next month
 

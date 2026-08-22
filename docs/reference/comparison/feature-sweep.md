@@ -377,6 +377,18 @@ A gap and a refusal read the same in a table and mean opposite things to a reade
 | --------------------------- | ------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Credentials scoped per tool | `vivarium` no | `vivarium` no† | Automatic scoping needs a built-in table of application names; vivarium is application-agnostic and every path that crosses is user-declared |
 
+### A verdict moved because the subject changed
+
+Every other entry here corrects a reading. This one records a subject that moved under a reading that was correct when it was made: `vivarium` derived the workspace from the invoking directory, and at `162f230` it stopped. `[[workspaces]]` makes the project tree a declaration carrying a host `source`, a manifest that declares none cannot launch, and the sandbox that held one tree holds a set ([`ADR-0108`](../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md)).
+
+| Row                                                           | Was            | Now            | Why                                                                                                                                                                                      |
+| ------------------------------------------------------------- | -------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The tool derives the workspace mount, with no host path named | `vivarium` yes | `vivarium` no† | The tree is declared rather than discovered; deriving it would make the mount set a function of the call, and a directory must belong to one sandbox for resolution from it to be unique |
+
+A project moving its own cell from a yes to a no is where a self-authored comparison earns or loses its credibility, so the `†` faces the same test as every other one: a recorded position that names what it costs. [`ADR-0109`](../../decisions/ADR-0109-an-undeclared-working-directory-is-refused.md) writes the cost down — a user who moves a project edits the manifest by hand, where the marker used to follow the move — and refuses rather than defaulting. Two neighbouring rows gained the same reading without moving: mirroring now runs across a declared set, and the crossing set is two tables rather than one.
+
+The row is also the only one where `vivarium` and `flake-pilot`'s `krun` route now answer alike for related reasons, both having been told which tree to carry. What still separates them is where the telling lives, which is the row this one defers to.
+
 ### Labels corrected
 
 `The boundary cannot be switched off` stated vivarium's property as the question, and asking it that way had already produced a wrong verdict: `flake-pilot` was marked `❌ no` when nothing at run time revisits a registered engine. The row is about a boundary changing underneath the user, which is `glaipnir`'s probe fallback and not `flake-pilot`'s registration. Its first rewrite, `Boundary

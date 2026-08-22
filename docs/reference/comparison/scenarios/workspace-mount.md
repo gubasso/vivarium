@@ -1,6 +1,6 @@
 # Workspace mount
 
-Three questions hide in "can I see my project inside". This one asks the narrowest of them: whether the tool works out which project it is looking at, with no host path named anywhere. [The next](./host-path.md) asks whether the path it lands on is the one it had outside, and [the mount-choice row](./choosing-mounts.md) asks whether the decision, however it was made, was recorded in a file or retyped at each start. A tool can pass that last one and fail this one, and one of the subjects here does.[^read]
+Three questions hide in "can I see my project inside". This one asks the narrowest of them: whether the tool works out which project it is looking at, with no host path named anywhere. [The next](./host-path.md) asks whether the path it lands on is the one it had outside, and [the mount-choice row](./choosing-mounts.md) asks whether the decision, however it was made, was recorded in a file or retyped at each start. A tool can pass that last one and fail this one, and two of the subjects here do, vivarium among them.[^read]
 
 1. Register or configure the tool as its own documentation intends, and stop before starting it.
 2. Put a project at a known absolute path on the host.
@@ -9,7 +9,11 @@ Three questions hide in "can I see my project inside". This one asks the narrowe
 
 ## vivarium
 
-Yes: the workspace is the project the manifest belongs to, so binding the project once is what names it, and no argument repeats the decision at each start. Project identity is anchored by a marker rather than by the path, so the mount survives a rename.
+No, and by a recorded decision rather than a gap: a workspace is declared, not discovered. Each `[[workspaces]]` row in the manifest names a host `source`, and a manifest that declares none cannot launch, so what puts the project inside is a path a person wrote. A host-side `${VAR}` may stand in for the literal, which keeps a personal path out of anything shared and does not change who named the tree.
+
+Deriving the workspace from the invoking directory is what vivarium did until `162f230`, and it stopped working the moment a sandbox could hold more than one project tree: with a set, the invoking directory has to be looked up among the declared trees rather than be the answer, and a directory has to belong to exactly one sandbox for that lookup to be unique ([ADR-0108](../../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md)). Deriving it would also make the mount set a function of the call, so one configuration would name a different sandbox from every directory it was started in. What replaces the derivation is a refusal rather than a default: a command run from a tree the resolved manifest does not declare is specified to exit `78` naming the block to add, instead of starting quietly somewhere else ([ADR-0109](../../../decisions/ADR-0109-an-undeclared-working-directory-is-refused.md), recorded and not yet built).
+
+That the decision is written once in the project's own file rather than retyped at each start is a real property, and it is credited on [the row that asks where the decision is written down](./choosing-mounts.md#vivarium). This row asks the other half, whether the tool needed to be told at all, and vivarium now needs to be told — the same answer as flake-pilot's `krun` route, reached from the opposite direction: there because a registration is per command name, here because a sandbox holds a declared set of trees.
 
 ## flake-pilot
 
@@ -36,4 +40,4 @@ cd ~/projects/my-thing
 podman run --rm -it --runtime krun -v "$PWD:$PWD" -w "$PWD" docker.io/library/node:22 bash
 ```
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19. The `flake-pilot` `krun` route and the protocol's registration step were added at `920f41e` on 2026-08-21.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19. The `flake-pilot` `krun` route and the protocol's registration step were added at `920f41e` on 2026-08-21. `vivarium` re-read at `162f230` on 2026-08-22, where the derived workspace became a declared one.

@@ -38,7 +38,7 @@ Three kinds of no, one qualified yes, and one mark that is not a verdict at all.
 | `✅ yes‡` | the tool provides the mechanism; nothing arranges it, so the user does                       |
 | `➖ n/a`  | the question does not arise at this setup; the linked cell says why                          |
 
-Read the bare ones first: they are what a comparison written by the subject would have left out. Most `†` cells cite a binding invariant; `Scopes credentials per app out of the box` is the exception, citing a design position no invariant states yet, logged as `Q-031` in [`open-questions.md`](../../plan/open-questions.md).
+Read the bare ones first: they are what a comparison written by the subject would have left out. A `†` has to name its authority, and three kinds appear: most cells cite a binding invariant, the two build rows cite the tool that owns the job instead, and `Scopes credentials per app out of the box` cites a design position no invariant states yet, logged as `Q-031` in [`open-questions.md`](../../plan/open-questions.md). `The tool derives the workspace mount` cites a recorded decision rather than any of the three, because it names a position vivarium adopted after these tables were first written.
 
 The `‡` is the mark that keeps a row honest in the other direction, and it says something specific: the capability is real and reachable by a documented mechanism, and the tool will not do it for you or notice that you forgot. A reader choosing between "it can" and "it does" needs both halves, and a bare yes gives only the first.
 

@@ -6,20 +6,22 @@ What every verdict in [`README.md`](./README.md) rests on. Each subject is pinne
 
 ### `vivarium`
 
-This repository, branch `initial-implementation` at `ceb0027`.[^vivarium]
+This repository, branch `develop` at `162f230`.[^vivarium]
 
-| What it establishes                                                   | Where                                                                                                            |
-| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| The binding product rules, named in words throughout                  | [`docs/reference/spec/08-invariants-and-guarantees.md`](../spec/08-invariants-and-guarantees.md)                 |
-| Which commands run and which are specified only                       | [`docs/reference/implementation-status.md`](../implementation-status.md)                                         |
-| The lifecycle ladder and what `stop` reaches                          | [`docs/reference/spec/10-vm-lifecycle.md`](../spec/10-vm-lifecycle.md)                                           |
-| Generations, rollback, and reclamation                                | [`docs/reference/spec/11-generations-and-build-history.md`](../spec/11-generations-and-build-history.md)         |
-| Egress modes and the gating resolver                                  | [`docs/reference/spec/05-networking-and-egress.md`](../spec/05-networking-and-egress.md)                         |
-| The artifact model, and how a shared piece declares its own inputs    | [`docs/reference/spec/03-artifact-model.md`](../spec/03-artifact-model.md)                                       |
-| Module merge, the priority convention, and the one effective lockfile | [`docs/reference/spec/04-composition-and-determinism.md`](../spec/04-composition-and-determinism.md)             |
-| Mount sources, the agent channel, and what never crosses              | [`docs/reference/spec/07-secrets-and-config-sharing.md`](../spec/07-secrets-and-config-sharing.md)               |
-| The two-layer design, and what the guest base must ship for it        | [`docs/reference/spec/06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md) |
-| Unresolved scope questions the tables point at                        | [`docs/plan/open-questions.md`](../../plan/open-questions.md)                                                    |
+| What it establishes                                                   | Where                                                                                                                                             |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The binding product rules, named in words throughout                  | [`docs/reference/spec/08-invariants-and-guarantees.md`](../spec/08-invariants-and-guarantees.md)                                                  |
+| Which commands run and which are specified only                       | [`docs/reference/implementation-status.md`](../implementation-status.md)                                                                          |
+| The lifecycle ladder and what `stop` reaches                          | [`docs/reference/spec/10-vm-lifecycle.md`](../spec/10-vm-lifecycle.md)                                                                            |
+| Generations, rollback, and reclamation                                | [`docs/reference/spec/11-generations-and-build-history.md`](../spec/11-generations-and-build-history.md)                                          |
+| Egress modes and the gating resolver                                  | [`docs/reference/spec/05-networking-and-egress.md`](../spec/05-networking-and-egress.md)                                                          |
+| The artifact model, and how a shared piece declares its own inputs    | [`docs/reference/spec/03-artifact-model.md`](../spec/03-artifact-model.md)                                                                        |
+| Module merge, the priority convention, and the one effective lockfile | [`docs/reference/spec/04-composition-and-determinism.md`](../spec/04-composition-and-determinism.md)                                              |
+| Mount sources, the agent channel, and what never crosses              | [`docs/reference/spec/07-secrets-and-config-sharing.md`](../spec/07-secrets-and-config-sharing.md)                                                |
+| The two-layer design, and what the guest base must ship for it        | [`docs/reference/spec/06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md)                                  |
+| Unresolved scope questions the tables point at                        | [`docs/plan/open-questions.md`](../../plan/open-questions.md)                                                                                     |
+| Why a project tree is declared rather than derived, and owned once    | [`docs/decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md`](../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md)             |
+| What a command does when the working directory is not declared        | [`docs/decisions/ADR-0109-an-undeclared-working-directory-is-refused.md`](../../decisions/ADR-0109-an-undeclared-working-directory-is-refused.md) |
 
 Rules cited by name, and what each fixes:
 
@@ -34,7 +36,7 @@ Rules cited by name, and what each fixes:
 | never-touch-user-files rule          | vivarium does not modify a project's own user-authored files                               |
 | no-secrets-in-the-store rule         | A secret never enters the build or the store; runtime-injected or encrypted-at-rest only   |
 | personal-data-free-artifact rule     | A shared image or piece carries no literal personal path or plaintext secret               |
-| host-symmetric mount rule            | The workspace mounts inside the guest at its host absolute path                            |
+| host-symmetric mount rule            | Every declared workspace mounts inside the guest at its host absolute path                 |
 | deny-by-default environment rule     | Host environment crosses only by allowlist or explicit `--env`                             |
 | non-destructive stop rule            | `viv stop` removes no volume, generation, or state                                         |
 | sandboxed-VMM rule                   | The monitor and every host-side helper run under a seccomp and capability sandbox          |
@@ -140,7 +142,7 @@ The cadence above is the reading; [`tracking.yaml`](../tracking.yaml) is what sc
 
 A refresh re-reads the material at a new commit and updates the `Verified:` line above each table. Editing a version number without re-reading produces a false date, which is worse than no refresh because it resets the reader's suspicion.
 
-[^vivarium]: Verified 2026-08-18.
+[^vivarium]: Verified 2026-08-18 at `ceb0027`. Partially re-read 2026-08-22 at `162f230`, where `[[workspaces]]` replaced the derived workspace: the workspace-mount, host-path, and mount-choice rows only. Every other row still carries its 2026-08-18 reading, and the pin moves so a later reader compares against the tree the tables now describe.
 
 [^flake-pilot]: Verified 2026-08-18. Partially re-read 2026-08-20 against a fresh clone at `44e3ab2`: the boundary, engine-selection, and firecracker-networking rows, which are the ones that had rested on a non-public source, and later the same day the `Guest environment` rows added for packages, the inner environment, and setup hooks. Re-read again 2026-08-20 at `920f41e`, two commits later — a version bump and an rsync-option change, neither touching a row here — for image provenance: how a user builds and maintains a firecracker VM of their own, and how a built image enters the local store. Re-read a third time 2026-08-21, at that same `920f41e` against a fresh clone, to add the `krun` route as a read column: the published registration and the `containers.conf` note, the argument group behind `--resume` and `--attach`, how a stored `--volume` is replayed, and the firecracker overlay's drive schema — the last of these confirming, against a claim made to the contrary, that `overlay_size` is storage rather than passthrough. The adjacent libkrun, `crun`, and passt documentation the network and mount rows at that route rest on was read the same day. Re-read a fourth time 2026-08-22, at `920f41e` again, for where an `include.tar` / `include.path` payload lands at each route and for whether either pilot builds an image — the two facts behind the secrets-row correction in [`feature-sweep.md`](./feature-sweep.md), and the second claim from the same reader, this one confirmed where the `overlay_size` one was not. Re-read a fifth time 2026-08-22, at `920f41e` again and confirmed still `origin/main`: the complete `flake-ctl` command surface, for whether the tool builds anything at all; the delta-container and `layers:` provisioning path, which corrected the composition row; and the upstream statements of who builds an image and where trust is anchored. That round answered the third claim from the same reader, and turned up one error of this document's own that the reader had not raised. The rest of this subject still carries its 2026-08-18 reading.
 
