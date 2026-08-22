@@ -4,7 +4,7 @@ Two jobs, done four ways, start to finish. Every other question these tools answ
 
 Commands are transcribed from each project's own material; see [`sources.md`](./sources.md). Where vivarium's answer is specified rather than built it is marked `*`, and no command is shown that would refuse.
 
-Both jobs run at the fixed setups [`README.md`](./README.md)'s methodology names: vivarium's one microVM, both of flake-pilot's microVM rungs, glaipnir's libkrun microVM, and `podman run --runtime krun`. Container rungs appear only where they teach something, and are named as container rungs when they do, because most of what these tools do comfortably they do with the host kernel.
+Both jobs run at the fixed setups [`methodology.md`](./methodology.md) names: vivarium's one microVM, both of flake-pilot's microVM rungs, glaipnir's libkrun microVM, and `podman run --runtime krun`. Container rungs appear only where they teach something, and are named as container rungs when they do, because most of what these tools do comfortably they do with the host kernel.
 
 ## W1 — Point an agent at a real project
 

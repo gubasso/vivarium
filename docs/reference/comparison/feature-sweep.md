@@ -343,6 +343,22 @@ What survives is the absence of a secrets mechanism, which is real and is alread
 
 The row now reads yes in every column, which is the cost of the correction and is recorded rather than avoided. It keeps its place for two reasons: the marks still separate the subjects, since podman's `✅ yes‡` says the safe form is reachable while the ordinary `ENV TOKEN=…` is not it; and the row is one half of a pair whose other half discriminates sharply, vivarium alone reaching `⚠️ partial` where every alternative reads `❌`.
 
+### A row corrected by finding the layering this sweep had already recorded
+
+The flake-pilot sweep above lists, under `Composition`, "OCI layering: `--base` for a delta container, `--layer` repeatable and ordered". The merged row lost it. [`composition.md`](./scenarios/composition.md#flake-pilot) said that inside the guest there is no second level and that composing what goes into the artifact belongs to the builder rather than to flake-pilot. That is wrong at the `krun` route, where `podman-pilot` image-mounts a `base_container`, then each entry of an ordered `layers:` list, then the application container, syncing each onto the instance at provisioning. The mechanism is flake-pilot's own, and upstream publishes it as a use case: a solution stack of base plus python plus python-app, and deltas pulled against a base that exists only once.
+
+No verdict moved, because the row was already yes at both flake-pilot columns on the strength of drop-ins alone. What was wrong was the reason under two cells, and a second row rested on the same mistake: [`config-unit.md`](./scenarios/config-unit.md#flake-pilot) said the image is the whole environment, where a delta container is precisely a unit smaller than one. [`collision.md`](./scenarios/collision.md#flake-pilot) gains the second place two parts meet without a report, its verdict unchanged. The firecracker route keeps the old reading, which is correct there: `firecracker-pilot` has neither key.
+
+This is the failure this sweep exists to prevent, running backwards. The inventory was right and the merge dropped it, so sweeping alone caught what comparing lost.
+
+### A framing corrected for a subject that does not build
+
+A reader of this comparison objected that several rows assume the sandboxing tool creates the build artifact, and that for flake-pilot this does not apply — the images come from a store, and the build questions belong to whatever produced them. The objection is correct, and it is now answered where it belongs rather than inside a cell: [the methodology](./methodology.md) states the split between building and running, and how a build row is scored for a subject that only runs.
+
+Verified at `920f41e`: the entire `flake-ctl` command surface is `pull`, `load`, `register`, `show`, `remove`, `init`, and `list`, and no `build` or `commit` call appears anywhere in either pilot. Upstream states the delegation as a position rather than leaving it as silence, naming the Open Build Service with KIWI as one option among the different ways an image can be built, and anchoring trust at the image source instead. [`same-definition.md`](./scenarios/same-definition.md#flake-pilot) now carries that position; its two verdicts stand, because what a registration names is the pilot's own surface rather than the builder's.
+
+One mark moved. [`build-steps.md`](./scenarios/build-steps.md#flake-pilot) keeps its no at both columns, because the row asks what produced the artifact a user receives and the documented flow produces it through an arbitrary root shell — the same `config.sh` that earns the yes at [`own-setup-at-build.md`](./scenarios/own-setup-at-build.md#flake-pilot), credited once and charged once. What it gains is `†`: the guarantee is one flake-pilot placed outside itself, not one it failed to make. These are the first `†` marks in the tables that are not vivarium's, which was the asymmetry worth fixing on its own — the same kind of design refusal had been reading as a position for one subject and as a gap for another.
+
 ### Verdicts corrected by fixing podman's setup
 
 Until 2026-08-19 the `podman` column was read at its container boundary as the baseline. That was the last hidden cross-backend comparison in the set, so the column now reads at `podman run --runtime krun` like every other subject. Three verdicts moved, all against podman:[^podman-setup]

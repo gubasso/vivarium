@@ -14,7 +14,7 @@ Yes: scalars resolve by priority rather than by position — a shared piece prop
 
 No: `<app>.d/*.yaml` is read in alpha order and the last key wins. Two drop-ins setting one key is neither a conflict nor a merge — the later filename wins — so adopting a second author's file can undo the first's without saying so, and the deciding fact is a filename. The same mechanism is what loses flake-pilot the [boundary-file row](./boundary-file.md#flake-pilot).
 
-Both routes share that mechanism, because the drop-in directory belongs to the registration rather than to the engine.
+Both routes share that mechanism, because the drop-in directory belongs to the registration rather than to the engine. The `krun` route adds a second place where two parts meet without a report: [the ordered `layers:` list](./composition.md#flake-pilot) is synced onto the instance one layer at a time, so a path two layers both write is settled by position, and the deciding fact is an argument's order rather than a filename.
 
 ## glaipnir
 
@@ -24,4 +24,4 @@ n/a: hooks compose the way shell does, by running one after another, and `PACKAG
 
 n/a: there is one `Containerfile` and one author of it at a time, so two parts never meet to collide. A later `RUN` overwriting an earlier one's work is a script overwriting itself, which is the ordinary reading of a sequence.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19; `flake-pilot` re-read at `920f41e` on 2026-08-22 for the `base_container` and `layers:` provisioning path.
