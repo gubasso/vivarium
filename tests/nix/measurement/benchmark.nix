@@ -17,12 +17,12 @@
 # the shape most likely to survive review and mislead a later reader.
 #
 # A measurement leg. It is composed into an image only by `tests/nix/measurement`.
-{ pkgs, workspaceInternalMountPoint, ... }:
+{ pkgs, verificationWorkspaceInternal, ... }:
 
 let
   # The share's own mount point, not the mirrored path: this leg measures what
   # working through the share costs, and the mirror is a bind of the same mount.
-  benchHandshakeDir = "${workspaceInternalMountPoint}/.vivarium-share-benchmark";
+  benchHandshakeDir = "${verificationWorkspaceInternal}/.vivarium-share-benchmark";
 in
 {
   systemd.services.vivarium-share-benchmark = {
@@ -32,7 +32,7 @@ in
     wantedBy = [ "multi-user.target" ];
     after = [ "vivarium-volume-prepare.service" ];
     unitConfig.RequiresMountsFor = [
-      workspaceInternalMountPoint
+      verificationWorkspaceInternal
       "/home/vivarium"
     ];
     serviceConfig = {

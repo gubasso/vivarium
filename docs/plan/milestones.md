@@ -4,9 +4,10 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## in flight
 
+- 020 many-workspaces-in-one-sandbox — active — 3 sessions — needs 019 (done) and 022 (done)
+
 ## later
 
-- 020 many-workspaces-in-one-sandbox — later — 3 sessions — needs 019 (done) and 022 (done)
 - 021 the-manifest-is-the-sandbox — later — 4 sessions — needs 020
 - 025 the-fleet-is-visible — later — 3 sessions — needs 021 (the rekey every row carries)
 - 026 a-start-checks-the-room — later — 3 sessions — needs 025 (the fleet term admission reads)

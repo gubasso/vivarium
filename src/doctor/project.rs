@@ -358,6 +358,7 @@ mod tests {
             resources: None,
             egress: None,
             env: std::collections::BTreeMap::new(),
+            workspaces: Vec::new(),
             mounts: Vec::new(),
             volumes: Vec::new(),
             volume: None,

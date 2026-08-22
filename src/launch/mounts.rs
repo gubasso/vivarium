@@ -39,6 +39,15 @@ struct BuiltContract {
 ///
 /// Returns the read or parse error verbatim; the caller owns the diagnostic.
 pub fn declared_shares(store_path: &str) -> Result<Vec<BuiltShare>, std::io::Error> {
+    shares_by_origin(store_path, "declared")
+}
+
+/// Workspace shares of a built contract, in declaration order.
+pub fn workspace_shares(store_path: &str) -> Result<Vec<BuiltShare>, std::io::Error> {
+    shares_by_origin(store_path, "workspace")
+}
+
+fn shares_by_origin(store_path: &str, origin: &str) -> Result<Vec<BuiltShare>, std::io::Error> {
     let path = Path::new(store_path)
         .join("share")
         .join("vivarium")
@@ -48,7 +57,7 @@ pub fn declared_shares(store_path: &str) -> Result<Vec<BuiltShare>, std::io::Err
     Ok(contract
         .share_launch
         .into_iter()
-        .filter(|share| share.origin == "declared")
+        .filter(|share| share.origin == origin)
         .collect())
 }
 

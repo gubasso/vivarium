@@ -33,6 +33,7 @@ const ROOT_KEYS: &[&str] = &[
     "resources",
     "egress",
     "env",
+    "workspaces",
     "mounts",
     "volumes",
     "volume",
@@ -40,6 +41,7 @@ const ROOT_KEYS: &[&str] = &[
 const RESOURCE_KEYS: &[&str] = &["mem_mib", "vcpu"];
 const EGRESS_KEYS: &[&str] = &["mode", "allow"];
 const MOUNT_KEYS: &[&str] = &["source", "target", "readonly"];
+const WORKSPACE_KEYS: &[&str] = &["source"];
 const VOLUME_KEYS: &[&str] = &["name", "mount", "size_gib"];
 const DEFAULT_VOLUME_KEYS: &[&str] = &["size_gib", "persist"];
 
@@ -94,6 +96,8 @@ pub struct Manifest {
     pub env: BTreeMap<String, String>,
     /// Host paths mirrored into the guest.
     pub mounts: Vec<Mount>,
+    /// Host trees owned by and mirrored into this sandbox.
+    pub workspaces: Vec<Workspace>,
     /// Declared volumes beyond the home volume.
     pub volumes: Vec<Volume>,
     /// Configuration of the home volume, which exists without declaration.
@@ -136,6 +140,13 @@ pub struct Mount {
     pub target: String,
     /// Whether the guest sees it read-only.
     pub readonly: bool,
+}
+
+/// One host tree owned by this sandbox.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Workspace {
+    /// Host path. `${VAR}` stays unexpanded here and is resolved at launch.
+    pub source: String,
 }
 
 /// One declared volume.
@@ -234,6 +245,7 @@ impl Reader<'_> {
             resources: self.resources(root)?,
             egress: self.egress(root)?,
             env: self.env(root)?,
+            workspaces: self.workspaces(root)?,
             mounts: self.mounts(root)?,
             volumes: self.volumes(root)?,
             volume: self.default_volume(root)?,
@@ -352,6 +364,20 @@ impl Reader<'_> {
             });
         }
         Ok(mounts)
+    }
+
+    fn workspaces(&self, root: &DeTable<'_>) -> Result<Vec<Workspace>, ManifestError> {
+        let Some(value) = entry(root, "workspaces") else {
+            return Ok(Vec::new());
+        };
+        let mut workspaces = Vec::new();
+        for element in self.array(value, "workspaces")? {
+            let table = self.table(element, "workspaces")?;
+            workspaces.push(Workspace {
+                source: self.required_path(table, element, "workspaces.source", "source")?,
+            });
+        }
+        Ok(workspaces)
     }
 
     fn volumes(&self, root: &DeTable<'_>) -> Result<Vec<Volume>, ManifestError> {
@@ -606,6 +632,7 @@ fn collect_unknown_keys(
         let nested = match name {
             "resources" => Some(RESOURCE_KEYS),
             "egress" => Some(EGRESS_KEYS),
+            "workspaces" => Some(WORKSPACE_KEYS),
             "mounts" => Some(MOUNT_KEYS),
             "volumes" => Some(VOLUME_KEYS),
             "volume" => Some(DEFAULT_VOLUME_KEYS),
@@ -660,6 +687,8 @@ fn valid_environment_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
     use super::{ArtifactForm, EgressMode, Manifest, ManifestOrigin, Resources, parse_manifest};
     use crate::exit::ExitKind;
 
@@ -694,6 +723,9 @@ allow = [ ]
 [env]
 RUST_BACKTRACE = "1"
 
+[[workspaces]]
+source = "${HOME}/src/rust-web"
+
 [[mounts]]
 source   = "${HOME}/.config/foo"
 target   = "~/.config/foo"
@@ -726,6 +758,7 @@ persist  = [ "/opt/state" ]
             manifest.env.get("RUST_BACKTRACE").map(String::as_str),
             Some("1")
         );
+        assert_eq!(manifest.workspaces[0].source, "${HOME}/src/rust-web");
         assert_eq!(manifest.mounts.len(), 1);
         assert!(manifest.mounts[0].readonly);
         assert_eq!(manifest.volumes[0].size_gib, Some(64));
@@ -747,6 +780,24 @@ persist  = [ "/opt/state" ]
             parse("pieces = [ ]\n").err().map(|error| error.kind_name()),
             Some("missing-key")
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_rows_preserve_zero_one_and_many_in_order() -> Result<(), Box<dyn Error>> {
+        assert!(parse("image = 'x'\n")?.workspaces.is_empty());
+        let one = parse("image = 'x'\n[[workspaces]]\nsource = '/one'\n")?;
+        assert_eq!(one.workspaces[0].source, "/one");
+        let many = parse(
+            "image = 'x'\n[[workspaces]]\nsource = '/one'\n[[workspaces]]\nsource = '/two'\n",
+        )?;
+        assert_eq!(
+            many.workspaces
+                .iter()
+                .map(|workspace| workspace.source.as_str())
+                .collect::<Vec<_>>(),
+            ["/one", "/two"]
+        );
         Ok(())
     }
 
@@ -782,6 +833,7 @@ persist  = [ "/opt/state" ]
             "image = \"x\"\n[egress]\nallow = [ \"*.github.com\", \"**.example.org\" ]",
             "image = \"x\"\n[egress]\nallow = [ \"192.0.2.10\", \"2001:db8::/32\" ]",
             "image = \"x\"\n[env]\n_FOO9 = \"1\"",
+            "image = \"x\"\n[[workspaces]]\nsource = \"/workspace\"",
             "image = \"x\"\n[[mounts]]\nsource = \"/a\"\ntarget = \"~/a\"",
             "image = \"x\"\n[[volumes]]\nname = \"cache\"\nmount = \"/v\"\nsize_gib = 1",
             "image = \"x\"\n[volume]\npersist = [ \"/opt/a\" ]",
@@ -810,6 +862,15 @@ persist  = [ "/opt/state" ]
             ),
             ("image = \"x\"\n[env]\n9FOO = \"1\"", "invalid-value"),
             ("image = \"x\"\n[env]\nFOO = 1", "wrong-type"),
+            ("image = \"x\"\n[[workspaces]]", "missing-key"),
+            (
+                "image = \"x\"\n[[workspaces]]\nsource = \"\"",
+                "invalid-value",
+            ),
+            (
+                "image = \"x\"\n[[workspaces]]\nsource = \"/a\"\ntarget = \"/b\"",
+                "unknown-key",
+            ),
             ("image = \"x\"\n[[mounts]]\ntarget = \"~/a\"", "missing-key"),
             (
                 "image = \"x\"\n[[mounts]]\nsource = \"\"\ntarget = \"~/a\"",
@@ -875,7 +936,7 @@ persist  = [ "/opt/state" ]
                     "  --> manifests/rust-web.toml:3:1\n",
                     "  why: not part of the manifest grammar viv {version} understands\n",
                     "  accepted here: image, pieces, extends, resources, egress, ",
-                    "env, mounts, volumes, volume\n",
+                    "env, workspaces, mounts, volumes, volume\n",
                     "  hint: remove the key, or upgrade vivarium — a manifest written ",
                     "for a newer\n",
                     "        vivarium reports its new keys exactly this way",

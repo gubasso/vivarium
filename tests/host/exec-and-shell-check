@@ -148,12 +148,22 @@ else
   # guest's rather than a host constant restated. What is asserted here is the
   # other half: that a *rendered* specification — the file `viv exec` actually
   # reads out of the runtime directory — carries them through the launcher's jq.
+  #
+  # The measurement image rather than the shipped one, and it is a consequence of
+  # slice 020 rather than a preference. Since ADR-0108 a workspace is declared, and
+  # `images.shipped` declares none — so its contract carries zero `workspace`-origin
+  # shares, and `nix/runner.sh` refuses `--workspace ws0` against a contract that
+  # declares no `ws` tag. The measurement image is the closest artifact that renders
+  # one. What that costs is stated plainly: the rendered-specification half is now
+  # asserted against a verification image, so the shipped package's own rendering is
+  # covered only by the contract check above. Whether the shipped package deserves a
+  # zero-workspace rendering lane of its own is an open question, not a settled no.
   if [[ -n $contract_ok ]]; then
-    runner_out=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm" 2>&1)
+    runner_out=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm-measurement" 2>&1)
     runner="$(tail -n1 <<<"$runner_out")/bin/vivarium-first-microvm"
     if [[ -x $runner ]]; then
       spec_root=$(mktemp -d "${TMPDIR:-/tmp}/viv-exec-spec-XXXXXX")
-      spec_log=$("$runner" --workspace "$REPO_ROOT" --runtime-dir "$spec_root/rt" \
+      spec_log=$("$runner" --workspace ws0 "$REPO_ROOT" --runtime-dir "$spec_root/rt" \
         --volume-dir "$spec_root/volumes" --supervisor "$(command -v env)" \
         --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 \
         --project-id p --target default --print-static-arguments 2>&1)
@@ -166,7 +176,7 @@ else
         # host's own path, which the guest binds the share to at boot; `.mountPoint`
         # is the share's internal mount and would pass this check while telling
         # nothing about the cwd `viv exec` actually sends.
-        [[ $(jq -r '.shares[] | select(.tag == "workspace") | .source' <<<"$spec_log") == "$REPO_ROOT" ]] \
+        [[ $(jq -r '.shares[] | select(.tag == "ws0") | .source' <<<"$spec_log") == "$REPO_ROOT" ]] \
           || missing_fields+=("the workspace share does not mirror this repository's own path")
         [[ -n $(jq -r '.guestSession.path' <<<"$spec_log") ]] \
           || missing_fields+=("the guest session carries no PATH")
@@ -176,8 +186,8 @@ else
           fail "the launch specification carries what a session reads" "$(printf '%s\n' "${missing_fields[@]}")"
         else
           pass "the launch specification carries what a session reads"
-          record "guest cwd: $(jq -r '.shares[] | select(.tag == "workspace") | .source' <<<"$spec_log")"
-          record "workspace share internal mount: $(jq -r '.shares[] | select(.tag == "workspace") | .mountPoint' <<<"$spec_log")"
+          record "guest cwd: $(jq -r '.shares[] | select(.tag == "ws0") | .source' <<<"$spec_log")"
+          record "workspace share internal mount: $(jq -r '.shares[] | select(.tag == "ws0") | .mountPoint' <<<"$spec_log")"
           record "guest session user: $(jq -r '.guestSession.user' <<<"$spec_log")"
           record "guest session PATH: $(jq -r '.guestSession.path' <<<"$spec_log")"
         fi

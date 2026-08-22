@@ -174,6 +174,12 @@ pub fn config_eval_human(analysis: &Analysis) -> String {
     table(&mut rendered, "env", &environment);
     array_of_tables(
         &mut rendered,
+        "workspaces",
+        analysis.effective("workspaces"),
+        &["source"],
+    );
+    array_of_tables(
+        &mut rendered,
         "mounts",
         analysis.effective("mounts"),
         &["source", "target", "readonly"],

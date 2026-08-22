@@ -893,7 +893,11 @@ async fn reusable(
     // identity deliberately survives a directory move (spec/15), so the workspace path is the field
     // that notices one — and a moved project meeting its own crashed VM's record has to be able to
     // cold-start at the new path.
-    let mismatch = if boot.workspace_host_path != workspace {
+    let mismatch = if !boot
+        .workspace_host_paths
+        .values()
+        .any(|path| path == workspace)
+    {
         Some("it names another workspace host path")
     } else if boot.backend != crate::launch::BACKEND {
         Some("it names another backend")
@@ -1285,21 +1289,155 @@ fn resolve_declared_mounts<E: Environment>(
         .collect()
 }
 
-/// One diagnostic per broken mount-source invariant, every one `78` and every one naming the
-/// declared spelling, so the refusal reads against what the user wrote rather than against a
-/// tag they never chose.
+fn resolve_declared_workspaces<E: Environment>(
+    _context: &Context<'_, E>,
+    store_path: &str,
+) -> Result<Vec<mounts::ResolvedMount>, Failure> {
+    let contract_path = Path::new(store_path).join("share/vivarium/launch-arguments.json");
+    let declared = mounts::workspace_shares(store_path).map_err(|error| {
+        diagnosed(
+            Namespace::Vm,
+            "launch-contract-unreadable",
+            "the selected build's launch contract cannot be read",
+            Locus::File(contract_path),
+            error.to_string(),
+            ExitKind::Config,
+        )
+        .with_hint("`viv start --rebuild` rebuilds the selected build with this version")
+    })?;
+    let lookup =
+        |name: &str| std::env::var_os(name).map(|value| value.to_string_lossy().into_owned());
+    // No session roots, and that is a decision rather than an omission.
+    //
+    // N24 refuses a declared *mount* whose source lands in `/tmp`, `/var/tmp`, or
+    // `${XDG_RUNTIME_DIR}`, because a mount may name any directory on the host and those hold
+    // live session state no share may carry. A workspace is already bounded by a stricter rule:
+    // ADR-0108 mirrors it at its own host path, so it has to pass `unmirrorable` against
+    // `GUEST_OWNED_PATHS` — and that list already contains `/tmp`, `/var/tmp`, and `/run/user`.
+    // The same paths are refused either way; only the wording and the reason would differ.
+    //
+    // What running N24 here would add is therefore not coverage but a second refusal for a path
+    // the first one already refuses, and a dependence on the host's `${XDG_RUNTIME_DIR}` value
+    // that the workspace rule deliberately does not have. Since `tests/host/heavy-run` moves
+    // `TMPDIR` onto the drive and a bare run leaves it at `/tmp`, that dependence would also make
+    // whether the acceptance fixtures resolve at all a property of how the suite was invoked.
+    // One hazard, one rule, at the surface that owns it.
+    let session_roots: Vec<PathBuf> = Vec::new();
+    declared
+        .iter()
+        .map(|share| {
+            let expanded = mounts::expand_source(&share.source_token, &lookup)
+                .map_err(|defect| workspace_source_failure(share, defect))?;
+            let resolved = mounts::classify_source(&share.tag, &expanded, &session_roots)
+                .map_err(|defect| workspace_source_failure(share, defect))?;
+            if resolved.kind != MountPlanKind::Dir {
+                return Err(diagnosed(
+                    Namespace::Host,
+                    "workspace-source-not-directory",
+                    "a declared workspace is not a directory",
+                    Locus::File(resolved.share_source),
+                    format!("`{}` resolves to a regular file", share.source_token),
+                    ExitKind::Config,
+                )
+                .with_hint("declare a directory in `[[workspaces]] source = '...'`"));
+            }
+            Ok(resolved)
+        })
+        .collect()
+}
+
+/// Which declaring surface a source defect is being reported against.
+///
+/// The two surfaces share every defect and no wording. `[[mounts]]` says a directory is visible
+/// in this VM and any number of manifests may say it; `[[workspaces]]` says a directory belongs
+/// to this VM and at most one manifest may claim it (ADR-0108). A user who wrote one and is told
+/// about the other has to work out which of their own blocks the refusal means, so the diagnostic
+/// id, the noun, and the hint all carry the surface rather than defaulting to the older one.
+#[derive(Clone, Copy)]
+enum SourceSurface {
+    Mount,
+    Workspace,
+}
+
+impl SourceSurface {
+    /// The diagnostic id for one defect. Ids are a published surface (ADR-0075), so both families
+    /// are written out as literals rather than composed at runtime: a grep for one of these
+    /// strings has to find the site that emits it.
+    const fn id(self, defect: &mounts::MountSourceDefect) -> &'static str {
+        use mounts::MountSourceDefect as Defect;
+        match (self, defect) {
+            (Self::Mount, Defect::UnsetVariable { .. }) => "mount-source-unset-variable",
+            (Self::Mount, Defect::NotAbsolute { .. }) => "mount-source-not-absolute",
+            (Self::Mount, Defect::Missing { .. }) => "mount-source-missing",
+            (Self::Mount, Defect::Unreadable { .. }) => "mount-source-unreadable",
+            (Self::Mount, Defect::NotMountable { .. }) => "mount-source-not-mountable",
+            (Self::Mount, Defect::SessionDirectory { .. }) => "mount-source-session-directory",
+            (Self::Workspace, Defect::UnsetVariable { .. }) => "workspace-source-unset-variable",
+            (Self::Workspace, Defect::NotAbsolute { .. }) => "workspace-source-not-absolute",
+            (Self::Workspace, Defect::Missing { .. }) => "workspace-source-missing",
+            (Self::Workspace, Defect::Unreadable { .. }) => "workspace-source-unreadable",
+            (Self::Workspace, Defect::NotMountable { .. }) => "workspace-source-not-mountable",
+            (Self::Workspace, Defect::SessionDirectory { .. }) => {
+                "workspace-source-session-directory"
+            }
+        }
+    }
+
+    /// How the title names the thing, in possessive position.
+    const fn noun(self) -> &'static str {
+        match self {
+            Self::Mount => "a declared mount's source",
+            Self::Workspace => "a declared workspace's source",
+        }
+    }
+
+    /// The `Locus::Named` fallback, for a defect with no path to point at.
+    const fn locus(self) -> &'static str {
+        match self {
+            Self::Mount => "declared mounts",
+            Self::Workspace => "declared workspaces",
+        }
+    }
+
+    const fn sources_hint(self) -> &'static str {
+        match self {
+            Self::Mount => "`viv config sources` names the layer that declares this mount",
+            Self::Workspace => "`viv config sources` names the layer that declares this workspace",
+        }
+    }
+}
+
+fn workspace_source_failure(
+    share: &mounts::BuiltShare,
+    defect: mounts::MountSourceDefect,
+) -> Failure {
+    source_failure(SourceSurface::Workspace, share, defect)
+}
+
 fn mount_source_failure(share: &mounts::BuiltShare, defect: mounts::MountSourceDefect) -> Failure {
+    source_failure(SourceSurface::Mount, share, defect)
+}
+
+/// One diagnostic per broken source invariant, every one `78` and every one naming the
+/// declared spelling, so the refusal reads against what the user wrote rather than against a
+/// tag they never chose. Parameterized by surface rather than duplicated, so the two families
+/// cannot drift in wording while sharing a defect set.
+fn source_failure(
+    surface: SourceSurface,
+    share: &mounts::BuiltShare,
+    defect: mounts::MountSourceDefect,
+) -> Failure {
     use mounts::MountSourceDefect as Defect;
     let declared = &share.source_token;
-    let sources_hint = "`viv config sources` names the layer that declares this mount";
+    let sources_hint = surface.sources_hint();
+    let id = surface.id(&defect);
+    let noun = surface.noun();
     match defect {
         Defect::UnsetVariable { variable } => diagnosed(
             Namespace::Host,
-            "mount-source-unset-variable",
-            format!(
-                "a declared mount's source names `${{{variable}}}`, which this host does not set"
-            ),
-            Locus::Named("declared mounts"),
+            id,
+            format!("{noun} names `${{{variable}}}`, which this host does not set"),
+            Locus::Named(surface.locus()),
             format!("`{declared}` cannot resolve while `{variable}` is unset (ADR-0020)"),
             ExitKind::Config,
         )
@@ -1308,8 +1446,8 @@ fn mount_source_failure(share: &mounts::BuiltShare, defect: mounts::MountSourceD
         )),
         Defect::NotAbsolute { expanded } => diagnosed(
             Namespace::Host,
-            "mount-source-not-absolute",
-            "a declared mount's source does not expand to an absolute path",
+            id,
+            format!("{noun} does not expand to an absolute path"),
             Locus::File(expanded.clone()),
             format!("`{declared}` expanded to `{}`", expanded.display()),
             ExitKind::Config,
@@ -1317,8 +1455,8 @@ fn mount_source_failure(share: &mounts::BuiltShare, defect: mounts::MountSourceD
         .with_hint(sources_hint),
         Defect::Missing { expanded } => diagnosed(
             Namespace::Host,
-            "mount-source-missing",
-            "a declared mount's source does not exist on this host",
+            id,
+            format!("{noun} does not exist on this host"),
             Locus::File(expanded.clone()),
             format!(
                 "`{declared}` expanded to `{}`, which is missing (ADR-0020)",
@@ -1331,8 +1469,8 @@ fn mount_source_failure(share: &mounts::BuiltShare, defect: mounts::MountSourceD
         )),
         Defect::Unreadable { expanded, error } => diagnosed(
             Namespace::Host,
-            "mount-source-unreadable",
-            "a declared mount's source cannot be inspected",
+            id,
+            format!("{noun} cannot be inspected"),
             Locus::File(expanded),
             error,
             ExitKind::Config,
@@ -1340,8 +1478,8 @@ fn mount_source_failure(share: &mounts::BuiltShare, defect: mounts::MountSourceD
         .with_hint(sources_hint),
         Defect::NotMountable { expanded } => diagnosed(
             Namespace::Host,
-            "mount-source-not-mountable",
-            "a declared mount's source is not a regular file or directory",
+            id,
+            format!("{noun} is not a regular file or directory"),
             Locus::File(expanded),
             format!(
                 "`{declared}` names a socket, FIFO, or device node; a share conveys an inode, \
@@ -1354,8 +1492,8 @@ fn mount_source_failure(share: &mounts::BuiltShare, defect: mounts::MountSourceD
         ),
         Defect::SessionDirectory { expanded } => diagnosed(
             Namespace::Host,
-            "mount-source-session-directory",
-            "a declared mount's source resolves to a host session directory",
+            id,
+            format!("{noun} resolves to a host session directory"),
             Locus::File(expanded),
             format!(
                 "`{declared}` lands in `/tmp`, `/var/tmp`, or `${{XDG_RUNTIME_DIR}}`, which hold \
@@ -1386,16 +1524,50 @@ fn execute_runner<E: Environment>(
     // few host paths have no mirror: the guest owns them. The launch specification checks the same
     // rule and the guest re-derives it from the booted image, but only here is there a place to
     // say which path collided and what the user can do about it.
-    if let Some(reason) = unmirrorable(&context.project) {
+    let declared_workspaces = resolve_declared_workspaces(context, store_path)?;
+    if declared_workspaces.is_empty() {
         return Err(diagnosed(
             Namespace::Host,
-            "workspace-path-unmirrorable",
-            "this project cannot be mounted inside the guest at the path it occupies",
-            Locus::File(context.project.clone()),
-            reason.to_owned(),
+            "workspace-missing",
+            "the selected build declares no workspace",
+            Locus::Named("declared workspaces"),
+            "a sandbox needs at least one `[[workspaces]]` row before it can launch",
+            ExitKind::Config,
+        ));
+    }
+    for workspace in &declared_workspaces {
+        if let Some(reason) = unmirrorable(&workspace.share_source) {
+            return Err(diagnosed(
+                Namespace::Host,
+                "workspace-path-unmirrorable",
+                "a declared workspace cannot be mirrored inside the guest at its host path",
+                Locus::File(workspace.share_source.clone()),
+                reason.to_owned(),
+                ExitKind::Config,
+            )
+            .with_hint(
+                "move the workspace under a path the guest does not own, such as your home",
+            ));
+        }
+    }
+    if let Some((left, right)) = crate::launch::nested_workspaces(
+        declared_workspaces
+            .iter()
+            .map(|workspace| workspace.share_source.as_path()),
+    ) {
+        return Err(diagnosed(
+            Namespace::Host,
+            "workspace-paths-overlap",
+            "two declared workspaces overlap",
+            Locus::File(left.to_path_buf()),
+            format!(
+                "`{}` and `{}` are equal or nested",
+                left.display(),
+                right.display()
+            ),
             ExitKind::Config,
         )
-        .with_hint("move the project under a path the guest does not own, such as your home"));
+        .with_hint("declare disjoint workspace trees"));
     }
 
     // Every declared mount's source resolves against this host here, before anything is
@@ -1426,8 +1598,6 @@ fn execute_runner<E: Environment>(
     let step = context.ui.step("rendering the launch specification");
     let mut command = Command::new(&program);
     command
-        .arg("--workspace")
-        .arg(&context.project)
         .arg("--runtime-dir")
         .arg(&runtime.directory)
         .arg("--volume-dir")
@@ -1446,6 +1616,12 @@ fn execute_runner<E: Environment>(
         .arg(project_id)
         .arg("--target")
         .arg(DEFAULT_TARGET);
+    for workspace in &declared_workspaces {
+        command
+            .arg("--workspace")
+            .arg(&workspace.tag)
+            .arg(&workspace.share_source);
+    }
     for mount in &declared_mounts {
         // Four values per flag, matching the runner's `--mount TAG KIND ABS ENTRY` group; the
         // runner's own belt re-checks the set against the contract's declared tags.
@@ -2209,7 +2385,10 @@ mod tests {
             project_id: "envelope".into(),
             target: "default".into(),
             backend: crate::launch::BACKEND.into(),
-            workspace_host_path: PathBuf::from("/w"),
+            workspace_host_paths: std::collections::BTreeMap::from([(
+                "ws0".to_owned(),
+                PathBuf::from("/w"),
+            )]),
         };
         fs::write(
             runtime.directory.join("boot.json"),

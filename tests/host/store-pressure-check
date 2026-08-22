@@ -454,7 +454,7 @@ else
   # the run concluded the guest was gone, and every check downstream read a guest
   # that had exited 0 seconds into a leg budgeted for forty minutes. The unit is
   # the lifetime; `--project-id`/`--target` are what make its name predictable.
-  launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir"
+  launch_args=(--workspace ws0 "$WORKSPACE" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir"
     --uid "$(id -u)" --gid "$(id -g)" --memory-mib 4096 --vcpu 2
     --project-id store-pressure --target "$$")
   unit_name="vivarium-store-pressure-$$.service"

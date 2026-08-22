@@ -50,6 +50,13 @@ let
     };
   };
 
+  workspaceModule = {
+    options.source = mkOption {
+      type = types.str;
+      description = "Host tree owned by and mirrored into this sandbox.";
+    };
+  };
+
   volumeModule = {
     options = {
       name = mkOption {
@@ -81,6 +88,12 @@ in
         type = types.listOf (types.submodule mountModule);
         default = [ ];
         description = "Host paths mirrored into the guest. Layers concatenate.";
+      };
+
+      workspaces = mkOption {
+        type = types.listOf (types.submodule workspaceModule);
+        default = [ ];
+        description = "Host trees owned by and mirrored into this sandbox. Layers concatenate.";
       };
 
       resources = {

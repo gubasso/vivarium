@@ -194,7 +194,10 @@ fn probe_evaluation(viv: &Path, tp: &TempProject) -> Result<(), String> {
         .and_then(|()| {
             write_file(
                 &library.join("manifests").join("probe.toml"),
-                "image = \"probe\"\n",
+                &format!(
+                    "image = \"probe\"\n\n[[workspaces]]\nsource = '{}'\n",
+                    tp.project().display()
+                ),
             )
         })
         .map_err(|error| format!("cannot write the evaluation probe fixture: {error}"))?;

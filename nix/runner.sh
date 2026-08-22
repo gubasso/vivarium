@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 set -euo pipefail
 contract=@launchArgumentsPath@
-workspace=""
+workspaces_json='{}'
 runtime_dir=""
 volume_dir=""
 supervisor=""
@@ -17,7 +17,7 @@ console_log=true
 print_only=false
 mounts_json='{}'
 usage() {
-  echo "usage: $0 --workspace ABS --runtime-dir ABS --volume-dir ABS --supervisor ABS --uid N --gid N --memory-mib N --vcpu N [--project-id ID] [--target NAME] [--ssh-agent-socket ABS] [--gpg-agent-socket ABS] [--mount TAG dir|file ABS ENTRY]... [--no-console-log] [--print-static-arguments]" >&2
+  echo "usage: $0 --workspace TAG ABS... --runtime-dir ABS --volume-dir ABS --supervisor ABS --uid N --gid N --memory-mib N --vcpu N [--project-id ID] [--target NAME] [--ssh-agent-socket ABS] [--gpg-agent-socket ABS] [--mount TAG dir|file ABS ENTRY]... [--no-console-log] [--print-static-arguments]" >&2
   # The belt for a hand-invoked runner. `viv` refuses a build whose contract
   # schema differs from its own before executing this script, but a runner from
   # an old generation can still be run by hand, and its argument names differ —
@@ -29,7 +29,18 @@ usage() {
 }
 while (($#)); do
   case $1 in
-    --workspace | --runtime-dir | --volume-dir | --supervisor | --uid | --gid | --memory-mib | --vcpu | --project-id | --target | --ssh-agent-socket | --gpg-agent-socket)
+    --workspace)
+      (($# >= 3)) || usage
+      workspace_tag=$2
+      workspace_source=$3
+      [[ $workspace_tag =~ ^ws[0-9]+$ && $workspace_source = /* ]] || usage
+      jq -e --arg tag "$workspace_tag" 'has($tag) | not' <<<"$workspaces_json" >/dev/null || usage
+      workspace_source=$(realpath -m -- "$workspace_source")
+      workspaces_json=$(jq --arg tag "$workspace_tag" --arg source "$workspace_source" \
+        '. + {($tag): $source}' <<<"$workspaces_json")
+      shift 3
+      ;;
+    --runtime-dir | --volume-dir | --supervisor | --uid | --gid | --memory-mib | --vcpu | --project-id | --target | --ssh-agent-socket | --gpg-agent-socket)
       (($# >= 2)) || usage
       name=${1#--}
       name=${name//-/_}
@@ -73,7 +84,7 @@ while (($#)); do
     *) usage ;;
   esac
 done
-for value in workspace runtime_dir volume_dir supervisor; do
+for value in runtime_dir volume_dir supervisor; do
   candidate=${!value:-}
   [[ $candidate = /* ]] || usage
 done
@@ -107,7 +118,9 @@ fi
 declared_mount_tags=$(jq -r '[.shareLaunch[] | select(.origin == "declared") | .tag] | sort | join(" ")' "$contract")
 supplied_mount_tags=$(jq -r 'keys | sort | join(" ")' <<<"$mounts_json")
 [[ $declared_mount_tags == "$supplied_mount_tags" ]] || usage
-workspace=$(realpath -m -- "$workspace")
+declared_workspace_tags=$(jq -r '[.shareLaunch[] | select(.origin == "workspace") | .tag] | sort | join(" ")' "$contract")
+supplied_workspace_tags=$(jq -r 'keys | sort | join(" ")' <<<"$workspaces_json")
+[[ $declared_workspace_tags == "$supplied_workspace_tags" ]] || usage
 runtime_dir=$(realpath -m -- "$runtime_dir")
 # `-m`, so a directory that does not exist yet still resolves: the images are
 # created by the supervisor, and `--print-static-arguments` renders a contract
@@ -131,16 +144,15 @@ else
 fi
 jq \
   --arg project "$project_id" --arg target "$target" --arg runtime "$runtime_dir" \
-  --arg workspace "$workspace" --arg volumeDir "$volume_dir" \
+  --arg volumeDir "$volume_dir" \
   --arg api "$api" --arg console "$console" --arg control "$control" --arg ready "$ready" \
   --arg supervisor "$supervisor" \
   --arg sshAgent "$ssh_agent_socket" --arg gpgAgent "$gpg_agent_socket" --argjson uid "$uid" --argjson gid "$gid" \
-  --argjson memoryMiB "$memory_mib" --argjson vcpu "$vcpu" --argjson mountSources "$mounts_json" \
+  --argjson memoryMiB "$memory_mib" --argjson vcpu "$vcpu" --argjson workspaceSources "$workspaces_json" --argjson mountSources "$mounts_json" \
   --argjson landlock "$landlock" --argjson consoleLog "$console_log" '
   def token:
     if type != "string" then . else
-      gsub("@WORKSPACE_SOURCE@"; $workspace)
-      | gsub("@VOLUME_DIR@"; $volumeDir)
+      gsub("@VOLUME_DIR@"; $volumeDir)
       # One rule for every share: the guest module asserts each tag is
       # [a-z0-9]+, which is what makes this case roundtrip exact. The two
       # reserved shares keep their historical socket names by construction:
@@ -173,7 +185,9 @@ jq \
     identityTranslation: (.idTranslation + { hostUid: $uid, hostGid: $gid }),
     guestSession: .guestSession,
     shares: [.shareLaunch[] | { tag,
-      source: (if .origin == "declared" then $mountSources[.tag].source else (.sourceToken | token) end),
+      source: (if .origin == "declared" then $mountSources[.tag].source
+        elif .origin == "workspace" then $workspaceSources[.tag]
+        else (.sourceToken | token) end),
       mountPoint,
       socket: (.socketToken | token), cache, readOnly,
       mountPlan: (if .origin == "declared"

@@ -107,6 +107,65 @@ const CMDLINE_LIMIT: usize = 2048;
 /// base64's alphabet would make `vivarium.workspace=` ambiguous to split on; the guest decodes
 /// percent in one line of shell and needs no new binary in the image; and an ordinary path stays
 /// legible in `/proc/cmdline` and in the console log, which is where a failed boot is read.
+/// Compose the guest kernel command line from the base, the boot identity, the workspace set, and
+/// each declared mount's plan.
+///
+/// A free function rather than a method so the composition can be asserted directly. What reaches
+/// the guest here is the only channel that carries a launch-expanded absolute path: the guest
+/// cannot observe a virtiofs share's host-side source, and an fstab mount point is a build
+/// constant, which is why ADR-0100 fixed the command line as the launch channel and why ADR-0108's
+/// plural workspace stayed on it rather than growing a second one.
+fn compose_cmdline(
+    base: &str,
+    boot_identity: &str,
+    workspace_host_paths: &std::collections::BTreeMap<String, PathBuf>,
+    shares: &[crate::launch::ShareSpec],
+) -> Result<String, LaunchError> {
+    use std::fmt::Write as _;
+    let mut cmdline = format!("{base} vivarium.boot_identity={boot_identity}");
+    // One parameter per declared workspace, in tag order because the map is a `BTreeMap`: the
+    // guest matches by tag rather than by position, but a stable order keeps a `console.log` from
+    // two boots of one build diffable.
+    for (tag, path) in workspace_host_paths {
+        let _ = write!(
+            cmdline,
+            " vivarium.workspace.{tag}={}",
+            encode_cmdline_path(path)
+        );
+    }
+    // The launch half of each declared mount's plan, matched by tag against the bind table
+    // the image carries (`mount-bind.sh`). The entry is already percent-encoded — it goes
+    // verbatim, and the guest is the one decoder.
+    for share in shares {
+        match &share.mount_plan {
+            None => {}
+            Some(plan) => match (plan.kind, plan.entry.as_deref()) {
+                (crate::launch::MountPlanKind::Dir, _) => {
+                    let _ = write!(cmdline, " vivarium.mount.{}=dir", share.tag);
+                }
+                (crate::launch::MountPlanKind::File, Some(entry)) => {
+                    let _ = write!(cmdline, " vivarium.mount.{}=file:{entry}", share.tag);
+                }
+                (crate::launch::MountPlanKind::File, None) => {
+                    // `LaunchSpec::validate` refuses this shape; a spec that got here
+                    // anyway must not boot a guest with half a plan.
+                    return Err(LaunchError::InvalidSpec("a file mount plan lost its entry"));
+                }
+            },
+        }
+    }
+    // The budget is what bounds the practical workspace count at roughly fifteen to twenty
+    // ordinary trees. Refused here rather than evaded by a second channel: staging a table file
+    // into a share is machinery ADR-0100 already declined, and a truncated command line reaches
+    // the guest as a shorter, valid, wrong path rather than as an error.
+    if cmdline.len() >= CMDLINE_LIMIT {
+        return Err(LaunchError::InvalidSpec(
+            "the launch parameters do not fit the guest kernel command line",
+        ));
+    }
+    Ok(cmdline)
+}
+
 fn encode_cmdline_path(path: &Path) -> String {
     use std::fmt::Write as _;
     use std::os::unix::ffi::OsStrExt as _;
@@ -615,11 +674,15 @@ impl Supervisor {
             .map_err(|_| LaunchError::InvalidSpec("kernel UUID is malformed"))?;
         // Read before the command line is rebuilt: since ADR-0100 the same value is both the boot
         // record's host path and the guest's mount path, and it crosses on the command line.
-        let workspace_host_path = self
+        let workspace_host_paths = self
             .spec
-            .workspace_share()
-            .map(|share| share.source.clone())
-            .ok_or(LaunchError::InvalidSpec("workspace share is missing"))?;
+            .workspace_shares()
+            .into_iter()
+            .map(|share| (share.tag.clone(), share.source.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if workspace_host_paths.is_empty() {
+            return Err(LaunchError::InvalidSpec("workspace share is missing"));
+        }
         let cmdline = self
             .spec
             .vm_create
@@ -627,37 +690,12 @@ impl Supervisor {
             .and_then(|payload| payload.get_mut("cmdline"))
             .and_then(|value| value.as_str())
             .ok_or(LaunchError::InvalidSpec("VM create cmdline is missing"))?;
-        let mut cmdline = format!(
-            "{cmdline} vivarium.boot_identity={boot_identity} vivarium.workspace={}",
-            encode_cmdline_path(&workspace_host_path)
-        );
-        // The launch half of each declared mount's plan, matched by tag against the bind table
-        // the image carries (`mount-bind.sh`). The entry is already percent-encoded — it goes
-        // verbatim, and the guest is the one decoder.
-        for share in &self.spec.shares {
-            use std::fmt::Write as _;
-            match &share.mount_plan {
-                None => {}
-                Some(plan) => match (plan.kind, plan.entry.as_deref()) {
-                    (crate::launch::MountPlanKind::Dir, _) => {
-                        let _ = write!(cmdline, " vivarium.mount.{}=dir", share.tag);
-                    }
-                    (crate::launch::MountPlanKind::File, Some(entry)) => {
-                        let _ = write!(cmdline, " vivarium.mount.{}=file:{entry}", share.tag);
-                    }
-                    (crate::launch::MountPlanKind::File, None) => {
-                        // `LaunchSpec::validate` refuses this shape; a spec that got here
-                        // anyway must not boot a guest with half a plan.
-                        return Err(LaunchError::InvalidSpec("a file mount plan lost its entry"));
-                    }
-                },
-            }
-        }
-        if cmdline.len() >= CMDLINE_LIMIT {
-            return Err(LaunchError::InvalidSpec(
-                "the launch parameters do not fit the guest kernel command line",
-            ));
-        }
+        let cmdline = compose_cmdline(
+            cmdline,
+            boot_identity,
+            &workspace_host_paths,
+            &self.spec.shares,
+        )?;
         self.spec.vm_create["payload"]["cmdline"] = serde_json::Value::String(cmdline);
         Ok(BootMetadata {
             // The launch contract's number, not the guest-handshake protocol's: `launch.json`
@@ -668,7 +706,7 @@ impl Supervisor {
             project_id: self.spec.project_id.clone(),
             target: self.spec.target.clone(),
             backend: crate::launch::BACKEND.to_owned(),
-            workspace_host_path,
+            workspace_host_paths,
         })
     }
 
@@ -1029,6 +1067,100 @@ mod tests {
         // (`Q-019`).
         let path = PathBuf::from(OsStr::from_bytes(b"/a/\xff\xfe"));
         assert_eq!(encode_cmdline_path(&path), "/a/%FF%FE");
+    }
+
+    /// Every declared workspace reaches the guest as its own parameter, encoded.
+    ///
+    /// The plural shape's central claim, and the one nothing asserted: with the single `workspace`
+    /// tag gone, a workspace that never made it onto the command line does not fail — it mirrors
+    /// nothing and the guest reports `absent`, which reads as a working boot with a missing tree.
+    #[test]
+    fn every_declared_workspace_gets_its_own_encoded_parameter() {
+        let workspaces = std::collections::BTreeMap::from([
+            ("ws0".to_owned(), PathBuf::from("/home/u/app")),
+            // A space, so this also pins that the per-workspace parameter is encoded rather than
+            // merely appended: an unencoded space would split one parameter into two.
+            ("ws1".to_owned(), PathBuf::from("/home/u/my notes")),
+            ("ws2".to_owned(), PathBuf::from("/srv/data")),
+        ]);
+        let cmdline = compose_cmdline("console=ttyS0", "b7f0", &workspaces, &[]).unwrap();
+        assert!(cmdline.starts_with("console=ttyS0 vivarium.boot_identity=b7f0"));
+        assert!(cmdline.contains(" vivarium.workspace.ws0=/home/u/app"));
+        assert!(cmdline.contains(" vivarium.workspace.ws1=/home/u/my%20notes"));
+        assert!(cmdline.contains(" vivarium.workspace.ws2=/srv/data"));
+        // Whitespace-separated is the format, so the count is checkable: base, boot identity, and
+        // one per workspace and nothing else.
+        assert_eq!(cmdline.split_whitespace().count(), 5);
+    }
+
+    /// The budget refuses rather than truncates, and it refuses at the boundary rather than near
+    /// it. A kernel copies at most `COMMAND_LINE_SIZE - 1` bytes and drops the rest in silence, so
+    /// the failure this prevents is a path that decodes short, binds, and leaves a session's cwd
+    /// naming a directory that does not exist.
+    #[test]
+    fn the_command_line_budget_refuses_at_its_boundary() {
+        let base = "console=ttyS0";
+        let identity = "b7f0";
+        // Grow one workspace path until the composition is refused, then check the last accepted
+        // one sat just under the limit — which pins the comparison as `>=` rather than `>`.
+        let mut accepted = None;
+        let mut refused = None;
+        for length in 1..CMDLINE_LIMIT {
+            let workspaces = std::collections::BTreeMap::from([(
+                "ws0".to_owned(),
+                PathBuf::from(format!("/{}", "a".repeat(length))),
+            )]);
+            match compose_cmdline(base, identity, &workspaces, &[]) {
+                Ok(cmdline) => accepted = Some(cmdline.len()),
+                // Any error ends the sweep; the assertions below are what decide whether it was
+                // the refusal this test is about. Matching the reason rather than panicking on
+                // the others keeps the failure a comparison a reader can see.
+                Err(error) => {
+                    refused = Some(format!("{error:?}"));
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            refused,
+            Some(
+                "InvalidSpec(\"the launch parameters do not fit the guest kernel command line\")"
+                    .to_owned()
+            )
+        );
+        assert_eq!(accepted, Some(CMDLINE_LIMIT - 1));
+    }
+
+    /// Many ordinary workspaces fit, and enough of them do not. The plan carries "roughly fifteen
+    /// to twenty" as the practical bound; this is that estimate turned into an assertion so a
+    /// change to the parameter's shape shows up as a moved number rather than as a surprise on
+    /// somebody's manifest.
+    #[test]
+    fn an_ordinary_workspace_set_fits_the_budget_and_an_extravagant_one_does_not() {
+        let ordinary = (0..15)
+            .map(|index| {
+                (
+                    format!("ws{index}"),
+                    PathBuf::from(format!("/home/u/projects/service-{index}")),
+                )
+            })
+            .collect();
+        assert!(compose_cmdline("console=ttyS0", "b7f0", &ordinary, &[]).is_ok());
+
+        let extravagant = (0..80)
+            .map(|index| {
+                (
+                    format!("ws{index}"),
+                    PathBuf::from(format!("/home/u/projects/service-{index}")),
+                )
+            })
+            .collect();
+        assert!(matches!(
+            compose_cmdline("console=ttyS0", "b7f0", &extravagant, &[]),
+            Err(LaunchError::InvalidSpec(
+                "the launch parameters do not fit the guest kernel command line"
+            ))
+        ));
     }
 
     #[test]

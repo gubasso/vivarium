@@ -24,7 +24,7 @@ pub use spec::{
     BACKEND, BackendPrograms, BootMetadata, CredentialSpec, DescriptorBudget, EgressSpec,
     GuestSession, IdentityTranslation, LAUNCH_SCHEMA_VERSION, LaunchEgressMode, LaunchSpec,
     MountPlan, MountPlanKind, NetworkSpec, ResourceSpec, RuntimePaths, ShareSpec, SocketLegs,
-    VIRTIOFSD_RLIMIT_NOFILE, VersionEnvelope, VolumeSpec, WORKSPACE_SHARE_TAG, unmirrorable,
+    VIRTIOFSD_RLIMIT_NOFILE, VersionEnvelope, VolumeSpec, nested_workspaces, unmirrorable,
 };
 pub use supervisor::{
     ChildExit, ChildKind, GuestReadiness, LaunchReady, ShutdownReason, Supervisor,

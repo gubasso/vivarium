@@ -50,7 +50,7 @@ pub use identity::{
 };
 pub use manifest::{
     DefaultVolume, Egress, EgressMode, Manifest, ManifestOrigin, Mount, Resources, Volume,
-    parse_manifest,
+    Workspace, parse_manifest,
 };
 pub use materialize::{persist_created_lock, prepare_generated_flake};
 pub use registry::{Binding, REGISTRY_FILE, Registry, registry_path};

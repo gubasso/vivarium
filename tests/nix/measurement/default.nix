@@ -22,6 +22,7 @@
   storeLayout,
   storeCanaryExpression,
   storeFreeSpaceHook,
+  workspacesInternalRoot,
   legs,
 }:
 
@@ -62,7 +63,12 @@ let
 
   # The extra arguments the leg modules take beyond the standard module set.
   legArgs = {
-    _module.args = { inherit storeLayout storeCanaryExpression storeFreeSpaceHook; };
+    _module.args = {
+      inherit storeLayout storeCanaryExpression storeFreeSpaceHook;
+      # Derived from the guest's own share list rather than spelled a fourth
+      # time: the leg asserts against where ws0 actually mounted.
+      verificationWorkspaceInternal = "${workspacesInternalRoot}/ws0";
+    };
   };
 
   # Chain the selected legs in declared order: each is ordered after the one

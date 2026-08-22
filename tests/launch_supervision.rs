@@ -117,10 +117,10 @@ fn fixture(name: &str) -> LaunchSpec {
         },
         shares: vec![
             ShareSpec {
-                tag: "workspace".into(),
+                tag: "ws0".into(),
                 source: std::env::current_dir().unwrap(),
-                mount_point: "/run/vivarium-workspace".into(),
-                socket: child("workspace.sock"),
+                mount_point: "/run/vivarium-workspaces/ws0".into(),
+                socket: child("ws0.sock"),
                 cache: "auto".into(),
                 read_only: false,
                 mount_plan: None,

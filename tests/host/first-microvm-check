@@ -349,10 +349,10 @@ else
       pass "realised closure contains cloud-hypervisor, ch-remote package, and virtiofsd"
     else fail "realised backend closure" "$closure_output"; fi
 
-    common=(--workspace "$REPO_ROOT" --runtime-dir /run/user/1000/vivarium/canary-a --volume-dir /var/lib/vivarium/canary-a --supervisor "$(command -v env)" --uid 1000 --gid 1000 --memory-mib 2048 --vcpu 2 --print-static-arguments)
+    common=(--workspace ws0 "$REPO_ROOT" --runtime-dir /run/user/1000/vivarium/canary-a --volume-dir /var/lib/vivarium/canary-a --supervisor "$(command -v env)" --uid 1000 --gid 1000 --memory-mib 2048 --vcpu 2 --print-static-arguments)
     static_a=$("$launcher" "${common[@]}" 2>&1)
     static_status=$?
-    static_b=$("$launcher" --workspace /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume-dir /srv/vivarium/canary-b --supervisor "$(command -v env)" --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1)
+    static_b=$("$launcher" --workspace ws0 /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume-dir /srv/vivarium/canary-b --supervisor "$(command -v env)" --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1)
     static_b_status=$?
     if ((static_status == 0 && static_b_status == 0)); then
       # Every runtime path in `vmCreate` is scrubbed here, and the list has to grow
@@ -528,7 +528,7 @@ else
   image_allocated() { stat -c '%b*%B=%s' -- "$1" 2>/dev/null || echo unavailable; }
   store_alloc_before=$(image_allocated "$store_volume")
 
-  launch_args=(--workspace "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 --project-id first-microvm --target "$run_id")
+  launch_args=(--workspace ws0 "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 --project-id first-microvm --target "$run_id")
   unit_name="vivarium-first-microvm-$run_id.service"
 
   launch_attempt=0

@@ -483,7 +483,7 @@ else
   # own `systemd-run --scope` and waiting on that pid ended the run seconds into
   # the experiment while the guest was still working. `--project-id`/`--target`
   # make the unit's name predictable so the unit can be the lifetime instead.
-  launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir"
+  launch_args=(--workspace ws0 "$WORKSPACE" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir"
     --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2
     --project-id gc-interlock --target "$$")
   unit_name="vivarium-gc-interlock-$$.service"

@@ -934,6 +934,16 @@ fn render_manifest_module(manifest: &Manifest) -> String {
         }
         vivarium.push_str(" ];\n");
     }
+    if !manifest.workspaces.is_empty() {
+        vivarium.push_str("    workspaces = [");
+        for workspace in &manifest.workspaces {
+            vivarium.push_str(&format!(
+                " {{ source = \"{}\"; }}",
+                nix_string(&workspace.source)
+            ));
+        }
+        vivarium.push_str(" ];\n");
+    }
     if let Some(resources) = manifest.resources
         && (resources.mem_mib.is_some() || resources.vcpu.is_some())
     {
@@ -1024,6 +1034,7 @@ mod tests {
 
     use super::{
         BaselineInputs, EffectiveLock, GeneratedEntry, GeneratedFlakePlan, ResolvedComposition,
+        render_manifest_module,
     };
     use crate::config::test_support::ScratchDirectory;
     use crate::config::{ArtifactForm, ArtifactKind, Manifest, ResolvedArtifact, XdgRoots};
@@ -1048,6 +1059,27 @@ mod tests {
         );
         assert_eq!(pinned.nixpkgs, "path:/nix/store/x-source");
         assert_eq!(pinned.microvm, BaselineInputs::default().microvm);
+    }
+
+    #[test]
+    fn manifest_module_renders_every_workspace_source() {
+        let manifest = Manifest {
+            image: "base".to_owned(),
+            workspaces: vec![
+                crate::config::Workspace {
+                    source: "${HOME}/one".to_owned(),
+                },
+                crate::config::Workspace {
+                    source: "/two".to_owned(),
+                },
+            ],
+            ..Manifest::default()
+        };
+        assert!(
+            render_manifest_module(&manifest).contains(
+                "workspaces = [ { source = \"\\${HOME}/one\"; } { source = \"/two\"; } ];"
+            )
+        );
     }
 
     #[test]

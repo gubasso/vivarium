@@ -2276,11 +2276,14 @@ fn workflow_17_worktree() -> Result<(), Failed> {
     // source and target are the SAME path, which is the whole point — the worktree's `.git`
     // file names it absolutely, from either side.
     let main_spelling = main_repo.to_string_lossy().into_owned();
+    let worktree_spelling = worktree.to_string_lossy().into_owned();
     arrange_manifest(
         &tp,
         "wf17-worktree",
         &format!(
-            "\n[[mounts]]\nsource = \"{main_spelling}\"\n\
+            "\n[[workspaces]]\nsource = '{main_spelling}'\n\
+            \n[[workspaces]]\nsource = '{worktree_spelling}'\n\
+            \n[[mounts]]\nsource = \"{main_spelling}\"\n\
             target = \"{main_spelling}\"\nreadonly = false\n"
         ),
         "",
@@ -2570,6 +2573,12 @@ fn arrange_manifest_with_image(
     manifest_tail: &str,
     image_body: &str,
 ) -> Result<(), Failed> {
+    let workspace =
+        if manifest_body.contains("[[workspaces]]") || manifest_tail.contains("[[workspaces]]") {
+            String::new()
+        } else {
+            format!("\n[[workspaces]]\nsource = '{}'\n", tp.project().display())
+        };
     write_file(
         &tp.config()
             .join("vivarium")
@@ -2583,7 +2592,7 @@ fn arrange_manifest_with_image(
             .join("vivarium")
             .join("manifests")
             .join(format!("{name}.toml")),
-        &format!("image = \"minimal\"\n{manifest_body}{manifest_tail}"),
+        &format!("image = \"minimal\"\n{manifest_body}{manifest_tail}{workspace}"),
     )
     .map_err(io_failed)
 }

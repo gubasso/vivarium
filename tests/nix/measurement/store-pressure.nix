@@ -14,7 +14,7 @@
   pkgs,
   storeLayout,
   storeFreeSpaceHook,
-  workspaceInternalMountPoint,
+  verificationWorkspaceInternal,
   ...
 }:
 
@@ -33,7 +33,7 @@ let
   # by default. Measured not to reach `autoGC`, which is why the scaled image
   # exists at all; retained because arm D's negative result is the evidence.
   extraConfFile = "${freeSpaceHookDir}/nix-extra.conf";
-  pressureHandshakeDir = "${workspaceInternalMountPoint}/.vivarium-store-pressure";
+  pressureHandshakeDir = "${verificationWorkspaceInternal}/.vivarium-store-pressure";
 in
 {
   systemd = {
@@ -71,7 +71,7 @@ in
       # `RequiresMountsFor` carries both the requirement and the ordering, so the
       # share needs no separately spelled — and separately escaped — unit name.
       unitConfig.RequiresMountsFor = [
-        workspaceInternalMountPoint
+        verificationWorkspaceInternal
         upperRoot
       ];
       serviceConfig = {

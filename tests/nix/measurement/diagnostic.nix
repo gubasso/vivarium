@@ -6,12 +6,12 @@
 # never by `nix/guest.nix` — see ADR-0095. Note that it no longer owns the
 # poweroff: `tests/nix/measurement/default.nix` composes a stop unit ordered after
 # every selected leg, so an image built without this leg still stops.
-{ pkgs, workspaceInternalMountPoint, ... }:
+{ pkgs, verificationWorkspaceInternal, ... }:
 
 {
   systemd.services.vivarium-first-microvm-diagnostic = {
     enableStrictShellChecks = true;
-    environment.VIVARIUM_WORKSPACE_INTERNAL = workspaceInternalMountPoint;
+    environment.VIVARIUM_WORKSPACE_INTERNAL = verificationWorkspaceInternal;
     description = "Deterministic first-microVM diagnostic";
     wantedBy = [ "multi-user.target" ];
     after = [ "vivarium-volume-prepare.service" ];
@@ -19,7 +19,7 @@
     # Expands to `Requires` plus `After` on the synthesised mount unit, which is
     # why no escaped unit name appears here. The share's internal mount point
     # (ADR-0100), because the diagnostic reports on the share.
-    unitConfig.RequiresMountsFor = [ workspaceInternalMountPoint ];
+    unitConfig.RequiresMountsFor = [ verificationWorkspaceInternal ];
     serviceConfig = {
       Type = "oneshot";
       # Deliberately *not* `journal+console`. journald forwards to the console

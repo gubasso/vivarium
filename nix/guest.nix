@@ -5,8 +5,7 @@
   storeLayout,
   volumeLabel,
   storeVolumeLabel,
-  workspaceSourceSentinel,
-  workspaceInternalMountPoint,
+  workspacesInternalRoot,
   volumeDirSentinel,
   homeVolumeName,
   storeVolumeName,
@@ -129,6 +128,16 @@ let
   # above: the option surface lives in `nix/vivarium-options.nix`, which only a
   # generated flake composes.
   requestedMounts = config.vivarium.mounts or [ ];
+  requestedWorkspaces = config.vivarium.workspaces or [ ];
+
+  declaredWorkspaces = lib.imap0 (index: workspace: {
+    tag = "ws${toString index}";
+    internal = "${workspacesInternalRoot}/ws${toString index}";
+    inherit (workspace) source;
+  }) requestedWorkspaces;
+  workspaceTable = pkgs.writeText "vivarium-workspace-table" (
+    lib.concatMapStrings (workspace: "${workspace.tag} ${workspace.internal}\n") declaredWorkspaces
+  );
 
   # Guest-side target expansion (ADR-0020): `~` is the guest home, and each side
   # expands its own home, which is what lets an identity mount such as
@@ -212,7 +221,7 @@ let
     "/run/nscd"
     "/run/opengl-driver"
     upperRoot
-    workspaceInternalMountPoint
+    workspacesInternalRoot
   ];
 
   # `sandbox.egress` is build-channel policy the guest system is built against.
@@ -302,33 +311,25 @@ in
           readOnly = true;
           cache = "always";
         }
-        {
-          tag = "workspace";
-          source = workspaceSourceSentinel;
-          # A build-time constant, and not where a session finds the project.
-          # N16 puts the project at the host's own absolute path so git's linked
-          # worktrees resolve from either side; that path is launch-channel and
-          # this field is build output, so `vivarium-workspace.service` below
-          # binds the share where the host holds it (ADR-0100). The workspace is
-          # consequently the one share whose session-visible location is absent
-          # from the guest's own fstab.
-          mountPoint = workspaceInternalMountPoint;
-          proto = "virtiofs";
-          cache = "auto";
-          posixAcl = false;
-          # spec/06 requires a *complete* bidirectional 1:1 translation: guest ids
-          # outside the map are forbidden, host ids outside it appear as overflow.
-          # virtiofsd's default for an unmapped id is identity, so a lone
-          # `map:` range is not the contract — the forbid/squash ranges have to be
-          # spelled out. They depend on the launch-time host uid/gid, so the
-          # launcher expands each token into the full argument run (N19).
-          extraArgs = [
-            "@UID_TRANSLATION@"
-            "@GID_TRANSLATION@"
-          ];
-        }
       ]
-      # One share per declared mount, appended after the two reserved entries —
+      ++ map (workspace: {
+        inherit (workspace) tag source;
+        mountPoint = workspace.internal;
+        proto = "virtiofs";
+        cache = "auto";
+        posixAcl = false;
+        # spec/06 requires a *complete* bidirectional 1:1 translation: guest ids
+        # outside the map are forbidden, host ids outside it appear as overflow.
+        # virtiofsd's default for an unmapped id is identity, so a lone
+        # `map:` range is not the contract — the forbid/squash ranges have to be
+        # spelled out. They depend on the launch-time host uid/gid, so the
+        # launcher expands each token into the full argument run (N19).
+        extraArgs = [
+          "@UID_TRANSLATION@"
+          "@GID_TRANSLATION@"
+        ];
+      }) declaredWorkspaces
+      # One share per declared mount, appended after the store and workspaces —
       # the same "reserved first, declared appended" contract the volumes keep.
       # `source` carries the DECLARED string verbatim, `${VAR}` and all: a host
       # path may not enter a build output (N19), and expansion against the host
@@ -574,8 +575,8 @@ in
         # because a host path may not enter a build output (N19); this binds it
         # where the host holds the project, reading that path from the kernel
         # command line the launcher wrote it to.
-        vivarium-workspace = {
-          description = "Bind the project tree at the host path it occupies";
+        vivarium-workspace = lib.mkIf (declaredWorkspaces != [ ]) {
+          description = "Bind declared workspace trees at their host paths";
           wantedBy = [ "multi-user.target" ];
           # `RequiresMountsFor` rather than a bare `after`, and the `Requires`
           # half is what matters: a virtiofs mount that FAILED leaves an empty
@@ -583,7 +584,7 @@ in
           # makes then lands on the guest's own root filesystem while looking
           # exactly like the project — lost at shutdown, silently. Ordering alone
           # does not exclude that; a requirement does.
-          unitConfig.RequiresMountsFor = [ workspaceInternalMountPoint ];
+          unitConfig.RequiresMountsFor = map (workspace: workspace.internal) declaredWorkspaces;
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
@@ -600,7 +601,10 @@ in
             pkgs.util-linux
             pkgs.gnugrep
           ];
-          environment.VIVARIUM_WORKSPACE_INTERNAL = workspaceInternalMountPoint;
+          environment = {
+            VIVARIUM_WORKSPACES_INTERNAL_ROOT = workspacesInternalRoot;
+            VIVARIUM_WORKSPACE_TABLE = workspaceTable;
+          };
           # Same `enableStrictShellChecks` exemption as `vivarium-volume-prepare`
           # below, for the same reason: this unit ships in the image, and the
           # swap to `writeShellApplication` would move the guest's derivation
@@ -666,17 +670,17 @@ in
           # reading `systemctl show -p After vivarium-agent.service` in a live guest,
           # where neither name appeared.
           after = [
-            "vivarium-workspace.service"
             "vivarium-volume-prepare.service"
           ]
+          ++ lib.optional (declaredWorkspaces != [ ]) "vivarium-workspace.service"
           # A session must see every declared mount for the same reason it must
           # see the workspace: one loud boot failure beats one refusal per
           # session naming three possible causes.
           ++ lib.optional (declaredMounts != [ ]) "vivarium-mounts.service";
           requires = [
-            "vivarium-workspace.service"
             "vivarium-volume-prepare.service"
           ]
+          ++ lib.optional (declaredWorkspaces != [ ]) "vivarium-workspace.service"
           ++ lib.optional (declaredMounts != [ ]) "vivarium-mounts.service";
           serviceConfig = {
             Type = "simple";
@@ -832,11 +836,16 @@ in
           && !(lib.hasPrefix "/nix" volume.mount)
           && volume.mount != sessionUser.home
           && volume.mount != upperRoot
-          && volume.mount != workspaceInternalMountPoint;
+          && volume.mount != workspacesInternalRoot
+          # The whole subtree, not just its root: since ADR-0108 the shares mount
+          # one level below it as `wsN`, so an equality test alone would leave
+          # every actual workspace mount point free for a volume to shadow. The
+          # host-side `GUEST_OWNED_PATHS` entry already reserves the subtree.
+          && !(lib.hasPrefix "${workspacesInternalRoot}/" volume.mount);
         message =
           "volume `${volume.name}` mounts at `${volume.mount}`, which is not an absolute "
           + "whitespace-free path the guest leaves free (`/nix`, `${sessionUser.home}`, "
-          + "`${upperRoot}`, and `${workspaceInternalMountPoint}` are the guest's own)";
+          + "`${upperRoot}`, and `${workspacesInternalRoot}` are the guest's own)";
       }
     ]) declaredVolumes
     ++ [

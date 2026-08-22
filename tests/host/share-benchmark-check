@@ -387,7 +387,7 @@ else
       # started while pool 0 did": nothing about the pool size, just whichever
       # boot lost the race. `--project-id`/`--target` make the unit's name
       # predictable so the unit can be the lifetime instead.
-      launch_args=(--workspace "$WORKSPACE" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir"
+      launch_args=(--workspace ws0 "$WORKSPACE" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir"
         --uid "$(id -u)" --gid "$(id -g)" --memory-mib 4096 --vcpu 4
         --project-id share-bench --target "$$-$n")
       unit_name="vivarium-share-bench-$$-$n.service"

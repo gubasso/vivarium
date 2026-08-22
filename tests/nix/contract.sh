@@ -1,5 +1,9 @@
 # shellcheck shell=bash
-set -eu
+set -Eeu
+# This file is one long unnamed assertion list, so a bare `set -e` exit names no
+# assertion. The trap is what turns "the contract failed" into a line number;
+# `-E` is what makes it fire from inside a function or a subshell too.
+trap 'echo "contract failed at line $LINENO" >&2' ERR
 # The volume label is a build-to-launch contract that only a boot test would
 # otherwise catch: the launcher's mkfs applies it, and the guest resolves the
 # volume through /dev/disk/by-label/<label>. Compare the two independently
@@ -11,7 +15,7 @@ set -eu
 launcher_json=$VIVARIUM_RUNNER/share/vivarium/launch-arguments.json
 test -r "$launcher_json"
 grep -qF "$(readlink -f "$launcher_json")" "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"
-test "$(jq -r .schemaVersion "$launcher_json")" = 9
+test "$(jq -r .schemaVersion "$launcher_json")" = 10
 test "$(jq -r .descriptorBudget.limit "$launcher_json")" = 524288
 test "$(jq -r .descriptorBudget.workerPoolSize "$launcher_json")" = "$VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE"
 test "$(jq -r .socketLegs.api "$launcher_json")" = '@API_SOCKET@'
@@ -23,13 +27,13 @@ test "$(jq -r .vmCreate.serial.mode "$launcher_json")" = Socket
 test "$(jq -r .vmCreate.console.mode "$launcher_json")" = Off
 test "$(jq -r .vmCreate.landlock_enable "$launcher_json")" = true
 test "$(jq -r '.vmCreate.fs | length' "$launcher_json")" = "$(jq -r '.shareLaunch | length' "$launcher_json")"
-# Schema 8: the share list is no longer a fixed pair. Exactly one store and one
-# workspace origin whatever a layer declared, and every share's socket token in
+# Schema 10: workspace shares are explicit and repeatable, and every share's socket token in
 # the one shape the runner substitutes generically — a tag whose token diverged
 # would survive substitution and be refused far from here, as an unresolved
 # token.
 test "$(jq -r '[.shareLaunch[] | select(.origin == "store")] | length' "$launcher_json")" = 1
-test "$(jq -r '[.shareLaunch[] | select(.origin == "workspace")] | length' "$launcher_json")" = 1
+workspace_rows=$(awk 'NF { count++ } END { print count + 0 }' <<<"$VIVARIUM_DECLARED_WORKSPACES")
+test "$(jq -r '[.shareLaunch[] | select(.origin == "workspace")] | length' "$launcher_json")" = "$workspace_rows"
 test "$(jq -r '[.shareLaunch[] | select(.socketToken != ("@SHARE_SOCKET_" + (.tag | ascii_upcase) + "@"))] | length' "$launcher_json")" = 0
 # Guest networking (schema 6): the two renderings of the one NIC agree with the
 # network object the supervisor reads, and the shipped image defaults to spec/05's
@@ -97,21 +101,25 @@ test "$checked_mounts" -ge 1
 # The mirror is what puts the project where a session expects it, and every way it
 # can fail quietly is checked here, because none of them fails loudly at runtime.
 mirror_unit=$VIVARIUM_GUEST_SYSTEM/etc/systemd/system/vivarium-workspace.service
-test -f "$mirror_unit"
-# The share this binds must be the share the launcher serves. Two independently
-# realised artifacts again: the unit's own requirement against the launcher JSON.
-workspace_mount_point=$(jq -r '.shareLaunch[] | select(.tag == "workspace") | .mountPoint' "$launcher_json")
-test "$workspace_mount_point" = "$VIVARIUM_WORKSPACE_INTERNAL"
-grep -qF "RequiresMountsFor=$VIVARIUM_WORKSPACE_INTERNAL" "$mirror_unit"
-# A mount namespace of its own would make the bind invisible to every other
-# process: the unit would succeed, log nothing, and change nothing. This is the
-# only thing standing between that outcome and a later blanket-hardening pass, so
-# it is an exact denial rather than a spot check.
-if grep -qE '^(PrivateMounts|ProtectSystem|ProtectHome|PrivateTmp|PrivateDevices|ReadOnlyPaths|ProtectKernelTunables|RootDirectory|MountAPIVFS)=' "$mirror_unit"; then exit 1; fi
-# spec/12 starts every session in the workspace, so an agent that can accept one
-# before the mirror exists hands out a cwd that does not exist.
-grep -qF 'vivarium-workspace.service' <<<"$(sed -n 's/^Requires=//p' "$agent_unit")"
-grep -qF 'vivarium-workspace.service' <<<"$(sed -n 's/^After=//p' "$agent_unit")"
+workspace_count=0
+while read -r tag mount_point source; do
+  [ -n "$tag" ] || continue
+  test "$(jq -r --arg tag "$tag" '.shareLaunch[] | select(.tag == $tag) | .mountPoint' "$launcher_json")" = "$mount_point"
+  test "$(jq -r --arg tag "$tag" '.shareLaunch[] | select(.tag == $tag) | .sourceToken' "$launcher_json")" = "$source"
+  workspace_count=$((workspace_count + 1))
+done <<<"$VIVARIUM_DECLARED_WORKSPACES"
+if ((workspace_count > 0)); then
+  test -f "$mirror_unit"
+  while read -r _ mount_point _; do
+    [ -n "$mount_point" ] || continue
+    grep -qF "$mount_point" <<<"$(sed -n 's/^RequiresMountsFor=//p' "$mirror_unit")"
+  done <<<"$VIVARIUM_DECLARED_WORKSPACES"
+  if grep -qE '^(PrivateMounts|ProtectSystem|ProtectHome|PrivateTmp|PrivateDevices|ReadOnlyPaths|ProtectKernelTunables|RootDirectory|MountAPIVFS)=' "$mirror_unit"; then exit 1; fi
+  grep -qF 'vivarium-workspace.service' <<<"$(sed -n 's/^Requires=//p' "$agent_unit")"
+  grep -qF 'vivarium-workspace.service' <<<"$(sed -n 's/^After=//p' "$agent_unit")"
+else
+  test ! -e "$mirror_unit"
+fi
 # And spec/06 requires the first-boot home ownership applied before the agent
 # accepts a session. Both units are `WantedBy=multi-user.target`, so without an
 # ordering edge which one wins is undefined — and the losing order hands a session
@@ -121,7 +129,7 @@ grep -qF 'vivarium-volume-prepare.service' <<<"$(sed -n 's/^Requires=//p' "$agen
 grep -qF 'vivarium-volume-prepare.service' <<<"$(sed -n 's/^After=//p' "$agent_unit")"
 # Not under `/run/vivarium`, which `RuntimeDirectory=vivarium` on the agent has
 # systemd delete whenever that unit restarts.
-case $VIVARIUM_WORKSPACE_INTERNAL in /run/vivarium | /run/vivarium/*) exit 1 ;; esac
+case $VIVARIUM_WORKSPACES_INTERNAL_ROOT in /run/vivarium | /run/vivarium/*) exit 1 ;; esac
 # The host refuses to mirror a project onto this path, and its copy of the
 # literal lives in the installed binary, which this build no longer carries
 # (ADR-0102). The cross-language pairing moved with it: a unit test in
@@ -291,7 +299,9 @@ for feature in local-overlay-store read-only-local-store; do
 done
 # Per-share virtiofsd policy must reach the launcher from the guest module.
 grep -F '"cache":"always"' "$launcher_json"
-grep -F '"cache":"auto"' "$launcher_json"
+if jq -e '.shareLaunch | any(.origin != "store")' "$launcher_json" >/dev/null; then
+  grep -F '"cache":"auto"' "$launcher_json"
+fi
 grep -E '^overlay[[:space:]]+/nix/store[[:space:]]+overlay' "$fstab"
 # spec/06:22 — a read-only share must be read-only inside the guest too, which
 # upstream's generated `defaults` does not give us. Total over every `readOnly`

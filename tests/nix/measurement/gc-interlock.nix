@@ -5,12 +5,12 @@
 #
 # A measurement leg. It is composed into an image only by `tests/nix/measurement`,
 # never by `nix/guest.nix` — see ADR-0095.
-{ pkgs, workspaceInternalMountPoint, ... }:
+{ pkgs, verificationWorkspaceInternal, ... }:
 
 {
   systemd.services.vivarium-gc-interlock = {
     enableStrictShellChecks = true;
-    environment.VIVARIUM_GC_INTERLOCK_DIR = "${workspaceInternalMountPoint}/.vivarium-gc-interlock";
+    environment.VIVARIUM_GC_INTERLOCK_DIR = "${verificationWorkspaceInternal}/.vivarium-gc-interlock";
     description = "ADR-0085 host garbage-collection interlock measurement";
     wantedBy = [ "multi-user.target" ];
     # `RequiresMountsFor` alone: it expands to both the `Requires` and the
@@ -18,7 +18,7 @@
     # hand — which the mount point's own value would have to be spelled into —
     # is unnecessary. The share, not the mirror (ADR-0100): this leg measures
     # the share, and the internal mount point is where the share is.
-    unitConfig.RequiresMountsFor = [ workspaceInternalMountPoint ];
+    unitConfig.RequiresMountsFor = [ verificationWorkspaceInternal ];
     serviceConfig = {
       Type = "oneshot";
       StandardOutput = "journal";

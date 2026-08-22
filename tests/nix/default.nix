@@ -39,7 +39,7 @@ let
         pkgs
         volumeLabel
         storeVolumeLabel
-        workspaceInternalMountPoint
+        workspacesInternalRoot
         ;
       inherit (image) guest runner;
       expect = {
@@ -48,9 +48,12 @@ let
         # a third reading of the same evaluation instead of against the request.
         # Everything past the two reserved volumes is what a layer declared.
         declaredVolumes = lib.drop 2 image.guest.config.microvm.volumes;
-        # Same shape for shares: the two reserved entries lead, and everything
-        # after them is a declared mount's share (slice 019).
-        declaredMounts = lib.drop 2 image.guest.config.microvm.shares;
+        declaredWorkspaces = lib.filter (
+          share: lib.hasPrefix "ws" share.tag
+        ) image.guest.config.microvm.shares;
+        declaredMounts = lib.filter (
+          share: lib.hasPrefix "mnt" share.tag
+        ) image.guest.config.microvm.shares;
         # Read off the image's own resolved settings. Re-deriving them from the
         # defaults is what `nix/default.nix` used to do to itself, and it is how the
         # leg-to-unit map came to exist twice.
@@ -75,7 +78,7 @@ let
       settings = verificationDefaults // overrides;
       measurement = import ./measurement {
         inherit lib;
-        inherit (product) storeLayout storeCanaryExpression;
+        inherit (product) storeLayout storeCanaryExpression workspacesInternalRoot;
         inherit (settings) legs storeFreeSpaceHook;
       };
       productOverrides = builtins.removeAttrs settings [
@@ -87,7 +90,17 @@ let
       # the inert-versus-absent failure AGENTS.md names. The measurement legs stay
       # first so a fixture module can override what they set.
       image = product.mkImage (
-        productOverrides // { extraModules = measurement.modules ++ (settings.extraModules or [ ]); }
+        productOverrides
+        // {
+          extraModules = [
+            {
+              imports = [ product.optionsModule ];
+              vivarium.workspaces = [ { source = "/VIVARIUM_VERIFICATION_WORKSPACE"; } ];
+            }
+          ]
+          ++ measurement.modules
+          ++ (settings.extraModules or [ ]);
+        }
       );
     in
     lib.throwIf (unknownKeys != [ ])
@@ -170,6 +183,10 @@ let
       let
         image = product.mkImage {
           extraModules = [
+            {
+              imports = [ product.optionsModule ];
+              vivarium.workspaces = [ { source = "/VIVARIUM_VERIFICATION_WORKSPACE"; } ];
+            }
             ({ pkgs, ... }: {
               vivarium.credentials.agents = [ "ssh" ];
               environment.systemPackages = [ pkgs.socat ];
