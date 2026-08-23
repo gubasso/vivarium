@@ -25,7 +25,7 @@ use crate::diagnostic::Locus;
 /// The cache filename. It deliberately cannot collide with the removed authored registry.
 pub const INDEX_FILE: &str = "workspace-index.json";
 
-/// One manifest-library file and the mtime that decides whether cached derivation is current.
+/// One manifest-library file and what decides whether cached derivation of it is still current.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManifestStamp {
@@ -35,6 +35,22 @@ pub struct ManifestStamp {
     pub path: PathBuf,
     modified_seconds: u64,
     modified_nanos: u32,
+    /// A hash of the manifest's own bytes.
+    ///
+    /// The mtime alone cannot carry this rung, and the failure it misses is the worst one this
+    /// cache can produce. A rewrite that preserves the modification time — a restore from an
+    /// archive, a `cp -p`, or two edits inside one tick on a filesystem with coarse mtime
+    /// granularity — leaves every stamp equal, so the index is reused and a manifest that has
+    /// since claimed the invoking directory is never even a candidate. The resolver then accepts
+    /// the previously indexed owner and reaches a sandbox silently, where the honest answer is
+    /// that two manifests now claim this directory. Recomputed from the library like every other
+    /// field, so the index stays derived rather than authoritative.
+    ///
+    /// Not a cryptographic digest and deliberately not treated as one: the threat model here is
+    /// accidental change, not forgery, and the consequence of a hash that disagrees with a
+    /// previous run's — across a toolchain that reseeds the hasher, say — is a cache miss and a
+    /// rebuild. A rebuildable cache can afford a spurious miss; it cannot afford a spurious hit.
+    content_hash: u64,
 }
 
 impl ManifestStamp {
@@ -52,6 +68,19 @@ impl ManifestStamp {
     /// Returns a state-channel error if metadata or the modification time cannot be read for any
     /// reason other than the manifest having gone.
     pub fn read(name: String, path: PathBuf) -> Result<Option<Self>, RegistryError> {
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(RegistryError::io(
+                    "index-source-unreadable",
+                    path.clone(),
+                    format!("could not read manifest `{}`", path.display()),
+                    source,
+                    false,
+                ));
+            }
+        };
         let metadata = match fs::metadata(&path) {
             Ok(metadata) => metadata,
             Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -88,18 +117,38 @@ impl ManifestStamp {
             path,
             modified_seconds: elapsed.as_secs(),
             modified_nanos: elapsed.subsec_nanos(),
+            content_hash: content_hash(&bytes),
         }))
     }
 
     #[cfg(test)]
     fn fixture(name: &str, tick: u64) -> Self {
+        Self::fixture_with_text(name, tick, name)
+    }
+
+    /// A stamp whose mtime and whose bytes move independently, which is what the same-mtime
+    /// rewrite case needs to be expressible at all.
+    #[cfg(test)]
+    fn fixture_with_text(name: &str, tick: u64, text: &str) -> Self {
         Self {
             name: name.to_owned(),
             path: PathBuf::from(format!("/config/manifests/{name}.toml")),
             modified_seconds: tick,
             modified_nanos: 0,
+            content_hash: content_hash(text.as_bytes()),
         }
     }
+}
+
+/// Hashes a manifest's bytes for [`ManifestStamp::content_hash`].
+///
+/// `DefaultHasher` rather than a dependency, for the reason recorded on that field: this
+/// distinguishes accidental change, and a disagreement across runs costs a rebuild.
+fn content_hash(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// One successfully parsed manifest's recomputable owner declarations.
@@ -345,6 +394,50 @@ mod tests {
             calls.get(),
             3,
             "an mtime change did not invalidate the cache"
+        );
+        Ok(())
+    }
+
+    /// A rewrite that preserves the modification time still invalidates the cache.
+    ///
+    /// The case that makes the content hash load-bearing rather than belt-and-braces: with mtime
+    /// as the only stamp, the index below is reused, the rewritten manifest never becomes a
+    /// candidate, and resolution reaches the previously indexed owner while saying nothing about
+    /// the second claim. `cp -p`, an archive restore, and two edits inside one tick on a coarse
+    /// filesystem all produce exactly this.
+    #[test]
+    fn a_same_mtime_rewrite_invalidates_the_cache() -> Result<(), Box<dyn std::error::Error>> {
+        let scratch = ScratchDirectory::new()?;
+        let cache = scratch.path().join("cache");
+
+        let before = vec![ManifestStamp::fixture_with_text(
+            "owner",
+            1,
+            "source = '/one'",
+        )];
+        let first = load_or_rebuild(&cache, before, |_| Some(vec!["/one".to_owned()]))?;
+        assert_eq!(
+            first
+                .manifests()
+                .first()
+                .map(|m| m.workspace_sources.clone()),
+            Some(vec!["/one".to_owned()])
+        );
+
+        // Same name, same mtime, different bytes — the whole point.
+        let after = vec![ManifestStamp::fixture_with_text(
+            "owner",
+            1,
+            "source = '/two'",
+        )];
+        let second = load_or_rebuild(&cache, after, |_| Some(vec!["/two".to_owned()]))?;
+        assert_eq!(
+            second
+                .manifests()
+                .first()
+                .map(|m| m.workspace_sources.clone()),
+            Some(vec!["/two".to_owned()]),
+            "a same-mtime rewrite must rebuild rather than serve the stale derivation"
         );
         Ok(())
     }

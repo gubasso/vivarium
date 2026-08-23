@@ -756,7 +756,34 @@ fn workflow_03_literal_path(tp: &TempProject) -> Result<(), Failed> {
         &["kind", "key", "layers"],
     ))?;
     check(expect_stdout_mentions(&still_readable, "literal-path"))?;
-    check(expect_stdout_mentions(&still_readable, "/home/ana"))
+    check(expect_stdout_mentions(&still_readable, "/home/ana"))?;
+
+    // ADR-0108's ownership half, end to end rather than only in the merged-view unit tests.
+    // `vivarium.workspaces` is an ordinary `listOf`, so a shared layer setting it merges without
+    // complaint — and it must not, because ownership of a directory is decided from manifest text
+    // alone. A workspace a piece contributes would own a tree the derived index cannot see and
+    // the `78` refusal cannot name. Asserted through a real evaluation because the refusal reads
+    // the report's per-layer `defines`, and a rule that reads a key the report never emits would
+    // pass every unit test while never firing.
+    write_piece(
+        tp,
+        "team",
+        r#"{ ... }: {
+    vivarium.workspaces = [ { source = "\${HOME}/team-tree"; } ];
+}
+"#,
+    )?;
+    let owned_by_a_piece = viv_with_env(
+        tp,
+        &["config", "eval", "--json"],
+        &[("VIVARIUM_MANIFEST", "ana-api")],
+    )?;
+    check(expect_code(&owned_by_a_piece, EX_DATAERR))?;
+    check(expect_stderr_mentions(
+        &owned_by_a_piece,
+        "declared outside the manifest",
+    ))?;
+    check(expect_stderr_mentions(&owned_by_a_piece, "team"))
 }
 
 /// The equal-priority tie. Under ADR-0040's convention a shared piece proposes with
@@ -1597,6 +1624,27 @@ fn workflow_16_doctor() -> Result<(), Failed> {
     ))?;
     check(expect_stderr_mentions(&ambiguous, "doctor-ownership"))?;
     check(expect_stderr_mentions(&ambiguous, "doctor-second-owner"))?;
+
+    // ADR-0109's second consumer, on the same condition. `config` refused above; `doctor` must
+    // report the identical finding and NOT refuse, because a doctor that exited `78` on the
+    // condition it exists to explain would be self-defeating. Asserted here rather than trusted:
+    // the finding reaches doctor through a path where an ordinary `.ok()` would erase it, and an
+    // erased finding renders as `no-manifest-bound`, which says the opposite of what happened.
+    let diagnosed = viv_at(&tp, &elsewhere, &["doctor"])?;
+    check(expect_code(&diagnosed, 0))?;
+    for named in ["doctor-ownership", "doctor-second-owner"] {
+        check(expect_stdout_mentions(&diagnosed, named))?;
+    }
+    check(expect_stdout_mentions(
+        &diagnosed,
+        "working-directory-declared",
+    ))?;
+    check(expect_stdout_mentions(&diagnosed, "manifest-resolves"))?;
+    // The stderr note too, and not as an afterthought: it is the one line that can contradict
+    // everything above it. `project` is `None` here for the opposite of the usual reason — two
+    // manifests declare this directory, not none — and a note saying none would tell the user
+    // the reverse of what the findings just said.
+    check(expect_stderr_mentions(&diagnosed, "more than one manifest"))?;
     Ok(())
 }
 

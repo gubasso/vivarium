@@ -458,6 +458,13 @@ pub struct Inputs<'a, E: Environment> {
     pub roots: &'a XdgRoots,
     /// `None` when no manifest is bound; project probes then skip with `no-manifest-bound`.
     pub project: Option<ProjectInputs>,
+    /// ADR-0109's second-claimant finding, as a message and a hint.
+    ///
+    /// Separate from `project` because it is precisely the case where there is no single project
+    /// to gather: two manifests claim the directory, so neither is the one. Without this the
+    /// finding would be erased — every project probe would skip with `no-manifest-bound`, which
+    /// says the opposite of what happened.
+    pub ownership_ambiguity: Option<(String, String)>,
     /// Whether `--online` admitted the network probes.
     pub online: bool,
     /// The runtime root, when the environment could resolve one; `store-roots-intact` and
@@ -490,10 +497,20 @@ pub fn first_hard_failure<E: Environment>(inputs: &Inputs<'_, E>) -> Option<Find
 fn dispatch<E: Environment>(probe: &'static Probe, inputs: &Inputs<'_, E>) -> Finding {
     match probe.scope {
         Scope::Host => host::run(probe, inputs),
-        Scope::Project => inputs.project.as_ref().map_or_else(
-            || Finding::skipped(probe, "no-manifest-bound", ""),
-            |project| project::run(probe, project, inputs),
-        ),
+        Scope::Project => {
+            // Ambiguity answers two probes before the project-scope skip can hide them, and it is
+            // the same finding every manifest-resolving verb refuses on (ADR-0109). `doctor`
+            // reports rather than refuses, which is the whole point of the second consumer.
+            if let Some((message, hint)) = &inputs.ownership_ambiguity
+                && matches!(probe.id, "manifest-resolves" | "working-directory-declared")
+            {
+                return Finding::tripped(probe, message.clone(), hint.clone());
+            }
+            inputs.project.as_ref().map_or_else(
+                || Finding::skipped(probe, "no-manifest-bound", ""),
+                |project| project::run(probe, project, inputs),
+            )
+        }
         Scope::Network => {
             if inputs.online {
                 network::run(probe, inputs)

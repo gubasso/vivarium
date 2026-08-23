@@ -44,11 +44,15 @@ pub fn command<E: Environment>(
     drop(step);
 
     // The one stderr note spec/13 fixes: project probes skipped for want of a unique owner, said
-    // once with the way in.
-    let notes = if inputs.project.is_none() {
-        "project checks skipped: no manifest declares this workspace\n".to_owned()
-    } else {
-        String::new()
+    // once with the way in. Ambiguity is the case where `project` is `None` and the reason is the
+    // opposite of the usual one — two manifests declare this directory, not none — so it gets its
+    // own sentence rather than the note that would contradict the findings above it.
+    let notes = match (&inputs.ownership_ambiguity, inputs.project.is_none()) {
+        (Some(_), _) => {
+            "project checks skipped: more than one manifest declares this workspace\n".to_owned()
+        }
+        (None, true) => "project checks skipped: no manifest declares this workspace\n".to_owned(),
+        (None, false) => String::new(),
     };
 
     let code = exit_code(&findings, strict);
@@ -83,7 +87,14 @@ fn exit_code(findings: &[Finding], strict: bool) -> ExitKind {
 /// Gathers the run's injected inputs, leniently: whatever cannot be read arrives as the absence
 /// or the error a probe exists to report.
 fn gather<'a, E: Environment>(context: &'a Context<'_, E>, online: bool) -> Inputs<'a, E> {
-    let project = super::resolve_manifest_for_doctor(context)
+    let resolution = super::resolve_manifest_for_doctor(context);
+    // The one condition where there is no single project to gather and that fact is itself the
+    // finding. Held rather than discarded, so the catalog reports it instead of skipping.
+    let ownership_ambiguity = match &resolution {
+        Err(super::ResolveFailure::Ambiguous(finding)) => Some((finding.message(), finding.hint())),
+        _ => None,
+    };
+    let project = resolution
         .ok()
         .map(|resolved| {
             let refusal = resolved
@@ -103,6 +114,7 @@ fn gather<'a, E: Environment>(context: &'a Context<'_, E>, online: bool) -> Inpu
         environment: context.environment,
         roots: &context.roots,
         project,
+        ownership_ambiguity,
         online,
         runtime_root: config::resolve_runtime_root(context.environment, config::effective_uid())
             .ok(),

@@ -426,7 +426,48 @@ fn irreconcilable_merges(report: &Report) -> Vec<Irreconcilable> {
     let mut found = duplicate_volume_mounts(report);
     found.extend(duplicate_mount_targets(report));
     found.extend(overlapping_workspace_sources(report));
+    found.extend(workspaces_declared_outside_the_manifest(report));
     found
+}
+
+/// ADR-0108: a workspace is owned by one manifest, so only a manifest may declare one.
+///
+/// The option is a `listOf` like `vivarium.mounts`, so a shared layer setting it merges without
+/// complaint — which is why this refusal exists rather than a type that forbids it. The reason it
+/// must be refused is not taste but the resolution model. Ownership of a directory is decided
+/// from manifest text alone: the derived index scans each manifest's `[[workspaces]]` rows, and
+/// the ADR-0109 refusal is a `78` precisely because it is decidable without the merged
+/// configuration. A workspace contributed by an image, a piece, or an `extends` module is
+/// invisible to both, so it would own a directory that nothing could resolve to it, and the boot
+/// record would carry a tree the next invocation's reuse check does not know about.
+///
+/// It is an irreconcilable rather than a `78`, because which layer declared a row is exactly what
+/// the merged configuration is needed to see — the `65`/`78` boundary of spec/14 read in the
+/// direction it is written.
+fn workspaces_declared_outside_the_manifest(report: &Report) -> Vec<Irreconcilable> {
+    report
+        .layers
+        .iter()
+        .filter(|layer| layer.kind != LayerKind::Manifest)
+        // Any definition at all, empty ones included. An empty list is not an abstention: the
+        // report drops a key whose highest priority is the option default, so a layer only
+        // appears here by writing the option — and `mkForce []` from a shared layer writes it
+        // hardest of all, suppressing the manifest's own rows and leaving a sandbox with no
+        // workspace to start a session in. Filtering empties out would let the one shape that
+        // silently overrides the owner through.
+        .filter(|layer| layer.defines.contains_key("workspaces"))
+        .map(|layer| Irreconcilable {
+            what: "a workspace is declared outside the manifest".to_owned(),
+            why: format!(
+                "the {} `{}` declares `vivarium.workspaces`, but a workspace is owned by one \
+                manifest and only a manifest may declare one (ADR-0108); declare it in the \
+                manifest's own `[[workspaces]]`, or make it a `[[mounts]]` row if the layer only \
+                needs the directory visible",
+                layer.kind.as_str(),
+                layer.name
+            ),
+        })
+        .collect()
 }
 
 fn duplicate_volume_mounts(report: &Report) -> Vec<Irreconcilable> {
@@ -714,11 +755,77 @@ mod tests {
             ConflictKind::NonPortableVariable
         );
         assert_eq!(variable.conflicts[0].key, "workspaces");
-        assert!(!analyze(&fixture("piece", "${HOME}/project")).is_defective());
+        // A portable variable clears the path rules, so nothing in `conflicts` remains. The
+        // layer is still refused, by the ownership rule the next test owns — asserted here as
+        // the absence of a path conflict rather than as overall cleanliness, because those are
+        // two different claims and only the first one is this test's subject.
+        assert!(
+            analyze(&fixture("piece", "${HOME}/project"))
+                .conflicts
+                .is_empty()
+        );
 
         // N24 belongs only to mounts. Workspaces refuse these paths once through ADR-0108's
         // guest-owned-path rule, without making ownership depend on `${XDG_RUNTIME_DIR}`.
         assert!(!analyze(&fixture("manifest", "/tmp/project")).is_defective());
+    }
+
+    /// ADR-0108's ownership half, which the path rules above deliberately do not carry.
+    ///
+    /// This is the rule that keeps the resolution model coherent: ownership is decided from
+    /// manifest text alone, so a workspace a shared layer contributes would own a directory the
+    /// derived index cannot see and the `78` refusal cannot name.
+    #[test]
+    fn only_a_manifest_may_declare_a_workspace() {
+        let rows = r#"[ { "source": "${HOME}/project" } ]"#;
+        let fixture = |kind: &str| {
+            report(
+                &[key("workspaces", "list", "[]")],
+                &[layer("shared", kind, &[defines("workspaces", 100, rows)])],
+            )
+        };
+        for kind in ["image", "piece", "extends"] {
+            let analysis = analyze(&fixture(kind));
+            assert!(
+                analysis.is_defective(),
+                "{kind} must not declare a workspace"
+            );
+            let named = analysis.irreconcilable.iter().any(|found| {
+                found.what == "a workspace is declared outside the manifest"
+                    && found.why.contains("shared")
+                    && found.why.contains(kind)
+            });
+            assert!(named, "{kind} refusal must name the layer and its kind");
+        }
+        // The manifest is the one layer that may.
+        assert!(!analyze(&fixture("manifest")).is_defective());
+
+        // An empty list from a shared layer is still a declaration, and it is the shape that
+        // matters most: the report only carries a key a layer actually wrote, so `mkForce []`
+        // arrives here as a definition that suppresses the manifest's rows. Accepting it would
+        // send a manifest with declared workspaces to launch with none, failing at `78` about a
+        // missing workspace rather than at `65` about the layer that removed it.
+        assert!(
+            analyze(&report(
+                &[key("workspaces", "list", "[]")],
+                &[layer(
+                    "shared",
+                    "piece",
+                    &[defines("workspaces", 100, "[]")]
+                )],
+            ))
+            .is_defective(),
+            "an empty shared definition suppresses the owner and must be refused too"
+        );
+        // A layer that never mentions the option is untouched: `definitionAt` drops a key whose
+        // highest priority is the option default, so silence never reaches `defines`.
+        assert!(
+            !analyze(&report(
+                &[key("workspaces", "list", "[]")],
+                &[layer("quiet", "piece", &[defines("mounts", 100, "[]")])],
+            ))
+            .is_defective()
+        );
     }
 
     #[test]

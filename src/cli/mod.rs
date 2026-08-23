@@ -207,7 +207,8 @@ fn config_binding<E: Environment>(
     manifest_flag: Option<&str>,
     output: Output,
 ) -> Result<Success, Failure> {
-    let resolved = resolve_manifest_and_workspace(context, manifest_flag, false)?;
+    let resolved = resolve_manifest_and_workspace(context, manifest_flag, false)
+        .map_err(ResolveFailure::into_failure)?;
     let binding = &resolved.binding;
     let selected = &resolved.selected;
     let sandbox_id = selected.name.clone();
@@ -726,16 +727,42 @@ pub(super) struct LaunchInputs {
     pub(super) volumes: Vec<config::volumes::DeclaredVolume>,
 }
 
+/// Why the one resolution routine could not answer.
+///
+/// Two variants rather than a bare `Failure` so the second consumer can tell the ADR-0109
+/// ambiguity apart from every ordinary reason resolution fails. Refusing consumers collapse it
+/// immediately; only doctor looks inside.
+pub(super) enum ResolveFailure {
+    Ambiguous(AmbiguousWorkspaceOwner),
+    Other(Box<Failure>),
+}
+
+impl ResolveFailure {
+    fn into_failure(self) -> Failure {
+        match self {
+            Self::Ambiguous(finding) => finding.failure(),
+            Self::Other(failure) => *failure,
+        }
+    }
+}
+
+impl From<Failure> for ResolveFailure {
+    fn from(failure: Failure) -> Self {
+        Self::Other(Box::new(failure))
+    }
+}
+
 /// spec/10 step 1: resolve the binding and read the manifest it names.
 pub(super) fn resolve_manifest_for_launch<E: Environment>(
     context: &Context<'_, E>,
 ) -> Result<ResolvedForLaunch, Failure> {
-    resolve_manifest_and_workspace(context, None, false)
+    resolve_manifest_and_workspace(context, None, false).map_err(ResolveFailure::into_failure)
 }
 
+/// Doctor's view: never refuses, and keeps the ADR-0109 findings as values it can report.
 pub(super) fn resolve_manifest_for_doctor<E: Environment>(
     context: &Context<'_, E>,
-) -> Result<ResolvedForLaunch, Failure> {
+) -> Result<ResolvedForLaunch, ResolveFailure> {
     resolve_manifest_and_workspace(context, None, true)
 }
 
@@ -744,7 +771,7 @@ fn resolve_manifest_and_workspace<E: Environment>(
     context: &Context<'_, E>,
     manifest_flag: Option<&str>,
     allow_undeclared: bool,
-) -> Result<ResolvedForLaunch, Failure> {
+) -> Result<ResolvedForLaunch, ResolveFailure> {
     let override_binding = config::resolve_binding(manifest_flag, context.environment, None);
 
     let (binding, selected, source, manifest) = if let Some(binding) = override_binding {
@@ -784,13 +811,13 @@ fn resolve_manifest_and_workspace<E: Environment>(
             }
         }
         if matches.len() > 1 {
-            return Err(ambiguous_workspace_owner(
+            return Err(ResolveFailure::Ambiguous(ambiguous_workspace_owner(
                 &context.project,
                 matches.iter().map(|(selected, _, _)| selected),
-            ));
+            )));
         }
         let Some((selected, source, manifest)) = matches.pop() else {
-            return Err(unbound(context));
+            return Err(unbound(context).into());
         };
         let binding =
             config::resolve_binding(None, context.environment, Some(selected.name.as_str()))
@@ -806,7 +833,7 @@ fn resolve_manifest_and_workspace<E: Environment>(
         .is_none()
         .then(|| undeclared_workspace(&selected, &context.project));
     if !allow_undeclared && let Some(refusal) = &workspace_refusal {
-        return Err(refusal.failure());
+        return Err(refusal.failure().into());
     }
     Ok(ResolvedForLaunch {
         binding,
@@ -867,23 +894,62 @@ mod sandbox_name_tests {
     }
 }
 
+/// ADR-0109's second-claimant condition, as a value rather than only as a refusal.
+///
+/// A sibling of [`UndeclaredWorkspace`] and for the same reason: ADR-0109 gives the second
+/// claimant the same code and the same message shape as the undeclared directory, and both have
+/// two consumers. Every manifest-resolving verb turns one into a `78`; `viv doctor` reports it.
+/// Keeping the finding a value is what lets the second consumer exist at all — a `Failure` is
+/// something you return, and doctor needs something it can hold.
+pub(super) struct AmbiguousWorkspaceOwner {
+    cwd: PathBuf,
+    owners: Vec<(String, PathBuf)>,
+}
+
+impl AmbiguousWorkspaceOwner {
+    fn owner_list(&self) -> String {
+        self.owners
+            .iter()
+            .map(|(name, path)| format!("`{name}` ({})", path.display()))
+            .collect::<Vec<_>>()
+            .join(" and ")
+    }
+
+    pub(super) fn message(&self) -> String {
+        format!(
+            "{} both claim the working directory `{}`",
+            self.owner_list(),
+            self.cwd.display()
+        )
+    }
+
+    pub(super) fn hint(&self) -> String {
+        "remove one ownership claim so exactly one manifest declares this tree".to_owned()
+    }
+
+    fn failure(&self) -> Failure {
+        diagnosed(
+            Namespace::State,
+            "workspace-owner-ambiguous",
+            "the working directory matches more than one manifest binding",
+            Locus::File(self.cwd.clone()),
+            self.message(),
+            ExitKind::Config,
+        )
+        .with_hint(self.hint())
+    }
+}
+
 fn ambiguous_workspace_owner<'a>(
     cwd: &Path,
     owners: impl Iterator<Item = &'a ResolvedArtifact>,
-) -> Failure {
-    let owners = owners
-        .map(|selected| format!("`{}` ({})", selected.name, selected.path.display()))
-        .collect::<Vec<_>>()
-        .join(" and ");
-    diagnosed(
-        Namespace::State,
-        "workspace-owner-ambiguous",
-        "the working directory matches more than one manifest binding",
-        Locus::File(cwd.to_path_buf()),
-        format!("{owners} both claim this directory"),
-        ExitKind::Config,
-    )
-    .with_hint("remove one ownership claim so exactly one manifest declares this tree")
+) -> AmbiguousWorkspaceOwner {
+    AmbiguousWorkspaceOwner {
+        cwd: cwd.to_path_buf(),
+        owners: owners
+            .map(|selected| (selected.name.clone(), selected.path.clone()))
+            .collect(),
+    }
 }
 
 fn expanded_workspace_paths<E: Environment>(

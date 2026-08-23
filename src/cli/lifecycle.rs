@@ -485,6 +485,9 @@ fn preflight<E: Environment>(context: &Context<'_, E>) -> Result<PathBuf, Failur
         environment: context.environment,
         roots: &context.roots,
         project: None,
+        // The launch path reached here only by resolving, so ownership was unambiguous by
+        // construction; the two probes this feeds are soft and outside the hard subset anyway.
+        ownership_ambiguity: None,
         online: false,
         runtime_root: None,
     };
@@ -1887,9 +1890,15 @@ pub fn status<E: Environment>(context: &Context<'_, E>, global: bool) -> Result<
         ));
     }
 
+    // Manifest first, then the runtime root, and the order is the contract rather than a
+    // preference: ADR-0109 makes the undeclared-directory refusal one routine every
+    // manifest-resolving verb fails fast through, so it has to be the first thing that can fail.
+    // Resolving the runtime root first would answer an undeclared directory on a host with an
+    // unusable `${XDG_RUNTIME_DIR}` with `77` and a runtime-root diagnostic, which is a true
+    // statement about the host and the wrong answer to what the user did.
+    let resolved = super::resolve_manifest_for_launch(context)?;
     let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
         .map_err(|error| super::resolution_failure(&error))?;
-    let resolved = super::resolve_manifest_for_launch(context)?;
 
     let sandbox_id = resolved.selected.name.clone();
     let runtime = Runtime::locate(&runtime_root, &sandbox_id, DEFAULT_TARGET)?;
@@ -1957,9 +1966,10 @@ pub fn stop<E: Environment>(
         ));
     }
 
+    // Manifest before runtime root, for the reason `status` states above.
+    let resolved = super::resolve_manifest_for_launch(context)?;
     let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
         .map_err(|error| super::resolution_failure(&error))?;
-    let resolved = super::resolve_manifest_for_launch(context)?;
     let sandbox_id = resolved.selected.name;
     let runtime = Runtime::locate(&runtime_root, &sandbox_id, DEFAULT_TARGET)?;
 
