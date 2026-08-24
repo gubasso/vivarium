@@ -12,7 +12,7 @@ Specified in part: the [pure-build rule](../../spec/08-invariants-and-guarantees
 
 ## flake-pilot
 
-At the firecracker route, yes: the registration names a local rootfs and kernel, so nothing can move on its own, and a newer image takes `flake-ctl firecracker pull --force`.
+At the firecracker route, yes: the registration names a local rootfs and kernel, so nothing can move on its own, and a newer image takes `flake-ctl firecracker pull --force`. What holds still is the copy on this machine, which is a different question from whether a second person running the same command gets that same copy — [the same-definition row](./same-definition.md#flake-pilot) asks that one.
 
 At the `krun` route, no: the registration names a `:latest` tag on a registry that rebuilds nightly, so what a fresh machine or a re-pulled image gets is whatever was published that day. Nothing in the registration pins a version, nothing reports which build is running, and the moment of change is the registry's rather than the user's — the inverse of what this row asks for. Which is [the same reason the definition does not repeat](./same-definition.md#flake-pilot).
 

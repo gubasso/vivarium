@@ -389,6 +389,14 @@ A project moving its own cell from a yes to a no is where a self-authored compar
 
 The row is also the only one where `vivarium` and `flake-pilot`'s `krun` route now answer alike for related reasons, both having been told which tree to carry. What still separates them is where the telling lives, which is the row this one defers to.
 
+### A claim corrected where the reader was right
+
+The same reader objected that the image description is not unshared: upstream publishes it in the appstore, at both routes. Confirmed at `920f41e` — [`appstore/firecracker/claude/`](https://github.com/OSInside/flake-pilot/tree/920f41e/appstore/firecracker/claude) and [`appstore/podman/claude/`](https://github.com/OSInside/flake-pilot/tree/920f41e/appstore/podman/claude) each carry an `appliance.kiwi` and a `config.sh` — and this comparison already cited those files as evidence on [the guest OS row](./scenarios/guest-os.md#flake-pilot) and [the setup row](./scenarios/own-setup-at-build.md#flake-pilot). One page was contradicting two others rather than reading something new.
+
+The verdict holds and the reason changed, which is the correction worth having. [`same-definition.md`](./scenarios/same-definition.md#flake-pilot) had rested its `partial` on the description being unavailable, which was wrong. It now rests it on what the published description does: repositories named as moving branches, packages with no version, and a `config.sh` that installs the agent from the network, so a rebuild a month later is a different image built honestly from the same file. Published is not reproduced — a claim about a file a reader can open, rather than about what they were given.
+
+Two smaller changes came with it. Upstream began publishing a `<image>.tar.xz.sha256` beside each appstore tarball at [`36090e6`](https://github.com/OSInside/flake-pilot/commit/36090e6db7e244494982303f47cbb8453b9395cf) on 2026-08-23, after this subject's reading; it is the external identifier the row said did not exist, `pull` does not fetch it, and the row now names it. And the sha256 argument lost its security vocabulary: a record travelling inside the archive it attests reads as a tamper claim, the reader answered it as one by asking whether any artifact is unsafe because its holder can edit it, and no cell in these tables measures tamper resistance for any subject, `vivarium` included.
+
 ### Labels corrected
 
 `The boundary cannot be switched off` stated vivarium's property as the question, and asking it that way had already produced a wrong verdict: `flake-pilot` was marked `❌ no` when nothing at run time revisits a registered engine. The row is about a boundary changing underneath the user, which is `glaipnir`'s probe fallback and not `flake-pilot`'s registration. Its first rewrite, `Boundary

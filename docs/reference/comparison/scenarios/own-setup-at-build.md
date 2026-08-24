@@ -48,7 +48,7 @@ zypper --non-interactive addrepo https://download.opensuse.org/repositories/deve
 
 Then rebuild and re-pull. Both commands, with the boxed KIWI invocation in full, are [the guest OS row](./guest-os.md#flake-pilot), which owns them; the registration itself does not change, because it never named either file.
 
-The cost is that the description is a separate artifact from the registration, and nothing records which one produced a registered image — what [the same-definition row](./same-definition.md#flake-pilot) charges for.
+The cost is that the description is a separate artifact from the registration, and nothing records which one produced a registered image. It is published all the same, in upstream's appstore. What [the same-definition row](./same-definition.md#flake-pilot) charges is the next step: a description naming moving repositories and unversioned packages does not rebuild to the image it first produced.
 
 The `krun` route relocates the same answer into an OCI build: packages are lines in a `Containerfile` and setup is its `RUN` steps, run as root by whatever built the image, and the registration names neither. The cost is the same cost in a sharper form, because at that route the registration names a tag rather than an artifact, so nothing records which build the setup ran in.
 
