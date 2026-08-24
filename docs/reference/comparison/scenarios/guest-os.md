@@ -36,6 +36,8 @@ FLAKE_ALLOW_INSECURE_TRANSPORT=1 flake-ctl firecracker --user pull \
 
 The other cost is this comparison's reading rather than an upstream claim: the boundary is only as good as the image the registration names, and nothing in the registration attests to what is in it.
 
+The `krun` route answers this row more easily and with less to check: the guest is any OCI image the registration names, so every ordinary container toolchain applies and a public registry stands in for the local image store. The freedom is wider and the same caveat is wider with it — the boundary is only as good as the image the registration names, and at a moving tag [nothing fixes which image that was](./same-definition.md#flake-pilot).
+
 ## glaipnir
 
 No: `image/Containerfile` builds from `registry.opensuse.org/opensuse/tumbleweed:latest`, layered with a published per-agent image. `PACKAGES=(...)` and hooks extend that system; nothing selects a different one short of editing the `Containerfile`.

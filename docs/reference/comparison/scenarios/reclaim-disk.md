@@ -12,7 +12,9 @@ Specified, mostly not built: `viv volume list` reports occupancy today and `viv 
 
 ## flake-pilot
 
-No: no reclamation verb. The overlay is a file of the declared `overlay_size`, `%remove` is a podman-only pseudo-argument, and `flake-ctl firecracker remove --vm` deletes the image together with every registration using it — a teardown, not a reclamation.
+At the firecracker route, no: no reclamation verb. The overlay is a file of the declared `overlay_size`, `%remove` is a podman-only pseudo-argument, and `flake-ctl firecracker remove --vm` deletes the image together with every registration using it — a teardown, not a reclamation.
+
+At the `krun` route, partial: `%remove` is one of the call-time pseudo-arguments the pilot consumes, and it removes the container the call created, so the writable layer that accumulated goes with it while the registration and the image both stay. What it does not reach is the image, which is the larger of the two and needs podman's own tooling; and reclaiming is a side effect of a call rather than a verb you can run against a machine, so there is nothing to ask what is worth removing.
 
 ## glaipnir
 

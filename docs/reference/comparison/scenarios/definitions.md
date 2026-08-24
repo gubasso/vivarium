@@ -14,6 +14,8 @@ Specified, not built: there is no machine-wide index of projects today. `viv sta
 
 Yes: `flake-ctl list --format table|json|csv` reports every registration — name, engine, config path. The unit is the application rather than the project, which is [Defined by a project file](./project-file.md#flake-pilot), but every unit that exists is listed.
 
+This holds at both routes: `flake-ctl list` reports every registration whichever pilot it names. What it does not report is [what is running](./instances.md#flake-pilot).
+
 ## glaipnir
 
 Yes: `status` reports the agents and images that exist, and the roster is fixed, so the set is small and fully known by construction. Enumeration is easy for the same reason [an agent outside the roster cannot run](./per-tool-credentials.md#glaipnir).

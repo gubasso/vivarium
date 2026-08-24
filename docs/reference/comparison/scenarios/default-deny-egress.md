@@ -22,7 +22,11 @@ allow = [ ]
 
 ## flake-pilot
 
-Yes, by absence rather than by policy, and the absence is the shipped state. Upstream states that firecracker "supports networking only through TUN/TAP devices" and that "it is the user's responsibility to set up the routing on the host from the TUN/TAP device to the outside world", then walks a static-IP NAT setup: `ip_forward`, a MASQUERADE rule, a `tap-<app>` device per registration, and `boot_args` edited from `ip=dhcp` to a static triple. Until an operator does that work a microVM reaches nothing, and `flake-ctl firecracker register --no-net` keeps it that way deliberately, which is the documented restrictive posture this row asks for.
+At the firecracker route, yes by absence rather than by policy, and the absence is the shipped state. Upstream states that firecracker "supports networking only through TUN/TAP devices" and that "it is the user's responsibility to set up the routing on the host from the TUN/TAP device to the outside world", then walks a static-IP NAT setup: `ip_forward`, a MASQUERADE rule, a `tap-<app>` device per registration, and `boot_args` edited from `ip=dhcp` to a static triple. Until an operator does that work a microVM reaches nothing, and `flake-ctl firecracker register --no-net` keeps it that way deliberately, which is the documented restrictive posture this row asks for.
+
+At the `krun` route the posture is podman's and it is the opposite way round. The upstream registration ships `--opt "\--net host"`, which is open, and the deny posture is `--net none` — [genuinely default-deny at this engine](#podman) — reached by writing that option into the registration instead. So the mechanism is real and recorded once, and nothing in flake-pilot points at it or notices which of the two a registration chose.
+
+Same mark at both routes, arrived at from opposite directions: one starts closed and is opened by an operator's work, the other starts open and is closed by an option.
 
 ## podman
 

@@ -12,7 +12,9 @@ No, and nothing is arranged either way: the guest's network sits in its own name
 
 ## flake-pilot
 
-Partial: reachable but entirely the operator's job — a TAP device per instance (`@NAME` names it), `ip_forward`, MASQUERADE, hand-edited `boot_args`. Nothing in the tool arranges any of it, and that is host plumbing the user builds rather than a mechanism the tool offers, which is why this stays a hedge rather than becoming a qualified yes.
+At the firecracker route, partial: reachable but entirely the operator's job — a TAP device per instance (`@NAME` names it), `ip_forward`, MASQUERADE, hand-edited `boot_args`. Nothing in the tool arranges any of it, and that is host plumbing the user builds rather than a mechanism the tool offers, which is why this stays a hedge rather than becoming a qualified yes.
+
+At the `krun` route, yes, and the tool has a pseudo-argument for it. libkrun's transparent socket impersonation is on whenever no virtual interface is added, which is the case at the upstream registration, and an impersonated listener belongs host-side to the VMM process, so podman's ordinary publish path reaches it — [the mechanism the podman column reads](#podman). Publishing is a `--opt "\-p ..."` line in the registration, and `%port:number` is in the set of call-time pseudo-arguments the pilot consumes, so a port can also be named at the call site without re-registering. The two bounds that hold at the engine hold here too: a guest cannot listen on datagram sockets, and adding `krun.use_passt` swaps impersonation for a virtio-net interface that no podman flag then wires a published port into.
 
 ## glaipnir
 

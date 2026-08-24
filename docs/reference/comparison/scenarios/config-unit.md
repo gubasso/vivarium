@@ -12,7 +12,9 @@ Yes: images and pieces are the shared class and the manifest is the personal one
 
 ## flake-pilot
 
-Yes: an `<app>.d/*.yaml` drop-in is smaller than the registration and carries one concern's options, and a colleague adopts it by copying it into place. The image is the other unit and it is the whole environment; the drop-in is the small one.
+Yes: an `<app>.d/*.yaml` drop-in is smaller than the registration and carries one concern's options, and a colleague adopts it by copying it into place. That holds at both routes, the drop-in being a property of the registration rather than of the engine.
+
+At the `krun` route there is a second unit below the whole environment. A delta container is an image carrying just its own concern, adopted by naming it in [the registration's `layers:` list](./composition.md#flake-pilot) against a base that exists once — which is upstream's own stated reason for the mechanism, that only small deltas need pulling. At the firecracker route the image is the other unit and it is the whole environment, so the drop-in is the only small one there.
 
 ## glaipnir
 
@@ -22,4 +24,4 @@ No: configuration is one `glaipnir.conf`, in the checkout or under `$XDG_CONFIG_
 
 No: a `Containerfile` travels and reproduces its build steps elsewhere, and a published image travels as a pull. Neither is a unit of one concern — the smallest shareable thing is the whole environment, which is the same single-base limit that loses podman [the composition row](./composition.md#podman).
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19; `flake-pilot` re-read at `920f41e` on 2026-08-22 for the delta container as a unit smaller than the environment.

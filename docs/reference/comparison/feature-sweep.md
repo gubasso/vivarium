@@ -224,14 +224,15 @@ Plain rootless podman with no wrapper.
 
 Entries that name the same capability under different vocabularies were collapsed. An entry survived into the matrix when at least two subjects have a distinguishable answer to it, and when the answer is something a reader has to decide about rather than an implementation detail.
 
-Cells are then filled at one fixed setup per subject — the microVM backend for all four, apples to apples:
+Cells are then filled at one fixed isolation class for every subject — a microVM with its own guest kernel — with the engine inside that class left to be whatever each subject reaches it by:
 
 1. `vivarium` — its one microVM.
-2. `flake-pilot` — `firecracker-pilot`, at the upstream `claude` firecracker registration.
-3. `glaipnir` — the libkrun microVM.
-4. `podman` — rootless `podman run --runtime krun`.
+2. `flake-pilot` firecracker — `firecracker-pilot`, at the upstream `claude` firecracker registration.
+3. `flake-pilot` krun — `podman-pilot` at `--runtime krun`, at the upstream `claude` `krun` registration.
+4. `glaipnir` — the libkrun microVM.
+5. `podman` — rootless `podman run --runtime krun`.
 
-A capability a subject has only at another backend is not credited. Backend availability and selection are not capability rows: the seven entries themed `Backends` below fill the `Isolation backends` matrix in [`README.md`](./README.md) instead of a capability table. Filling a cell from whichever backend answers best would compare a tool with two modes against a tool with one, and every such mismatch found in review is listed below.[^merge]
+Five columns for four subjects, because flake-pilot reaches the class two ways and electing one of them would be a selection the phrase "the microVM" does not make. A capability a subject has only outside the class is not credited. Backend availability and selection are not capability rows: the seven entries themed `Backends` below fill the `Isolation backends` matrix in [`README.md`](./README.md) instead of a capability table. Filling a cell from whichever backend answers best would compare a tool with two modes against a tool with one, and every such mismatch found in review is listed below.[^merge]
 
 | Merged capability                                                        | Theme             | First seen in                                   |
 | ------------------------------------------------------------------------ | ----------------- | ----------------------------------------------- |
@@ -242,7 +243,7 @@ A capability a subject has only at another backend is not credited. Backend avai
 | Runs on a host without KVM                                               | Backends          | `flake-pilot`, `glaipnir`, `podman`             |
 | Choose the engine or hypervisor                                          | Backends          | `flake-pilot`                                   |
 | Runs on macOS                                                            | Backends          | `glaipnir`, `podman`                            |
-| The tool arranges the workspace mount                                    | Data              | `vivarium`, `glaipnir`                          |
+| The tool derives the workspace mount, with no host path named            | Data              | `vivarium`, `glaipnir`                          |
 | Work stays at its host path                                              | Data              | `vivarium`, `glaipnir`                          |
 | Choose which host paths cross, in a file rather than on the command line | Data              | `vivarium`                                      |
 | The caller chooses which host environment variables cross                | Data              | `vivarium`, `podman`                            |
@@ -303,6 +304,61 @@ Found by re-reading each filled row against the rule above.[^microvm-boundary]
 
 Eight of the fourteen moved in an alternative's favour, which is the check that the rule was applied to the comparison rather than to the competitors. Six came from re-reading the table, four from writing [`walkthroughs.md`](./walkthroughs.md), two more from re-reading [`scenarios/`](./scenarios/README.md), and the last two from the row-label audit below — each pass found what the previous one could not, because a verdict, a worked example, a method, and a label fail in different ways. The walkthrough exposes a cell filled from the rung with the better answer; the method exposes a verdict resting on a mechanism the method never runs; the label exposes a question only one design was ever going to answer well.
 
+### Verdicts corrected by reading flake-pilot at both routes
+
+Until 2026-08-21 the `flake-pilot` column was read at `firecracker-pilot` alone. That was the last hidden single-route selection in the set: upstream reaches the microVM class two ways, publishes a `claude` registration for each, and states the two are not equivalent, so naming the class did not name a setup. The subject now carries two columns. No verdict at the firecracker route moved; these are the twelve rows where the second route answers differently — eleven of them changing the mark, and one reaching the same mark by another mechanism — and they run both ways.[^both-routes]
+
+| Row                                                                      | firecracker | krun    | Why                                                                                                          |
+| ------------------------------------------------------------------------ | ----------- | ------- | ------------------------------------------------------------------------------------------------------------ |
+| Work stays at its host path                                              | n/a         | yes‡    | A registered `--volume` mirroring a path crosses as virtio-fs                                                |
+| Choose which host paths cross, in a file rather than on the command line | n/a         | yes‡    | The registration is a file, and a drop-in adds to it                                                         |
+| Refuses a mount that would expose the host session                       | n/a         | no      | There is now a mount to refuse, and nothing refuses it                                                       |
+| The project's own dev environment loads when you enter                   | no          | yes‡    | A mounted directory and a shell target; whether a toolchain loads is the image's property                    |
+| Something outside reaches a guest service                                | partial     | yes     | Impersonated listeners reach podman's ordinary publish path                                                  |
+| Stays off a corporate VPN                                                | partial     | no      | Both libkrun networking modes leave through the host's routing table                                         |
+| A later command reaches the instance already running                     | yes         | no      | The engine has no `exec`, so a registration cannot use `--resume`                                            |
+| The same definition gives everyone the same environment                  | partial     | no      | The unit is a `:latest` tag on a registry rebuilt nightly                                                    |
+| Update on purpose                                                        | yes         | no      | The same moving tag, moving without being asked                                                              |
+| Reclaim disk without a teardown                                          | no          | partial | `%remove` drops the container's writable layer without touching the registration                             |
+| Egress can be default-deny                                               | yes         | yes‡    | Deny is the shipped state at one route and an option to write into the registration at the other             |
+| Boot a previous build when the new one is broken                         | no          | no      | Same verdict, opposite reason: firecracker overwrites the bytes, `krun` keeps bytes no registration can name |
+
+Five move toward the second route and six away from it, which is the check that adding a column was a correction rather than a concession. The row that stayed put is the instructive one: two routes reaching the same `❌` by opposite mechanisms is what a single column had been hiding, and it is the shape [the workspace row](./scenarios/workspace-mount.md#flake-pilot) has too.
+
+One neighbouring claim was tested and rejected in the same pass. `overlay_size` at the firecracker route was put to us as a host mount, in the same breath as the registered `--volume` at the `krun` route. The engine schema carries no mount key of any kind, and the overlay is a sparse ext2 image attached as a second virtio-blk drive, so that verdict did not move — but the row's label had let the two readings coexist, which is the label correction below.
+
+### A verdict corrected by locating the include payload
+
+The `flake-pilot` author, reading these tables, rejected the `❌` on `Secrets are kept out of the built artifact`: no image the project ships carries a credential, and a token obtained after registration lands in instance storage rather than in the image. Reading the two provisioning paths at `920f41e` confirms it, and the cell's reasoning was wrong twice.[^include-destination]
+
+| Row                                        | Was                  | Now                    | Why                                                                              |
+| ------------------------------------------ | -------------------- | ---------------------- | -------------------------------------------------------------------------------- |
+| Secrets are kept out of the built artifact | `flake-pilot` no, no | `flake-pilot` yes, yes | An include payload lands on the instance, and the tool builds no artifact at all |
+
+The first error was mechanical. The cell had said an `include.tar` / `include.path` payload is carried "inside the artifact that gets registered and shared". It is not: at the firecracker route the payload is synced into a per-instance ext2 overlay layered over the image and unmounted before boot, and at the `krun` route into `podman mount <container-id>`, the created container's writable rootfs. Neither pilot calls `podman build` or `podman commit`, so nothing the payload touches is ever an artifact a second person receives. Three other pages carried the same phrasing and two more implied it; all five were corrected with it.
+
+The second error was the row applied to a subject that has no stage for it. flake-pilot registers an image built elsewhere — pulled as a KIS archive or named in a registry — so "does the tool's build put a credential in the artifact" has no subject here, and a credential baked into an image is the image builder's flow rather than this one's.
+
+What survives is the absence of a secrets mechanism, which is real and is already scored twice: `Keeping secrets out of the build is enforced` and `Commit an encrypted secret alongside the config` both read `❌` for flake-pilot and both keep it. Scoring it a third time under a question about the artifact was double-counting, and it is what let a factual claim about provisioning ride along unchecked.
+
+The row now reads yes in every column, which is the cost of the correction and is recorded rather than avoided. It keeps its place for two reasons: the marks still separate the subjects, since podman's `✅ yes‡` says the safe form is reachable while the ordinary `ENV TOKEN=…` is not it; and the row is one half of a pair whose other half discriminates sharply, vivarium alone reaching `⚠️ partial` where every alternative reads `❌`.
+
+### A row corrected by finding the layering this sweep had already recorded
+
+The flake-pilot sweep above lists, under `Composition`, "OCI layering: `--base` for a delta container, `--layer` repeatable and ordered". The merged row lost it. [`composition.md`](./scenarios/composition.md#flake-pilot) said that inside the guest there is no second level and that composing what goes into the artifact belongs to the builder rather than to flake-pilot. That is wrong at the `krun` route, where `podman-pilot` image-mounts a `base_container`, then each entry of an ordered `layers:` list, then the application container, syncing each onto the instance at provisioning. The mechanism is flake-pilot's own, and upstream publishes it as a use case: a solution stack of base plus python plus python-app, and deltas pulled against a base that exists only once.
+
+No verdict moved, because the row was already yes at both flake-pilot columns on the strength of drop-ins alone. What was wrong was the reason under two cells, and a second row rested on the same mistake: [`config-unit.md`](./scenarios/config-unit.md#flake-pilot) said the image is the whole environment, where a delta container is precisely a unit smaller than one. [`collision.md`](./scenarios/collision.md#flake-pilot) gains the second place two parts meet without a report, its verdict unchanged. The firecracker route keeps the old reading, which is correct there: `firecracker-pilot` has neither key.
+
+This is the failure this sweep exists to prevent, running backwards. The inventory was right and the merge dropped it, so sweeping alone caught what comparing lost.
+
+### A framing corrected for a subject that does not build
+
+A reader of this comparison objected that several rows assume the sandboxing tool creates the build artifact, and that for flake-pilot this does not apply — the images come from a store, and the build questions belong to whatever produced them. The objection is correct, and it is now answered where it belongs rather than inside a cell: [the methodology](./methodology.md) states the split between building and running, and how a build row is scored for a subject that only runs.
+
+Verified at `920f41e`: the entire `flake-ctl` command surface is `pull`, `load`, `register`, `show`, `remove`, `init`, and `list`, and no `build` or `commit` call appears anywhere in either pilot. Upstream states the delegation as a position rather than leaving it as silence, naming the Open Build Service with KIWI as one option among the different ways an image can be built, and anchoring trust at the image source instead. [`same-definition.md`](./scenarios/same-definition.md#flake-pilot) now carries that position; its two verdicts stand, because what a registration names is the pilot's own surface rather than the builder's.
+
+One mark moved. [`build-steps.md`](./scenarios/build-steps.md#flake-pilot) keeps its no at both columns, because the row asks what produced the artifact a user receives and the documented flow produces it through an arbitrary root shell — the same `config.sh` that earns the yes at [`own-setup-at-build.md`](./scenarios/own-setup-at-build.md#flake-pilot), credited once and charged once. What it gains is `†`: the guarantee is one flake-pilot placed outside itself, not one it failed to make. These are the first `†` marks in the tables that are not vivarium's, which was the asymmetry worth fixing on its own — the same kind of design refusal had been reading as a position for one subject and as a gap for another.
+
 ### Verdicts corrected by fixing podman's setup
 
 Until 2026-08-19 the `podman` column was read at its container boundary as the baseline. That was the last hidden cross-backend comparison in the set, so the column now reads at `podman run --runtime krun` like every other subject. Three verdicts moved, all against podman:[^podman-setup]
@@ -321,6 +377,26 @@ A gap and a refusal read the same in a table and mean opposite things to a reade
 | --------------------------- | ------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Credentials scoped per tool | `vivarium` no | `vivarium` no† | Automatic scoping needs a built-in table of application names; vivarium is application-agnostic and every path that crosses is user-declared |
 
+### A verdict moved because the subject changed
+
+Every other entry here corrects a reading. This one records a subject that moved under a reading that was correct when it was made: `vivarium` derived the workspace from the invoking directory, and at `162f230` it stopped. `[[workspaces]]` makes the project tree a declaration carrying a host `source`, a manifest that declares none cannot launch, and the sandbox that held one tree holds a set ([`ADR-0108`](../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md)).
+
+| Row                                                           | Was            | Now            | Why                                                                                                                                                                                      |
+| ------------------------------------------------------------- | -------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The tool derives the workspace mount, with no host path named | `vivarium` yes | `vivarium` no† | The tree is declared rather than discovered; deriving it would make the mount set a function of the call, and a directory must belong to one sandbox for resolution from it to be unique |
+
+A project moving its own cell from a yes to a no is where a self-authored comparison earns or loses its credibility, so the `†` faces the same test as every other one: a recorded position that names what it costs. [`ADR-0109`](../../decisions/ADR-0109-an-undeclared-working-directory-is-refused.md) writes the cost down — a user who moves a project edits the manifest by hand, where the marker used to follow the move — and refuses rather than defaulting. Two neighbouring rows gained the same reading without moving: mirroring now runs across a declared set, and the crossing set is two tables rather than one.
+
+The row is also the only one where `vivarium` and `flake-pilot`'s `krun` route now answer alike for related reasons, both having been told which tree to carry. What still separates them is where the telling lives, which is the row this one defers to.
+
+### A claim corrected where the reader was right
+
+The same reader objected that the image description is not unshared: upstream publishes it in the appstore, at both routes. Confirmed at `920f41e` — [`appstore/firecracker/claude/`](https://github.com/OSInside/flake-pilot/tree/920f41e/appstore/firecracker/claude) and [`appstore/podman/claude/`](https://github.com/OSInside/flake-pilot/tree/920f41e/appstore/podman/claude) each carry an `appliance.kiwi` and a `config.sh` — and this comparison already cited those files as evidence on [the guest OS row](./scenarios/guest-os.md#flake-pilot) and [the setup row](./scenarios/own-setup-at-build.md#flake-pilot). One page was contradicting two others rather than reading something new.
+
+The verdict holds and the reason changed, which is the correction worth having. [`same-definition.md`](./scenarios/same-definition.md#flake-pilot) had rested its `partial` on the description being unavailable, which was wrong. It now rests it on what the published description does: repositories named as moving branches, packages with no version, and a `config.sh` that installs the agent from the network, so a rebuild a month later is a different image built honestly from the same file. Published is not reproduced — a claim about a file a reader can open, rather than about what they were given.
+
+Two smaller changes came with it. Upstream began publishing a `<image>.tar.xz.sha256` beside each appstore tarball at [`36090e6`](https://github.com/OSInside/flake-pilot/commit/36090e6db7e244494982303f47cbb8453b9395cf) on 2026-08-23, after this subject's reading; it is the external identifier the row said did not exist, `pull` does not fetch it, and the row now names it. And the sha256 argument lost its security vocabulary: a record travelling inside the archive it attests reads as a tamper claim, the reader answered it as one by asking whether any artifact is unsafe because its holder can edit it, and no cell in these tables measures tamper resistance for any subject, `vivarium` included.
+
 ### Labels corrected
 
 `The boundary cannot be switched off` stated vivarium's property as the question, and asking it that way had already produced a wrong verdict: `flake-pilot` was marked `❌ no` when nothing at run time revisits a registered engine. The row is about a boundary changing underneath the user, which is `glaipnir`'s probe fallback and not `flake-pilot`'s registration. Its first rewrite, `Boundary
@@ -330,7 +406,9 @@ stays fixed once chosen`, still carried a presupposition: `once chosen` implies 
 
 `Roll back to an older environment` named an action with no situation attached, so nothing in it could be verdicted. Both projects that own this idea upstream phrase it as booting a previous state because the current one failed: the NixOS manual's "Rolling Back Configuration Changes" describes booting any previous configuration not yet garbage-collected and says it is especially useful when the new configuration fails to boot, and openSUSE's reference titles the section "System rollback by booting from snapshots" and frames it as recovering a misconfigured system. `Boot a previous build when the new one is broken` says that in the set's own voice; the evidence keeps vivarium's own noun, generation. No verdict moved.
 
-That retitle, and the three before it, retire the second of the two label rules above. A label is now required to state a claim a reader can verdict from the table alone, and length yields to that: `The same definition rebuilds the same environment` replaced a six-word label that said less. The first rule stands unchanged — a label states an observable behavior — and it is the one that was ever doing the work. The correction rows above keep the labels they were recorded under.[^rollback-label]
+`The tool arranges the workspace mount` was the label that let a reader and the subject's own author reach opposite readings from the same cell. `Arranges` is satisfied by a decision recorded once at registration and replayed at every start, which is exactly what a `krun` registration does; the property the row was built to measure is narrower, that the tool works out which project it is looking at with no host path named by anyone. Those are two capabilities, and the set already had a row for the first — `Choose which host paths cross, in a file rather than on the command line` asks precisely where the decision was written down. `The tool derives the workspace mount, with no host path named` states the second without borrowing the first, and the method under it now registers the subject before it starts it, so registration-time configuration is inside the test rather than ambiguously outside it. No verdict moved at any subject; two of them now say why they are a `❌` where before they only said that they were.
+
+That retitle, and the four before it, retire the second of the two label rules above. A label is now required to state a claim a reader can verdict from the table alone, and length yields to that: `The same definition rebuilds the same environment` replaced a six-word label that said less. The first rule stands unchanged — a label states an observable behavior — and it is the one that was ever doing the work. The correction rows above keep the labels they were recorded under.[^rollback-label]
 
 ### Citations corrected
 
@@ -483,3 +561,7 @@ The `‡` mark is what made the promotions honest rather than generous. It says 
 [^guest-environment]: Verified: 2026-08-20 — vivarium against [`spec/03-artifact-model.md`](../spec/03-artifact-model.md) for the manifest key table and [`spec/06-workspace-and-project-environment.md`](../spec/06-workspace-and-project-environment.md) for the inner layer, and against [`implementation-status.md`](../implementation-status.md) and the shipped guest module for the `*`; flake-pilot against the `sci` and `flake-ctl-firecracker-register` manual pages in a fresh clone at `44e3ab2`; glaipnir against `image/Containerfile`, `image/scripts/entrypoint.sh`, and `docs/overview.md` at `21ef389`; podman against its manual pages. No existing verdict moved.
 
 [^rows-split]: Verified: 2026-08-20 — every split and every promotion re-read against the evidence already recorded in [`scenarios/`](./scenarios/README.md) at the revisions [`sources.md`](./sources.md) pins, with no subject re-read for this pass. The correction tables above keep the row labels they were written with; a label frozen in a dated record is what makes the record readable later, and the inventory above is where the current set lives.
+
+[^include-destination]: Verified 2026-08-22, against a fresh clone at `920f41e`: `sync_includes` and the overlay assembly in `firecracker-pilot/src/firecracker.rs`, `sync_includes` and `mount_container` in `podman-pilot/src/podman.rs`, and the absence of any `build` or `commit` call in either pilot.
+
+[^both-routes]: Verified 2026-08-21, against a fresh clone at `920f41e` and the upstream libkrun, `crun`, and passt documentation named in [`sources.md`](./sources.md).

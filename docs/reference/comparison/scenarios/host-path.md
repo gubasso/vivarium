@@ -9,11 +9,13 @@ Given that the project is visible inside — [the row above](./workspace-mount.m
 
 ## vivarium
 
-Yes: the [host-symmetric mount rule](../../spec/08-invariants-and-guarantees.md) fixes the workspace at the absolute path it occupies on the host, and a declared mount carries that same target rather than one the declaration invents.
+Yes: the [host-symmetric mount rule](../../spec/08-invariants-and-guarantees.md) fixes the workspace at the absolute path it occupies on the host, and a declared mount carries that same target rather than one the declaration invents. Since `162f230` that holds for a set rather than one tree — every declared workspace is mirrored at its own host path, and a pair where one contains the other is refused before boot, because two nesting trees cannot both be mirrored at their own paths ([ADR-0108](../../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md)).
 
 ## flake-pilot
 
-n/a: nothing crosses at the firecracker boundary, so there is no inside path to compare — the same reason the [mount-choice row](./choosing-mounts.md) and the [session-directory row](./session-sockets.md) read `n/a` here. The published `--volume %HOME/ai:%HOME/ai` that does mirror a path is the `crun` container backend, and it mirrors a quarantine directory rather than the project tree.
+At the firecracker route, n/a: nothing crosses, so there is no inside path to compare — the same reason [the mount-choice row](./choosing-mounts.md) and [the session-directory row](./session-sockets.md) read `n/a` for it.
+
+At the `krun` route, reachable and nothing checks it: the upstream registration's `--opt "\--volume %HOME/ai:%HOME/ai"` names the same path on both sides, and under `krun` the mount crosses as virtio-fs, so a file's path inside is the path it had outside. Two things keep it an arrangement rather than an answer. The mirroring is a property of how the person who wrote the registration happened to write it — `%HOME/ai:/work` would have been accepted identically, and nothing reports a mismatch — and what mirrors is `~/ai`, a quarantine directory the upstream flow tells you to create, rather than the project tree wherever it already lives.
 
 ## glaipnir
 
@@ -23,4 +25,4 @@ No: since 1.0.0 a workspace under `$HOME` mounts at `/home/aiuser/<path relative
 
 Reachable, nothing arranges it: `-v /host/path:/host/path` mirrors any single path exactly, and under krun the mount crosses as virtiofs, so it holds at the compared setup. The user types the path twice at every invocation, nothing refuses a mismatch, and published examples usually pick a different target.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19. `vivarium` re-read at `162f230` on 2026-08-22, where mirroring generalized from one tree to a declared set.

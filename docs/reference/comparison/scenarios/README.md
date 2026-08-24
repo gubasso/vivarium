@@ -5,9 +5,13 @@ The method for every row in [`../README.md`](../README.md), and the evidence beh
 Every subject section is read at that subject's fixed setup:
 
 - `vivarium` — its one microVM
-- `flake-pilot` — `firecracker-pilot`, at the upstream `claude` firecracker registration
+- `flake-pilot` — both of its microVM routes: `firecracker-pilot` at the upstream `claude` firecracker registration, and `podman-pilot` at `--runtime krun` at the upstream `claude` `krun` registration
 - `glaipnir` — the libkrun microVM
 - `podman` — `podman run --runtime krun`
+
+flake-pilot has one section per scenario carrying both routes, because the routes share a registration model and the interesting part of most rows is where they diverge. A section names the route whenever the verdict differs between them, and says so plainly when it does not.
+
+Every method starts by setting the subject up the way its own documentation says to before first use — registering a flake, writing a manifest, whatever that tool calls it — and only then runs the steps. Configuration a user is told to do once is inside what the tool provides; a decision retyped at each start is not the same capability, and the rows that care about the difference say which of the two they are measuring.
 
 A file carries a subject section only where the verdict needed more than its symbol, so the four are not all present everywhere. Which of the tables in [`../README.md`](../README.md) a scenario backs is legible there, where every capability name links to the file that decides it.
 

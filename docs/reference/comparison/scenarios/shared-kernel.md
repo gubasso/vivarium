@@ -15,6 +15,8 @@ No, by rule: vivarium's [separate-kernel rule](../../spec/08-invariants-and-guar
 
 Yes: `podman-pilot` at podman's default runtime is the upstream README's first `claude` registration, and its cost is legible in the registration itself — a shared kernel, `--net host`, and `~/ai` as the one shared path. It is also the rung with the best ergonomics, and upstream says why: the `krun` handler does not support `exec`, so a `krun` registration cannot use `--resume` either.
 
+This rung is also where both microVM routes land when the boundary is unavailable — [a host without `/dev/kvm` runs container registrations and nothing else](./no-kvm.md#flake-pilot) — and where a `krun` registration lands if the option naming the engine is [rewritten by a file](./boundary-file.md#flake-pilot).
+
 ## glaipnir
 
 Yes: rootless podman is the baseline and the microVM is an upgrade on top. `--no-microvm` selects the baseline outright; a failed probe lands on it with a warning; on macOS it is the only mode.

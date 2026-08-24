@@ -42,6 +42,8 @@ flake-ctl firecracker register --vm myvm \
     --app /usr/bin/claude --target /usr/bin/claude-wrapped
 ```
 
+The `krun` route has the same one slot and reaches it through podman's entry point rather than through `sci`: the registration's `--target` is the path run inside the image, so a wrapper baked into the image and named there does the setup and then execs the application. Same arrangement, same absence of a place to add to.
+
 ## glaipnir
 
 Yes: `--run-hook` stages scripts into a mounted directory, and the entrypoint finds every `*.sh` there, sorts them, and runs each one on every start. The ordered `NN-*.sh` convention is what composes them, and each is validated with `shellcheck` before use. The cost is the same as the mechanism: they compose the way shell does, one after another, so nothing can report a disagreement between two of them — which is where [the collision row](./collision.md#glaipnir) reads `n/a`.
