@@ -758,13 +758,20 @@ fn workflow_03_literal_path(tp: &TempProject) -> Result<(), Failed> {
     check(expect_stdout_mentions(&still_readable, "literal-path"))?;
     check(expect_stdout_mentions(&still_readable, "/home/ana"))?;
 
-    // ADR-0108's ownership half, end to end rather than only in the merged-view unit tests.
-    // `vivarium.workspaces` is an ordinary `listOf`, so a shared layer setting it merges without
-    // complaint — and it must not, because ownership of a directory is decided from manifest text
-    // alone. A workspace a piece contributes would own a tree the derived index cannot see and
-    // the `78` refusal cannot name. Asserted through a real evaluation because the refusal reads
-    // the report's per-layer `defines`, and a rule that reads a key the report never emits would
-    // pass every unit test while never firing.
+    // ADR-0108's ownership half, end to end. What it asserts changed with ADR-0110 and the
+    // change is worth pinning rather than deleting.
+    //
+    // The rule used to be enforced: `vivarium.workspaces` was an option a shared layer could
+    // write, so `src/config/merged.rs` refused one at `65` naming the offending layer. There is
+    // no such option now — a workspace compiles to a `vivarium.mounts` row that `viv` writes from
+    // manifest text — so the guarantee is structural. A piece reaching for the old spelling
+    // contributes nothing, and the provenance view says so by showing the manifest's own trees
+    // and no others.
+    //
+    // It also says so quietly, which is the cost: `nix/vivarium-report.nix` evaluates each layer
+    // with `_module.check = false` so an ordinary NixOS layer is not fatal here, and an undeclared
+    // `vivarium.*` is ignored along with it. Recorded as `Q-034`; this trial pins the behaviour so
+    // the day it gains a diagnostic, this is what moves.
     write_piece(
         tp,
         "team",
@@ -778,12 +785,13 @@ fn workflow_03_literal_path(tp: &TempProject) -> Result<(), Failed> {
         &["config", "eval", "--json"],
         &[("VIVARIUM_MANIFEST", "ana-api")],
     )?;
-    check(expect_code(&owned_by_a_piece, EX_DATAERR))?;
-    check(expect_stderr_mentions(
+    check(expect_code(&owned_by_a_piece, 0))?;
+    // The manifest's own tree, and nothing the piece asked for.
+    check(expect_stdout_mentions(
         &owned_by_a_piece,
-        "declared outside the manifest",
+        "\"workspaces\":[{",
     ))?;
-    check(expect_stderr_mentions(&owned_by_a_piece, "team"))
+    check(expect_stdout_lacks(&owned_by_a_piece, "team-tree"))
 }
 
 /// The equal-priority tie. Under ADR-0040's convention a shared piece proposes with
@@ -2254,9 +2262,18 @@ fn workflow_17_refusals() -> Result<(), Failed> {
             "workspace-path-unmirrorable",
         ))?;
         check(expect_stderr_mentions(&refused, source))?;
+        // Every resolving verb answers the same way about the same defect. Since ADR-0110 the
+        // mirroring rules are decided at resolution rather than inside `start`, so `status` meets
+        // them too — the deliberate consistency cost ADR-0109 already established for a broken
+        // selected manifest, now covering a declaration that cannot be mounted. Asserted rather
+        // than tolerated: a verb that answered `built` here would be reporting on a sandbox this
+        // manifest can never have.
         let resting = viv_at(&tp, cwd, &["status", "--json"])?;
-        check(expect_code(&resting, 0))?;
-        check(expect_json_string(&resting, "state", "built"))?;
+        check(expect_code(&resting, EX_CONFIG))?;
+        check(expect_stderr_mentions(
+            &resting,
+            "workspace-path-unmirrorable",
+        ))?;
     }
 
     // Different variable spellings conceal the nesting from the decidable textual tier. Launch
@@ -2301,8 +2318,8 @@ fn workflow_17_refusals() -> Result<(), Failed> {
         ],
     )
     .map_err(io_failed)?;
-    check(expect_code(&resting, 0))?;
-    check(expect_json_string(&resting, "state", "built"))
+    check(expect_code(&resting, EX_CONFIG))?;
+    check(expect_stderr_mentions(&resting, "workspace-paths-overlap"))
 }
 
 /// Slice 019's acceptance heart: a piece-declared directory mount with a portable source is
@@ -2479,9 +2496,15 @@ fn workflow_17_worktree() -> Result<(), Failed> {
         &main_repo,
     )?;
 
-    // The manifest is the personal layer, where a literal absolute path is ordinary authorship;
-    // source and target are the SAME path, which is the whole point — the worktree's `.git`
-    // file names it absolutely, from either side.
+    // Both trees at their own host paths, which is the whole point — the worktree's `.git` file
+    // names the main repository absolutely, from either side.
+    //
+    // Two rows, not three. Before ADR-0110 this manifest also carried a `[[mounts]]` row
+    // mirroring the main repository, because that was the surface slice 019 built for reaching a
+    // tree outside the workspace set. It is now the same mechanism: a workspace compiles to a
+    // mount whose target is its source, so declaring both put two rows on one target and is
+    // refused at `65`. That refusal is correct and the redundancy was always there — it was
+    // invisible while two units bound the same path and the later one silently won.
     let main_spelling = main_repo.to_string_lossy().into_owned();
     let worktree_spelling = worktree.to_string_lossy().into_owned();
     arrange_manifest(
@@ -2489,9 +2512,7 @@ fn workflow_17_worktree() -> Result<(), Failed> {
         "wf17-worktree",
         &format!(
             "\n[[workspaces]]\nsource = '{main_spelling}'\n\
-            \n[[workspaces]]\nsource = '{worktree_spelling}'\n\
-            \n[[mounts]]\nsource = \"{main_spelling}\"\n\
-            target = \"{main_spelling}\"\nreadonly = false\n"
+            \n[[workspaces]]\nsource = '{worktree_spelling}'\n"
         ),
         "",
     )?;

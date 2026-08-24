@@ -30,7 +30,7 @@ Defined terms used across the vivarium documentation. Each term is defined once 
 
 - Workspace ownership — the association declared by a manifest's `[[workspaces]]` rows and used by the derived resolution rung to select one sandbox for an invoking directory. See [`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md).
 
-- Workspace — the user's working directory, mounted read-write into the guest at a fixed location. See [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md).
+- Workspace — a host tree a manifest declares it owns, mounted read-write into the guest at the same absolute path it occupies on the host. See [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md).
 
 - Session — one active `exec` command or interactive `shell` attached through the guest agent.
 
@@ -42,7 +42,7 @@ Defined terms used across the vivarium documentation. Each term is defined once 
 
 - Outer / inner evaluation — the two Nix evaluations: the outer builds the sandbox from the manifest at build time; the inner builds the project's development environment inside the guest at shell time.
 
-- Launch channel — the runtime portion of the merged configuration (mounts, runtime environment, and resource ceilings, declared as `vivarium.mounts`, `vivarium.env`, and `vivarium.resources`) that the tool extracts by pure evaluation and applies when the VM launches; never a build input. Membership is per option, not per namespace: `vivarium.volumes` is a tool-owned option that belongs to the build channel. See [`04-composition-and-determinism.md`](./04-composition-and-determinism.md).
+- Launch channel — the runtime portion of the merged configuration (mounts, runtime environment, and resource ceilings, declared as `vivarium.mounts`, `vivarium.env`, and `vivarium.resources`) that the tool extracts by pure evaluation and applies when the VM launches; never a build input. Membership is per option, not per namespace: `vivarium.volumes` belongs to the build channel, and so does a declared workspace, which reaches Nix as a `vivarium.mounts` row whose target is its own source rather than through an option of its own. See [`04-composition-and-determinism.md`](./04-composition-and-determinism.md).
 
 - Portable variable — an unexpanded, machine-independent host variable — `${HOME}` or an `${XDG_*}` directory — the only host reference permitted in shared mount declarations; resolved against the host environment at launch. See [`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md).
 

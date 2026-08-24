@@ -349,10 +349,10 @@ else
       pass "realised closure contains cloud-hypervisor, ch-remote package, and virtiofsd"
     else fail "realised backend closure" "$closure_output"; fi
 
-    common=(--workspace ws0 "$REPO_ROOT" --runtime-dir /run/user/1000/vivarium/canary-a --volume-dir /var/lib/vivarium/canary-a --supervisor "$(command -v env)" --uid 1000 --gid 1000 --memory-mib 2048 --vcpu 2 --print-static-arguments)
+    common=(--mount mnt0 dir "$REPO_ROOT" - --runtime-dir /run/user/1000/vivarium/canary-a --volume-dir /var/lib/vivarium/canary-a --supervisor "$(command -v env)" --uid 1000 --gid 1000 --memory-mib 2048 --vcpu 2 --print-static-arguments)
     static_a=$("$launcher" "${common[@]}" 2>&1)
     static_status=$?
-    static_b=$("$launcher" --workspace ws0 /opt/vivarium-canary --runtime-dir /run/user/4242/vivarium/canary-b --volume-dir /srv/vivarium/canary-b --supervisor "$(command -v env)" --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1)
+    static_b=$("$launcher" --mount mnt0 dir /opt/vivarium-canary - --runtime-dir /run/user/4242/vivarium/canary-b --volume-dir /srv/vivarium/canary-b --supervisor "$(command -v env)" --uid 4242 --gid 4343 --memory-mib 4096 --vcpu 8 --print-static-arguments 2>&1)
     static_b_status=$?
     if ((static_status == 0 && static_b_status == 0)); then
       # Every runtime path in `vmCreate` is scrubbed here, and the list has to grow
@@ -528,7 +528,7 @@ else
   image_allocated() { stat -c '%b*%B=%s' -- "$1" 2>/dev/null || echo unavailable; }
   store_alloc_before=$(image_allocated "$store_volume")
 
-  launch_args=(--workspace ws0 "$REPO_ROOT" --runtime-dir "$runtime_dir" --volume-dir "$volume_dir" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 --sandbox-id first-microvm --target "$run_id")
+  launch_args=(--mount mnt0 dir "$REPO_ROOT" - --runtime-dir "$runtime_dir" --volume-dir "$volume_dir" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 --sandbox-id first-microvm --target "$run_id")
   unit_name="vivarium-first-microvm-$run_id.service"
 
   launch_attempt=0
@@ -757,7 +757,7 @@ PY
       role=wrapper
       case $cmd in
         *virtiofsd*store.sock*) role=virtiofsd:store ;;
-        *virtiofsd*workspace.sock*) role=virtiofsd:workspace ;;
+        *virtiofsd*mnt0.sock*) role=virtiofsd:workspace ;;
         *cloud-hypervisor*) role=cloud-hypervisor ;;
       esac
       userns=$(proc_userns "$pid")
@@ -918,18 +918,15 @@ rejoined count is below expected, so bytes are genuinely missing rather than spl
     # would report a mirror failure on a host where the mirror was correct, which is the
     # wrong-reason failure this file exists to avoid.
     #
-    # Two escapings and therefore two decoders, because the two markers have different
-    # authors: the unit percent-encodes (the same encoding the launcher put on the kernel
-    # command line), and the diagnostic passes the mount table's octal form through. Each
-    # decode appends and strips an `x`, because command substitution deletes a trailing
-    # newline and a path may end in one — the same sentinel `nix/workspace-mirror.sh` uses.
-    mirror_claim=$(grep -a 'VIVARIUM_WORKSPACE_MIRROR=' "$console_log" | head -n1 | tr -d '\r' || true)
-    mirror_encoded=$(sed -n 's/.*VIVARIUM_WORKSPACE_MIRROR=ok internal=[^ ]* path=//p' <<<"$mirror_claim" || true)
-    mirror_path=
-    if [[ -n $mirror_encoded ]]; then
-      mirror_path=$(printf '%b' "${mirror_encoded//%/\\x}x")
-      mirror_path=${mirror_path%x}
-    fi
+    # Two markers with different authors, which is the point: the bind unit says what it
+    # did, and the diagnostic re-reads what the kernel holds. Since ADR-0110 the unit is
+    # `vivarium-mounts.service` and its marker carries the target plainly rather than
+    # percent-encoded — `target=` is last on the line and read to end of line, so a space
+    # survives. A newline in a project path does not, which the encoded form used to carry
+    # and this does not; the mount-table reading below is byte-exact and is what the
+    # comparison rests on.
+    mirror_claim=$(grep -a 'VIVARIUM_MOUNT_BIND=ok ' "$console_log" | head -n1 | tr -d '\r' || true)
+    mirror_path=$(sed -n 's/.*VIVARIUM_MOUNT_BIND=ok tag=[^ ]* kind=[^ ]* target=//p' <<<"$mirror_claim" || true)
     mirror_escaped=$(grep -a 'VIVARIUM_WORKSPACE_MIRROR_PATH=' "$console_log" | head -n1 | tr -d '\r' \
       | sed -n 's/.*VIVARIUM_WORKSPACE_MIRROR_PATH=//p' || true)
     mirror_seen=
@@ -940,9 +937,9 @@ rejoined count is below expected, so bytes are genuinely missing rather than spl
     if [[ $mirror_path == "$REPO_ROOT" && $mirror_seen == "$REPO_ROOT" ]]; then
       pass "the project is mirrored into the guest at its own host path ($REPO_ROOT)"
     else
-      fail "guest workspace mirror" "unit claim: ${mirror_claim:-absent}
+      fail "guest workspace mount" "unit claim: ${mirror_claim:-absent}
 mount table: ${mirror_escaped:-absent}
-expected both to name $REPO_ROOT (N16, ADR-0100)"
+expected both to name $REPO_ROOT (N16, ADR-0110)"
     fi
     free_lines=$(grep -ao 'VIVARIUM_MEM_PHASE=[a-z]* MEMFREE=[0-9]* MEMAVAIL=[0-9]*' "$console_log" || true)
     # VmRSS is not authoritative here and must not be reported as if it were.

@@ -18,7 +18,7 @@ Each invariant is proved by the cheapest lane that can prove it. A lane is not a
 | 2 | Structured golden    | the generated flake and the `--json` records are what the spec says | nothing              | yes                  |
 | 3 | Text-contract golden | usage output and the human error skeleton                           | nothing              | yes                  |
 | 4 | Evaluation           | the generated flake evaluates                                       | Nix                  | where Nix is present |
-| 5 | Purity               | N3, N5, N19 — no host or launch-channel value in a build input      | Nix                  | where Nix is present |
+| 5 | Purity               | N3, N19 — no launch-channel value in a build input                  | Nix                  | where Nix is present |
 | 6 | Non-invasion         | N9 — no user file is touched                                        | nothing              | yes                  |
 | — | Acceptance (gated)   | end-to-end behavior                                                 | Nix + virtualization | informational        |
 
@@ -52,8 +52,10 @@ It evaluates without building: no derivation is realized and no VM is booted. It
 
 Two assertions, both structural. Neither scans for values that look suspicious; a deny-list is the heuristic [`../decisions/ADR-0069-redaction-is-by-construction.md`](../decisions/ADR-0069-redaction-is-by-construction.md) refused for redaction, and it has the same unbounded tail here.
 
-- Canary. Each run plants a unique random token in the workspace host path and in every launch-channel value, then asserts the token appears nowhere in the recursive derivation graph — input sources, input derivations, and environment. For the value it tracks, a unique token has no false negatives.
-- Metamorphic equality. The same manifest is built from two different host paths, and separately with only launch-channel data changed. The derivation must be identical either way. This states N3, N5, and N19 as an equality rather than as a search, so it catches a leak nobody thought to look for.
+- Canary. Each run plants a unique random token in every launch-channel value, then asserts the token appears nowhere in the recursive derivation graph — input sources, input derivations, and environment. For the value it tracks, a unique token has no false negatives.
+- Metamorphic equality. The same manifest is built twice with only launch-channel data changed. The derivation must be identical either way. This states N3 and N19 as an equality rather than as a search, so it catches a leak nobody thought to look for.
+
+Both halves narrowed with [`../decisions/ADR-0110-the-workspace-is-an-ordinary-mount.md`](../decisions/ADR-0110-the-workspace-is-an-ordinary-mount.md), and the narrowing is the point rather than a concession. A declared workspace's expanded path is now build-channel: it is the guest path the tree is mounted at, so a build output depends on it by design. Planting a canary there, or building one manifest from two host paths and demanding one derivation, would now assert the opposite of what the product promises. What the lane still proves is that nothing which resolves at launch — a `[[mounts]]` source, `[env]`, `[resources]` — reaches a build input, which is the whole of N19 as it now reads.
 
 The derivation-inspection format this lane reads is documented upstream as experimental. That is a known dependency: if it changes, this lane changes with it, and the invariants it proves do not.
 

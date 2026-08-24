@@ -14,6 +14,7 @@ pub mod secure_fs;
 mod spec;
 mod supervisor;
 mod systemd;
+pub mod workspace;
 
 pub use command::CommandSpec;
 pub use console::{ConsoleReader, ConsoleSink};
@@ -24,7 +25,7 @@ pub use spec::{
     BACKEND, BackendPrograms, BootMetadata, CredentialSpec, DescriptorBudget, EgressSpec,
     GuestSession, IdentityTranslation, LAUNCH_SCHEMA_VERSION, LaunchEgressMode, LaunchSpec,
     MountPlan, MountPlanKind, NetworkSpec, ResourceSpec, RuntimePaths, ShareSpec, SocketLegs,
-    VIRTIOFSD_RLIMIT_NOFILE, VersionEnvelope, VolumeSpec, nested_workspaces, unmirrorable,
+    VIRTIOFSD_RLIMIT_NOFILE, VersionEnvelope, VolumeSpec,
 };
 pub use supervisor::{
     ChildExit, ChildKind, GuestReadiness, LaunchReady, ShutdownReason, Supervisor,

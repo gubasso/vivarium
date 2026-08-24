@@ -45,10 +45,10 @@ echo 'VIVARIUM_CONSOLE_BYTES_CLAIMED=1048576'
 rm -f "$burst"
 sleep 10
 
-# Two facts since ADR-0100, and they are separate on purpose. The share mounts at
-# a build-time constant, which is what this first probe reads; where a session
-# actually finds the project is a bind made at boot from the kernel command line,
-# which the second probe reads. A run where the share is rw and the mirror never
+# Two facts, and they are separate on purpose. The share mounts at a build-time
+# constant, which is what this first probe reads; where a session actually finds
+# the project is a bind the guest makes at boot from its own table, which the
+# second probe reads. A run where the share is rw and the mirror never
 # happened is exactly the state that would otherwise look like a working guest
 # with an empty project directory.
 mount_line="$(awk -v want="$VIVARIUM_WORKSPACE_INTERNAL" '$2 == want { print; exit }' /proc/self/mounts)"
@@ -59,8 +59,8 @@ else
   echo 'VIVARIUM_WORKSPACE_CONTRACT=unexpected'
 fi
 
-# The mirror is `vivarium-workspace.service`'s to make, and it says so on the
-# console itself. Re-read here from the mount table so the diagnostic reports what
+# The bind is `vivarium-mounts.service`'s to make, and it says so on the console
+# itself. Re-read here from the mount table so the diagnostic reports what
 # the kernel holds rather than what a unit claimed, and so the two can disagree.
 mirror_source=$(awk -v want="$VIVARIUM_WORKSPACE_INTERNAL" '$2 == want { print $1; exit }' /proc/self/mounts)
 mirror_line=$(awk -v want="$VIVARIUM_WORKSPACE_INTERNAL" -v src="$mirror_source" \

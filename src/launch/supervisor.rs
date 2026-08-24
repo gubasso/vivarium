@@ -76,71 +76,39 @@ const GUEST_POWEROFF_TIMEOUT: Duration = Duration::from_secs(6);
 /// How long the destroyed VM's processes are given to exit before they are killed.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// RFC 3986's unreserved set plus `/`: the bytes a path crosses the kernel command line as itself.
-const CMDLINE_UNRESERVED: &[u8] = b"-._~/";
-
 /// Linux's `COMMAND_LINE_SIZE`, which is 2048 on both supported architectures.
 ///
 /// A hard refusal rather than a warning, because the kernel copies what fits and drops the rest in
-/// silence. A percent sequence cut mid-way usually fails the guest's allowlist, but a cut on a
-/// byte boundary decodes to a shorter path that is perfectly valid and wrong — a workspace bound
-/// somewhere nobody asked for. The rendered command line is around 300 bytes today, so the
-/// remaining budget is real: `PATH_MAX` is 4096, and a fully-encoded path exhausts this at ~550
-/// characters.
+/// silence. Since ADR-0110 what rides here is one short parameter per declared mount — a kind, and
+/// for a file plan an already-encoded basename — so the budget is no longer the thing that bounds
+/// how many trees a sandbox may hold. It still bounds the mount count, and a truncated line still
+/// reaches the guest as a shorter, valid, wrong plan rather than as an error.
 const CMDLINE_LIMIT: usize = 2048;
 
-/// Percent-encode a host path for the kernel command line (ADR-0100).
+/// Compose the guest kernel command line from the base, the boot identity, and each declared
+/// mount's plan.
 ///
-/// Over the raw bytes rather than over a `String`, because a path is bytes and `to_string_lossy`
-/// would substitute U+FFFD for a non-UTF-8 component and hand the guest a path that silently
-/// differs from the host's.
-///
-/// That makes this function byte-exact and does not make the pipeline byte-exact, which is worth
-/// separating because the test below proves the first and could be misread as proving the second.
-/// The specification reaches here as JSON, and [`../../nix/runner.sh`] injects the workspace path
-/// into it with `jq --arg`, which is where a non-UTF-8 byte is already replaced — so such a path is
-/// U+FFFD before this function ever sees it, and N16's promise of one path string quietly does not
-/// hold for it. Tracked as `Q-019` in `docs/plan/open-questions.md`; the repair belongs at the JSON
-/// boundary, not here, and encoding bytes here is still the right shape for it to land on.
-///
-/// Percent rather than base64, for one sufficient reason and two supporting ones. The `=` in
-/// base64's alphabet would make `vivarium.workspace=` ambiguous to split on; the guest decodes
-/// percent in one line of shell and needs no new binary in the image; and an ordinary path stays
-/// legible in `/proc/cmdline` and in the console log, which is where a failed boot is read.
-/// Compose the guest kernel command line from the base, the boot identity, the workspace set, and
-/// each declared mount's plan.
-///
-/// A free function rather than a method so the composition can be asserted directly. What reaches
-/// the guest here is the only channel that carries a launch-expanded absolute path: the guest
-/// cannot observe a virtiofs share's host-side source, and an fstab mount point is a build
-/// constant, which is why ADR-0100 fixed the command line as the launch channel and why ADR-0108's
-/// plural workspace stayed on it rather than growing a second one.
+/// A free function rather than a method so the composition can be asserted directly. What crosses
+/// here is the half of a mount plan that resolves only at launch: whether the declared source was
+/// a directory or a regular file, and which entry of the share the file is. Where the share binds
+/// is build output, carried in the contract's own bind table, which is what let ADR-0110 delete
+/// the workspace's separate channel rather than move it.
 fn compose_cmdline(
     base: &str,
     boot_identity: &str,
-    workspace_host_paths: &std::collections::BTreeMap<String, PathBuf>,
     shares: &[crate::launch::ShareSpec],
 ) -> Result<String, LaunchError> {
     use std::fmt::Write as _;
     let mut cmdline = format!("{base} vivarium.boot_identity={boot_identity}");
-    // One parameter per declared workspace, in tag order because the map is a `BTreeMap`: the
-    // guest matches by tag rather than by position, but a stable order keeps a `console.log` from
-    // two boots of one build diffable.
-    for (tag, path) in workspace_host_paths {
-        let _ = write!(
-            cmdline,
-            " vivarium.workspace.{tag}={}",
-            encode_cmdline_path(path)
-        );
-    }
-    // The launch half of each declared mount's plan, matched by tag against the bind table
-    // the image carries (`mount-bind.sh`). The entry is already percent-encoded — it goes
-    // verbatim, and the guest is the one decoder.
+    // Matched by tag against the bind table the image carries (`mount-bind.sh`). The entry is
+    // already percent-encoded — it goes verbatim, and the guest is the one decoder.
     for share in shares {
         match &share.mount_plan {
             None => {}
             Some(plan) => match (plan.kind, plan.entry.as_deref()) {
-                (crate::launch::MountPlanKind::Dir, _) => {
+                // `Tree` rides as `dir`: the guest binds a mirrored tree and an ordinary
+                // directory mount identically, so the distinction is the host's and stays there.
+                (crate::launch::MountPlanKind::Dir | crate::launch::MountPlanKind::Tree, _) => {
                     let _ = write!(cmdline, " vivarium.mount.{}=dir", share.tag);
                 }
                 (crate::launch::MountPlanKind::File, Some(entry)) => {
@@ -154,31 +122,12 @@ fn compose_cmdline(
             },
         }
     }
-    // The budget is what bounds the practical workspace count at roughly fifteen to twenty
-    // ordinary trees. Refused here rather than evaded by a second channel: staging a table file
-    // into a share is machinery ADR-0100 already declined, and a truncated command line reaches
-    // the guest as a shorter, valid, wrong path rather than as an error.
     if cmdline.len() >= CMDLINE_LIMIT {
         return Err(LaunchError::InvalidSpec(
             "the launch parameters do not fit the guest kernel command line",
         ));
     }
     Ok(cmdline)
-}
-
-fn encode_cmdline_path(path: &Path) -> String {
-    use std::fmt::Write as _;
-    use std::os::unix::ffi::OsStrExt as _;
-    let mut encoded = String::new();
-    for byte in path.as_os_str().as_bytes() {
-        if byte.is_ascii_alphanumeric() || CMDLINE_UNRESERVED.contains(byte) {
-            encoded.push(char::from(*byte));
-        } else {
-            // Upper-case hex, matching the allowlist the guest checks before it decodes.
-            let _ = write!(encoded, "%{byte:02X}");
-        }
-    }
-    encoded
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -672,17 +621,23 @@ impl Supervisor {
         let boot_identity = boot_identity.trim();
         validate_boot_identity(boot_identity)
             .map_err(|_| LaunchError::InvalidSpec("kernel UUID is malformed"))?;
-        // Read before the command line is rebuilt: since ADR-0100 the same value is both the boot
-        // record's host path and the guest's mount path, and it crosses on the command line.
-        let workspace_host_paths = self
+        // Derived from the specification rather than carried, because since ADR-0110 a workspace
+        // is an ordinary mount and there is no argument channel that would say which rows came
+        // from `[[workspaces]]`. The equality below is the definition, not a guess at it.
+        //
+        // Through the same canonical form the resolution side uses, because `reusable()` compares
+        // the two directly: the share order here is the build's and the resolved order there is
+        // the manifest's, and two spellings of one set must not read as two sets.
+        let mut workspace_paths = self
             .spec
             .workspace_shares()
             .into_iter()
-            .map(|share| (share.tag.clone(), share.source.clone()))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        if workspace_host_paths.is_empty() {
-            return Err(LaunchError::InvalidSpec("workspace share is missing"));
-        }
+            .map(|share| share.source.clone())
+            .collect::<Vec<_>>();
+        crate::launch::workspace::canonicalize_set(&mut workspace_paths);
+        // An empty set is not refused here. A manifest declaring no workspace is refused at
+        // resolution (ADR-0109), and a verification image boots by hand with mounts that land at
+        // fixed targets rather than at their sources.
         let cmdline = self
             .spec
             .vm_create
@@ -690,12 +645,7 @@ impl Supervisor {
             .and_then(|payload| payload.get_mut("cmdline"))
             .and_then(|value| value.as_str())
             .ok_or(LaunchError::InvalidSpec("VM create cmdline is missing"))?;
-        let cmdline = compose_cmdline(
-            cmdline,
-            boot_identity,
-            &workspace_host_paths,
-            &self.spec.shares,
-        )?;
+        let cmdline = compose_cmdline(cmdline, boot_identity, &self.spec.shares)?;
         self.spec.vm_create["payload"]["cmdline"] = serde_json::Value::String(cmdline);
         Ok(BootMetadata {
             // The launch contract's number, not the guest-handshake protocol's: `launch.json`
@@ -706,7 +656,7 @@ impl Supervisor {
             sandbox_id: self.spec.sandbox_id.clone(),
             target: self.spec.target.clone(),
             backend: crate::launch::BACKEND.to_owned(),
-            workspace_host_paths,
+            workspace_paths,
         })
     }
 
@@ -1027,90 +977,83 @@ async fn cleanup_runtime(spec: &LaunchSpec) -> Result<(), LaunchError> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::launch::VolumeSpec;
+    use crate::launch::{MountPlan, VolumeSpec};
 
-    #[test]
-    fn encodes_every_byte_the_command_line_cannot_carry() {
-        // The ordinary case stays legible, which is the whole reason this is not base64: a boot
-        // that fails is read out of `/proc/cmdline` and the console log.
-        assert_eq!(
-            encode_cmdline_path(Path::new("/home/u/Projects/my-repo.git")),
-            "/home/u/Projects/my-repo.git"
-        );
-        assert_eq!(encode_cmdline_path(Path::new("/a/~_-.")), "/a/~_-.");
-        // Whitespace ends a kernel parameter, so a space is the case that motivates encoding.
-        assert_eq!(encode_cmdline_path(Path::new("/a/my repo")), "/a/my%20repo");
-        assert_eq!(encode_cmdline_path(Path::new("/a/b\tc")), "/a/b%09c");
-        assert_eq!(encode_cmdline_path(Path::new("/a/b\nc")), "/a/b%0Ac");
-        // `=` would otherwise make `vivarium.workspace=` ambiguous to split on.
-        assert_eq!(encode_cmdline_path(Path::new("/a/b=c")), "/a/b%3Dc");
-        // `%` must round-trip, or the guest's decode reads the next two bytes as its hex.
-        assert_eq!(encode_cmdline_path(Path::new("/a/100%")), "/a/100%25");
-        // A literal backslash, which is what makes the guest's `printf %b` decode safe.
-        assert_eq!(encode_cmdline_path(Path::new("/a/b\\c")), "/a/b%5Cc");
-        assert_eq!(encode_cmdline_path(Path::new("/a/\"q'")), "/a/%22q%27");
-        assert_eq!(encode_cmdline_path(Path::new("/a/pkg@1.0")), "/a/pkg%401.0");
+    fn share(tag: &str, plan: Option<MountPlan>) -> crate::launch::ShareSpec {
+        crate::launch::ShareSpec {
+            tag: tag.to_owned(),
+            source: PathBuf::from("/home/u/tree"),
+            mount_point: PathBuf::from(format!("/run/vivarium-mounts/{tag}")),
+            socket: PathBuf::from(format!("/run/user/1000/viv/{tag}.sock")),
+            cache: "auto".to_owned(),
+            read_only: false,
+            mount_plan: plan,
+            extra_args: Vec::new(),
+        }
     }
 
-    #[test]
-    fn encodes_a_non_utf8_path_byte_for_byte() {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt as _;
-        // Over bytes rather than `to_string_lossy`, whose U+FFFD would hand the guest a path that
-        // silently differs from the host's.
-        //
-        // What this proves and what it does not. It proves this function is byte-exact, which is
-        // the shape a repair has to land on. It does not prove a non-UTF-8 project path reaches
-        // the guest intact, because the specification arrives as JSON and `nix/runner.sh` has
-        // already replaced such a byte by the time it gets here — so the assertion is about the
-        // encoder alone and is stated that way rather than left to read as end-to-end coverage
-        // (`Q-019`).
-        let path = PathBuf::from(OsStr::from_bytes(b"/a/\xff\xfe"));
-        assert_eq!(encode_cmdline_path(&path), "/a/%FF%FE");
+    fn dir_plan() -> MountPlan {
+        MountPlan {
+            kind: crate::launch::MountPlanKind::Dir,
+            entry: None,
+            target: PathBuf::from("/home/u/tree"),
+        }
     }
 
-    /// Every declared workspace reaches the guest as its own parameter, encoded.
+    fn file_plan(entry: &str) -> MountPlan {
+        MountPlan {
+            kind: crate::launch::MountPlanKind::File,
+            entry: Some(entry.to_owned()),
+            target: PathBuf::from("/home/u/.config/thing.toml"),
+        }
+    }
+
+    /// Every plan reaches the guest, and the store share — which has none — contributes nothing.
     ///
-    /// The plural shape's central claim, and the one nothing asserted: with the single `workspace`
-    /// tag gone, a workspace that never made it onto the command line does not fail — it mirrors
-    /// nothing and the guest reports `absent`, which reads as a working boot with a missing tree.
+    /// Since ADR-0110 this is the whole of what the command line carries beyond the boot identity:
+    /// a workspace's host path stopped travelling here and became build output, so a parameter
+    /// appearing for a share with no plan would be a leak of the channel this decision closed.
     #[test]
-    fn every_declared_workspace_gets_its_own_encoded_parameter() {
-        let workspaces = std::collections::BTreeMap::from([
-            ("ws0".to_owned(), PathBuf::from("/home/u/app")),
-            // A space, so this also pins that the per-workspace parameter is encoded rather than
-            // merely appended: an unencoded space would split one parameter into two.
-            ("ws1".to_owned(), PathBuf::from("/home/u/my notes")),
-            ("ws2".to_owned(), PathBuf::from("/srv/data")),
-        ]);
-        let cmdline = compose_cmdline("console=ttyS0", "b7f0", &workspaces, &[]).unwrap();
+    fn each_declared_mount_plan_reaches_the_guest_as_its_own_parameter() {
+        let shares = [
+            share("store", None),
+            share("mnt0", Some(dir_plan())),
+            share("mnt1", Some(file_plan("thing.toml"))),
+        ];
+        let cmdline = compose_cmdline("console=ttyS0", "b7f0", &shares).unwrap();
         assert!(cmdline.starts_with("console=ttyS0 vivarium.boot_identity=b7f0"));
-        assert!(cmdline.contains(" vivarium.workspace.ws0=/home/u/app"));
-        assert!(cmdline.contains(" vivarium.workspace.ws1=/home/u/my%20notes"));
-        assert!(cmdline.contains(" vivarium.workspace.ws2=/srv/data"));
-        // Whitespace-separated is the format, so the count is checkable: base, boot identity, and
-        // one per workspace and nothing else.
-        assert_eq!(cmdline.split_whitespace().count(), 5);
+        assert!(cmdline.contains(" vivarium.mount.mnt0=dir"));
+        assert!(cmdline.contains(" vivarium.mount.mnt1=file:thing.toml"));
+        assert!(!cmdline.contains("vivarium.mount.store"));
+        // The closed channel, asserted as absent rather than assumed: a workspace is an ordinary
+        // mount now and nothing about it rides here.
+        assert!(!cmdline.contains("vivarium.workspace"));
     }
 
-    /// The budget refuses rather than truncates, and it refuses at the boundary rather than near
-    /// it. A kernel copies at most `COMMAND_LINE_SIZE - 1` bytes and drops the rest in silence, so
-    /// the failure this prevents is a path that decodes short, binds, and leaves a session's cwd
-    /// naming a directory that does not exist.
+    /// A file plan that lost its entry is refused rather than booted with half a plan.
+    #[test]
+    fn a_file_plan_without_its_entry_is_refused() {
+        let mut plan = file_plan("thing.toml");
+        plan.entry = None;
+        let shares = [share("mnt0", Some(plan))];
+        assert!(matches!(
+            compose_cmdline("console=ttyS0", "b7f0", &shares),
+            Err(LaunchError::InvalidSpec("a file mount plan lost its entry"))
+        ));
+    }
+
     #[test]
     fn the_command_line_budget_refuses_at_its_boundary() {
         let base = "console=ttyS0";
         let identity = "b7f0";
-        // Grow one workspace path until the composition is refused, then check the last accepted
-        // one sat just under the limit — which pins the comparison as `>=` rather than `>`.
+        // Grow one file plan's entry until the composition is refused, then check the last
+        // accepted one sat just under the limit — which pins the comparison as `>=` rather
+        // than `>`.
         let mut accepted = None;
         let mut refused = None;
         for length in 1..CMDLINE_LIMIT {
-            let workspaces = std::collections::BTreeMap::from([(
-                "ws0".to_owned(),
-                PathBuf::from(format!("/{}", "a".repeat(length))),
-            )]);
-            match compose_cmdline(base, identity, &workspaces, &[]) {
+            let shares = [share("mnt0", Some(file_plan(&"a".repeat(length))))];
+            match compose_cmdline(base, identity, &shares) {
                 Ok(cmdline) => accepted = Some(cmdline.len()),
                 // Any error ends the sweep; the assertions below are what decide whether it was
                 // the refusal this test is about. Matching the reason rather than panicking on
@@ -1131,47 +1074,28 @@ mod tests {
         assert_eq!(accepted, Some(CMDLINE_LIMIT - 1));
     }
 
-    /// Many ordinary workspaces fit, and enough of them do not. The plan carries "roughly fifteen
-    /// to twenty" as the practical bound; this is that estimate turned into an assertion so a
-    /// change to the parameter's shape shows up as a moved number rather than as a surprise on
-    /// somebody's manifest.
+    /// Many ordinary mounts fit, and enough of them do not.
+    ///
+    /// The bound moved with ADR-0110 and moved the right way: what rides here is now a short
+    /// constant per share rather than a percent-encoded absolute path, so the budget stopped
+    /// being what limits how many trees a sandbox may hold. Asserted rather than assumed, because
+    /// "it got roomier" is exactly the kind of claim that rots quietly.
     #[test]
-    fn an_ordinary_workspace_set_fits_the_budget_and_an_extravagant_one_does_not() {
-        let ordinary = (0..15)
-            .map(|index| {
-                (
-                    format!("ws{index}"),
-                    PathBuf::from(format!("/home/u/projects/service-{index}")),
-                )
-            })
+    fn an_ordinary_mount_set_fits_the_budget_and_an_extravagant_one_does_not() {
+        let ordinary: Vec<_> = (0..40)
+            .map(|index| share(&format!("mnt{index}"), Some(dir_plan())))
             .collect();
-        assert!(compose_cmdline("console=ttyS0", "b7f0", &ordinary, &[]).is_ok());
+        assert!(compose_cmdline("console=ttyS0", "b7f0", &ordinary).is_ok());
 
-        let extravagant = (0..80)
-            .map(|index| {
-                (
-                    format!("ws{index}"),
-                    PathBuf::from(format!("/home/u/projects/service-{index}")),
-                )
-            })
+        let extravagant: Vec<_> = (0..200)
+            .map(|index| share(&format!("mnt{index}"), Some(dir_plan())))
             .collect();
         assert!(matches!(
-            compose_cmdline("console=ttyS0", "b7f0", &extravagant, &[]),
+            compose_cmdline("console=ttyS0", "b7f0", &extravagant),
             Err(LaunchError::InvalidSpec(
                 "the launch parameters do not fit the guest kernel command line"
             ))
         ));
-    }
-
-    #[test]
-    fn the_encoded_form_matches_what_the_guest_will_accept() {
-        // The guest checks this allowlist before it decodes, so the two must agree by construction.
-        let encoded = encode_cmdline_path(Path::new("/home/u/a b/pkg@1.0/100%"));
-        assert!(encoded.bytes().all(|byte| byte.is_ascii_alphanumeric()
-            || CMDLINE_UNRESERVED.contains(&byte)
-            || byte == b'%'
-            || byte.is_ascii_hexdigit()));
-        assert!(!encoded.contains(' '));
     }
 
     /// A `truncate`/`mkfs.ext4` stand-in that records its argv and creates the file it is given.

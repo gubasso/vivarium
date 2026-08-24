@@ -32,6 +32,11 @@ let
   # The contract is built against an already-realised image, never against a second
   # construction of one. `units` comes from the leg composition that built the image,
   # so the allowlist and the image cannot disagree about which probes exist.
+  # The tree every verification image owns. A real path shape rather than a store
+  # path: the guest binds a share here at boot, and the host lane supplies whatever
+  # directory it wants served at launch, so nothing needs this to exist anywhere.
+  verificationWorkspace = "/VIVARIUM_VERIFICATION_WORKSPACE";
+
   contractFor =
     image: units:
     import ./contract.nix {
@@ -39,7 +44,6 @@ let
         pkgs
         volumeLabel
         storeVolumeLabel
-        workspacesInternalRoot
         ;
       inherit (image) guest runner;
       expect = {
@@ -48,9 +52,6 @@ let
         # a third reading of the same evaluation instead of against the request.
         # Everything past the two reserved volumes is what a layer declared.
         declaredVolumes = lib.drop 2 image.guest.config.microvm.volumes;
-        declaredWorkspaces = lib.filter (
-          share: lib.hasPrefix "ws" share.tag
-        ) image.guest.config.microvm.shares;
         declaredMounts = lib.filter (
           share: lib.hasPrefix "mnt" share.tag
         ) image.guest.config.microvm.shares;
@@ -78,7 +79,8 @@ let
       settings = verificationDefaults // overrides;
       measurement = import ./measurement {
         inherit lib;
-        inherit (product) storeLayout storeCanaryExpression workspacesInternalRoot;
+        inherit (product) storeLayout storeCanaryExpression;
+        inherit verificationWorkspace;
         inherit (settings) legs storeFreeSpaceHook;
       };
       productOverrides = builtins.removeAttrs settings [
@@ -95,7 +97,17 @@ let
           extraModules = [
             {
               imports = [ product.optionsModule ];
-              vivarium.workspaces = [ { source = "/VIVARIUM_VERIFICATION_WORKSPACE"; } ];
+              # A tree the image owns, declared the way ADR-0110 has a manifest declare
+              # one: a mount whose target is its own source. Every verification image
+              # carries it so no claim about declared shares is asserted over an empty
+              # list — the inert-versus-absent failure AGENTS.md names.
+              vivarium.mounts = [
+                {
+                  source = verificationWorkspace;
+                  target = verificationWorkspace;
+                  readonly = false;
+                }
+              ];
             }
           ]
           ++ measurement.modules
@@ -185,7 +197,13 @@ let
           extraModules = [
             {
               imports = [ product.optionsModule ];
-              vivarium.workspaces = [ { source = "/VIVARIUM_VERIFICATION_WORKSPACE"; } ];
+              vivarium.mounts = [
+                {
+                  source = verificationWorkspace;
+                  target = verificationWorkspace;
+                  readonly = false;
+                }
+              ];
             }
             ({ pkgs, ... }: {
               vivarium.credentials.agents = [ "ssh" ];

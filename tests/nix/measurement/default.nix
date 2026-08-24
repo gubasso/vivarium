@@ -22,7 +22,7 @@
   storeLayout,
   storeCanaryExpression,
   storeFreeSpaceHook,
-  workspacesInternalRoot,
+  verificationWorkspace,
   legs,
 }:
 
@@ -62,14 +62,30 @@ let
   selected = lib.filter (l: lib.elem l legs) legOrder;
 
   # The extra arguments the leg modules take beyond the standard module set.
-  legArgs = {
-    _module.args = {
-      inherit storeLayout storeCanaryExpression storeFreeSpaceHook;
-      # Derived from the guest's own share list rather than spelled a fourth
-      # time: the leg asserts against where ws0 actually mounted.
-      verificationWorkspaceInternal = "${workspacesInternalRoot}/ws0";
+  legArgs =
+    { config, ... }:
+    {
+      _module.args = {
+        inherit storeLayout storeCanaryExpression storeFreeSpaceHook;
+        # Looked up in the guest's own share list rather than re-derived. Since
+        # ADR-0110 the verification tree is an ordinary declared mount, so its
+        # internal point is a `mnt<index>` the guest module minted — and re-deriving
+        # that index here would be a second derivation of one fact, which is exactly
+        # the silent reclassification a contract exists to catch. Matched on the
+        # source, which the composition above fixes and no index can drift from.
+        #
+        # `throw` rather than a default: a leg measuring a share that is not there
+        # would report on the guest's root filesystem and pass.
+        verificationWorkspaceInternal =
+          let
+            matching = lib.filter (share: share.source == verificationWorkspace) config.microvm.shares;
+          in
+          if matching == [ ] then
+            throw "no share serves the verification workspace `${verificationWorkspace}`"
+          else
+            (lib.head matching).mountPoint;
+      };
     };
-  };
 
   # Chain the selected legs in declared order: each is ordered after the one
   # before it and nothing else, so removing a leg from the middle closes the gap

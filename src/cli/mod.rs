@@ -19,7 +19,6 @@ mod render;
 pub mod session;
 mod volume;
 
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -310,6 +309,7 @@ fn evaluate_resolved<E: Environment>(
         selected,
         source,
         manifest,
+        workspace_paths,
         resources: _,
         ..
     } = resolved;
@@ -320,6 +320,7 @@ fn evaluate_resolved<E: Environment>(
         &selected,
         &source,
         &manifest,
+        &workspace_paths,
         &config::BaselineInputs::from_environment(context.environment),
     )
     .map_err(|error| flake_failure(&error))?;
@@ -355,11 +356,15 @@ fn evaluate_resolved<E: Environment>(
     } else {
         String::new()
     };
+    let mut analysis = config::merged::analyze(&report);
+    // The one key the report cannot carry: since ADR-0110 a workspace compiles to a mount and Nix
+    // never learns it was one, so the reader's view of ownership is put back here.
+    analysis.with_manifest_workspaces(&manifest, &selected.name);
     Ok(Evaluated {
         binding,
         manifest,
         notes,
-        analysis: config::merged::analyze(&report),
+        analysis,
         flake_directory: prepared.directory,
     })
 }
@@ -705,10 +710,13 @@ pub(super) struct ResolvedForLaunch {
     manifest: config::Manifest,
     /// The declared workspace containing the exact invoking directory.
     pub(super) matched_workspace: Option<PathBuf>,
-    /// The manifest's declared workspace set in the same tag order the launch contract uses.
-    pub(super) workspace_host_paths: BTreeMap<String, PathBuf>,
-    /// Present only for doctor's non-refusing view of ADR-0109's finding.
-    pub(super) workspace_refusal: Option<UndeclaredWorkspace>,
+    /// The manifest's declared workspace set, expanded and canonical, in declaration order.
+    ///
+    /// One list, derived once, reaches the reuse comparison and the generated flake. Empty only
+    /// when a refusal is being carried rather than raised.
+    pub(super) workspace_paths: Vec<PathBuf>,
+    /// Present only for doctor's non-refusing view: every verb but `doctor` has already refused.
+    pub(super) workspace_refusal: Option<WorkspaceFinding>,
     pub(super) resources: Option<config::Resources>,
 }
 
@@ -792,18 +800,25 @@ fn resolve_manifest_and_workspace<E: Environment>(
             {
                 continue;
             }
-            let selected = match resolve_manifest(context, &indexed.name) {
-                Ok(selected) => selected,
-                Err(_) => continue,
+            let Ok(selected) = resolve_manifest(context, &indexed.name) else {
+                continue;
             };
-            let (source, manifest) = match read_manifest(context, &selected) {
-                Ok(read) => read,
-                Err(_) => continue,
+            let Ok((source, manifest)) = read_manifest(context, &selected) else {
+                continue;
             };
-            // The cache narrows candidates; current manifest text remains the authority.
+            // The cache narrows candidates; current manifest text remains the authority. Lenient
+            // on purpose, and it is the strictness asymmetry this routine turns on: an unset
+            // variable or a missing tree in someone else's manifest must not decide whether this
+            // invocation resolves, or one bad file in the library would take the whole tool
+            // hostage. The selected manifest is held to the full rule below.
+            let sources: Vec<String> = manifest
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.source.clone())
+                .collect();
             let owns = containing_workspace(
                 &context.project,
-                expanded_workspace_paths(context, &manifest).values(),
+                expanded_workspace_sources(context, &sources).iter(),
             )
             .is_some();
             if owns {
@@ -827,11 +842,31 @@ fn resolve_manifest_and_workspace<E: Environment>(
 
     validate_sandbox_name(&selected)?;
 
-    let workspace_host_paths = expanded_workspace_paths(context, &manifest);
-    let matched_workspace = containing_workspace(&context.project, workspace_host_paths.values());
-    let workspace_refusal = matched_workspace
-        .is_none()
-        .then(|| undeclared_workspace(&selected, &context.project));
+    // The selected manifest, held to the whole rule. Since ADR-0110 this is where a workspace
+    // defect is decided: the paths it produces are written into the generated flake as both the
+    // share source and its guest target, so a defect that survived to evaluation would reach the
+    // build rather than the user.
+    let lookup = |name: &str| {
+        context
+            .environment
+            .dynamic_variable(name)
+            .map(|value| value.to_string_lossy().into_owned())
+    };
+    let sources: Vec<String> = manifest
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.source.clone())
+        .collect();
+    let (workspace_paths, defect) = match crate::launch::workspace::resolve(&sources, &lookup) {
+        Ok(paths) => (paths, None),
+        Err(defect) => (Vec::new(), Some(WorkspaceFinding::Defect(defect))),
+    };
+    let matched_workspace = containing_workspace(&context.project, workspace_paths.iter());
+    let workspace_refusal = defect.or_else(|| {
+        matched_workspace.is_none().then(|| {
+            WorkspaceFinding::Undeclared(undeclared_workspace(&selected, &context.project))
+        })
+    });
     if !allow_undeclared && let Some(refusal) = &workspace_refusal {
         return Err(refusal.failure().into());
     }
@@ -840,7 +875,7 @@ fn resolve_manifest_and_workspace<E: Environment>(
         selected,
         source,
         matched_workspace,
-        workspace_host_paths,
+        workspace_paths,
         workspace_refusal,
         resources: manifest.resources,
         manifest,
@@ -923,6 +958,10 @@ impl AmbiguousWorkspaceOwner {
         )
     }
 
+    // Paired with `message` above, which needs the receiver. Splitting the pair so one is an
+    // associated function would make the two halves of one diagnostic read differently at every
+    // call site.
+    #[allow(clippy::unused_self)]
     pub(super) fn hint(&self) -> String {
         "remove one ownership claim so exactly one manifest declares this tree".to_owned()
     }
@@ -950,28 +989,6 @@ fn ambiguous_workspace_owner<'a>(
             .map(|selected| (selected.name.clone(), selected.path.clone()))
             .collect(),
     }
-}
-
-fn expanded_workspace_paths<E: Environment>(
-    context: &Context<'_, E>,
-    manifest: &config::Manifest,
-) -> BTreeMap<String, PathBuf> {
-    let lookup = |name: &str| {
-        context
-            .environment
-            .dynamic_variable(name)
-            .map(|value| value.to_string_lossy().into_owned())
-    };
-    manifest
-        .workspaces
-        .iter()
-        .enumerate()
-        .filter_map(|(index, workspace)| {
-            let expanded = crate::launch::mounts::expand_source(&workspace.source, &lookup).ok()?;
-            let path = PathBuf::from(expanded);
-            Some((format!("ws{index}"), path.canonicalize().unwrap_or(path)))
-        })
-        .collect()
 }
 
 fn expanded_workspace_sources<E: Environment>(
@@ -1002,6 +1019,149 @@ fn containing_workspace<'a>(
         .filter(|workspace| cwd.starts_with(workspace))
         .max_by_key(|workspace| workspace.components().count())
         .cloned()
+}
+
+/// A workspace finding a resolving verb refuses on and `doctor` reports.
+///
+/// Two shapes, one channel. A directory declared by no workspace is `ADR-0109`'s refusal; a
+/// declared workspace that cannot be resolved is `ADR-0100`'s and `ADR-0108`'s, moved here from
+/// launch by `ADR-0110`. They share a channel because every consumer treats them the same way:
+/// refuse, except `doctor`, which reports and keeps checking. Kept as a value rather than raised
+/// on the spot for exactly that reason — the previous shape discarded one of them through an
+/// `.ok()` and rendered the wrong finding.
+#[derive(Clone, Debug)]
+pub(super) enum WorkspaceFinding {
+    Undeclared(UndeclaredWorkspace),
+    Defect(crate::launch::workspace::WorkspaceDefect),
+}
+
+impl WorkspaceFinding {
+    pub(super) fn message(&self) -> String {
+        match self {
+            Self::Undeclared(finding) => finding.message(),
+            Self::Defect(defect) => defect_message(defect),
+        }
+    }
+
+    pub(super) fn hint(&self) -> String {
+        match self {
+            Self::Undeclared(finding) => finding.hint(),
+            Self::Defect(defect) => defect_hint(defect),
+        }
+    }
+
+    fn failure(&self) -> Failure {
+        match self {
+            Self::Undeclared(finding) => finding.failure(),
+            Self::Defect(defect) => workspace_defect_failure(defect),
+        }
+    }
+}
+
+/// The published id for one defect. Ids are a published surface (ADR-0075), so each is a literal:
+/// a grep for one of these strings has to find the site that emits it. Every one of them predates
+/// ADR-0110 and is carried across unchanged — only where it fires moved.
+const fn defect_id(kind: &crate::launch::workspace::WorkspaceDefectKind) -> &'static str {
+    use crate::launch::workspace::WorkspaceDefectKind as Kind;
+    match kind {
+        Kind::UnsetVariable { .. } => "workspace-source-unset-variable",
+        Kind::NotAbsolute { .. } => "workspace-source-not-absolute",
+        Kind::Missing { .. } => "workspace-source-missing",
+        Kind::Unreadable { .. } => "workspace-source-unreadable",
+        Kind::NotDirectory { .. } => "workspace-source-not-directory",
+        Kind::GuestOwned { .. } => "workspace-path-unmirrorable",
+        Kind::Nested { .. } => "workspace-paths-overlap",
+    }
+}
+
+fn defect_message(defect: &crate::launch::workspace::WorkspaceDefect) -> String {
+    use crate::launch::workspace::WorkspaceDefectKind as Kind;
+    match &defect.kind {
+        Kind::UnsetVariable { variable } => {
+            format!("a declared workspace names `${{{variable}}}`, which this host does not set")
+        }
+        Kind::NotAbsolute { .. } => {
+            "a declared workspace does not expand to an absolute path".to_owned()
+        }
+        Kind::Missing { .. } => "a declared workspace does not exist on this host".to_owned(),
+        Kind::Unreadable { .. } => "a declared workspace cannot be read on this host".to_owned(),
+        Kind::NotDirectory { .. } => "a declared workspace is not a directory".to_owned(),
+        Kind::GuestOwned { .. } => {
+            "a declared workspace cannot be mounted inside the guest at its host path".to_owned()
+        }
+        Kind::Nested { .. } => "two declared workspaces overlap".to_owned(),
+    }
+}
+
+fn defect_hint(defect: &crate::launch::workspace::WorkspaceDefect) -> String {
+    use crate::launch::workspace::WorkspaceDefectKind as Kind;
+    match &defect.kind {
+        Kind::UnsetVariable { variable } => {
+            format!("set `{variable}`, or write the path out in full in `[[workspaces]]`")
+        }
+        Kind::NotAbsolute { .. } | Kind::Missing { .. } | Kind::Unreadable { .. } => {
+            "`[[workspaces]] source` names one existing tree by its absolute path".to_owned()
+        }
+        Kind::NotDirectory { .. } => {
+            "declare a directory in `[[workspaces]] source`; a single file is a `[[mounts]]` row"
+                .to_owned()
+        }
+        Kind::GuestOwned { .. } => {
+            "move the workspace under a path the guest does not own, such as your home".to_owned()
+        }
+        Kind::Nested { .. } => "declare disjoint workspace trees".to_owned(),
+    }
+}
+
+fn workspace_defect_failure(defect: &crate::launch::workspace::WorkspaceDefect) -> Failure {
+    use crate::launch::workspace::WorkspaceDefectKind as Kind;
+    let declared = &defect.declared;
+    let locus = match &defect.kind {
+        Kind::UnsetVariable { .. } => Locus::Named("declared workspaces"),
+        Kind::NotAbsolute { expanded }
+        | Kind::Missing { expanded }
+        | Kind::Unreadable { expanded, .. }
+        | Kind::NotDirectory { expanded }
+        | Kind::GuestOwned { expanded, .. } => Locus::File(expanded.clone()),
+        Kind::Nested { left, .. } => Locus::File(left.clone()),
+    };
+    // The declared spelling in every `why`, because the refusal reads against what the user wrote
+    // rather than against an expansion they never typed.
+    let why = match &defect.kind {
+        Kind::UnsetVariable { variable } => {
+            format!("`{declared}` cannot resolve while `{variable}` is unset (ADR-0020)")
+        }
+        Kind::NotAbsolute { expanded } => {
+            format!("`{declared}` expanded to `{}`", expanded.display())
+        }
+        Kind::Missing { expanded } => format!(
+            "`{declared}` expanded to `{}`, which is missing",
+            expanded.display()
+        ),
+        Kind::Unreadable { expanded, error } => format!(
+            "`{declared}` expanded to `{}`, which could not be read: {error}",
+            expanded.display()
+        ),
+        Kind::NotDirectory { expanded } => format!(
+            "`{declared}` expanded to `{}`, which is not a directory",
+            expanded.display()
+        ),
+        Kind::GuestOwned { reason, .. } => (*reason).to_owned(),
+        Kind::Nested { left, right } => format!(
+            "`{}` and `{}` are equal or nested",
+            left.display(),
+            right.display()
+        ),
+    };
+    diagnosed(
+        Namespace::Host,
+        defect_id(&defect.kind),
+        defect_message(defect),
+        locus,
+        why,
+        ExitKind::Config,
+    )
+    .with_hint(defect_hint(defect))
 }
 
 #[derive(Clone, Debug)]

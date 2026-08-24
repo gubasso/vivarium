@@ -15,7 +15,7 @@ trap 'echo "contract failed at line $LINENO" >&2' ERR
 launcher_json=$VIVARIUM_RUNNER/share/vivarium/launch-arguments.json
 test -r "$launcher_json"
 grep -qF "$(readlink -f "$launcher_json")" "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"
-test "$(jq -r .schemaVersion "$launcher_json")" = 11
+test "$(jq -r .schemaVersion "$launcher_json")" = 12
 test "$(jq -r .descriptorBudget.limit "$launcher_json")" = 524288
 test "$(jq -r .descriptorBudget.workerPoolSize "$launcher_json")" = "$VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE"
 test "$(jq -r .socketLegs.api "$launcher_json")" = '@API_SOCKET@'
@@ -27,13 +27,19 @@ test "$(jq -r .vmCreate.serial.mode "$launcher_json")" = Socket
 test "$(jq -r .vmCreate.console.mode "$launcher_json")" = Off
 test "$(jq -r .vmCreate.landlock_enable "$launcher_json")" = true
 test "$(jq -r '.vmCreate.fs | length' "$launcher_json")" = "$(jq -r '.shareLaunch | length' "$launcher_json")"
-# Schema 10: workspace shares are explicit and repeatable, and every share's socket token in
-# the one shape the runner substitutes generically — a tag whose token diverged
-# would survive substitution and be refused far from here, as an unresolved
-# token.
+# Exactly one store share, and every other share's socket token in the one shape
+# the runner substitutes generically — a tag whose token diverged would survive
+# substitution and be refused far from here, as an unresolved token.
+#
+# Schema 12: there is no `workspace` origin any more. A tree the manifest owns is
+# a declared share whose `target` equals its `source` (ADR-0110), which the
+# declared-mount block below asserts along with every other declared row.
 test "$(jq -r '[.shareLaunch[] | select(.origin == "store")] | length' "$launcher_json")" = 1
-workspace_rows=$(awk 'NF { count++ } END { print count + 0 }' <<<"$VIVARIUM_DECLARED_WORKSPACES")
-test "$(jq -r '[.shareLaunch[] | select(.origin == "workspace")] | length' "$launcher_json")" = "$workspace_rows"
+test "$(jq -r '[.shareLaunch[] | select(.origin != "store" and .origin != "declared")] | length' "$launcher_json")" = 0
+# The store share is mounted from the fstab and bound nowhere, so it carries no
+# target. Asserted so `target` stays a field only a bindable share has, rather
+# than one that quietly acquires a default nobody reads.
+test "$(jq -r '.shareLaunch[] | select(.origin == "store") | .target' "$launcher_json")" = null
 test "$(jq -r '[.shareLaunch[] | select(.socketToken != ("@SHARE_SOCKET_" + (.tag | ascii_upcase) + "@"))] | length' "$launcher_json")" = 0
 # Guest networking (schema 6): the two renderings of the one NIC agree with the
 # network object the supervisor reads, and the shipped image defaults to spec/05's
@@ -77,11 +83,11 @@ fstab=$VIVARIUM_GUEST_SYSTEM/etc/fstab
 # volume labels below: the guest's own fstab enacts it. Compare the two artifacts
 # rather than two copies of one Nix string.
 #
-# Still total over every share, which ADR-0100 is the reason to say out loud. The
-# workspace's session-visible path moved to the host's own, and the temptation was
-# to except that share here; instead `mountPoint` kept meaning "what the fstab
-# mounts" and the mirror became a separate assertion below. An exception in this
-# loop would have been a share nothing compares.
+# Total over every share, which is worth saying out loud because the temptation
+# has always been to except one. `mountPoint` means "what the fstab mounts" for
+# every share without exception, including a tree the manifest owns — where the
+# guest binds it afterwards is the bind unit's business, asserted separately
+# below. An exception in this loop would be a share nothing compares.
 checked_mounts=0
 while read -r tag mount_point; do
   test -n "$mount_point"
@@ -96,30 +102,6 @@ done < <(jq -r '.shareLaunch[] | "\(.tag) \(.mountPoint)"' "$launcher_json")
 # of a check that reports on a field it stopped reading.
 test "$checked_mounts" = "$(jq -r '.shareLaunch | length' "$launcher_json")"
 test "$checked_mounts" -ge 1
-# ADR-0100's guest half, asserted on the built unit rather than on a boot.
-#
-# The mirror is what puts the project where a session expects it, and every way it
-# can fail quietly is checked here, because none of them fails loudly at runtime.
-mirror_unit=$VIVARIUM_GUEST_SYSTEM/etc/systemd/system/vivarium-workspace.service
-workspace_count=0
-while read -r tag mount_point source; do
-  [ -n "$tag" ] || continue
-  test "$(jq -r --arg tag "$tag" '.shareLaunch[] | select(.tag == $tag) | .mountPoint' "$launcher_json")" = "$mount_point"
-  test "$(jq -r --arg tag "$tag" '.shareLaunch[] | select(.tag == $tag) | .sourceToken' "$launcher_json")" = "$source"
-  workspace_count=$((workspace_count + 1))
-done <<<"$VIVARIUM_DECLARED_WORKSPACES"
-if ((workspace_count > 0)); then
-  test -f "$mirror_unit"
-  while read -r _ mount_point _; do
-    [ -n "$mount_point" ] || continue
-    grep -qF "$mount_point" <<<"$(sed -n 's/^RequiresMountsFor=//p' "$mirror_unit")"
-  done <<<"$VIVARIUM_DECLARED_WORKSPACES"
-  if grep -qE '^(PrivateMounts|ProtectSystem|ProtectHome|PrivateTmp|PrivateDevices|ReadOnlyPaths|ProtectKernelTunables|RootDirectory|MountAPIVFS)=' "$mirror_unit"; then exit 1; fi
-  grep -qF 'vivarium-workspace.service' <<<"$(sed -n 's/^Requires=//p' "$agent_unit")"
-  grep -qF 'vivarium-workspace.service' <<<"$(sed -n 's/^After=//p' "$agent_unit")"
-else
-  test ! -e "$mirror_unit"
-fi
 # And spec/06 requires the first-boot home ownership applied before the agent
 # accepts a session. Both units are `WantedBy=multi-user.target`, so without an
 # ordering edge which one wins is undefined — and the losing order hands a session
@@ -127,15 +109,6 @@ fi
 # it would pass a boot test most of the time.
 grep -qF 'vivarium-volume-prepare.service' <<<"$(sed -n 's/^Requires=//p' "$agent_unit")"
 grep -qF 'vivarium-volume-prepare.service' <<<"$(sed -n 's/^After=//p' "$agent_unit")"
-# Not under `/run/vivarium`, which `RuntimeDirectory=vivarium` on the agent has
-# systemd delete whenever that unit restarts.
-case $VIVARIUM_WORKSPACES_INTERNAL_ROOT in /run/vivarium | /run/vivarium/*) exit 1 ;; esac
-# The host refuses to mirror a project onto this path, and its copy of the
-# literal lives in the installed binary, which this build no longer carries
-# (ADR-0102). The cross-language pairing moved with it: a unit test in
-# `src/launch/spec.rs` compares the crate constant against the embedded
-# `nix/default.nix` text the binary ships.
-
 # The guest process environment (spec/12). The agent clears the environment before
 # every spawn, so a session gets exactly what the launcher carries here — and a
 # `PATH` that disagreed with the guest's own would surface as a missing program
@@ -229,11 +202,12 @@ if [ "$declared_mounts_expected" -gt 0 ]; then
   mounts_table=$(sed -n 's/^Environment="VIVARIUM_MOUNT_TABLE=\(.*\)"$/\1/p' "$mounts_unit")
   test -r "$mounts_table"
   test "$(grep -c . "$mounts_table")" = "$declared_mounts_expected"
-  # The same mount-namespace denial as the workspace mirror, for the same
-  # silent-success reason.
+  # No mount-namespace hardening: each of these would put the unit in its own
+  # namespace, where the binds it exists to make are invisible to every other
+  # process — the unit succeeds, logs nothing, and changes nothing.
   if grep -qE '^(PrivateMounts|ProtectSystem|ProtectHome|PrivateTmp|PrivateDevices|ReadOnlyPaths|ProtectKernelTunables|RootDirectory|MountAPIVFS)=' "$mounts_unit"; then exit 1; fi
-  # A session must not start before its declared mounts are in place, exactly
-  # as it must not start before the workspace mirror.
+  # A session must not start before its declared mounts are in place: its cwd is
+  # one of them (ADR-0110).
   grep -qF 'vivarium-mounts.service' <<<"$(sed -n 's/^Requires=//p' "$agent_unit")"
   grep -qF 'vivarium-mounts.service' <<<"$(sed -n 's/^After=//p' "$agent_unit")"
 fi
@@ -252,6 +226,13 @@ while read -r tag internal ro source; do
   # share's internal mount before binding from it.
   grep -qE "^$tag $ro /[^ ]*$" "$mounts_table"
   grep -qF "$internal" <<<"$(sed -n 's/^RequiresMountsFor=//p' "$mounts_unit")"
+  # Schema 12: the launcher publishes the same target the guest's bind table
+  # carries, from the guest module's own derivation of it rather than from a
+  # second walk over the option list (ADR-0110). This is the field the supervisor
+  # reads to tell a tree the manifest owns — target equal to source — from any
+  # other mount, so the two sides disagreeing would silently reclassify a share.
+  target=$(jq -r --arg t "$tag" '.shareLaunch[] | select(.tag == $t) | .target' "$launcher_json")
+  grep -qE "^$tag $ro $target$" "$mounts_table"
   mounts_seen=$((mounts_seen + 1))
 done <<<"${VIVARIUM_DECLARED_MOUNTS:-}"
 test "$mounts_seen" = "$declared_mounts_expected"

@@ -18,17 +18,9 @@
 
 let
   inherit (config.microvm) shares volumes;
-  # The tag family, not a second `lib.imap0` over `config.vivarium.workspaces`.
-  #
-  # `nix/guest.nix` mints one `ws<index>` tag per declared workspace and is the
-  # only thing that does. Re-deriving the same list here from the same option
-  # produced two independent derivations of one fact: if only one of them ever
-  # changed, `origin` would silently reclassify every workspace share as
-  # `declared`, and a silent reclassification is exactly the failure a contract
-  # exists to catch. Reading the family off the tag is also what the host does
-  # (`is_workspace_tag` in `src/launch/spec.rs`), so the two sides now agree by
-  # construction rather than by two people editing in step.
-  isWorkspaceTag = tag: builtins.match "ws[0-9]+" tag != null;
+  # The guest module's own bind table, read rather than re-derived: it mints the
+  # `mnt<index>` tags and is the only thing that does (ADR-0110).
+  bindTable = config.vivarium.internal.bindTable or [ ];
   inherit (pkgs.stdenv.hostPlatform) system;
   kernelPath =
     if system == "x86_64-linux" then
@@ -97,22 +89,13 @@ let
     share:
     let
       # What kind of share this is. The store is recognised by its
-      # machine-independent source; a workspace by its tag family, which the
-      # guest module mints. Everything else is a declared mount (spec/06,
-      # ADR-0020).
-      #
-      # Since ADR-0108 a workspace's `source` is a declared string like a mount's,
-      # so the source no longer distinguishes the two and the tag is what does.
-      # That is the same discipline the tags already carried: they are
-      # build-controlled and prefix-disciplined, and the guest module asserts the
-      # charset.
-      origin =
-        if share.source == "/nix/store" then
-          "store"
-        else if isWorkspaceTag share.tag then
-          "workspace"
-        else
-          "declared";
+      # machine-independent source. Everything else is a declared mount (spec/06,
+      # ADR-0020), the trees a manifest owns among them: since ADR-0110 a
+      # workspace is a declared mount whose `target` is its own `source`, and
+      # nothing here records that it came from `[[workspaces]]` because nothing
+      # downstream needs to know. What a reader wants is the mirroring, and the
+      # equality states it.
+      origin = if share.source == "/nix/store" then "store" else "declared";
     in
     {
       inherit (share)
@@ -132,15 +115,24 @@ let
       # `[a-z0-9]+`, which is what makes the case roundtrip total.
       socketToken = "@SHARE_SOCKET_${lib.toUpper share.tag}@";
       # The store source is a machine-independent constant (`mounts.nix` selects
-      # on it). Everything else — a workspace and a declared mount alike — is the
-      # declaration's own string, `${VAR}` unexpanded, which `viv` resolves
-      # against the host environment at launch and hands back through the runner
-      # (N19).
-      #
-      # The workspace used to be a third case here, a sentinel, because its path
-      # was the invoking directory and unknowable at build time. ADR-0108 made it
-      # a declaration, which is what collapsed the two arms into one.
+      # on it). Everything else is whatever `viv` wrote into the merged
+      # configuration: the declaration's own string with `${VAR}` unexpanded for
+      # an ordinary mount, which `viv` resolves against the host environment at
+      # launch and hands back through the runner (N19); and an already-expanded
+      # absolute path for a workspace, whose guest location is its host location
+      # and is therefore build-channel (ADR-0110).
       sourceToken = if origin == "store" then "/nix/store" else share.source;
+      # Where the guest binds this share, from the guest module's own table.
+      #
+      # Published rather than left implicit because it is the one field that tells
+      # a mirrored tree from any other mount, and the supervisor has to make that
+      # distinction with no channel of its own to learn it on. `null` for the
+      # store share, which the guest mounts from its fstab and binds nowhere.
+      target =
+        let
+          declared = lib.filter (mount: mount.tag == share.tag) bindTable;
+        in
+        if declared == [ ] then null else (lib.head declared).target;
     }
   ) shares;
   # What a guest process gets that no host variable could supply.
@@ -209,13 +201,24 @@ in
   # generation, whose argument names can differ before any schema is read —
   # `usage()` prints this number for exactly that reason.
   #
-  # 10 since a sandbox mirrors many declared workspaces (ADR-0108): the single
+  # 10 since a sandbox mirrored many declared workspaces (ADR-0108): the single
   # `workspace` share became the `ws<index>` tag family, `boot.json`'s
   # `workspaceHostPath` became the `workspaceHostPaths` map, and the kernel
   # parameter `vivarium.workspace=` became one `vivarium.workspace.<tag>=` per
-  # declared tree. `LAUNCH_SCHEMA_VERSION` in `src/launch/spec.rs` carries the
-  # same number and the same paragraph.
-  schemaVersion = 11;
+  # declared tree.
+  #
+  # 11 since the sandbox keys on its manifest (ADR-0107): `projectId` became
+  # `sandboxId`, carrying the manifest's own name where it had carried a minted
+  # identifier.
+  #
+  # 12 since a workspace is an ordinary mount (ADR-0110): the `ws` family and the
+  # `workspace` origin are gone, a declared tree arrives as a `mnt<index>` share
+  # whose `target` equals its `source`, and `shareLaunch` publishes that `target`
+  # so a reader can tell the two apart. `vivarium.workspace.<tag>=` left the
+  # kernel command line, and `boot.json`'s map became the `workspacePaths` list.
+  # `LAUNCH_SCHEMA_VERSION` in `src/launch/spec.rs` carries the same number and
+  # the same paragraphs.
+  schemaVersion = 12;
   inherit guestSession;
   # The launch half of `sandbox.egress` (spec/05): carried across so host-side
   # enforcement needs no evaluation at start. `or`-defaulted because the shipped

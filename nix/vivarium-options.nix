@@ -50,13 +50,6 @@ let
     };
   };
 
-  workspaceModule = {
-    options.source = mkOption {
-      type = types.str;
-      description = "Host tree owned by and mirrored into this sandbox.";
-    };
-  };
-
   volumeModule = {
     options = {
       name = mkOption {
@@ -87,21 +80,12 @@ in
       mounts = mkOption {
         type = types.listOf (types.submodule mountModule);
         default = [ ];
+        # Every host path that crosses, including the trees a manifest declares as
+        # `[[workspaces]]`: those compile to a row whose `target` is its own expanded
+        # `source` (ADR-0110), so there is no second option and the guest holds no
+        # notion of a workspace. Ownership stays a question `viv` answers from manifest
+        # text, which is why nothing here records which rows came from that table.
         description = "Host paths mirrored into the guest. Layers concatenate.";
-      };
-
-      workspaces = mkOption {
-        type = types.listOf (types.submodule workspaceModule);
-        default = [ ];
-        # Not "layers concatenate", which is what `vivarium.mounts` says one option
-        # above. A workspace is owned by one manifest (ADR-0108), and ownership is
-        # decided from manifest text alone: the derived index scans each manifest's
-        # `[[workspaces]]` rows and the undeclared-directory refusal is a `78` because
-        # it needs no merged configuration. A row contributed by a shared layer is
-        # invisible to both, so `src/config/merged.rs` refuses one at `65`, naming the
-        # layer. The type stays a plain `listOf` because the refusal is the thing that
-        # can name which layer offended, and a type cannot.
-        description = "Host trees owned by and mirrored into this sandbox. Only the manifest may declare these.";
       };
 
       resources = {

@@ -7,18 +7,25 @@
 # fstab cannot mount it at the target directly. A file mount's share holds
 # exactly that one file — the host stages it as the only entry of the share's
 # export root (ADR-0105), so nothing here has to hide a sibling; there are
-# none. This unit closes the gap the way `workspace-mirror.sh` does
-# for the project tree: the static half — tag, read-only flag, target — is baked
-# into `VIVARIUM_MOUNT_TABLE` from the merged configuration, and the launch half
-# — dir or file, and which entry of the share is the file — arrives on the
-# kernel command line as `vivarium.mount.<tag>=dir` or
+# none. The static half — tag, read-only flag, target — is baked into
+# `VIVARIUM_MOUNT_TABLE` from the merged configuration, and the launch half — dir
+# or file, and which entry of the share is the file — arrives on the kernel
+# command line as `vivarium.mount.<tag>=dir` or
 # `vivarium.mount.<tag>=file:<encoded basename>`.
 #
-# The basename is percent-encoded by the host for the same reason the workspace
-# path is: the command line is whitespace-separated while a file name may hold a
-# space, a quote or a newline. The decode is `%` -> `\x` plus `printf %b`, safe
-# only because the allowlist is checked BEFORE the decode — see the header of
-# `workspace-mirror.sh`, which owns the full argument.
+# Since ADR-0110 this is the only bind unit. A tree the manifest declared as
+# `[[workspaces]]` arrives here as an ordinary row whose target is its own source,
+# because the guest mounts it where the host holds it and that path is therefore
+# build output rather than launch data. Nothing in this file needs to know which
+# rows those were.
+#
+# The basename is percent-encoded by the host because the command line is
+# whitespace-separated while a file name may hold a space, a quote or a newline.
+# The decode is `%` -> `\x` plus `printf %b`, and it is safe only because the
+# allowlist is checked BEFORE the decode, never after: the encoder emits `%XX`
+# for every byte outside the unreserved set, a literal backslash included, so a
+# decode-then-validate order would let a crafted sequence through as text `printf`
+# expands.
 #
 # The command line is written by the trusted host side; the guest is the
 # untrusted party, not the reverse. The checks here are against a stale or
@@ -85,7 +92,8 @@ refuse_symlinked_components() {
 
 # Declared before the read for `set -u`, and `|| true` because `read` reports
 # failure at end of input — the same shape, for the same reason, as the
-# workspace mirror's own cmdline read.
+# read, whose return at end of input `set -e` would otherwise abort on with no
+# diagnostic at all — the one outcome this unit must never produce.
 tokens=()
 read -r -a tokens </proc/cmdline || true
 
@@ -112,7 +120,7 @@ while read -r tag readonly_flag target; do
   if [ -z "$value" ]; then
     # The image booted without `viv` — a measurement leg or a hand boot. The
     # share is readable at its internal point; having no plan for it is not a
-    # failure, exactly as an absent workspace parameter is not.
+    # failure — refusing here would make the image bootable by nothing but `viv`.
     say "absent tag=$tag internal=$internal"
     continue
   fi
@@ -129,7 +137,9 @@ while read -r tag readonly_flag target; do
       printf '%s' "$encoded" | grep -qxE '([A-Za-z0-9._~-]|%[0-9A-F]{2})+' \
         || refuse "$tag" malformed-entry-encoding
       # The `x` sentinel carries a trailing newline through command
-      # substitution; `workspace-mirror.sh` owns the explanation.
+      # substitution, so a name ending in one would otherwise decode short. `%b`
+      # reads `\xHH` as at most two hex digits, so the sentinel is never absorbed
+      # into the byte before it.
       entry=$(printf '%b' "${encoded//%/\\x}x")
       entry=${entry%x}
       case $entry in
@@ -156,6 +166,21 @@ while read -r tag readonly_flag target; do
     # The target may legitimately exist: a home-volume path like
     # `~/.cargo/registry` persists across boots. It must only be the right
     # shape to bind over; the symlink walk above already refused links.
+    #
+    # A mirrored tree is held to the same rule since ADR-0110, and that is a
+    # reduction worth naming rather than leaving to be discovered. The deleted
+    # mirror unit refused a leaf that already existed, on the reasoning that a
+    # workspace has nothing to bind over — so an image that shipped a directory
+    # at a path the user later declared as a workspace met a refusal. It now
+    # meets a bind, and the guest's own directory is shadowed by the user's tree.
+    #
+    # Kept rather than restored, because the two are no longer distinguishable
+    # here and inventing a distinction to re-refuse one of them would put the
+    # workspace concept back into the guest for one guard. What made the old
+    # refusal load-bearing was the silent-empty-directory failure underneath it,
+    # and that is closed on this path anyway: a failed bind refuses the unit,
+    # which fails `vivarium-agent` through its `Requires`, so nothing reaches a
+    # session with an empty directory reading as the tree.
     if [ "$kind" = dir ]; then
       [ -d "$target" ] || refuse "$tag" target-not-a-directory
     else
@@ -173,8 +198,9 @@ while read -r tag readonly_flag target; do
     fi
   fi
 
-  # `--rbind` for the same spec/06 reason as the workspace mirror: the host's
-  # own filesystem boundaries cross with the mount.
+  # `--rbind` rather than `--bind`: spec/06 promises the guest sees the host's own
+  # filesystem boundaries, so if the daemon ever announces submounts they must come
+  # across with the mount rather than be flattened away by this bind.
   mount --rbind -- "$source" "$target" || refuse "$tag" bind-failed
   findmnt --mountpoint "$target" >/dev/null || refuse "$tag" bind-not-mounted
 

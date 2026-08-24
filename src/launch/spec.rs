@@ -2,10 +2,11 @@
 
 use crate::launch::LaunchError;
 use crate::launch::mounts::encode_entry;
+use crate::launch::workspace::{guest_owned_collision, nested_pair};
 use crate::protocol::CredentialId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -43,14 +44,24 @@ use std::path::{Component, Path, PathBuf};
 /// with this code would hand a daemon a directory where a file is required, and the pairing is
 /// refused before that can happen.
 ///
-/// 10 since a sandbox mirrors many declared workspaces (ADR-0108): the single `workspace` share
+/// 10 since a sandbox mirrored many declared workspaces (ADR-0108): the single `workspace` share
 /// became the `ws<index>` tag family, so three paired spellings moved at once. `boot.json`'s
 /// `workspaceHostPath` became `workspaceHostPaths`, a tag-to-path map; the kernel parameter
 /// `vivarium.workspace=` became one `vivarium.workspace.<tag>=` per declared tree; and a share's
-/// `origin` is classified by tag family rather than against one reserved tag. An older record
-/// paired with this code parses differently in all three places, which is the skew this constant
-/// refuses rather than discovers at boot.
-pub const LAUNCH_SCHEMA_VERSION: u32 = 11;
+/// `origin` was classified by tag family rather than against one reserved tag.
+///
+/// 11 since the sandbox keys on its manifest (ADR-0107): `projectId` became `sandboxId`, carrying
+/// the manifest's own name where it had carried a minted identifier. Both are strings, so the
+/// pairing parses either way and only the version separates them.
+///
+/// 12 since a workspace is an ordinary mount (ADR-0110): the `ws<index>` family is gone and a
+/// declared tree arrives as a `mnt<index>` share whose [`MountPlan`] target equals its source.
+/// `boot.json`'s `workspaceHostPaths` map became `workspacePaths`, a sorted list, because nothing
+/// mints a workspace tag any more; `vivarium.workspace.<tag>=` left the kernel command line
+/// entirely; and `mountPlan` gained `target`, which is what lets a reader tell a mirrored tree
+/// from any other mount. A schema-11 record paired with this code carries a map where a list is
+/// required and names shares in a family this code no longer accepts.
+pub const LAUNCH_SCHEMA_VERSION: u32 = 12;
 pub const VIRTIOFSD_RLIMIT_NOFILE: u64 = 524_288;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -259,7 +270,13 @@ pub struct BootMetadata {
     pub sandbox_id: String,
     pub target: String,
     pub backend: String,
-    pub workspace_host_paths: BTreeMap<String, PathBuf>,
+    /// The declared workspaces this boot mounted, canonical and sorted.
+    ///
+    /// Tag-free since ADR-0110: a workspace is an ordinary mount and nothing mints a name for it,
+    /// so the set is what identifies it rather than a tag-to-path pairing. `reusable()` compares
+    /// this against what resolution computed, and it is the only thing that can — that path
+    /// deliberately evaluates nothing, so a changed declaration reaches it through no other field.
+    pub workspace_paths: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -272,9 +289,9 @@ pub struct ShareSpec {
     /// The guest module owns the value, which is what lets `tests/nix/contract.sh` compare every
     /// share against the guest's fstab as a total check rather than an exception list.
     ///
-    /// For the workspace this is no longer the path a session starts in. N16 puts the project at
-    /// the host's own absolute path, this field is build output, and N19 keeps a host path out of
-    /// one — so the share mounts here and the guest binds it at `source` (ADR-0100).
+    /// Never the path a session starts in. Every share mounts at a build-time internal point and
+    /// the guest's bind unit places it at its target, because whether a declared source is a
+    /// directory or a regular file resolves only at launch.
     pub mount_point: PathBuf,
     pub socket: PathBuf,
     pub cache: String,
@@ -283,9 +300,10 @@ pub struct ShareSpec {
     ///
     /// `viv` decided it at launch when it expanded the declared source: a directory is served
     /// whole, a regular file is served through its parent directory with `entry` naming the one
-    /// file inside the share the guest binds at the target. The supervisor relays the plan on the
-    /// kernel command line as `vivarium.mount.<tag>=...`; the target itself is baked into the
-    /// guest's own bind table and never crosses here.
+    /// file inside the share the guest binds at the target. The supervisor relays the kind and the
+    /// entry on the kernel command line as `vivarium.mount.<tag>=...`; the guest's own bind table
+    /// is what places the share, and `target` is carried here so a reader can tell a mirrored
+    /// workspace — whose target is its source — from any other mount (ADR-0110).
     #[serde(default)]
     pub mount_plan: Option<MountPlan>,
     #[serde(default)]
@@ -297,6 +315,14 @@ pub struct ShareSpec {
 pub enum MountPlanKind {
     Dir,
     File,
+    /// A tree the manifest declared it owns, mounted at the path the host holds it at.
+    ///
+    /// Served exactly as `Dir` is — the guest binds both the same way and the kernel command line
+    /// carries `dir` for either. What it adds is provenance: `viv` resolved this row from a
+    /// `[[workspaces]]` table and says so, rather than leaving a reader to infer it from `target`
+    /// happening to equal `source`. Two rows can hold that equality for different reasons, and a
+    /// reader that guesses gets one of them wrong (ADR-0110).
+    Tree,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -306,6 +332,12 @@ pub struct MountPlan {
     /// The percent-encoded basename a `file` mount serves, kept encoded end to end: the guest's
     /// bind unit is the one decoder, checking the allowlist before decoding (`mount-bind.sh`).
     pub entry: Option<String>,
+    /// Where the guest binds this share, taken from the build's own bind table.
+    ///
+    /// Carried rather than derived because it is the one field that distinguishes a mirrored tree
+    /// from any other mount once `[[workspaces]]` has compiled away (ADR-0110), and the supervisor
+    /// has to make that distinction with no channel of its own to learn it on.
+    pub target: PathBuf,
 }
 
 impl ShareSpec {
@@ -417,21 +449,24 @@ const fn default_console_log() -> bool {
 }
 
 impl LaunchSpec {
-    /// Workspace shares, identified by the build-controlled `ws<index>` family.
+    /// The declared trees this specification mounts at their own host paths.
+    ///
+    /// Read off the plan `viv` relayed, not off `target == source`. An ordinary `[[mounts]]` row
+    /// may legitimately name a path at itself, and one that does is a mount rather than a tree the
+    /// manifest owns — a distinction only the side that read the manifest can make, which is why
+    /// it is carried rather than inferred (ADR-0110). `validate` holds the equality as a contract
+    /// on these rows instead of using it to find them.
     #[must_use]
     pub fn workspace_shares(&self) -> Vec<&ShareSpec> {
         self.shares
             .iter()
-            .filter(|share| is_workspace_tag(&share.tag))
+            .filter(|share| {
+                share
+                    .mount_plan
+                    .as_ref()
+                    .is_some_and(|plan| plan.kind == MountPlanKind::Tree)
+            })
             .collect()
-    }
-
-    /// The first guest workspace path, retained only for the phase-1 session-cwd bridge.
-    #[must_use]
-    pub fn workspace_guest_path(&self) -> Option<&Path> {
-        self.workspace_shares()
-            .first()
-            .map(|share| share.source.as_path())
     }
 
     /// Deserialize and validate the strict internal launch schema.
@@ -612,7 +647,7 @@ impl LaunchSpec {
             if !tags.insert(&share.tag) {
                 return Err(LaunchError::InvalidSpec("duplicate share tag"));
             }
-            if share.tag != "store" && !is_workspace_tag(&share.tag) && !is_mount_tag(&share.tag) {
+            if share.tag != "store" && !is_mount_tag(&share.tag) {
                 return Err(LaunchError::InvalidSpec(
                     "share tag is outside the build families",
                 ));
@@ -636,8 +671,11 @@ impl LaunchSpec {
             // The contract backstop, not the diagnostic: `src/cli/lifecycle.rs` refuses the same
             // paths first and with an explanation, and this catches a hand-written or stale
             // specification that walked past it.
-            if is_workspace_tag(&share.tag)
-                && let Some(reason) = unmirrorable(&share.source)
+            if share
+                .mount_plan
+                .as_ref()
+                .is_some_and(|plan| plan.kind == MountPlanKind::Tree)
+                && let Some(reason) = guest_owned_collision(&share.source)
             {
                 return Err(LaunchError::InvalidSpec(reason));
             }
@@ -664,15 +702,31 @@ impl LaunchSpec {
             } else if !metadata.is_dir() {
                 return Err(LaunchError::InvalidSpec("share source is not a directory"));
             }
+            if let Some(plan) = &share.mount_plan {
+                // Every plan names where the guest binds it, and it must be a path the guest can
+                // hold.
+                require_absolute_resolved(&plan.target)?;
+                // The mirroring contract, asserted on the rows that claim it rather than used to
+                // find them. `viv` relays which rows came from `[[workspaces]]`; a record saying
+                // one is a tree while binding it somewhere other than its own source is skew, and
+                // acting on it would start a session in a directory the host does not hold.
+                if plan.kind == MountPlanKind::Tree && plan.target != share.source {
+                    return Err(LaunchError::InvalidSpec(
+                        "a workspace plan must bind the share at its own source",
+                    ));
+                }
+            }
             match &share.mount_plan {
                 None
                 | Some(MountPlan {
-                    kind: MountPlanKind::Dir,
+                    kind: MountPlanKind::Dir | MountPlanKind::Tree,
                     entry: None,
+                    ..
                 }) => {}
                 Some(MountPlan {
-                    kind: MountPlanKind::Dir,
+                    kind: MountPlanKind::Dir | MountPlanKind::Tree,
                     entry: Some(_),
+                    ..
                 }) => {
                     return Err(LaunchError::InvalidSpec(
                         "a directory mount plan carries no entry",
@@ -681,6 +735,7 @@ impl LaunchSpec {
                 Some(MountPlan {
                     kind: MountPlanKind::File,
                     entry,
+                    ..
                 }) => {
                     if !entry.as_deref().is_some_and(is_encoded_entry) {
                         return Err(LaunchError::InvalidSpec(
@@ -724,11 +779,11 @@ impl LaunchSpec {
                 ));
             }
         }
+        // An empty set is legal here and is not this validator's refusal. A manifest declaring no
+        // workspace cannot resolve at all (ADR-0109), and a verification image boots by hand with
+        // mounts that land at fixed targets rather than at their sources.
         let workspaces = self.workspace_shares();
-        if workspaces.is_empty() {
-            return Err(LaunchError::InvalidSpec("workspace share is missing"));
-        }
-        if nested_workspaces(workspaces.iter().map(|share| share.source.as_path())).is_some() {
+        if nested_pair(workspaces.iter().map(|share| share.source.as_path())).is_some() {
             return Err(LaunchError::InvalidSpec("workspace paths overlap"));
         }
         // Volumes were unchecked while there were exactly two of them and the host named both
@@ -811,112 +866,6 @@ fn contains_unresolved_token(rendered: &str) -> bool {
         }
     }
     false
-}
-
-/// Guest paths the image owns, which a mirrored workspace may neither occupy nor contain.
-///
-/// The guest unit re-derives the same answer from the booted image and is the authority; this list
-/// exists so the refusal carries a diagnostic before a VM is started, and so a generation whose
-/// `/etc` is not a mount of its own still refuses `/etc/...`.
-///
-/// Two whole subtrees are deliberately absent, and both for the same reason: a host keeps real
-/// projects under them, so a blanket denial refuses ordinary work. `/var`, because ostree-based
-/// hosts put home directories at `/var/home/<user>`. And `/run`, because a removable drive is
-/// mounted at `/run/media/<user>/<label>` on an ordinary desktop — measured, by this repository's
-/// own acceptance fixtures, which live on exactly such a drive and were refused by the first
-/// version of this list. What the guest owns under those two roots is named individually instead.
-const GUEST_OWNED_PATHS: &[&str] = &[
-    "/nix",
-    "/proc",
-    "/sys",
-    "/dev",
-    "/etc",
-    "/boot",
-    "/usr",
-    "/bin",
-    "/sbin",
-    "/lib",
-    "/lib64",
-    "/root",
-    "/tmp",
-    "/var/lib",
-    "/var/log",
-    "/var/tmp",
-    "/var/empty",
-    // The guest's own `/run` names. `/run/vivarium` is the agent's `RuntimeDirectory`, and
-    // `/run/vivarium-workspaces` is where the shares mount; the guest re-derives the latter
-    // from the value it was built with, so this spelling is the host's copy and `tests/nix`
-    // asserts the Nix constant against it.
-    "/run/vivarium",
-    "/run/vivarium-workspaces",
-    // The declared mounts' internal root. The guest script has always refused it; this list did
-    // not, so a workspace declared here was refused at boot by the guest rather than at
-    // resolution by the host — the same answer, arrived at far later and with a worse message.
-    "/run/vivarium-mounts",
-    "/run/user",
-    "/run/current-system",
-    "/run/booted-system",
-    "/run/wrappers",
-    "/run/systemd",
-    "/run/udev",
-    "/run/dbus",
-    "/run/lock",
-    "/run/log",
-    "/run/keys",
-    "/run/credentials",
-    "/run/binfmt",
-    "/run/nscd",
-    "/run/opengl-driver",
-    // The guest home, and not a corner case: a host user named `vivarium` keeps their projects
-    // under exactly this path, and it is an ext4 volume, so mirroring into it would create
-    // root-owned directories inside a persistent home the user cannot clear. Refused rather than
-    // worked around; moving the guest home is `Q-017` in `docs/plan/open-questions.md`.
-    "/home/vivarium",
-];
-
-/// Why a host path cannot be mirrored as the guest's workspace, or `None` when it can (ADR-0100).
-///
-/// Returns the message the refusal is stated with, so the CLI diagnostic and this module's contract
-/// check share one vocabulary instead of describing the same rule twice.
-#[must_use]
-pub fn unmirrorable(path: &Path) -> Option<&'static str> {
-    if !path.is_absolute() {
-        return Some("workspace path must be absolute to be mirrored into the guest");
-    }
-    if path.parent().is_none() {
-        return Some("the filesystem root cannot be mirrored into the guest");
-    }
-    for owned in GUEST_OWNED_PATHS {
-        let owned = Path::new(owned);
-        // `Path::starts_with` compares whole components, so `/nix` does not match
-        // `/nixos-projects`. A string prefix would, which is the bug this notes rather than risks.
-        if path.starts_with(owned) || owned.starts_with(path) {
-            return Some("workspace path collides with a path the guest owns");
-        }
-    }
-    None
-}
-
-/// The first equal or nested workspace pair, with both paths preserved for diagnostics.
-#[must_use]
-pub fn nested_workspaces<'a>(
-    paths: impl IntoIterator<Item = &'a Path>,
-) -> Option<(&'a Path, &'a Path)> {
-    let paths: Vec<_> = paths.into_iter().collect();
-    for (index, left) in paths.iter().enumerate() {
-        for right in &paths[index + 1..] {
-            if left.starts_with(right) || right.starts_with(left) {
-                return Some((*left, *right));
-            }
-        }
-    }
-    None
-}
-
-#[must_use]
-pub fn is_workspace_tag(tag: &str) -> bool {
-    tag.strip_prefix("ws")
-        .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 fn is_mount_tag(tag: &str) -> bool {
@@ -1068,13 +1017,19 @@ pub mod tests {
                 resolver_port: 53,
             },
             shares: vec![ShareSpec {
-                tag: "ws0".into(),
-                source,
-                mount_point: "/run/vivarium-workspaces/ws0".into(),
-                socket: child("workspace.sock"),
+                tag: "mnt0".into(),
+                source: source.clone(),
+                mount_point: "/run/vivarium-mounts/mnt0".into(),
+                socket: child("mnt0.sock"),
                 cache: "auto".into(),
                 read_only: false,
-                mount_plan: None,
+                // A tree the manifest owns: `viv` relays the kind, and the target is the source
+                // because that is what owning it means (ADR-0110).
+                mount_plan: Some(MountPlan {
+                    kind: MountPlanKind::Tree,
+                    entry: None,
+                    target: source,
+                }),
                 extra_args: vec![],
             }],
             volumes: vec![],
@@ -1143,23 +1098,6 @@ pub mod tests {
             launch_arguments.contains(&format!("schemaVersion = {LAUNCH_SCHEMA_VERSION};")),
             "nix/launch-arguments.nix does not declare schemaVersion = {LAUNCH_SCHEMA_VERSION}"
         );
-
-        // `nix/default.nix` rather than `nix/guest.nix`: the constant is declared in the product
-        // and threaded into the guest module and into `tests/nix`, so that the contract lane
-        // asserts against a realised product value rather than against its own literal.
-        let product =
-            std::str::from_utf8(crate::config::embedded_file("nix/default.nix").unwrap()).unwrap();
-        let workspace_internal = "/run/vivarium-workspaces";
-        assert!(
-            GUEST_OWNED_PATHS.contains(&workspace_internal),
-            "the host no longer refuses to mirror onto the shares' internal root"
-        );
-        assert!(
-            product.contains(&format!(
-                "workspacesInternalRoot = \"{workspace_internal}\";"
-            )),
-            "nix/default.nix does not declare the internal root the host refuses"
-        );
     }
 
     #[test]
@@ -1200,6 +1138,14 @@ pub mod tests {
 
     #[test]
     fn rejects_mutated_contracts() {
+        /// Move a share's source and its plan target together, keeping it a mirrored tree.
+        fn mirror_at(spec: &mut LaunchSpec, path: &str) {
+            spec.shares[0].source = PathBuf::from(path);
+            if let Some(plan) = spec.shares[0].mount_plan.as_mut() {
+                plan.target = PathBuf::from(path);
+            }
+        }
+
         let mutations: Vec<Box<dyn Fn(&mut LaunchSpec)>> = vec![
             Box::new(|s| s.runtime_paths.api_socket = s.runtime_paths.console_socket.clone()),
             Box::new(|s| s.shares[0].socket = s.runtime_paths.api_socket.clone()),
@@ -1210,10 +1156,13 @@ pub mod tests {
                 let duplicate = s.shares[0].clone();
                 s.shares.push(duplicate);
             }),
-            // ADR-0100: the workspace source is also the guest's mount path, so a source the guest
-            // owns is now a refusal here and not only in the CLI that usually gets there first.
-            Box::new(|s| s.shares[0].source = PathBuf::from("/home/vivarium/work")),
-            Box::new(|s| s.shares[0].source = PathBuf::from("/home")),
+            // ADR-0100: a mirrored tree's source is also its guest path, so a source the guest owns
+            // is a refusal here and not only in the CLI that usually gets there first. The pair
+            // moves together, because since ADR-0110 it is the equality that makes the share a
+            // mirror at all — moving the source alone would turn it into an ordinary mount, whose
+            // source the guest has no claim on.
+            Box::new(|s| mirror_at(s, "/home/vivarium/work")),
+            Box::new(|s| mirror_at(s, "/home")),
             // The volume half. Every one of these is a way the `--volume-dir` join can go wrong,
             // and none of them was reachable while the host named two image paths itself.
             Box::new(|s| {
@@ -1251,44 +1200,50 @@ pub mod tests {
                 s.shares[0].mount_plan = Some(MountPlan {
                     kind: MountPlanKind::Dir,
                     entry: Some("stray".into()),
+                    target: s.shares[0].source.clone(),
                 });
             }),
             Box::new(|s| {
                 s.shares[0].mount_plan = Some(MountPlan {
                     kind: MountPlanKind::File,
                     entry: None,
+                    target: s.shares[0].source.clone(),
                 });
             }),
             Box::new(|s| {
                 s.shares[0].mount_plan = Some(MountPlan {
                     kind: MountPlanKind::File,
                     entry: Some("a/b".into()),
+                    target: s.shares[0].source.clone(),
                 });
             }),
             Box::new(|s| {
                 s.shares[0].mount_plan = Some(MountPlan {
                     kind: MountPlanKind::File,
                     entry: Some("..".into()),
+                    target: s.shares[0].source.clone(),
                 });
             }),
             Box::new(|s| {
                 s.shares[0].mount_plan = Some(MountPlan {
                     kind: MountPlanKind::File,
                     entry: Some("%2".into()),
+                    target: s.shares[0].source.clone(),
                 });
             }),
             Box::new(|s| {
                 s.shares[0].mount_plan = Some(MountPlan {
                     kind: MountPlanKind::File,
                     entry: Some(String::new()),
+                    target: s.shares[0].source.clone(),
                 });
             }),
         ];
-        for mutate in mutations {
+        for (index, mutate) in mutations.into_iter().enumerate() {
             let mut spec = fixture();
             assert_eq!(spec.shares.len(), 1);
             mutate(&mut spec);
-            assert!(spec.validate().is_err());
+            assert!(spec.validate().is_err(), "mutation {index} was accepted");
         }
     }
 
@@ -1303,12 +1258,15 @@ pub mod tests {
     fn a_plan_and_its_source_kind_must_agree() {
         let mut spec = fixture();
         let mut declared = spec.shares[0].clone();
-        declared.tag = "mnt0".into();
-        declared.mount_point = "/run/vivarium-mounts/mnt0".into();
-        declared.socket = spec.runtime_paths.root.join("mnt0.sock");
+        declared.tag = "mnt1".into();
+        declared.mount_point = "/run/vivarium-mounts/mnt1".into();
+        declared.socket = spec.runtime_paths.root.join("mnt1.sock");
         declared.mount_plan = Some(MountPlan {
             kind: MountPlanKind::Dir,
             entry: None,
+            // A chosen target rather than the source, so this share is an ordinary mount and the
+            // fixture keeps exactly one workspace.
+            target: "/workspaces/declared".into(),
         });
         spec.shares.push(declared);
         spec.validate().unwrap();
@@ -1318,6 +1276,7 @@ pub mod tests {
         let file_plan = Some(MountPlan {
             kind: MountPlanKind::File,
             entry: Some("Cargo.toml".into()),
+            target: "/workspaces/declared".into(),
         });
 
         spec.shares[1].mount_plan.clone_from(&file_plan);
@@ -1334,6 +1293,7 @@ pub mod tests {
         spec.shares[1].mount_plan = Some(MountPlan {
             kind: MountPlanKind::Dir,
             entry: None,
+            target: "/workspaces/declared".into(),
         });
         assert!(spec.validate().is_err());
         assert!(spec.shares[1].stage_dir(&spec.runtime_paths.root).is_none());
@@ -1346,6 +1306,7 @@ pub mod tests {
         spec.shares[1].mount_plan = Some(MountPlan {
             kind: MountPlanKind::File,
             entry: Some("Cargo.lock".into()),
+            target: "/workspaces/declared".into(),
         });
         assert!(spec.validate().is_err());
     }
@@ -1366,11 +1327,12 @@ pub mod tests {
             let mut declared = spec.shares[0].clone();
             declared.tag = tag.into();
             declared.source.clone_from(&file);
-            declared.mount_point = "/run/vivarium-mounts/mnt0".into();
-            declared.socket = spec.runtime_paths.root.join("mnt0.sock");
+            declared.mount_point = "/run/vivarium-mounts/mnt1".into();
+            declared.socket = spec.runtime_paths.root.join("mnt1.sock");
             declared.mount_plan = Some(MountPlan {
                 kind: MountPlanKind::File,
                 entry: Some("Cargo.toml".into()),
+                target: "/workspaces/declared".into(),
             });
             spec.shares.push(declared);
             assert!(
@@ -1378,139 +1340,6 @@ pub mod tests {
                 "a share tagged {tag} derived an export root the runtime root does not hold"
             );
         }
-    }
-
-    #[test]
-    fn unmirrorable_names_the_paths_the_guest_owns() {
-        // Refused: the guest owns these, or the mirror would contain something it owns.
-        for refused in [
-            "/",
-            "/nix",
-            "/nix/store/x",
-            "/etc/projects",
-            "/home/vivarium",
-            "/home/vivarium/work",
-            // A proper ancestor: mirroring here would bury `/home/vivarium` under the share.
-            "/home",
-            "/var/lib/thing",
-            "/run/vivarium/x",
-            "/run/vivarium-workspaces/x",
-            "/run/user/1000/x",
-            "relative/path",
-        ] {
-            assert!(
-                unmirrorable(Path::new(refused)).is_some(),
-                "{refused} should be refused"
-            );
-        }
-        // Allowed. `/nixos-projects` is the component-wise check earning its keep: a string prefix
-        // would read it as `/nix`. `/var/home/u` is the ostree layout a blanket `/var` would break.
-        for allowed in [
-            "/home/u/Projects/foo",
-            "/nixos-projects/foo",
-            "/var/home/u/foo",
-            // A removable drive on an ordinary desktop, and the reason `/run` is not denied
-            // wholesale: this repository's own acceptance fixtures live at exactly this shape.
-            "/run/media/u/drive/projects/foo",
-            "/mnt/work/foo",
-            "/srv/foo",
-            "/data/foo",
-            "/home/vivariumesque/foo",
-        ] {
-            assert!(
-                unmirrorable(Path::new(allowed)).is_none(),
-                "{allowed} should be allowed"
-            );
-        }
-    }
-
-    /// The host list and the guest script's list are two copies of one rule, so they are pinned
-    /// against each other rather than maintained in parallel.
-    ///
-    /// The three copies are deliberate (`src/cli/lifecycle.rs` owns the diagnostic a user meets,
-    /// this file backstops a stale specification, and `nix/workspace-mirror.sh` is the authority
-    /// that reads the image which actually booted). What is not deliberate is drift: a path only
-    /// the guest refuses turns a resolution-time `78` into a failed boot, which is the same answer
-    /// arrived at far later and with a worse message.
-    #[test]
-    fn the_host_and_the_guest_refuse_the_same_owned_paths() {
-        let script =
-            std::str::from_utf8(crate::config::embedded_file("nix/workspace-mirror.sh").unwrap())
-                .unwrap();
-        // The guest's list is the `for owned in ...` word list, continued over several lines.
-        let body = script
-            .split_once("for owned in ")
-            .expect("the guest script still denies a list of owned paths")
-            .1
-            .split_once("; do")
-            .expect("the owned-path list is still a `for` list")
-            .0;
-        let guest_owned: std::collections::BTreeSet<&str> = body
-            .split_whitespace()
-            .filter(|word| word.starts_with('/'))
-            .collect();
-        let host_owned: std::collections::BTreeSet<&str> =
-            GUEST_OWNED_PATHS.iter().copied().collect();
-        assert_eq!(
-            host_owned, guest_owned,
-            "the host and the guest disagree about which paths the guest owns"
-        );
-    }
-
-    /// The overlap rule, which exists in three deliberate copies and had assertions in none.
-    ///
-    /// ADR-0108 gives every declared workspace its own host-symmetric mirror, and two trees where
-    /// one contains the other cannot both have one: the inner bind lands inside the outer share
-    /// and is shadowed by it, so a session in the inner tree silently reads the outer tree's copy.
-    /// No declaration order makes both promises true, which is why the pair is refused rather than
-    /// ordered.
-    #[test]
-    fn nested_workspaces_finds_equal_and_contained_pairs_component_wise() {
-        let pairs_that_overlap: &[(&str, &str)] = &[
-            // Equal, which is the degenerate nesting and the one an `is_prefix`-style rule that
-            // tested only strict containment would miss.
-            ("/home/u/app", "/home/u/app"),
-            // Contained, in each declaration order, because the refusal may not depend on which
-            // of the two the user happened to write first.
-            ("/home/u", "/home/u/app"),
-            ("/home/u/app", "/home/u"),
-            ("/", "/home/u/app"),
-        ];
-        for (left, right) in pairs_that_overlap {
-            assert!(
-                nested_workspaces([Path::new(left), Path::new(right)]).is_some(),
-                "{left} and {right} overlap and must be refused"
-            );
-        }
-        // Component-wise, not string prefix: `/a` does not contain `/ab`. This is the same rule
-        // `unmirrorable` relies on to let `/nixos-projects` past a `/nix` denial, asserted here
-        // too because the two use different code paths to reach it.
-        let pairs_that_are_disjoint: &[(&str, &str)] = &[
-            ("/home/u/a", "/home/u/ab"),
-            ("/home/u/app", "/home/u/app-2"),
-            ("/home/u/one", "/home/u/two"),
-            ("/srv/a", "/data/b"),
-        ];
-        for (left, right) in pairs_that_are_disjoint {
-            assert!(
-                nested_workspaces([Path::new(left), Path::new(right)]).is_none(),
-                "{left} and {right} are disjoint and must be allowed"
-            );
-        }
-        // Total over the set rather than over adjacent pairs: the overlapping pair here is the
-        // first and the last, which a scan comparing only neighbours would walk straight past.
-        assert!(
-            nested_workspaces([
-                Path::new("/home/u/app"),
-                Path::new("/srv/other"),
-                Path::new("/home/u/app/inner"),
-            ])
-            .is_some()
-        );
-        // Zero and one are both non-overlapping by construction; asserted so the empty case is a
-        // decision rather than an accident of the loop bounds.
-        assert!(nested_workspaces([]).is_none());
-        assert!(nested_workspaces([Path::new("/home/u/app")]).is_none());
     }
 
     /// The launch-spec backstop, which is the copy that catches a stale specification: the host
@@ -1523,14 +1352,19 @@ pub mod tests {
         // the overlap rule. `src` under the crate root is the nested tree, and the fixture's own
         // source is the crate root that contains it.
         let outer = spec.shares[0].source.clone();
+        let inner = outer.join("src");
         spec.shares.push(ShareSpec {
-            tag: "ws1".into(),
-            source: outer.join("src"),
-            mount_point: "/run/vivarium-workspaces/ws1".into(),
-            socket: spec.runtime_paths.root.join("workspace1.sock"),
+            tag: "mnt1".into(),
+            source: inner.clone(),
+            mount_point: "/run/vivarium-mounts/mnt1".into(),
+            socket: spec.runtime_paths.root.join("mnt1.sock"),
             cache: "auto".into(),
             read_only: false,
-            mount_plan: None,
+            mount_plan: Some(MountPlan {
+                kind: MountPlanKind::Tree,
+                entry: None,
+                target: inner,
+            }),
             extra_args: vec![],
         });
         assert!(matches!(
@@ -1539,49 +1373,50 @@ pub mod tests {
         ));
     }
 
-    /// A sandbox with nothing to mirror is refused rather than booted empty. Under ADR-0109 a
-    /// manifest declaring no `[[workspaces]]` cannot resolve at all, so a spec reaching here with
-    /// none is skew rather than a user's configuration — but it is refused at this rung too,
-    /// because the session's starting directory has nowhere to come from without one.
+    /// Only the relayed kind marks a tree the manifest owns, and this is the distinction every
+    /// workspace rule rests on.
+    ///
+    /// The middle case is the regression: an ordinary `[[mounts]]` row may legitimately name a
+    /// path at itself, and while the predicate read `target == source` such a row entered the
+    /// boot record's workspace set while resolution — which reads `[[workspaces]]` alone — never
+    /// put it there. `reusable()` then refused a healthy VM as foreign on every invocation after
+    /// the first. Two rows can hold that equality for different reasons, so the reason is carried
+    /// rather than inferred.
     #[test]
-    fn validate_refuses_a_spec_with_no_workspace_share() {
+    fn only_the_relayed_tree_kind_reads_as_a_workspace() {
         let mut spec = fixture();
-        // Retagged rather than removed: an empty share list is refused one rung earlier, by the
-        // required-fields check, so emptying it would assert that rung instead of this one. What
-        // this pins is a build that declared shares and no workspace among them.
-        for share in &mut spec.shares {
-            if is_workspace_tag(&share.tag) {
-                share.tag = "mnt0".into();
-                share.mount_point = "/run/vivarium-mounts/mnt0".into();
-            }
+        assert_eq!(spec.workspace_shares().len(), 1);
+
+        // A directory mount whose target happens to equal its source. Mirroring, and not a
+        // workspace: the user asked for visibility, not ownership.
+        if let Some(plan) = spec.shares[0].mount_plan.as_mut() {
+            plan.kind = MountPlanKind::Dir;
+        }
+        assert_eq!(
+            spec.shares[0].mount_plan.as_ref().map(|plan| &plan.target),
+            Some(&spec.shares[0].source)
+        );
+        assert!(spec.workspace_shares().is_empty());
+
+        // The store share carries no plan at all and is never a workspace.
+        spec.shares[0].mount_plan = None;
+        assert!(spec.workspace_shares().is_empty());
+    }
+
+    /// A record claiming a tree while binding it elsewhere is skew, and acting on it would start a
+    /// session in a directory the host does not hold.
+    #[test]
+    fn a_tree_plan_must_bind_the_share_at_its_own_source() {
+        let mut spec = fixture();
+        if let Some(plan) = spec.shares[0].mount_plan.as_mut() {
+            plan.target = PathBuf::from("/workspaces/elsewhere");
         }
         assert!(matches!(
             spec.validate(),
-            Err(LaunchError::InvalidSpec("workspace share is missing"))
+            Err(LaunchError::InvalidSpec(
+                "a workspace plan must bind the share at its own source"
+            ))
         ));
-    }
-
-    /// Tags are build-controlled and prefix-disciplined (`ws<index>`, `mnt<index>`, and `store`),
-    /// which is what lets `origin` be recomputed from the tag rather than carried. A tag outside
-    /// those families means the share list and the contract were built by different generations.
-    #[test]
-    fn workspace_tags_are_the_ws_family_and_nothing_adjacent() {
-        for tag in ["ws0", "ws1", "ws10", "ws999"] {
-            assert!(is_workspace_tag(tag), "{tag} is a workspace tag");
-        }
-        for tag in [
-            "ws",
-            "workspace",
-            "wsa",
-            "ws0a",
-            "WS0",
-            "mnt0",
-            "store",
-            "ws-1",
-            "",
-        ] {
-            assert!(!is_workspace_tag(tag), "{tag} is not a workspace tag");
-        }
     }
 
     #[test]

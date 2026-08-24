@@ -85,10 +85,6 @@ let
   };
 
   listPaths = {
-    "workspaces" = [
-      "vivarium"
-      "workspaces"
-    ];
     "mounts" = [
       "vivarium"
       "mounts"
@@ -119,9 +115,6 @@ let
   # could not produce JSON, so each list of submodules is projected down to the
   # fields the manifest surface actually has.
   projectors = {
-    "workspaces" = workspace: {
-      inherit (workspace) source;
-    };
     "mounts" = mount: {
       inherit (mount) source target readonly;
     };

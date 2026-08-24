@@ -26,6 +26,10 @@ const STAGED_FILE_MODE: u32 = 0o666;
 ///
 /// Returns [`GeneratedFlakeError`] when read-only resolution fails or the complete replacement
 /// cannot be prepared, flushed, published, or cleaned up safely.
+// Eight distinct nouns, none of which groups with another: the roots, the two path components
+// the target is keyed by, the selected artifact, its text, its parse, its resolved workspaces, and
+// the baseline. A struct here would be a bag named for this call rather than for anything.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_generated_flake(
     roots: &XdgRoots,
     sandbox_id: &str,
@@ -33,6 +37,9 @@ pub fn prepare_generated_flake(
     selected_manifest: &ResolvedArtifact,
     manifest_source: &str,
     manifest: &Manifest,
+    // Expanded and canonical, resolved by the caller so the owner index and the build read one
+    // derivation of the set (ADR-0110).
+    workspaces: &[PathBuf],
     baseline: &BaselineInputs,
 ) -> Result<PreparedFlake, GeneratedFlakeError> {
     let composition = ResolvedComposition::resolve(
@@ -48,6 +55,7 @@ pub fn prepare_generated_flake(
         selected_manifest,
         manifest_source,
         manifest,
+        workspaces,
         &composition,
         baseline,
     )?;
@@ -704,6 +712,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &[],
             &BaselineInputs::default(),
         )?;
         fs::write(first.directory.join("old-only"), "old")?;
@@ -714,6 +723,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &[],
             &BaselineInputs::default(),
         )?;
         assert!(!second.directory.join("old-only").exists());
@@ -741,6 +751,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &[],
             &BaselineInputs::default(),
         )?;
         fs::write(prepared.directory.join("sentinel"), "old")?;
@@ -755,6 +766,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &[],
             &BaselineInputs::default(),
         )
         .err()
@@ -785,6 +797,7 @@ mod tests {
                 image: "base".to_owned(),
                 ..Manifest::default()
             },
+            &[],
             &BaselineInputs::default(),
         )?;
         assert_eq!(
@@ -813,6 +826,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &[],
             &BaselineInputs::default(),
         )?;
         fs::write(first.directory.join("flake.lock"), b"new pin")?;
@@ -828,6 +842,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &[],
             &BaselineInputs::default(),
         )?;
         fs::write(second.directory.join("flake.lock"), b"new pin")?;
@@ -843,6 +858,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &[],
             &BaselineInputs::default(),
         )?;
         fs::write(third.directory.join("flake.lock"), b"losing pin")?;
@@ -882,6 +898,7 @@ mod tests {
                 image: "base".to_owned(),
                 ..Manifest::default()
             },
+            &[],
             &BaselineInputs::default(),
         )?;
         assert!(prepared.directory.join("flake.nix").is_file());

@@ -42,15 +42,6 @@ pub fn declared_shares(store_path: &str) -> Result<Vec<BuiltShare>, std::io::Err
     shares_by_origin(store_path, "declared")
 }
 
-/// Workspace shares of a built contract, in declaration order.
-///
-/// # Errors
-///
-/// Returns the read or parse error verbatim; the caller owns the diagnostic.
-pub fn workspace_shares(store_path: &str) -> Result<Vec<BuiltShare>, std::io::Error> {
-    shares_by_origin(store_path, "workspace")
-}
-
 fn shares_by_origin(store_path: &str, origin: &str) -> Result<Vec<BuiltShare>, std::io::Error> {
     let path = Path::new(store_path)
         .join("share")

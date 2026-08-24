@@ -424,6 +424,7 @@ impl GeneratedFlakePlan {
         selected_manifest: &ResolvedArtifact,
         manifest_source: &str,
         manifest: &Manifest,
+        workspaces: &[PathBuf],
         composition: &ResolvedComposition,
         baseline: &BaselineInputs,
     ) -> Result<Self, GeneratedFlakeError> {
@@ -442,7 +443,7 @@ impl GeneratedFlakePlan {
             },
             GeneratedEntry::RenderedFile {
                 destination: PathBuf::from(MANIFEST_MODULE_FILE),
-                bytes: render_manifest_module(manifest).into_bytes(),
+                bytes: render_manifest_module(manifest, workspaces).into_bytes(),
             },
             GeneratedEntry::RenderedFile {
                 destination: PathBuf::from(MANIFEST_SOURCE_FILE),
@@ -910,8 +911,15 @@ fn nix_import(artifact: &ResolvedArtifact) -> String {
 ///
 /// `image`, `pieces`, and `extends` are absent on purpose: they select the layers rather than
 /// contribute to the merge, and the generated flake already imports what they name.
+///
+/// `workspaces` is the one table that does not reach Nix under its own name. Since `ADR-0110` a
+/// declared workspace compiles to a `vivarium.mounts` row whose `target` is its `source`, already
+/// expanded, because the guest mounts it at the path the host holds it at and that path is
+/// therefore guest system configuration rather than launch data. The expansion arrives here as a
+/// resolved list rather than as a closure: two callers expanding one manifest separately is how
+/// the owner index and the build come to disagree about which trees a manifest declares.
 #[allow(clippy::format_push_string)]
-fn render_manifest_module(manifest: &Manifest) -> String {
+fn render_manifest_module(manifest: &Manifest, workspaces: &[PathBuf]) -> String {
     let mut vivarium = String::new();
     if !manifest.env.is_empty() {
         vivarium.push_str("    env = {");
@@ -924,8 +932,12 @@ fn render_manifest_module(manifest: &Manifest) -> String {
         }
         vivarium.push_str(" };\n");
     }
-    if !manifest.mounts.is_empty() {
+    if !manifest.mounts.is_empty() || !workspaces.is_empty() {
         vivarium.push_str("    mounts = [");
+        // Authored `[[mounts]]` first, workspaces appended. Nothing downstream depends on the
+        // order — the guest matches by tag — but the guest module mints `mnt<index>` from this
+        // list, so a stable order keeps a manifest's mount indices from moving when a workspace
+        // is added, and keeps two renderings of one manifest diffable.
         for mount in &manifest.mounts {
             vivarium.push_str(&format!(
                 " {{ source = \"{}\"; target = \"{}\"; readonly = {}; }}",
@@ -934,14 +946,10 @@ fn render_manifest_module(manifest: &Manifest) -> String {
                 mount.readonly
             ));
         }
-        vivarium.push_str(" ];\n");
-    }
-    if !manifest.workspaces.is_empty() {
-        vivarium.push_str("    workspaces = [");
-        for workspace in &manifest.workspaces {
+        for workspace in workspaces {
+            let path = nix_string(&workspace.to_string_lossy());
             vivarium.push_str(&format!(
-                " {{ source = \"{}\"; }}",
-                nix_string(&workspace.source)
+                " {{ source = \"{path}\"; target = \"{path}\"; readonly = false; }}"
             ));
         }
         vivarium.push_str(" ];\n");
@@ -1030,7 +1038,7 @@ fn nix_string(value: &str) -> String {
 mod tests {
     use std::fs;
     use std::os::unix::fs::symlink;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use std::ffi::OsString;
 
@@ -1063,8 +1071,16 @@ mod tests {
         assert_eq!(pinned.microvm, BaselineInputs::default().microvm);
     }
 
+    /// A declared workspace reaches Nix as a mount that mirrors its own path, and the declared
+    /// spelling never does.
+    ///
+    /// Both halves matter. Emitting the resolved path is what makes the guest mount the tree where
+    /// the host holds it (`ADR-0110`); leaving `${HOME}` in would hand Nix a string it cannot
+    /// expand and the guest a directory that does not exist. And `workspaces` must not appear as
+    /// an option at all — the module surface no longer declares one, so an emitted key would fail
+    /// evaluation rather than be ignored.
     #[test]
-    fn manifest_module_renders_every_workspace_source() {
+    fn a_declared_workspace_is_rendered_as_a_mount_that_mirrors_its_own_path() {
         let manifest = Manifest {
             image: "base".to_owned(),
             workspaces: vec![
@@ -1075,11 +1091,43 @@ mod tests {
                     source: "/two".to_owned(),
                 },
             ],
+            mounts: vec![crate::config::Mount {
+                source: "${HOME}/.config/gh".to_owned(),
+                target: "~/.config/gh".to_owned(),
+                readonly: true,
+            }],
             ..Manifest::default()
         };
+        let rendered = render_manifest_module(
+            &manifest,
+            &[PathBuf::from("/home/u/one"), PathBuf::from("/two")],
+        );
+        assert!(rendered.contains(concat!(
+            "mounts = [",
+            " { source = \"\\${HOME}/.config/gh\"; target = \"~/.config/gh\"; readonly = true; }",
+            " { source = \"/home/u/one\"; target = \"/home/u/one\"; readonly = false; }",
+            " { source = \"/two\"; target = \"/two\"; readonly = false; }",
+            " ];"
+        )), "rendered: {rendered}");
+        assert!(!rendered.contains("workspaces ="), "rendered: {rendered}");
+        // The declared spelling stays out of the compiled form entirely; it survives for the
+        // reader in `viv config eval`, which injects it from the manifest rather than from here.
+        assert!(!rendered.contains("${HOME}/one"), "rendered: {rendered}");
+    }
+
+    /// A manifest with workspaces and no `[[mounts]]` still emits the option, and one with
+    /// neither still omits it. The absent case is the load-bearing one: an emitted empty list
+    /// would read as an authored decision in the provenance view.
+    #[test]
+    fn the_mounts_option_is_emitted_exactly_when_something_declares_one() {
+        let bare = Manifest {
+            image: "base".to_owned(),
+            ..Manifest::default()
+        };
+        assert!(!render_manifest_module(&bare, &[]).contains("mounts ="));
         assert!(
-            render_manifest_module(&manifest).contains(
-                "workspaces = [ { source = \"\\${HOME}/one\"; } { source = \"/two\"; } ];"
+            render_manifest_module(&bare, &[PathBuf::from("/only")]).contains(
+                "mounts = [ { source = \"/only\"; target = \"/only\"; readonly = false; } ];"
             )
         );
     }
@@ -1162,6 +1210,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &[],
             &composition,
             &BaselineInputs::default(),
         )?;
@@ -1170,6 +1219,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &[],
             &composition,
             &BaselineInputs::default(),
         )?;
@@ -1239,6 +1289,7 @@ mod tests {
                 &selected,
                 "image = 'base'",
                 &manifest,
+                &[],
                 &composition,
                 &BaselineInputs::default(),
             )?)
@@ -1308,6 +1359,7 @@ mod tests {
             &selected,
             "image = 'base'",
             &manifest,
+            &[],
             &composition,
             &BaselineInputs::default(),
         )?;
@@ -1414,6 +1466,7 @@ mod tests {
             &selected,
             "image = 'base'\nextends = 'extra.nix'",
             &manifest,
+            &[],
             &composition,
             &BaselineInputs::default(),
         ) else {

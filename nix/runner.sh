@@ -1,7 +1,6 @@
 # shellcheck shell=bash
 set -euo pipefail
 contract=@launchArgumentsPath@
-workspaces_json='{}'
 runtime_dir=""
 volume_dir=""
 supervisor=""
@@ -17,7 +16,7 @@ console_log=true
 print_only=false
 mounts_json='{}'
 usage() {
-  echo "usage: $0 --workspace TAG ABS... --runtime-dir ABS --volume-dir ABS --supervisor ABS --uid N --gid N --memory-mib N --vcpu N [--sandbox-id ID] [--target NAME] [--ssh-agent-socket ABS] [--gpg-agent-socket ABS] [--mount TAG dir|file ABS ENTRY]... [--no-console-log] [--print-static-arguments]" >&2
+  echo "usage: $0 --runtime-dir ABS --volume-dir ABS --supervisor ABS --uid N --gid N --memory-mib N --vcpu N [--sandbox-id ID] [--target NAME] [--ssh-agent-socket ABS] [--gpg-agent-socket ABS] [--mount TAG dir|tree|file ABS ENTRY]... [--no-console-log] [--print-static-arguments]" >&2
   # The belt for a hand-invoked runner. `viv` refuses a build whose contract
   # schema differs from its own before executing this script, but a runner from
   # an old generation can still be run by hand, and its argument names differ —
@@ -29,17 +28,6 @@ usage() {
 }
 while (($#)); do
   case $1 in
-    --workspace)
-      (($# >= 3)) || usage
-      workspace_tag=$2
-      workspace_source=$3
-      [[ $workspace_tag =~ ^ws[0-9]+$ && $workspace_source = /* ]] || usage
-      jq -e --arg tag "$workspace_tag" 'has($tag) | not' <<<"$workspaces_json" >/dev/null || usage
-      workspace_source=$(realpath -m -- "$workspace_source")
-      workspaces_json=$(jq --arg tag "$workspace_tag" --arg source "$workspace_source" \
-        '. + {($tag): $source}' <<<"$workspaces_json")
-      shift 3
-      ;;
     --runtime-dir | --volume-dir | --supervisor | --uid | --gid | --memory-mib | --vcpu | --sandbox-id | --target | --ssh-agent-socket | --gpg-agent-socket)
       (($# >= 2)) || usage
       name=${1#--}
@@ -51,9 +39,13 @@ while (($#)); do
       # Four values per flag — tag, kind, expanded absolute source, entry —
       # separate words rather than one delimited string, because a source path
       # may hold any delimiter. The entry is the percent-encoded basename a
-      # `file` mount serves through its parent directory, and `-` for a `dir`
-      # mount. `viv` expands and validates the declared source before invoking
-      # this script; the checks here are the belt, not the diagnostic.
+      # `file` mount serves through its parent directory, and `-` for a `dir` or
+      # `tree` mount. `tree` is a directory the manifest declared it owns: served
+      # exactly as `dir` is, and named apart only so the rendered specification
+      # records which rows came from `[[workspaces]]` rather than leaving a reader
+      # to infer it from the target matching the source (ADR-0110). `viv` expands
+      # and validates the declared source before invoking this script; the checks
+      # here are the belt, not the diagnostic.
       (($# >= 5)) || usage
       mount_tag=$2
       mount_kind=$3
@@ -62,7 +54,7 @@ while (($#)); do
       [[ $mount_tag =~ ^[a-z0-9]+$ ]] || usage
       [[ $mount_source = /* ]] || usage
       case $mount_kind in
-        dir) [[ $mount_entry = - ]] || usage ;;
+        dir | tree) [[ $mount_entry = - ]] || usage ;;
         file) [[ $mount_entry =~ ^([A-Za-z0-9._~-]|%[0-9A-F]{2})+$ ]] || usage ;;
         *) usage ;;
       esac
@@ -118,9 +110,6 @@ fi
 declared_mount_tags=$(jq -r '[.shareLaunch[] | select(.origin == "declared") | .tag] | sort | join(" ")' "$contract")
 supplied_mount_tags=$(jq -r 'keys | sort | join(" ")' <<<"$mounts_json")
 [[ $declared_mount_tags == "$supplied_mount_tags" ]] || usage
-declared_workspace_tags=$(jq -r '[.shareLaunch[] | select(.origin == "workspace") | .tag] | sort | join(" ")' "$contract")
-supplied_workspace_tags=$(jq -r 'keys | sort | join(" ")' <<<"$workspaces_json")
-[[ $declared_workspace_tags == "$supplied_workspace_tags" ]] || usage
 runtime_dir=$(realpath -m -- "$runtime_dir")
 # `-m`, so a directory that does not exist yet still resolves: the images are
 # created by the supervisor, and `--print-static-arguments` renders a contract
@@ -148,7 +137,7 @@ jq \
   --arg api "$api" --arg console "$console" --arg control "$control" --arg ready "$ready" \
   --arg supervisor "$supervisor" \
   --arg sshAgent "$ssh_agent_socket" --arg gpgAgent "$gpg_agent_socket" --argjson uid "$uid" --argjson gid "$gid" \
-  --argjson memoryMiB "$memory_mib" --argjson vcpu "$vcpu" --argjson workspaceSources "$workspaces_json" --argjson mountSources "$mounts_json" \
+  --argjson memoryMiB "$memory_mib" --argjson vcpu "$vcpu" --argjson mountSources "$mounts_json" \
   --argjson landlock "$landlock" --argjson consoleLog "$console_log" '
   def token:
     if type != "string" then . else
@@ -186,12 +175,15 @@ jq \
     guestSession: .guestSession,
     shares: [.shareLaunch[] | { tag,
       source: (if .origin == "declared" then $mountSources[.tag].source
-        elif .origin == "workspace" then $workspaceSources[.tag]
         else (.sourceToken | token) end),
       mountPoint,
       socket: (.socketToken | token), cache, readOnly,
+      # `target` comes from the contract rather than from the argument group: the
+      # bind table is build output, and it is what tells a mirrored tree from any
+      # other mount (ADR-0110). The kind and the entry are the launch half, which
+      # `viv` resolved against this host.
       mountPlan: (if .origin == "declared"
-        then { kind: $mountSources[.tag].kind, entry: $mountSources[.tag].entry }
+        then { kind: $mountSources[.tag].kind, entry: $mountSources[.tag].entry, target: .target }
         else null end),
       extraArgs: [.extraArgs[]? | select(. != "@UID_TRANSLATION@" and . != "@GID_TRANSLATION@") | token] }],
     volumes: [.volumeLaunch[] | { label, path: (.imagePath | token), sizeMiB, imageType, inodeRatio }],

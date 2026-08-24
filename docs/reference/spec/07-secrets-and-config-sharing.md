@@ -1,6 +1,6 @@
 # 07 — Secrets and config sharing
 
-How a project's sandbox configuration is shared across a team without leaking personal or secret data. Two rules govern this: secrets never enter the build (see [`../../decisions/ADR-0010-secrets-never-in-nix-store.md`](../../decisions/ADR-0010-secrets-never-in-nix-store.md)), and machine-specific paths are injected at launch, not built in (see [`../../decisions/ADR-0009-launch-time-workspace-path-injection.md`](../../decisions/ADR-0009-launch-time-workspace-path-injection.md)).
+How a project's sandbox configuration is shared across a team without leaking personal or secret data. Two rules govern this: secrets never enter the build (see [`../../decisions/ADR-0010-secrets-never-in-nix-store.md`](../../decisions/ADR-0010-secrets-never-in-nix-store.md)), and a shared artifact references the host only through portable variables, resolved at launch (see [`../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md`](../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md)).
 
 ## The shared / personal split
 
@@ -69,7 +69,7 @@ So `[env] TOKEN = "…"` is a build-time secret, whatever the channel classifica
 
 Host config files and directories are mirrored into the guest through the declarative mount schema ([`../../decisions/ADR-0020-mount-and-config-mirroring-schema.md`](../../decisions/ADR-0020-mount-and-config-mirroring-schema.md), [`../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md`](../../decisions/ADR-0021-typed-launch-channel-options-in-pieces.md), [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)): the host `source` expands host-side variables at launch, the guest `target` expands `~` to the guest home, and `readonly = true` marks identity files that must not be written. Because each side expands its own home, identity mounts (`~/.config/foo` → `~/.config/foo`) need no path translation even though the guest username differs from the host's.
 
-Mount declarations travel the launch channel and are never build inputs (N5, N19, [`04-composition-and-determinism.md`](./04-composition-and-determinism.md)): an unset variable or missing host path fails before boot with a legible error, and no expanded path is ever recorded in a shared artifact (N11). One caveat: mirroring is transparent at the path layer only — a mirrored file whose contents embed a host-absolute path is not rewritten. Runtime environment values pass through `vivarium.env` (pieces) or the manifest `[env]` table, subject to the deny-by-default rule (N17).
+A `[[mounts]]` declaration travels the launch channel and is never a build input (N19, [`04-composition-and-determinism.md`](./04-composition-and-determinism.md)): an unset variable or missing host path fails before boot with a legible error, and no expanded path is ever recorded in a shared artifact (N11). One caveat: mirroring is transparent at the path layer only — a mirrored file whose contents embed a host-absolute path is not rewritten. Runtime environment values pass through `vivarium.env` (pieces) or the manifest `[env]` table, subject to the deny-by-default rule (N17).
 
 ### Portable variables — the sharing rule
 

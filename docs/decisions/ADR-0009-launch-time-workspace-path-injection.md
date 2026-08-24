@@ -24,6 +24,8 @@ This preserves the core determinism guarantee: identical manifest and lockfile p
 
 ## Status
 
-Accepted
+Superseded
+
+Superseded by [`ADR-0110-the-workspace-is-an-ordinary-mount.md`](./ADR-0110-the-workspace-is-an-ordinary-mount.md) — the path this record kept out of the build is now a build input. A workspace is declared in the manifest rather than taken from the invoking directory, so it is known before evaluation, and compiling it to an ordinary mount deletes the launch channel, the percent-encoder, and the guest unit that carried it. The determinism bought here is retracted with it: one manifest now evaluates to different store outputs on two machines.
 
 Amended by ADR-0048 — states how the injection is achieved. vivarium generates the launch itself rather than consuming the upstream runner package, because that package writes each share's host source path into the build output, which is exactly what this decision forbids.

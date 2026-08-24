@@ -4,7 +4,7 @@ The share launch profile and descriptor arithmetic are implemented in [`src/laun
 
 vivarium shares three classes of host content into a guest: the project workspace, explicitly declared configuration or extra mounts, and the immutable host Nix store. Host source paths are supplied only at launch, and sources representing host temporary or session directories are refused.
 
-Guest targets divide by who chose them. A declared mount names its own target, and the store's is a constant. The primary workspace is the exception: its target is the host path itself, so one absolute path names the project on both sides. That target is launch data and may not reach a build output, so the share mounts at a build-time constant the guest owns and a boot-time unit binds it at the mirrored path — which is why the workspace is the one share whose guest location is absent from the guest's own `/etc/fstab`, and why it is reachable at two paths rather than one.
+Guest targets divide by who chose them. The store's is a constant. Every other share names its own target, and a declared workspace is the row whose target is its own host path, so one absolute path names the tree on both sides. Every share alike mounts at a build-time constant the guest owns and a boot-time unit binds it at its target, because whether a source is a directory or a regular file resolves only at launch — so the guest's own `/etc/fstab` holds the internal points and the bind unit holds the targets, and each tree is reachable at exactly one of them.
 
 A declared regular-file mount is the one case where what a daemon serves is not what the manifest names. virtiofs exports a tree, so the launcher builds the smallest true one: a per-share export root, private to a namespace the supervisor makes before the daemon starts, whose only entry is a bind mount of the declared file. The parent directory is therefore not something the daemon is trusted to avoid — it is not in its mount table. That places the confinement where a hostile guest cannot argue with it, and it is why the guest side carries no masking of its own.
 
@@ -18,7 +18,7 @@ The host store is exposed read-only. Guest writes never modify it and belong to 
 
 ## Governing decisions
 
-- [ADR-0100](../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md) — mirrors the host path as the workspace target, superseding [ADR-0017](../decisions/ADR-0017-workspace-mount-path-and-extra-mounts.md), whose extra-mount form stands.
+- [ADR-0110](../decisions/ADR-0110-the-workspace-is-an-ordinary-mount.md) — makes the mirrored path the share's own declared target, so one mechanism serves every share. Supersedes [ADR-0100](../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md) on mechanism; the host-symmetric outcome it decided stands.
 - [ADR-0020](../decisions/ADR-0020-mount-and-config-mirroring-schema.md) — fixes the declarative schema those mounts are authored in.
 - [ADR-0027](../decisions/ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md) — fixes the confinement each sharing daemon runs under.
 - [ADR-0105](../decisions/ADR-0105-a-file-mount-is-staged-into-its-own-export-root.md) — stages a file mount into an export root holding that file alone.

@@ -73,21 +73,6 @@ let
   storeLayout = import ./store-layout.nix { inherit pkgs lib; };
   volumeLabel = "vivarium-default";
   storeVolumeLabel = "vivarium-store";
-  # Where the declared workspace shares mount, one `wsN` subdirectory per
-  # declared tree. Deliberately not where a session finds a tree: ADR-0108 makes
-  # every declared workspace mirror its own host path, and a share's `mountPoint`
-  # is build output that N19 keeps host paths out of — so the shares land under
-  # this constant and `workspace-mirror.sh` binds each into place at boot from
-  # the launch-channel path (ADR-0100).
-  #
-  # Not `/run/vivarium`: the agent unit declares `RuntimeDirectory = "vivarium"`,
-  # which makes systemd create that directory at agent start and delete it at
-  # agent stop. A live mount inside it would not survive the unit restarting.
-  #
-  # Declared here in the product rather than inside `nix/guest.nix` so that
-  # `tests/nix` can inherit the same value it asserts against. A check whose two
-  # sides are both literals in the checking file reports on nothing.
-  workspacesInternalRoot = "/run/vivarium-workspaces";
   # One sentinel for the directory rather than one per volume image, because the
   # number of volumes is a property of the merged configuration and not of the
   # host's argv: `viv start --no-rebuild` evaluates nothing and boots the last
@@ -213,7 +198,6 @@ let
       storeLayout
       volumeLabel
       storeVolumeLabel
-      workspacesInternalRoot
       volumeDirSentinel
       homeVolumeName
       storeVolumeName
@@ -315,7 +299,6 @@ in
     storeCanaryExpression
     volumeLabel
     storeVolumeLabel
-    workspacesInternalRoot
     imageDefaults
     networkLayout
     mkImage

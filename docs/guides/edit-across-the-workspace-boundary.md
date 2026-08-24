@@ -2,7 +2,7 @@
 
 > Design-intent walkthrough — not yet working. This guide describes the target experience. None of these commands run today; vivarium is at the design stage. For what is actually implemented, see [`../reference/implementation-status.md`](../reference/implementation-status.md), which is the source of truth for status. Read this as the north star the implementation aims at.
 
-Every tree the manifest declares with `[[workspaces]]` is mounted read-write inside the same sandbox at the absolute path it has on the host. One path string names each tree on both sides, so an editor on the host and a build inside the guest work on the same bytes and refer to them the same way. The mount set and its confinement are specified in [workspace and project environment](../reference/spec/06-workspace-and-project-environment.md), and [the decision to mirror the host path](../decisions/ADR-0100-the-workspace-mirrors-its-host-path.md) explains what that buys and what it costs.
+Every tree the manifest declares with `[[workspaces]]` is mounted read-write inside the same sandbox at the absolute path it has on the host. One path string names each tree on both sides, so an editor on the host and a build inside the guest work on the same bytes and refer to them the same way. The mount set and its confinement are specified in [workspace and project environment](../reference/spec/06-workspace-and-project-environment.md), and [the decision to mirror the host path](../decisions/ADR-0110-the-workspace-is-an-ordinary-mount.md) explains what that buys and what it costs.
 
 ## Confirm where the project is
 
@@ -41,4 +41,4 @@ Keep regenerable caches off it. Dependency trees, package-manager caches, and bu
 
 ## Acceptance coverage
 
-`workflow_09_workspace_round_trip` in [`user_workflows.rs`](../../tests/user_workflows.rs) covers one tree and host ownership. `workflow_20_many_workspaces_one_sandbox` covers two trees in one VM, round-trips an edit through both, and proves `exec` and `shell` preserve the exact invoking tree or subdirectory. [`../../tests/host/first-microvm-check`](../../tests/host/first-microvm-check) covers the guest half independently, comparing what the mirror unit reported against the guest's own mount table so the two can be seen to disagree.
+`workflow_09_workspace_round_trip` in [`user_workflows.rs`](../../tests/user_workflows.rs) covers one tree and host ownership. `workflow_20_many_workspaces_one_sandbox` covers two trees in one VM, round-trips an edit through both, and proves `exec` and `shell` preserve the exact invoking tree or subdirectory. [`../../tests/host/first-microvm-check`](../../tests/host/first-microvm-check) covers the guest half independently, comparing what the bind unit reported against the guest's own mount table so the two can be seen to disagree.

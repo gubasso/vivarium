@@ -23,7 +23,7 @@ use crate::diagnostic::{Locus, Namespace};
 use crate::exit::ExitKind;
 use crate::launch::{
     BootMetadata, GuestSession, LAUNCH_SCHEMA_VERSION, LaunchSpec, MountPlanKind, VersionEnvelope,
-    mounts, secure_fs, unmirrorable,
+    mounts, secure_fs,
 };
 use crate::ui::{Ui, watch};
 
@@ -557,6 +557,9 @@ pub fn start<E: Environment>(
     // to it. The evaluating path below overrides this with the merged value spec/04 makes
     // authoritative.
     let leaf_resources = resolved.resources;
+    // Cloned before `resolved` is consumed by the evaluating path: the launch below relays which
+    // rows came from `[[workspaces]]`, and only this side ever knew.
+    let workspace_paths = resolved.workspace_paths.clone();
     // Filled by the evaluating path below, and left empty by `--no-rebuild`.
     let mut merged = None;
 
@@ -646,7 +649,14 @@ pub fn start<E: Environment>(
 
     // Step 5, ensure running. The selected manifest name keys every artifact below.
     let resources = effective_resources(merged.or(leaf_resources).as_ref());
-    launch(context, &sandbox_id, &runtime, &store_path, resources)?;
+    launch(
+        context,
+        &sandbox_id,
+        &runtime,
+        &store_path,
+        resources,
+        &workspace_paths,
+    )?;
 
     context.ui.outro(&format!(
         "running · {} MiB · {} vcpu",
@@ -698,6 +708,7 @@ fn launch<E: Environment>(
     runtime: &Runtime,
     store_path: &str,
     resources: Resources,
+    workspace_paths: &[PathBuf],
 ) -> Result<(), Failure> {
     // Before the record: a refused boot must not leave `running-build` naming a build that never
     // ran, which `status` would then read as this VM's provenance.
@@ -706,7 +717,14 @@ fn launch<E: Environment>(
         &running_build_path(&context.roots, sandbox_id, DEFAULT_TARGET),
         store_path,
     )?;
-    execute_runner(context, store_path, runtime, sandbox_id, resources)
+    execute_runner(
+        context,
+        store_path,
+        runtime,
+        sandbox_id,
+        resources,
+        workspace_paths,
+    )
 }
 
 /// spec/10's pre-boot refusal: the selected build must speak this binary's launch contract.
@@ -793,7 +811,7 @@ pub(super) async fn ensure_running<E: Environment + Sync>(
             .as_ref()
             .is_some_and(|workspace| context.project.starts_with(workspace))
     );
-    let workspace_host_paths = resolved.workspace_host_paths.clone();
+    let workspace_paths = resolved.workspace_paths.clone();
     let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
         .map_err(|error| super::resolution_failure(&error))?;
     let sandbox_id = resolved.selected.name.clone();
@@ -805,7 +823,7 @@ pub(super) async fn ensure_running<E: Environment + Sync>(
     // Steps 2 and 3: when the socket is there, the agent answered for this boot, and the record
     // names this project, nothing is preflighted, evaluated, built, or booted.
     let boot = if let Some(boot) =
-        reusable(&runtime, &sandbox_id, &workspace_host_paths, context.ui).await?
+        reusable(&runtime, &sandbox_id, &workspace_paths, context.ui).await?
     {
         boot
     } else {
@@ -820,6 +838,7 @@ pub(super) async fn ensure_running<E: Environment + Sync>(
             &runtime,
             &store_path,
             effective_resources(merged.as_ref()),
+            &workspace_paths,
         )?;
         // The launcher returns only once the supervisor has awaited the guest agent's own readiness
         // handshake, so spec/12 step 5's "wait for readiness before releasing the lock" holds by
@@ -854,7 +873,7 @@ pub(super) async fn ensure_running<E: Environment + Sync>(
 async fn reusable(
     runtime: &Runtime,
     sandbox_id: &str,
-    workspace_host_paths: &std::collections::BTreeMap<String, PathBuf>,
+    workspace_paths: &[PathBuf],
     ui: &Ui,
 ) -> Result<Option<BootMetadata>, Failure> {
     // Step 2. A socket that is not there at all is the ordinary cold case — but only once step 4's
@@ -918,11 +937,11 @@ async fn reusable(
     // than on the mismatch: a live VM is refused because replacing it is not a repair, and a dead
     // one is stale state that must be cleared or the project could never start again.
     //
-    // The manifest was already selected and parsed before this routine, so comparing its complete
-    // tag-to-path set costs no preflight, evaluation, or build. Membership of the invoking cwd was
-    // the singleton-era identity only while the project directory was necessarily `ws0`; using it
-    // now would reject a valid owner whose declared trees deliberately exclude the binding anchor.
-    let mismatch = if boot.workspace_host_paths != *workspace_host_paths {
+    // The manifest was already selected, parsed, and resolved before this routine, so comparing
+    // its complete workspace set costs no preflight, evaluation, or build. It is also the only
+    // comparison that can detect a changed declaration here: this path evaluates nothing, so a
+    // manifest that gained or lost a tree reaches it through no other field.
+    let mismatch = if boot.workspace_paths != *workspace_paths {
         Some("it names another declared workspace set")
     } else if boot.backend != crate::launch::BACKEND {
         Some("it names another backend")
@@ -1153,11 +1172,11 @@ fn prepared(
     // were true when the VM was launched, and a session has no business re-litigating them.
     let spec: LaunchSpec = serde_json::from_slice(&bytes)
         .map_err(|_| unreadable("it does not match the launch schema this version understands"))?;
-    // ADR-0108 privileges no declaration. Every workspace is mirrored at its host path, so the
+    // ADR-0108 privileges no declaration. Every workspace is mounted at its host path, so the
     // exact invoking cwd is already its guest path after ownership was proved during resolution.
     if !boot
-        .workspace_host_paths
-        .values()
+        .workspace_paths
+        .iter()
         .any(|workspace| invoking_cwd.starts_with(workspace))
     {
         return Err(unreadable(
@@ -1322,155 +1341,46 @@ fn resolve_declared_mounts<E: Environment>(
         .collect()
 }
 
-fn resolve_declared_workspaces<E: Environment>(
-    _context: &Context<'_, E>,
-    store_path: &str,
-) -> Result<Vec<mounts::ResolvedMount>, Failure> {
-    let contract_path = Path::new(store_path).join("share/vivarium/launch-arguments.json");
-    let declared = mounts::workspace_shares(store_path).map_err(|error| {
-        diagnosed(
-            Namespace::Vm,
-            "launch-contract-unreadable",
-            "the selected build's launch contract cannot be read",
-            Locus::File(contract_path),
-            error.to_string(),
-            ExitKind::Config,
-        )
-        .with_hint("`viv start --rebuild` rebuilds the selected build with this version")
-    })?;
-    let lookup =
-        |name: &str| std::env::var_os(name).map(|value| value.to_string_lossy().into_owned());
-    // No session roots, and that is a decision rather than an omission.
-    //
-    // N24 refuses a declared *mount* whose source lands in `/tmp`, `/var/tmp`, or
-    // `${XDG_RUNTIME_DIR}`, because a mount may name any directory on the host and those hold
-    // live session state no share may carry. A workspace is already bounded by a stricter rule:
-    // ADR-0108 mirrors it at its own host path, so it has to pass `unmirrorable` against
-    // `GUEST_OWNED_PATHS` — and that list already contains `/tmp`, `/var/tmp`, and `/run/user`.
-    // The same paths are refused either way; only the wording and the reason would differ.
-    //
-    // What running N24 here would add is therefore not coverage but a second refusal for a path
-    // the first one already refuses, and a dependence on the host's `${XDG_RUNTIME_DIR}` value
-    // that the workspace rule deliberately does not have. Since `tests/host/heavy-run` moves
-    // `TMPDIR` onto the drive and a bare run leaves it at `/tmp`, that dependence would also make
-    // whether the acceptance fixtures resolve at all a property of how the suite was invoked.
-    // One hazard, one rule, at the surface that owns it.
-    let session_roots: Vec<PathBuf> = Vec::new();
-    declared
-        .iter()
-        .map(|share| {
-            let expanded = mounts::expand_source(&share.source_token, &lookup)
-                .map_err(|defect| workspace_source_failure(share, defect))?;
-            let resolved = mounts::classify_source(&share.tag, &expanded, &session_roots)
-                .map_err(|defect| workspace_source_failure(share, defect))?;
-            if resolved.kind != MountPlanKind::Dir {
-                return Err(diagnosed(
-                    Namespace::Host,
-                    "workspace-source-not-directory",
-                    "a declared workspace is not a directory",
-                    Locus::File(resolved.share_source),
-                    format!("`{}` resolves to a regular file", share.source_token),
-                    ExitKind::Config,
-                )
-                .with_hint("declare a directory in `[[workspaces]] source = '...'`"));
-            }
-            Ok(resolved)
-        })
-        .collect()
-}
-
-/// Which declaring surface a source defect is being reported against.
+/// The diagnostic id for one declared-mount source defect.
 ///
-/// The two surfaces share every defect and no wording. `[[mounts]]` says a directory is visible
-/// in this VM and any number of manifests may say it; `[[workspaces]]` says a directory belongs
-/// to this VM and at most one manifest may claim it (ADR-0108). A user who wrote one and is told
-/// about the other has to work out which of their own blocks the refusal means, so the diagnostic
-/// id, the noun, and the hint all carry the surface rather than defaulting to the older one.
-#[derive(Clone, Copy)]
-enum SourceSurface {
-    Mount,
-    Workspace,
-}
-
-impl SourceSurface {
-    /// The diagnostic id for one defect. Ids are a published surface (ADR-0075), so both families
-    /// are written out as literals rather than composed at runtime: a grep for one of these
-    /// strings has to find the site that emits it.
-    const fn id(self, defect: &mounts::MountSourceDefect) -> &'static str {
-        use mounts::MountSourceDefect as Defect;
-        match (self, defect) {
-            (Self::Mount, Defect::UnsetVariable { .. }) => "mount-source-unset-variable",
-            (Self::Mount, Defect::NotAbsolute { .. }) => "mount-source-not-absolute",
-            (Self::Mount, Defect::Missing { .. }) => "mount-source-missing",
-            (Self::Mount, Defect::Unreadable { .. }) => "mount-source-unreadable",
-            (Self::Mount, Defect::NotMountable { .. }) => "mount-source-not-mountable",
-            (Self::Mount, Defect::SessionDirectory { .. }) => "mount-source-session-directory",
-            (Self::Workspace, Defect::UnsetVariable { .. }) => "workspace-source-unset-variable",
-            (Self::Workspace, Defect::NotAbsolute { .. }) => "workspace-source-not-absolute",
-            (Self::Workspace, Defect::Missing { .. }) => "workspace-source-missing",
-            (Self::Workspace, Defect::Unreadable { .. }) => "workspace-source-unreadable",
-            (Self::Workspace, Defect::NotMountable { .. }) => "workspace-source-not-mountable",
-            (Self::Workspace, Defect::SessionDirectory { .. }) => {
-                "workspace-source-session-directory"
-            }
-        }
+/// Ids are a published surface (ADR-0075), so each is written out as a literal rather than
+/// composed at runtime: a grep for one of these strings has to find the site that emits it.
+///
+/// One family, since ADR-0110. A workspace is refused at resolution now, against manifest text
+/// rather than against a built contract, so its own ids live beside that check in `src/cli/mod.rs`
+/// and this surface has only mounts left to name.
+const fn mount_source_id(defect: &mounts::MountSourceDefect) -> &'static str {
+    use mounts::MountSourceDefect as Defect;
+    match defect {
+        Defect::UnsetVariable { .. } => "mount-source-unset-variable",
+        Defect::NotAbsolute { .. } => "mount-source-not-absolute",
+        Defect::Missing { .. } => "mount-source-missing",
+        Defect::Unreadable { .. } => "mount-source-unreadable",
+        Defect::NotMountable { .. } => "mount-source-not-mountable",
+        Defect::SessionDirectory { .. } => "mount-source-session-directory",
     }
-
-    /// How the title names the thing, in possessive position.
-    const fn noun(self) -> &'static str {
-        match self {
-            Self::Mount => "a declared mount's source",
-            Self::Workspace => "a declared workspace's source",
-        }
-    }
-
-    /// The `Locus::Named` fallback, for a defect with no path to point at.
-    const fn locus(self) -> &'static str {
-        match self {
-            Self::Mount => "declared mounts",
-            Self::Workspace => "declared workspaces",
-        }
-    }
-
-    const fn sources_hint(self) -> &'static str {
-        match self {
-            Self::Mount => "`viv config sources` names the layer that declares this mount",
-            Self::Workspace => "`viv config sources` names the layer that declares this workspace",
-        }
-    }
-}
-
-fn workspace_source_failure(
-    share: &mounts::BuiltShare,
-    defect: mounts::MountSourceDefect,
-) -> Failure {
-    source_failure(SourceSurface::Workspace, share, defect)
 }
 
 fn mount_source_failure(share: &mounts::BuiltShare, defect: mounts::MountSourceDefect) -> Failure {
-    source_failure(SourceSurface::Mount, share, defect)
+    source_failure(share, defect)
 }
 
 /// One diagnostic per broken source invariant, every one `78` and every one naming the
 /// declared spelling, so the refusal reads against what the user wrote rather than against a
 /// tag they never chose. Parameterized by surface rather than duplicated, so the two families
 /// cannot drift in wording while sharing a defect set.
-fn source_failure(
-    surface: SourceSurface,
-    share: &mounts::BuiltShare,
-    defect: mounts::MountSourceDefect,
-) -> Failure {
+fn source_failure(share: &mounts::BuiltShare, defect: mounts::MountSourceDefect) -> Failure {
     use mounts::MountSourceDefect as Defect;
     let declared = &share.source_token;
-    let sources_hint = surface.sources_hint();
-    let id = surface.id(&defect);
-    let noun = surface.noun();
+    let sources_hint = "`viv config sources` names the layer that declares this mount";
+    let id = mount_source_id(&defect);
+    let noun = "a declared mount's source";
     match defect {
         Defect::UnsetVariable { variable } => diagnosed(
             Namespace::Host,
             id,
             format!("{noun} names `${{{variable}}}`, which this host does not set"),
-            Locus::Named(surface.locus()),
+            Locus::Named("declared mounts"),
             format!("`{declared}` cannot resolve while `{variable}` is unset (ADR-0020)"),
             ExitKind::Config,
         )
@@ -1545,6 +1455,12 @@ fn execute_runner<E: Environment>(
     runtime: &Runtime,
     sandbox_id: &str,
     resources: Resources,
+    // What resolution decided a workspace is. Carried here rather than re-derived from the built
+    // contract, because the contract cannot tell a tree the manifest owns from an ordinary mount
+    // that happens to name a path at itself — only the side that read `[[workspaces]]` can, and
+    // relaying it is what keeps the boot record's set and the set it is compared against one fact
+    // (ADR-0110).
+    workspace_paths: &[PathBuf],
 ) -> Result<(), Failure> {
     // spec/02 and ADR-0019 fix the location: a project's volumes are part of its per-project state
     // at `projects/<sandbox-id>/<target>/volumes/<name>.img`, under the same two components the
@@ -1553,57 +1469,6 @@ fn execute_runner<E: Environment>(
     // The directory is all this passes: which images go in it, and under what names, is decided by
     // the build and joined by the launcher. `--no-rebuild` is why — it evaluates nothing, so there
     // is no path on which this function knows what a merged configuration declared.
-    // Before anything is created, because this is the refusal a user meets rather than a defect
-    // to survive. ADR-0100 mirrors the project at its own absolute path inside the guest, and a
-    // few host paths have no mirror: the guest owns them. The launch specification checks the same
-    // rule and the guest re-derives it from the booted image, but only here is there a place to
-    // say which path collided and what the user can do about it.
-    let declared_workspaces = resolve_declared_workspaces(context, store_path)?;
-    if declared_workspaces.is_empty() {
-        return Err(diagnosed(
-            Namespace::Host,
-            "workspace-missing",
-            "the selected build declares no workspace",
-            Locus::Named("declared workspaces"),
-            "a sandbox needs at least one `[[workspaces]]` row before it can launch",
-            ExitKind::Config,
-        ));
-    }
-    for workspace in &declared_workspaces {
-        if let Some(reason) = unmirrorable(&workspace.share_source) {
-            return Err(diagnosed(
-                Namespace::Host,
-                "workspace-path-unmirrorable",
-                "a declared workspace cannot be mirrored inside the guest at its host path",
-                Locus::File(workspace.share_source.clone()),
-                reason.to_owned(),
-                ExitKind::Config,
-            )
-            .with_hint(
-                "move the workspace under a path the guest does not own, such as your home",
-            ));
-        }
-    }
-    if let Some((left, right)) = crate::launch::nested_workspaces(
-        declared_workspaces
-            .iter()
-            .map(|workspace| workspace.share_source.as_path()),
-    ) {
-        return Err(diagnosed(
-            Namespace::Host,
-            "workspace-paths-overlap",
-            "two declared workspaces overlap",
-            Locus::File(left.to_path_buf()),
-            format!(
-                "`{}` and `{}` are equal or nested",
-                left.display(),
-                right.display()
-            ),
-            ExitKind::Config,
-        )
-        .with_hint("declare disjoint workspace trees"));
-    }
-
     // Every declared mount's source resolves against this host here, before anything is
     // created, for the workspace refusal's reason stated above: this is where a user meets
     // "the variable is unset" or "the path is missing" as a sentence rather than as a dead
@@ -1650,12 +1515,6 @@ fn execute_runner<E: Environment>(
         .arg(sandbox_id)
         .arg("--target")
         .arg(DEFAULT_TARGET);
-    for workspace in &declared_workspaces {
-        command
-            .arg("--workspace")
-            .arg(&workspace.tag)
-            .arg(&workspace.share_source);
-    }
     for mount in &declared_mounts {
         // Four values per flag, matching the runner's `--mount TAG KIND ABS ENTRY` group; the
         // runner's own belt re-checks the set against the contract's declared tags.
@@ -1663,7 +1522,8 @@ fn execute_runner<E: Environment>(
             .arg("--mount")
             .arg(&mount.tag)
             .arg(match mount.kind {
-                MountPlanKind::Dir => "dir",
+                MountPlanKind::Dir if workspace_paths.contains(&mount.share_source) => "tree",
+                MountPlanKind::Dir | MountPlanKind::Tree => "dir",
                 MountPlanKind::File => "file",
             })
             .arg(&mount.share_source)
@@ -2447,10 +2307,7 @@ mod tests {
             sandbox_id: "envelope".into(),
             target: "default".into(),
             backend: crate::launch::BACKEND.into(),
-            workspace_host_paths: std::collections::BTreeMap::from([(
-                "ws0".to_owned(),
-                PathBuf::from("/w"),
-            )]),
+            workspace_paths: vec![PathBuf::from("/w")],
         };
         fs::write(
             runtime.directory.join("boot.json"),

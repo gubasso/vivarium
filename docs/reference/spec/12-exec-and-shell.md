@@ -1,6 +1,6 @@
 # 12 — Exec and shell
 
-This page specifies how `viv exec` and `viv shell` connect to a project VM, how they start it if needed, and how they map streams and failures. The control and exit-status rationale is in [`../../decisions/ADR-0016-guest-control-transport-and-exec-contract.md`](../../decisions/ADR-0016-guest-control-transport-and-exec-contract.md); the workspace path rationale is in [`../../decisions/ADR-0017-workspace-mount-path-and-extra-mounts.md`](../../decisions/ADR-0017-workspace-mount-path-and-extra-mounts.md); the shared stream and failure rules are in [`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md); and startup reuses the ensure-running routine in [`10-vm-lifecycle.md`](./10-vm-lifecycle.md).
+This page specifies how `viv exec` and `viv shell` connect to a project VM, how they start it if needed, and how they map streams and failures. The control and exit-status rationale is in [`../../decisions/ADR-0016-guest-control-transport-and-exec-contract.md`](../../decisions/ADR-0016-guest-control-transport-and-exec-contract.md); the workspace path rationale is in [`../../decisions/ADR-0110-the-workspace-is-an-ordinary-mount.md`](../../decisions/ADR-0110-the-workspace-is-an-ordinary-mount.md); the shared stream and failure rules are in [`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md); and startup reuses the ensure-running routine in [`10-vm-lifecycle.md`](./10-vm-lifecycle.md).
 
 ## Command grammar
 
@@ -39,13 +39,13 @@ Agent forwarding is not an exception to that rule, and naming `--env SSH_AUTH_SO
 
 ## Workspace mounts
 
-Mount semantics are owned by [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md). Every declared workspace is mounted read-write at the absolute path it occupies on the host, and additional mounts may be declared for chosen guest paths. All host paths for workspaces and extra mounts are launch-time inputs or personal/machine-local config and must never enter the Nix build output or a shared image or piece — which is why each mirrored path is applied at boot rather than declared as the share's own mount point.
+Mount semantics are owned by [`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md). Every declared workspace is mounted read-write at the absolute path it occupies on the host, and additional mounts may be declared for chosen guest paths. An extra mount's host source is a launch-time input and must never enter the Nix build output or a shared image or piece. A declared workspace's path is the exception and the reason is the symmetry above: it is the guest path as well as the host one, so the build depends on it ([`../../decisions/ADR-0110-the-workspace-is-an-ordinary-mount.md`](../../decisions/ADR-0110-the-workspace-is-an-ordinary-mount.md)). Neither may appear in a shared image or piece, which only a portable variable may reference.
 
 ## Ensure running and control socket
 
 1. Take the per-target `flock` under `$XDG_RUNTIME_DIR/vivarium/<manifest>/<target>/lock`.
 2. If `control.sock` exists, send the guest agent a cheap `Ping` over an authorized connection (below).
-3. If `Ping` succeeds and `boot.json` matches the manifest sandbox key, running generation/store path, backend, and complete tag-to-host-path workspace map expected for this invocation, reuse the running VM and skip preflight/build/boot.
+3. If `Ping` succeeds and `boot.json` matches the manifest sandbox key, running generation/store path, backend, and complete declared workspace set expected for this invocation, reuse the running VM and skip preflight/build/boot.
 4. If the socket exists but ping fails, check `vm.pid` only as diagnostic/staleness evidence: dead process means remove stale runtime files; live process with unreachable agent means wait within the boot timeout or fail EX_UNAVAILABLE (69).
 5. If no live VM is found, run the same hard preflight subset used by `viv start`, build or select the requested generation as needed, launch the VM, inject mounts, and wait for the guest agent readiness ping before releasing the lock.
 6. After startup, concurrent `exec` and `shell` sessions do not hold the startup lock; they multiplex over the control socket.

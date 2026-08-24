@@ -116,29 +116,37 @@ fn fixture(name: &str) -> LaunchSpec {
             resolver_port: 53,
         },
         shares: vec![
-            ShareSpec {
-                tag: "ws0".into(),
-                source: std::env::current_dir().unwrap(),
-                mount_point: "/run/vivarium-workspaces/ws0".into(),
-                socket: child("ws0.sock"),
-                cache: "auto".into(),
-                read_only: false,
-                mount_plan: None,
-                extra_args: vec![],
-            },
-            // A declared mount's share (slice 019), so every per-share loop below — spawn,
-            // cleanup allowlist, rendered validation — is exercised over a list the two
-            // reserved entries no longer bound.
+            // A declared workspace, which since ADR-0110 is an ordinary mount whose target is
+            // its own source. Nothing but that equality marks it, which is why it is spelled out
+            // here rather than tagged.
             ShareSpec {
                 tag: "mnt0".into(),
                 source: std::env::current_dir().unwrap(),
                 mount_point: "/run/vivarium-mounts/mnt0".into(),
                 socket: child("mnt0.sock"),
                 cache: "auto".into(),
+                read_only: false,
+                mount_plan: Some(MountPlan {
+                    kind: MountPlanKind::Dir,
+                    entry: None,
+                    target: std::env::current_dir().unwrap(),
+                }),
+                extra_args: vec![],
+            },
+            // A declared mount landing at a chosen target (slice 019), so every per-share loop
+            // below — spawn, cleanup allowlist, rendered validation — is exercised over both
+            // shapes rather than over one repeated.
+            ShareSpec {
+                tag: "mnt2".into(),
+                source: std::env::current_dir().unwrap(),
+                mount_point: "/run/vivarium-mounts/mnt2".into(),
+                socket: child("mnt2.sock"),
+                cache: "auto".into(),
                 read_only: true,
                 mount_plan: Some(MountPlan {
                     kind: MountPlanKind::Dir,
                     entry: None,
+                    target: "/workspaces/declared".into(),
                 }),
                 extra_args: vec![],
             },
@@ -155,6 +163,7 @@ fn fixture(name: &str) -> LaunchSpec {
                 mount_plan: Some(MountPlan {
                     kind: MountPlanKind::File,
                     entry: Some("Cargo.toml".into()),
+                    target: "/home/vivarium/.config/thing.toml".into(),
                 }),
                 extra_args: vec![],
             },

@@ -29,6 +29,8 @@ Every declared workspace is mirrored at its own host path, generalizing N16 beyo
 
 Implemented
 
+Amended by [`ADR-0110-the-workspace-is-an-ordinary-mount.md`](./ADR-0110-the-workspace-is-an-ordinary-mount.md) — on the compiled form, not the authored one. The `[[workspaces]]` table and its single-valued ownership stand exactly as decided here. What changes is that the table compiles to a mount row whose `target` equals its `source` rather than to a share family of its own, so "not a `[[mounts]]` row with a flag on it" describes the surface a user writes rather than the merged configuration.
+
 Amends N16 in [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md), which scopes host-symmetric mirroring to the primary workspace.
 
 Amends [`ADR-0020-mount-and-config-mirroring-schema.md`](./ADR-0020-mount-and-config-mirroring-schema.md), whose schema keeps the `target`-mounted kind and loses the project tree to a table of its own, and [`ADR-0100-the-workspace-mirrors-its-host-path.md`](./ADR-0100-the-workspace-mirrors-its-host-path.md), whose mirroring and refusal set now run across a set rather than one tree. Both stand and carry the pointer back.

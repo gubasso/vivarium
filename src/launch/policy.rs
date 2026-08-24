@@ -643,22 +643,23 @@ mod tests {
         let root = spec.runtime_paths.root.clone();
         let source = std::env::current_dir().unwrap().join("Cargo.toml");
         spec.shares.push(ShareSpec {
-            tag: "mnt0".into(),
+            tag: "mnt1".into(),
             source: source.clone(),
-            mount_point: "/run/vivarium-mounts/mnt0".into(),
-            socket: root.join("mnt0.sock"),
+            mount_point: "/run/vivarium-mounts/mnt1".into(),
+            socket: root.join("mnt1.sock"),
             cache: "auto".into(),
             read_only: true,
             mount_plan: Some(MountPlan {
                 kind: MountPlanKind::File,
                 entry: Some("Cargo.toml".into()),
+                target: "/home/vivarium/.config/thing.toml".into(),
             }),
             extra_args: vec![],
         });
         let profile = ConfinementProfile::with_bounding_set_drop(&spec, true).unwrap();
         let shares = profile.shares();
         let staged = shares.last().unwrap();
-        let stage = root.join("mnt0.stage").display().to_string();
+        let stage = root.join("mnt1.stage").display().to_string();
 
         assert_eq!(staged.program(), spec.backend_programs.unshare);
         for leg in STAGING_NAMESPACE {

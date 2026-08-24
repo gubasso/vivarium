@@ -27,7 +27,7 @@ The normative boundaries are in the [workspace](../reference/spec/06-workspace-a
 ## Governing decisions
 
 - [ADR-0001](../decisions/ADR-0001-microvm-isolation-boundary.md) — fixes the hardware-virtualization boundary this path must produce.
-- [ADR-0009](../decisions/ADR-0009-launch-time-workspace-path-injection.md) — injects the workspace path at launch so it never becomes a build input.
+- [ADR-0110](../decisions/ADR-0110-the-workspace-is-an-ordinary-mount.md) — makes a declared workspace an ordinary mount at its own host path, so its expanded path is build-channel and the launch channel that carried it is gone. Supersedes [ADR-0009](../decisions/ADR-0009-launch-time-workspace-path-injection.md).
 - [ADR-0024](../decisions/ADR-0024-backend-security-requirements.md) — fixes the security requirements a backend has to satisfy.
 - [ADR-0025](../decisions/ADR-0025-default-hypervisor-cloud-hypervisor.md) — selects the default virtual machine monitor.
 - [ADR-0026](../decisions/ADR-0026-global-flags-and-config-precedence.md) — fixes the global flags the launch path reads.

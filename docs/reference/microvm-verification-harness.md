@@ -2,7 +2,7 @@
 
 `tests/` verifies product behavior across Rust, Nix, and host lanes. `scripts/` contains repository operations such as release helpers and structural gates.
 
-`tests/host/first-microvm-check` builds the first microVM, boots it on a real host, and checks the things only a real host can answer — including, since ADR-0100, that the project is reachable inside the guest at its own host path, read once from the mirror unit's console claim and once from the guest's own mount table so the two can be seen to disagree. It is the base the host lane of [`testing-lanes.md`](./testing-lanes.md) grows from, and it is run by hand today.
+`tests/host/first-microvm-check` builds the first microVM, boots it on a real host, and checks the things only a real host can answer — including that the project is reachable inside the guest at its own host path, read once from the bind unit's console claim and once from the guest's own mount table so the two can be seen to disagree. It is the base the host lane of [`testing-lanes.md`](./testing-lanes.md) grows from, and it is run by hand today.
 
 `tests/host/store-gc-interlock-check` is its sibling, described below: same shapes, separate script because it mutates the host store.
 
@@ -92,7 +92,7 @@ An evaluation-tier result says nothing about target-host behaviour. A skipped ho
 ### Purity and the build/launch boundary
 
 - Metamorphism — the derivation path is unchanged by the invoking environment, the working directory, and the worktree's location on disk. Three separate checks, because each closes a different leak.
-- Negative reference (ADR-0048) — no upstream runner or supervisor derivation is forced. vivarium generates the launch itself; forcing one of those would mean an upstream runner had written a host path into the build output, violating N5/N19.
+- Negative reference (ADR-0048) — no upstream runner or supervisor derivation is forced. vivarium generates the launch itself; forcing one of those would mean an upstream runner had written a launch-channel source into the build output, violating N19.
 - Sentinel provenance — neither launch-channel sentinel occurs anywhere in the derivation graph. Any occurrence is a defect.
 - No concrete host paths in the graph.
 - Token flow, positively — every scan above is negative, and a launcher that hardcoded a launch-channel value would pass all of them. The positive counterpart renders the launcher's arguments twice with different inputs and asserts each value tracked its argument.

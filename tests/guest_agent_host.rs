@@ -376,9 +376,11 @@ async fn guest_agent_and_credential_relay(runner: &Path) {
     let boot_started = Instant::now();
     let rendered = Command::new(runner)
         .args([
-            "--workspace",
-            "ws0",
+            "--mount",
+            "mnt0",
+            "dir",
             std::env::current_dir().unwrap().to_str().unwrap(),
+            "-",
             "--runtime-dir",
             runtime.to_str().unwrap(),
             // The directory, not the images: the launcher names each one from the build, so a

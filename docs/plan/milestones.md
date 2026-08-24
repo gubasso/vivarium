@@ -21,6 +21,8 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## closed
 
+- 029 a-workspace-is-just-a-mount — done — 4 sessions — one pass under the appetite; the host evidence, the three unplanned moves, and the `Q-034` regression are in the slice `Revisions`
+
 - 021 the-manifest-is-the-sandbox — done — 4 sessions — phases 4 through 7 ran as one merged pass under the appetite, remainder included; the host evidence, gate timings, and deviations are in the slice `Revisions`
 
 - 020 many-workspaces-in-one-sandbox — done — 3 sessions — one merged pass under the appetite, remainder included; the host evidence, fixture repair, and timings are in the slice `Revisions`

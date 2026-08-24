@@ -142,6 +142,54 @@ impl Analysis {
     pub fn effective(&self, key: &str) -> Option<&Value> {
         self.value_of(key).and_then(|view| view.effective.as_ref())
     }
+
+    /// Adds the manifest's own `[[workspaces]]` rows to the rendered view.
+    ///
+    /// Injected rather than read from the report, because since `ADR-0110` there is no
+    /// `vivarium.workspaces` option for the report to carry: a declared workspace compiles to a
+    /// `mounts` row whose target is its source, and Nix never learns it was a workspace.
+    ///
+    /// The reader still needs the distinction, which is why this exists rather than letting the
+    /// rows show up only as mounts. `[[workspaces]]` says a directory belongs to this sandbox and
+    /// at most one manifest may claim it; `[[mounts]]` says a directory is visible in it and any
+    /// number may. That difference decides which manifest a working directory resolves to, so a
+    /// provenance view that hid it would answer a question the user did not ask.
+    ///
+    /// The declared spelling, not the expansion. It is what the user edits, and the expansion is
+    /// visible in the `mounts` block beside it — which makes the two blocks explain each other
+    /// rather than repeat each other.
+    pub fn with_manifest_workspaces(&mut self, manifest: &super::Manifest, manifest_name: &str) {
+        if manifest.workspaces.is_empty() {
+            return;
+        }
+        let rows = Value::Array(
+            manifest
+                .workspaces
+                .iter()
+                .map(|workspace| {
+                    let mut row = Map::new();
+                    row.insert("source".to_owned(), Value::String(workspace.source.clone()));
+                    Value::Object(row)
+                })
+                .collect(),
+        );
+        self.values.push(KeyView {
+            key: "workspaces".to_owned(),
+            // A list, so `config sources` prints the contribution as cooperation rather than
+            // naming a winner. Truer here than anywhere: there is exactly one contributor and no
+            // rival is possible, because only a manifest may declare a workspace at all.
+            class: KeyClass::List,
+            effective: Some(rows.clone()),
+            winner: None,
+            contributors: vec![Contributor {
+                layer: manifest_name.to_owned(),
+                kind: LayerKind::Manifest,
+                priority: "normal",
+                value: rows,
+                winner: false,
+            }],
+        });
+    }
 }
 
 /// Reads a report into effective values, provenance, and defects.
@@ -264,21 +312,13 @@ fn view_of(
 /// path, where `/home/<name>` is the ordinary shape of a home directory rather than one person's
 /// machine.
 fn literal_path_conflicts(report: &Report) -> Vec<Conflict> {
-    let mut conflicts = source_conflicts(
+    source_conflicts(
         report,
         "mounts",
         ConflictKind::LiteralPath,
         true,
         is_personal_path,
-    );
-    conflicts.extend(source_conflicts(
-        report,
-        "workspaces",
-        ConflictKind::LiteralPath,
-        true,
-        is_personal_path,
-    ));
-    conflicts
+    )
 }
 
 fn is_personal_path(value: &str) -> bool {
@@ -383,21 +423,13 @@ fn non_portable_variable_conflicts(report: &Report) -> Vec<Conflict> {
             .iter()
             .any(|name| !PORTABLE_VARIABLES.contains(&name.as_str()))
     };
-    let mut conflicts = source_conflicts(
+    source_conflicts(
         report,
         "mounts",
         ConflictKind::NonPortableVariable,
         true,
         flagged,
-    );
-    conflicts.extend(source_conflicts(
-        report,
-        "workspaces",
-        ConflictKind::NonPortableVariable,
-        true,
-        flagged,
-    ));
-    conflicts
+    )
 }
 
 /// Every `${NAME}` reference in a source, by the same grammar the launch-time expander reads:
@@ -424,50 +456,11 @@ fn variable_references(source: &str) -> Vec<String> {
 /// Merges no priority can settle, which are defects of the result rather than of one key.
 fn irreconcilable_merges(report: &Report) -> Vec<Irreconcilable> {
     let mut found = duplicate_volume_mounts(report);
+    // Since ADR-0110 this reaches a declared workspace too: it compiles to a `mounts` row whose
+    // target is its source, so a shared layer mounting something at a tree the manifest owns is
+    // one duplicate target rather than a rule of its own.
     found.extend(duplicate_mount_targets(report));
-    found.extend(overlapping_workspace_sources(report));
-    found.extend(workspaces_declared_outside_the_manifest(report));
     found
-}
-
-/// ADR-0108: a workspace is owned by one manifest, so only a manifest may declare one.
-///
-/// The option is a `listOf` like `vivarium.mounts`, so a shared layer setting it merges without
-/// complaint — which is why this refusal exists rather than a type that forbids it. The reason it
-/// must be refused is not taste but the resolution model. Ownership of a directory is decided
-/// from manifest text alone: the derived index scans each manifest's `[[workspaces]]` rows, and
-/// the ADR-0109 refusal is a `78` precisely because it is decidable without the merged
-/// configuration. A workspace contributed by an image, a piece, or an `extends` module is
-/// invisible to both, so it would own a directory that nothing could resolve to it, and the boot
-/// record would carry a tree the next invocation's reuse check does not know about.
-///
-/// It is an irreconcilable rather than a `78`, because which layer declared a row is exactly what
-/// the merged configuration is needed to see — the `65`/`78` boundary of spec/14 read in the
-/// direction it is written.
-fn workspaces_declared_outside_the_manifest(report: &Report) -> Vec<Irreconcilable> {
-    report
-        .layers
-        .iter()
-        .filter(|layer| layer.kind != LayerKind::Manifest)
-        // Any definition at all, empty ones included. An empty list is not an abstention: the
-        // report drops a key whose highest priority is the option default, so a layer only
-        // appears here by writing the option — and `mkForce []` from a shared layer writes it
-        // hardest of all, suppressing the manifest's own rows and leaving a sandbox with no
-        // workspace to start a session in. Filtering empties out would let the one shape that
-        // silently overrides the owner through.
-        .filter(|layer| layer.defines.contains_key("workspaces"))
-        .map(|layer| Irreconcilable {
-            what: "a workspace is declared outside the manifest".to_owned(),
-            why: format!(
-                "the {} `{}` declares `vivarium.workspaces`, but a workspace is owned by one \
-                manifest and only a manifest may declare one (ADR-0108); declare it in the \
-                manifest's own `[[workspaces]]`, or make it a `[[mounts]]` row if the layer only \
-                needs the directory visible",
-                layer.kind.as_str(),
-                layer.name
-            ),
-        })
-        .collect()
 }
 
 fn duplicate_volume_mounts(report: &Report) -> Vec<Irreconcilable> {
@@ -519,35 +512,6 @@ fn duplicate_mount_targets(report: &Report) -> Vec<Irreconcilable> {
             });
         }
         seen.push(target);
-    }
-    found
-}
-
-/// ADR-0108: workspace declarations concatenate across layers, but two equal or nested host
-/// trees cannot both be mirrored at their own paths. This is the decidable textual tier; source
-/// expansion and canonicalization run again at launch and catch aliases hidden by variables or
-/// symlinks before the first bind.
-fn overlapping_workspace_sources(report: &Report) -> Vec<Irreconcilable> {
-    let Some(entry) = report.keys.get("workspaces") else {
-        return Vec::new();
-    };
-    let mut seen: Vec<&str> = Vec::new();
-    let mut found = Vec::new();
-    for workspace in entry.value.as_array().into_iter().flatten() {
-        let Some(source) = workspace.get("source").and_then(Value::as_str) else {
-            continue;
-        };
-        for other in &seen {
-            let source_path = std::path::Path::new(source);
-            let other_path = std::path::Path::new(other);
-            if source_path.starts_with(other_path) || other_path.starts_with(source_path) {
-                found.push(Irreconcilable {
-                    what: "two declared workspaces overlap".to_owned(),
-                    why: format!("`{other}` and `{source}` are equal or nested (ADR-0108)"),
-                });
-            }
-        }
-        seen.push(source);
     }
     found
 }
@@ -731,177 +695,6 @@ mod tests {
     }
 
     #[test]
-    fn workspace_sources_share_the_decidable_path_rules_except_n24() {
-        let workspace = |source: &str| format!(r#"[ {{ "source": "{source}" }} ]"#);
-        let fixture = |kind: &str, source: &str| {
-            report(
-                &[key("workspaces", "list", "[]")],
-                &[layer(
-                    "owner",
-                    kind,
-                    &[defines("workspaces", 100, workspace(source).as_str())],
-                )],
-            )
-        };
-
-        let literal = analyze(&fixture("piece", "/home/ana/project"));
-        assert_eq!(literal.conflicts[0].kind, ConflictKind::LiteralPath);
-        assert_eq!(literal.conflicts[0].key, "workspaces");
-        assert!(!analyze(&fixture("manifest", "/home/ana/project")).is_defective());
-
-        let variable = analyze(&fixture("piece", "${PROJECTS_DIR}/project"));
-        assert_eq!(
-            variable.conflicts[0].kind,
-            ConflictKind::NonPortableVariable
-        );
-        assert_eq!(variable.conflicts[0].key, "workspaces");
-        // A portable variable clears the path rules, so nothing in `conflicts` remains. The
-        // layer is still refused, by the ownership rule the next test owns — asserted here as
-        // the absence of a path conflict rather than as overall cleanliness, because those are
-        // two different claims and only the first one is this test's subject.
-        assert!(
-            analyze(&fixture("piece", "${HOME}/project"))
-                .conflicts
-                .is_empty()
-        );
-
-        // N24 belongs only to mounts. Workspaces refuse these paths once through ADR-0108's
-        // guest-owned-path rule, without making ownership depend on `${XDG_RUNTIME_DIR}`.
-        assert!(!analyze(&fixture("manifest", "/tmp/project")).is_defective());
-    }
-
-    /// ADR-0108's ownership half, which the path rules above deliberately do not carry.
-    ///
-    /// This is the rule that keeps the resolution model coherent: ownership is decided from
-    /// manifest text alone, so a workspace a shared layer contributes would own a directory the
-    /// derived index cannot see and the `78` refusal cannot name.
-    #[test]
-    fn only_a_manifest_may_declare_a_workspace() {
-        let rows = r#"[ { "source": "${HOME}/project" } ]"#;
-        let fixture = |kind: &str| {
-            report(
-                &[key("workspaces", "list", "[]")],
-                &[layer("shared", kind, &[defines("workspaces", 100, rows)])],
-            )
-        };
-        for kind in ["image", "piece", "extends"] {
-            let analysis = analyze(&fixture(kind));
-            assert!(
-                analysis.is_defective(),
-                "{kind} must not declare a workspace"
-            );
-            let named = analysis.irreconcilable.iter().any(|found| {
-                found.what == "a workspace is declared outside the manifest"
-                    && found.why.contains("shared")
-                    && found.why.contains(kind)
-            });
-            assert!(named, "{kind} refusal must name the layer and its kind");
-        }
-        // The manifest is the one layer that may.
-        assert!(!analyze(&fixture("manifest")).is_defective());
-
-        // An empty list from a shared layer is still a declaration, and it is the shape that
-        // matters most: the report only carries a key a layer actually wrote, so `mkForce []`
-        // arrives here as a definition that suppresses the manifest's rows. Accepting it would
-        // send a manifest with declared workspaces to launch with none, failing at `78` about a
-        // missing workspace rather than at `65` about the layer that removed it.
-        assert!(
-            analyze(&report(
-                &[key("workspaces", "list", "[]")],
-                &[layer(
-                    "shared",
-                    "piece",
-                    &[defines("workspaces", 100, "[]")]
-                )],
-            ))
-            .is_defective(),
-            "an empty shared definition suppresses the owner and must be refused too"
-        );
-        // A layer that never mentions the option is untouched: `definitionAt` drops a key whose
-        // highest priority is the option default, so silence never reaches `defines`.
-        assert!(
-            !analyze(&report(
-                &[key("workspaces", "list", "[]")],
-                &[layer("quiet", "piece", &[defines("mounts", 100, "[]")])],
-            ))
-            .is_defective()
-        );
-    }
-
-    #[test]
-    fn a_session_path_source_is_a_defect_in_every_layer() {
-        let fixture = |kind: &str, source: &str| {
-            let mounts =
-                format!(r#"[ {{ "source": "{source}", "target": "/x", "readonly": false }} ]"#);
-            report(
-                &[key("mounts", "list", "[]")],
-                &[layer("l", kind, &[defines("mounts", 100, mounts.as_str())])],
-            )
-        };
-        // Decidable spellings: the roots, paths under them, the literal ancestors, and the
-        // runtime-directory variable — refused in the personal manifest too, unlike N11.
-        for source in [
-            "/tmp",
-            "/tmp/shared",
-            "/var/tmp/x",
-            "/run/user",
-            "/run/user/1000",
-            "/var",
-            "/run",
-            "/",
-            "${XDG_RUNTIME_DIR}",
-            "${XDG_RUNTIME_DIR}/gnupg",
-        ] {
-            for kind in ["piece", "manifest"] {
-                let analysis = analyze(&fixture(kind, source));
-                assert_eq!(
-                    analysis.conflicts.first().map(|conflict| conflict.kind),
-                    Some(ConflictKind::SessionPath),
-                    "{kind} declaring {source}"
-                );
-            }
-        }
-        // Names that merely share a prefix are ordinary paths, and `/var/lib` is an ancestor of
-        // nothing in the session set.
-        for source in ["/tmpfiles", "/var/tmpish/x", "/var/lib/x", "/run/media/u/d"] {
-            assert!(
-                !analyze(&fixture("manifest", source)).is_defective(),
-                "{source}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_non_portable_variable_is_a_defect_only_in_a_shared_layer() {
-        let fixture = |kind: &str, source: &str| {
-            let mounts =
-                format!(r#"[ {{ "source": "{source}", "target": "/x", "readonly": false }} ]"#);
-            report(
-                &[key("mounts", "list", "[]")],
-                &[layer("l", kind, &[defines("mounts", 100, mounts.as_str())])],
-            )
-        };
-        let shared = analyze(&fixture("piece", "${PROJECTS_DIR}/tool"));
-        assert_eq!(shared.conflicts[0].kind, ConflictKind::NonPortableVariable);
-        assert_eq!(shared.conflicts[0].evidence, vec!["${PROJECTS_DIR}/tool"]);
-        // The personal manifest may name any variable it likes.
-        assert!(!analyze(&fixture("manifest", "${PROJECTS_DIR}/tool")).is_defective());
-        // The five portable names pass in a shared layer (spec/07).
-        for source in [
-            "${HOME}/.config/x",
-            "${XDG_CONFIG_HOME}/x",
-            "${XDG_DATA_HOME}/x",
-            "${XDG_STATE_HOME}/x",
-            "${XDG_CACHE_HOME}/x",
-        ] {
-            assert!(
-                !analyze(&fixture("piece", source)).is_defective(),
-                "{source}"
-            );
-        }
-    }
-
-    #[test]
     fn two_mounts_on_one_target_are_irreconcilable() {
         let fixture = |targets: [&str; 2]| {
             let entry = |source: &str, target: &str| {
@@ -923,30 +716,51 @@ mod tests {
         assert!(!analyze(&fixture(["~/.config/x", "~/.config/y"])).is_defective());
     }
 
+    /// The ownership collision, which since ADR-0110 arrives as a duplicate target.
+    ///
+    /// A declared workspace compiles to a mount whose target is its source, so a shared layer
+    /// mounting anything at a tree the manifest owns collides on that target and is refused at
+    /// `65`. Three rules became one: the workspace-only overlap check, the manifest-only
+    /// declaration check, and this. Pinned because the collapse is only sound if the surviving
+    /// rule actually covers the cases the deleted ones did.
     #[test]
-    fn textually_overlapping_workspaces_are_irreconcilable() {
-        let fixture = |sources: [&str; 2]| {
-            let value = format!(
-                r#"[ {{ "source": "{}" }}, {{ "source": "{}" }} ]"#,
-                sources[0], sources[1]
-            );
+    fn a_layer_mounting_over_a_workspace_collides_on_its_target() {
+        let entry = |source: &str, target: &str| {
+            format!(r#"{{ "source": "{source}", "target": "{target}", "readonly": false }}"#)
+        };
+        let fixture = |rows: String| {
             report(
-                &[key("workspaces", "list", value.as_str())],
+                &[key("mounts", "list", rows.as_str())],
                 &[layer("m", "manifest", &[])],
             )
         };
-        for sources in [
-            ["${HOME}/code", "${HOME}/code"],
-            ["${HOME}/code", "${HOME}/code/api"],
-            ["${HOME}/code/api", "${HOME}/code"],
-        ] {
-            let analysis = analyze(&fixture(sources));
-            assert!(analysis.is_defective(), "{sources:?}");
-            assert!(analysis.irreconcilable[0].what.contains("workspaces"));
-            assert!(analysis.irreconcilable[0].why.contains(sources[0]));
-            assert!(analysis.irreconcilable[0].why.contains(sources[1]));
-        }
-        assert!(!analyze(&fixture(["${HOME}/code/api", "${HOME}/code/web"])).is_defective());
+
+        // Two workspaces that overlap: equal targets, because each mirrors its own source.
+        let equal = analyze(&fixture(format!(
+            "[ {}, {} ]",
+            entry("/home/u/code", "/home/u/code"),
+            entry("/home/u/code", "/home/u/code")
+        )));
+        assert!(equal.is_defective());
+        assert!(equal.irreconcilable[0].what.contains("/home/u/code"));
+
+        // A shared layer landing a mount on a tree the manifest owns.
+        let shadowed = analyze(&fixture(format!(
+            "[ {}, {} ]",
+            entry("/home/u/code", "/home/u/code"),
+            entry("/srv/other", "/home/u/code")
+        )));
+        assert!(shadowed.is_defective());
+
+        // Disjoint trees stay legal, which is the whole point of the plural workspace.
+        assert!(
+            !analyze(&fixture(format!(
+                "[ {}, {} ]",
+                entry("/home/u/api", "/home/u/api"),
+                entry("/home/u/web", "/home/u/web")
+            )))
+            .is_defective()
+        );
     }
 
     #[test]

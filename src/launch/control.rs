@@ -362,10 +362,7 @@ mod tests {
             sandbox_id: "p".to_owned(),
             target: "t".to_owned(),
             backend: "cloud-hypervisor".to_owned(),
-            workspace_host_paths: std::collections::BTreeMap::from([(
-                "ws0".to_owned(),
-                "/workspace".into(),
-            )]),
+            workspace_paths: vec!["/workspace".into()],
         }
     }
 
