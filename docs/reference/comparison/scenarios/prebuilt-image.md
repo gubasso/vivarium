@@ -19,8 +19,8 @@ The `krun` route is the same answer at podman's own path: the registration names
 
 Yes: the agent image starts `FROM` a published per-agent image on an OBS registry, so the first run pulls rather than builds — what is built locally is the thin layer `PACKAGES` and the hooks add.
 
-## podman
+## bunkerbox
 
-Yes: the first `podman run` of an image not present pulls it, and that is the documented path.
+Yes: the first run imports the OCI archive the runtime config names and starts. A package ships that archive alongside the config, so the finished artifact is already on disk and nothing is built or fetched. It arrives as a file rather than from a registry — there is no pull path at all — which is a narrower yes than the others here and still a yes at what the row asks.
 
-[^read]: Read at `vivarium` `ceb0027` on 2026-08-18; `flake-pilot` `920f41e`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-20.
+[^read]: Read at `vivarium` `ceb0027` on 2026-08-18; `flake-pilot` `920f41e` and `glaipnir` `21ef389` on 2026-08-20; `bunkerbox` `b7f14f3` on 2026-08-25.

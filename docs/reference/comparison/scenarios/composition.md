@@ -22,8 +22,18 @@ At the firecracker route there is no such level: `firecracker-pilot` has neither
 
 Yes: the extension surface is ordered `NN-*.sh` drop-in hooks, run as root at build and as `aiuser` on every start, `shellcheck`-validated before use, plus a `PACKAGES=(...)` array interpolated into the base install line. A second concern is a second file in the hooks directory.
 
-## podman
+## bunkerbox
 
-No: a `Containerfile` composes linearly — one `FROM` and a sequence of steps, with multi-stage builds copying artifacts between stages. There is exactly one base, so two bases cannot be adopted together, and combining two authors' work means editing one file into the other by hand.
+Partial, and the two halves of the environment answer differently. The guest is one `containerfile` under one `FROM`, so adopting a second author's work there means editing their steps into yours by hand — the same single-base limit a container build always has.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19; `flake-pilot` re-read at `920f41e` on 2026-08-22 for the `base_container` and `layers:` provisioning path.
+The host side does compose. Sandbox profiles are separate YAML files, adopted by name or absolute path, and listing several merges them into the union of their binaries, paths, and environment. Five ship built in, and a second author's profile is added without touching the first:
+
+```yaml
+profiles:
+  - rust
+  - make
+```
+
+That is real composition of the toolchain the agent builds with, which is why the cell is not a bare no. It is not composition of the guest, which is what the row is mostly about.
+
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` re-read at `920f41e` on 2026-08-22 for the `base_container` and `layers:` provisioning path; `bunkerbox` `b7f14f3` on 2026-08-25.

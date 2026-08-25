@@ -22,14 +22,14 @@ The declaration names a member of the closed enum and carries no host path, whic
 
 No: the firecracker boundary has neither a share nor a relay. A key reaches the guest only by being written into the image or into an `include.tar` / `include.path` payload, which is the material itself rather than its use.
 
-The `krun` route has a share and still has no relay. Mounting the agent socket — `--opt "\-v $SSH_AUTH_SOCK ..."` — is the shared-kernel answer, and the guest here runs its own kernel, so the carried path arrives with no listener behind it: [the shape podman's cell records](#podman). Nothing forwards an agent by any other route at either engine.
+The `krun` route has a share and still has no relay. Mounting the agent socket — `--opt "\-v $SSH_AUTH_SOCK ..."` — is the shared-kernel answer, and the guest here runs its own kernel, so the carried path arrives with no listener behind it. Nothing forwards an agent by any other route at either engine.
 
 ## glaipnir
 
 No, by a different route: nothing is forwarded, and the design instead authenticates inside the sandbox and persists the result to a host cache directory the user owns. What ends up in the guest is a token rather than a private key, which is better than copying one — but an existing host key still cannot be used from inside.
 
-## podman
+## bunkerbox
 
-No: mounting the agent socket — `-v $SSH_AUTH_SOCK`, and the same move for `gpg-agent` — is the usual answer, and it is a shared-kernel answer. Under `krun` the guest runs its own kernel, so the shared inode has no listener behind it, and podman relays no agent by any other route.
+No: there is no agent relay and no mount to carry a socket with, so a key the host holds is unreachable from the guest. The channel that does cross — [passthrough](./host-toolchain.md#bunkerbox) — reaches the other way, and with `profiles` empty it hands a command the host's real `HOME`, so an unsandboxed passthrough command reaches `~/.ssh` from the host side while the guest still cannot. Naming `ssh` in the whitelist is what would make that an answer to this row, and upstream says not to.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

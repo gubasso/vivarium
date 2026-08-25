@@ -22,8 +22,8 @@ passt does have `--outbound-if4` and `--outbound-if6` to bind outbound sockets t
 
 Yes: `_detect_public_iface` reads the default route, filters out `tun|wg|vpn|tap|ppp|openvpn|docker0|br-`, and binds egress with `--network pasta:--outbound-if4,<iface>`. No qualifying interface aborts the run — the one place the script is fatal rather than degrading.
 
-## podman
+## bunkerbox
 
-Reachable, nothing arranges it: the mechanism glaipnir uses is podman's own — `--network pasta:--outbound-if4,<iface>` binds egress to a named interface, and it is available to anyone typing the flag. What podman does not do is what glaipnir does around it: nothing reads the default route, nothing filters `tun` or `wg` out of the answer, and a run that omits the flag takes the host's routing table with the VPN on it.
+No: the guest sits on a CNI bridge at `10.247.0.0/24`, and its traffic is forwarded by the host's own routing table once the `FORWARD` chain has passed it. A tunnel that owns the default route carries the guest with it, and nothing reads the route or names an interface. The same verdict as vivarium's, for the same reason.
 
-[^read]: Read at `vivarium` `ceb0027`, re-read 2026-08-19; `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` `920f41e` and `podman` 5.x on 2026-08-20.
+[^read]: Read at `vivarium` `ceb0027`, re-read 2026-08-19; `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` `920f41e` on 2026-08-20; `bunkerbox` `b7f14f3` on 2026-08-25.

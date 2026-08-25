@@ -29,8 +29,8 @@ At the `krun` route the answer is the same and the reason is the engine's. `podm
 
 No, and for the same reason it fails [the row above](./later-command.md#glaipnir): a krun guest cannot be entered even once more, so it cannot be entered twice. Two runs are two numbered sibling containers.
 
-## podman
+## bunkerbox
 
-No: with no in-guest agent there is no way to inject a first extra process, let alone a concurrent one. Two `podman run` invocations are two microVMs with two rootfs layers.
+No: nothing joins a running container, for the reason [the row above](./later-command.md#bunkerbox) gives, so two invocations are two Kata sandboxes. Against one repository they are also two sandboxes reaching the same fixed paths — the overlay image at `.bunkerbox/upper.img` and the session image inside the persisted home — and nothing in the documentation addresses a second concurrent run.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

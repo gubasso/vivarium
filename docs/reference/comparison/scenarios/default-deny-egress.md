@@ -24,18 +24,14 @@ allow = [ ]
 
 At the firecracker route, yes by absence rather than by policy, and the absence is the shipped state. Upstream states that firecracker "supports networking only through TUN/TAP devices" and that "it is the user's responsibility to set up the routing on the host from the TUN/TAP device to the outside world", then walks a static-IP NAT setup: `ip_forward`, a MASQUERADE rule, a `tap-<app>` device per registration, and `boot_args` edited from `ip=dhcp` to a static triple. Until an operator does that work a microVM reaches nothing, and `flake-ctl firecracker register --no-net` keeps it that way deliberately, which is the documented restrictive posture this row asks for.
 
-At the `krun` route the posture is podman's and it is the opposite way round. The upstream registration ships `--opt "\--net host"`, which is open, and the deny posture is `--net none` — [genuinely default-deny at this engine](#podman) — reached by writing that option into the registration instead. So the mechanism is real and recorded once, and nothing in flake-pilot points at it or notices which of the two a registration chose.
+At the `krun` route the posture is podman's and it is the opposite way round. The upstream registration ships `--opt "\--net host"`, which is open, and the deny posture is `--net none`, genuinely default-deny at this engine, reached by writing that option into the registration instead. So the mechanism is real and recorded once, and nothing in flake-pilot points at it or notices which of the two a registration chose.
 
 Same mark at both routes, arrived at from opposite directions: one starts closed and is opened by an operator's work, the other starts open and is closed by an option.
 
-## podman
+## bunkerbox
 
-Yes: `--network none` is genuinely default-deny, and the network posture is podman's rather than the OCI runtime's, so it applies at the krun setup too.
+Yes: `network: bridge` with an `allow` list installs a `BUNKERBOX-EGRESS` chain whose terminal rule is `REJECT`, so an unnamed destination is refused promptly rather than left to time out — the same posture, and the same reject-not-drop choice, vivarium makes. Established traffic and DNS to the host's own resolvers are permitted ahead of it, and the chain is torn down when the container exits.
 
-The posture is one flag, and it composes with the runtime flag rather than replacing it:
+The deny and the allowlist are one switch rather than two. Bridge mode without `allow` deploys no firewall at all and egress is unrestricted, so the restrictive posture is reached by naming a destination rather than by asking for denial, and there is no documented setting that leaves the guest with no network.
 
-```bash
-podman run --runtime krun --network none docker.io/library/node:22 bash
-```
-
-[^read]: Read at `vivarium` `ceb0027` on 2026-08-18; `flake-pilot` `main` on 2026-08-18, re-read 2026-08-20; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027` on 2026-08-18; `flake-pilot` `main` on 2026-08-18, re-read 2026-08-20; `bunkerbox` `b7f14f3` on 2026-08-25.

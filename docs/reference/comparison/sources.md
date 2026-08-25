@@ -112,22 +112,34 @@ One neighbouring report was checked and excluded rather than cited. Podman issue
 | The fixed openSUSE base, carrying no Nix, direnv, or version manager | `image/Containerfile`         |
 | The macOS VPN enforcer, and what it costs                            | `scripts/`, `launchd/`        |
 
-### `podman`
+### `bunkerbox`
 
-Plain rootless podman 5.x with no wrapper, read at `podman run --runtime krun` per [the methodology](./methodology.md). Prerequisites at that setup: libkrun installed and `/dev/kvm` accessible.[^podman]
+<https://github.com/tinythings/bunkerbox> at `b7f14f3`, which was `master` when this subject was read. Rust, MIT licensed. Created 2026-07-10, four releases through `0.4.1` on 2026-08-04, and self-described as a proof of concept. Read at its one Kata route, which is the only one it has.[^bunkerbox]
 
-| What it establishes                                                                                  | Where                                                                                                                                      |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--runtime` selecting an OCI runtime, `-v`, `--env`, `--network`, `-p`, `exec`, `ps`, `prune`        | The upstream manual pages, <https://docs.podman.io>                                                                                        |
-| Secret drivers, and which of them encrypts at rest                                                   | The `podman-secret-create` manual page, <https://docs.podman.io/en/latest/markdown/podman-secret-create.1.html>                            |
-| `Volume=` in a Quadlet unit, and that it matches `--volume`                                          | The `podman-systemd.unit` manual page, <https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html>                              |
-| libkrun as a microVM runtime, the libkrunfw guest kernel, TSI networking                             | The libkrun project README, <https://github.com/containers/libkrun>                                                                        |
-| That impersonation carries connections inbound to a listening guest port, and what it does not carry | The networking section of that README                                                                                                      |
-| The annotation that swaps impersonation for a virtio-net interface                                   | The `krun` manual page in `crun`, <https://github.com/containers/crun/blob/main/krun.1.md>                                                 |
-| An `AF_INET6` listener reported as not forwarded, unsettled against the README                       | podman issue `25494`, <https://github.com/containers/podman/issues/25494>                                                                  |
-| A published port reached from the host under `krun`                                                  | José Castillo Lema, "Playing with Podman crun backends: Wasm(Edge) and libkrun", <https://josecastillolema.github.io/podman-wasm-libkrun/> |
+| What it establishes                                                                                         | Where                                                           |
+| ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| The product's own framing, and the packaged-command model                                                   | The upstream `README.md` and `docs/index.md`                    |
+| `io.containerd.kata.v2` as the only runtime, and the `ctr run` line it is passed to                         | `src/kata.rs`                                                   |
+| That every privileged step goes through `sudo` — `ctr`, `iptables`, `mount`, `systemctl`, `tee`             | `src/kata.rs`                                                   |
+| The workspace bind at `/workspace`, the persisted-home bind, and the environment the container receives     | `src/kata.rs`                                                   |
+| The `bridge` egress chain: `br_netfilter`, `BUNKERBOX-EGRESS`, per-name IPv4 resolution, terminal `REJECT`  | `src/kata.rs`                                                   |
+| The complete CLI: `setup`, `install-image`, `prepare`, `config`, `run`, `list`, `sync`                      | `src/clidef.rs`                                                 |
+| That `setup` supports Ubuntu 22.04 or 24.04 on `x86_64` only, and what it installs and symlinks             | `src/commands.yaml`                                             |
+| The image-config schema: `containerfile`, `command`, `build_args`, `files`, `hooks`, `runtime`              | `docs/config/image.md` and `docs/reference/config-schema.md`    |
+| The runtime-config schema: `oci`, `image`, `workspace`, `home`, `session_mb`, `network`, `allow`, `encrypt` | `docs/config/runtime.md` and `docs/reference/config-schema.md`  |
+| The three workspace modes, the quota rule, and what `direct` gives up                                       | `docs/config/runtime.md` and `docs/config/project.md`           |
+| The project config: `quota`, `exclude`, `passthrough`, `profiles`, `env`, and the three unoverridable keys  | `docs/config/project.md`                                        |
+| Passthrough: the vsock ports, the symlink install, the VM-wins rule, and the auto-detected whitelist        | `docs/guides/passthrough.md`                                    |
+| That profiles are empty by default, and that passthrough then runs on the host with no sandbox              | `docs/guides/passthrough.md` and `docs/guides/profiles.md`      |
+| What a bubblewrap profile declares, how several merge, and what upstream says the model is not              | `docs/guides/profiles.md` and `docs/reference/config-schema.md` |
+| The mediated proxy path, and that `--unshare-net` rather than the proxy variables is the boundary           | `docs/guides/passthrough.md`                                    |
+| Encryption at rest: the cipher, the derivation, the prompt, and the wrong-passphrase path                   | `docs/config/runtime.md`                                        |
+| The packaging model: the symlink, `/usr/share/bunkerbox`, and the generated runtime config                  | `docs/guides/packaging.md`                                      |
+| The container recipe every image follows, and the musl requirement on the base                              | `docs/guides/custom-images.md`                                  |
 
-It is in the tables because it is the baseline most readers arrive from, and because its `crun` default is the honest name for what `flake-pilot`'s first isolation level runs on.
+Every row above is public and linkable at <https://github.com/tinythings/bunkerbox>, and the `docs/` tree is published at <https://bunkerbox.readthedocs.io/en/latest/>.
+
+It replaced plain `podman` in these tables on 2026-08-25. podman had been the baseline a reader arrives from rather than a peer; bunkerbox is read at the same isolation class as every other column, is built for the same job, and disagrees with vivarium about where a build runs, which is a comparison the podman column could not make.
 
 ## Re-verification
 
@@ -138,7 +150,7 @@ Cadence set against the release rhythm of each subject named above.[^cadence]
 | `vivarium`    | Every slice that closes | `implementation-status.md` is what decides a `*`                           |
 | `flake-pilot` | 90 days                 | A registration schema key, a new engine, or a third route worth a column   |
 | `glaipnir`    | 30 days                 | A rename, an RPM, and a 1.0.0 release all land inside one changelog window |
-| `podman`      | 180 days                | Rootless defaults change slowly                                            |
+| `bunkerbox`   | 30 days                 | Four releases in its first six weeks, and a default that decides two rows  |
 
 The cadence above is the reading; [`tracking.yaml`](../tracking.yaml) is what schedules it, and that file's `last_checked` date for this set is the one a reader should trust when the two disagree. The table stays here because it names what moves for each subject, which a `revalidate` line cannot carry per-subject.
 
@@ -150,6 +162,6 @@ A refresh re-reads the material at a new commit and updates the `Verified:` line
 
 [^glaipnir]: Verified 2026-08-18. Partially re-read 2026-08-20 against a fresh clone at the same commit: the image, its hooks, and its package mechanism only, for the three `Guest environment` rows added that day. Every other row still carries its 2026-08-18 reading.
 
-[^podman]: Verified 2026-08-19.
+[^bunkerbox]: Verified 2026-08-25, at `b7f14f3` against a fresh archive of that revision: the published `docs/` tree in full, plus `src/kata.rs`, `src/clidef.rs`, and `src/commands.yaml` for the facts the documentation does not state — that the runtime is a literal, that every privileged step is a `sudo` call, what the container is actually started with, and what the CLI's verb list is. Read, not run: no containerd, Kata, or `bunkerbox setup` was installed for this reading, which is the same standard every other subject here is held to.
 
 [^cadence]: Verified 2026-08-18.

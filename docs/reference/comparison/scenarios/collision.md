@@ -20,8 +20,8 @@ Both routes share that mechanism, because the drop-in directory belongs to the r
 
 n/a: hooks compose the way shell does, by running one after another, and `PACKAGES=(...)` is one array in one file. There is no declaration for two parts to disagree over, so there is no stage at which a disagreement could be reported. Not a gap — a different shape of extension, whose cost is paid in [the row above](./composition.md#glaipnir) rather than here.
 
-## podman
+## bunkerbox
 
-n/a: there is one `Containerfile` and one author of it at a time, so two parts never meet to collide. A later `RUN` overwriting an earlier one's work is a script overwriting itself, which is the ordinary reading of a sequence.
+No: profiles are the one place two parts meet, and they meet as a union. Upstream describes the merge as the union of all binaries, paths, and environment variables, and names nothing that reports two profiles mapping the same binary or the same variable to different values. The guest half has nothing to collide, for the reason [the composition row](./composition.md#bunkerbox) gives.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19; `flake-pilot` re-read at `920f41e` on 2026-08-22 for the `base_container` and `layers:` provisioning path.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` re-read at `920f41e` on 2026-08-22 for the `base_container` and `layers:` provisioning path; `bunkerbox` `b7f14f3` on 2026-08-25.

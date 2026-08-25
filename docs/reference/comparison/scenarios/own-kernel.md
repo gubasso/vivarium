@@ -16,8 +16,8 @@ Yes, by two routes, and both are read in these tables. `firecracker-pilot` boots
 
 Yes: a libkrun microVM, gated by `_check_microvm` on `/usr/bin/krun`, `libkrun.so.1` above 1.18.0, `/dev/kvm`, and `kvm` group membership. `copilot` and `opencode` are held out of it unconditionally by a known libkrun vsock bug.
 
-## podman
+## bunkerbox
 
-Yes: `--runtime krun` runs the container as a libkrun microVM, with libkrun installed and `/dev/kvm` accessible as prerequisites. The guest kernel comes from libkrunfw, not from the image — the runtime decides the kernel, the image decides the userland.
+Yes, and it is the only mode: `ctr run --runtime io.containerd.kata.v2` starts the OCI image as a Kata Containers workload, so the guest kernel is Kata's rather than the image's and the image decides only the userland. Prerequisites are containerd, a Kata shim on `PATH`, `/dev/kvm`, and the `vhost_vsock` module, which the toolchain channel needs; without vsock the container still boots and passthrough is simply unavailable.
 
-[^read]: Read at `flake-pilot` `main` on 2026-08-18, re-read 2026-08-20; `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `flake-pilot` `main` on 2026-08-18, re-read 2026-08-20; `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

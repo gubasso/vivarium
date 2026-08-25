@@ -33,8 +33,8 @@ glaipnir run claude
 #   -> the gh token is not mounted at all
 ```
 
-## podman
+## bunkerbox
 
-No: `-v` is a flat list assembled at the call site and podman has no notion of which process inside needs which mount, so everything passed is visible to everything in the guest. Launching one container per tool with a different `-v` set reproduces the effect, and that is the user doing it per invocation rather than the tool providing it.
+Yes, because the application is the unit the whole tool is organized around. A packaged command resolves its own runtime config by the name it was invoked as, and that config names its own persisted home; nothing else is mounted. Starting `opencode` therefore cannot see what `crush` wrote, and no one had to map the two — the mapping is the packaging.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

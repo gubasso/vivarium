@@ -32,14 +32,8 @@ At the `krun` route, reachable and recorded in a file: what crosses is a list of
 
 No: the crossing set is written in the script. `_bind_agent_mounts` emits a fixed `--volume` list per agent name, and the workspace, hooks, and cache mounts are assembled at the call site beside it. There is no configuration key that adds a path, so a user who wants one edits `glaipnir.sh` — which is the same built-in opinion that wins glaipnir the [credential-scoping row](./per-tool-credentials.md) and costs it every tool outside the roster.
 
-## podman
+## bunkerbox
 
-Reachable, nothing arranges it: the documented answer is `-v` on the command line, and a Quadlet unit does record the same decision in a file — `Volume=` is "equivalent to the Podman `--volume` option" and takes the same argument form. What the unit is not is the path anyone is sent down: the manual pages teach `-v`, and a project that wants the file writes it itself. Where that file lives, and what happens when two concerns want to edit it, are the two rows this one defers to.
+No: the mount set is fixed. What crosses is the project tree, the tool's own persisted home, a generated resolver file, and a generated wrapper directory — and none of the four config surfaces has a key for adding a fifth. The nearest thing to one is a sandbox profile's `paths`, and it faces the other way: those are host directories a passthrough command may see while it runs on the host, not host directories the guest may see.
 
-The same decision, made where the run is typed rather than where the project is described:
-
-```bash
-podman run --runtime krun -v "$HOME/.config/gcloud:$HOME/.config/gcloud:ro" ...
-```
-
-[^read]: Read at `vivarium` `ceb0027` on 2026-08-18, re-read at `162f230` on 2026-08-22 for the workspace table; `flake-pilot` `44e3ab2` on 2026-08-20; `glaipnir` `8c7420e`, read 2026-08-20 — a later revision than the `21ef389` the rest of this subject is pinned to, read fresh for this row; `podman` 5.x on 2026-08-20.
+[^read]: Read at `vivarium` `ceb0027` on 2026-08-18, re-read at `162f230` on 2026-08-22 for the workspace table; `flake-pilot` `44e3ab2` on 2026-08-20; `glaipnir` `8c7420e`, read 2026-08-20 — a later revision than the `21ef389` the rest of this subject is pinned to, read fresh for this row; `bunkerbox` `b7f14f3` on 2026-08-25.

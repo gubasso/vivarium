@@ -21,8 +21,8 @@ What `†` records is that the guarantee is one flake-pilot has placed outside i
 
 No: build hooks execute as root during the image build, and the base image installs agents from npm and from vendor scripts piped to `bash`. The generality is the point; the cost is that the image is not reproducible from the declaration alone.
 
-## podman
+## bunkerbox
 
-No: a `RUN` line is a root shell command by construction, and a `Containerfile` is a sequence of them. The effect is recorded — `podman history` keeps the commands — but recorded is not restrained, and what any of them fetched from the network is not part of that record.
+No: `bunkerbox-image` drives a container build over the config's `containerfile`, so every `RUN` line is a root shell command with an open network, and the shipped configs use that — `apk add` and a `curl` of a release tarball. The tool adds nothing that restrains it, and the recorded effect is the image's own history rather than anything bunkerbox keeps.
 
-[^read]: Read at `glaipnir` `21ef389` on 2026-08-18; `vivarium` `ceb0027`, `flake-pilot` `920f41e`, and `podman` 5.x on 2026-08-20; `flake-pilot` re-read at `920f41e` on 2026-08-22 for the complete `flake-ctl` command surface and for where upstream states who builds an image.
+[^read]: Read at `glaipnir` `21ef389` on 2026-08-18; `vivarium` `ceb0027` and `flake-pilot` `920f41e` on 2026-08-20; `flake-pilot` re-read at `920f41e` on 2026-08-22 for the complete `flake-ctl` command surface and for where upstream states who builds an image; `bunkerbox` `b7f14f3` on 2026-08-25.

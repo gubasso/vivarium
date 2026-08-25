@@ -20,8 +20,8 @@ This holds at both routes: the registration is written where the pilot looks for
 
 No: one `glaipnir.conf`, in the checkout or under `$XDG_CONFIG_HOME`, per user rather than per project — and `_parse_conf` runs after the argument loop, so a value in the file overwrites the same value given on the command line.
 
-## podman
+## bunkerbox
 
-Partial: a `Containerfile` can live in the project and describe the environment exactly, but nothing binds it to the directory or resolves it on entry — the binding is the user's shell history.
+Partial, and the split is clean rather than a hedge. `.bunkerbox/project.conf` lives in the repository, is read on entry without being named, and decides what this project is: its quota, its excluded directories, its passthrough whitelist, its sandbox profiles, and overrides for workspace mode, session size, and extra allowed destinations. What it cannot decide is which environment runs — the image, the base allow list, and the encryption patterns come from `/usr/share/bunkerbox/<command>.conf`, installed by whoever packaged the tool. So the directory selects the policy and the typed command selects the environment, and two projects needing different environments need two commands rather than two files.
 
-[^read]: Read at `flake-pilot` `main`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-18; `vivarium` `ceb0027` on 2026-08-20.
+[^read]: Read at `flake-pilot` `main` and `glaipnir` `21ef389` on 2026-08-18; `vivarium` `ceb0027` on 2026-08-20; `bunkerbox` `b7f14f3` on 2026-08-25.

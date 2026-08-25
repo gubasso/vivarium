@@ -13,8 +13,8 @@ No: the tool targets a Linux host with KVM. The specification takes no position 
 
 Container only: `_macos_adjust_microvm` sets `USE_MICROVM=0` on Darwin, treating Podman Machine's VM as the boundary. The Linux egress guarantee costs a LaunchAgent, an SSH channel into the machine VM, and an nftables ruleset there.
 
-## podman
+## bunkerbox
 
-Container only: Podman Machine interposes one managed Linux VM for every container, and a krun microVM inside it would need nested virtualization the machine does not provide. The VM boundary is per machine, not per workload.
+No: `bunkerbox setup` refuses anything but Ubuntu 22.04 or 24.04 on `x86_64`, and what it installs — containerd, CNI plugins, and a Kata shim over `/dev/kvm` — is Linux either way.
 
-[^read]: Read at `vivarium` `ceb0027` and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027` and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

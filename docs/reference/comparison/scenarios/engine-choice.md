@@ -20,4 +20,8 @@ Both rungs are read in these tables rather than one standing for the other, beca
 
 The host probe chooses. There is no engine key: a passing `_check_microvm` selects libkrun, `--no-microvm` opts down to the container, and nothing selects among engines.
 
-[^read]: Read at `vivarium` `ceb0027` on 2026-08-18; `flake-pilot` `main` on 2026-08-18, re-read 2026-08-20; `glaipnir` `21ef389` on 2026-08-19.
+## bunkerbox
+
+Nobody chooses, and the reason is different from vivarium's. There is no engine key in any of the four config surfaces because the runtime is a literal in the source, `io.containerd.kata.v2`. What that name resolves to is then Kata's own business: the hypervisor comes from the `configuration.toml` that `bunkerbox setup` symlinks into `/etc/kata-containers`, so the engine underneath is decided by a file the tool installs and never reads. vivarium reaches the same place by naming a capability class on purpose; bunkerbox reaches it by having one runtime and delegating what sits below it.
+
+[^read]: Read at `vivarium` `ceb0027` on 2026-08-18; `flake-pilot` `main` on 2026-08-18, re-read 2026-08-20; `glaipnir` `21ef389` on 2026-08-19; `bunkerbox` `b7f14f3` on 2026-08-25.

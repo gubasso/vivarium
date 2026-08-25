@@ -55,21 +55,19 @@ Each step is a file, and the number prefix is the whole ordering mechanism:
 refresh-token --quiet
 ```
 
-## podman
+## bunkerbox
 
-Reachable, nothing arranges it: the start side is one command — `ENTRYPOINT` baked into the image, or `--entrypoint` replacing it for a single run — so setup means writing a script that does the work and then execs the real one. The mechanism is podman's and the arrangement is the user's: there is no directory of start steps to add to, so a second step edits the first, or rebuilds.
+Yes: an image config carries a `hooks` map with five named lifecycle points, and the shell attached to each runs inside the container at that moment. Typical uses are exactly what the row expects — writing a config file, marking `/workspace` a safe git directory, clearing a cache before state is saved.
 
-The same wrapper shape as flake-pilot's, either baked in as `ENTRYPOINT` or named per run:
-
-```bash
-# entrypoint.sh, baked into the image
-#!/bin/sh
-refresh-token
-exec claude "$@"
+```yaml
+hooks:
+  before-home-load: ...
+  before-app: ...
+  after-app: ...
+  app-error: ...
+  after-home-save: ...
 ```
 
-```bash
-podman run --runtime krun --rm -it --entrypoint /usr/local/bin/entrypoint.sh dev:latest
-```
+What it costs is the second-step half of the method. The points are fixed and each holds one shell, so a second step at the same moment is appended to the first author's script rather than added beside it, and adding any of them at all rebuilds the image.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `44e3ab2`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-20.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `44e3ab2`, and `glaipnir` `21ef389` on 2026-08-20; `bunkerbox` `b7f14f3` on 2026-08-25.

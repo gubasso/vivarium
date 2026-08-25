@@ -42,8 +42,8 @@ The `krun` route answers this row more easily and with less to check: the guest 
 
 No: `image/Containerfile` builds from `registry.opensuse.org/opensuse/tumbleweed:latest`, layered with a published per-agent image. `PACKAGES=(...)` and hooks extend that system; nothing selects a different one short of editing the `Containerfile`.
 
-## podman
+## bunkerbox
 
-Yes: any image runs, so `/etc/os-release` inside is the user's choice. Under krun the kernel is libkrunfw's regardless of image — the userland is chosen, the kernel is not.
+Yes: the `containerfile`'s `FROM` decides the userland, and any image that meets the tool's requirements runs. Two constraints narrow the choice without closing it — the guidance is an `x86_64` musl base, since the helper binaries copied in are built against musl, and the kernel is Kata's regardless. Every shipped config takes the same one, `alpine:3.22`.
 
-[^read]: Read at `vivarium` `ceb0027` and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19; `flake-pilot` `920f41e` on 2026-08-20.
+[^read]: Read at `vivarium` `ceb0027` and `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` `920f41e` on 2026-08-20; `bunkerbox` `b7f14f3` on 2026-08-25.

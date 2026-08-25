@@ -20,8 +20,8 @@ Neither route inspects anything: the `krun` route adds an image and a mount to t
 
 No: it is practice rather than a rule. Build hooks run arbitrary commands as root at build time, so a user who puts a credential there gets it in the image, and nothing objects — no check reads the hooks, and the `security.credentials="runtime-only"` label keeps saying what it said.
 
-## podman
+## bunkerbox
 
-No: the safe mechanism of [the row above](./secrets-in-the-build.md#podman) is opt-in and its absence is silent. Nothing reads a `Containerfile` for a credential, no warning distinguishes `--mount=type=secret` from a `COPY` of the same file, and the layer that carries it is as pullable as any other.
+No: the safe mechanism of [the row above](./secrets-in-the-build.md#bunkerbox) is the one a user follows, and nothing notices when they do not. `build_args` are passed through to the container build unread, no check distinguishes a version string from a token there, and nothing inspects the `containerfile` at all. The image builder's own output — an archive and a generated runtime config — is produced either way.
 
-[^read]: Read at `vivarium` `ceb0027` and `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` `44e3ab2` and `podman` 5.x on 2026-08-20.
+[^read]: Read at `vivarium` `ceb0027` and `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` `44e3ab2` on 2026-08-20; `bunkerbox` `b7f14f3` on 2026-08-25.

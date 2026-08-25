@@ -18,8 +18,8 @@ The microVM registrations do not start: firecracker and `krun` both require `/de
 
 Falls back: a failed `_check_microvm` proceeds in a plain container with a warning. The stance is stated — a weaker sandbox beats no sandbox.
 
-## podman
+## bunkerbox
 
-`--runtime krun` cannot create the VM without `/dev/kvm`; the default `crun` runtime runs anywhere. Nothing falls back on its own — the failing flag is the user's to remove.
+Fails, and not on its own account: bunkerbox probes nothing before it runs, so the missing device surfaces as a containerd error when the Kata shim cannot create the sandbox. There is nothing to fall back to, since the runtime is fixed in the source. The outcome matches vivarium's — no weaker boundary is reached — and the difference is that one refusal is the product's and the other is the runtime's.
 
-[^read]: Read at `vivarium` `ceb0027` on 2026-08-18; `flake-pilot` `main`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027` on 2026-08-18; `flake-pilot` `main` and `glaipnir` `21ef389` on 2026-08-19; `bunkerbox` `b7f14f3` on 2026-08-25.

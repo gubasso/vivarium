@@ -16,8 +16,8 @@ At the firecracker route, yes: the registration names a local rootfs and kernel,
 
 At the `krun` route, no: the registration names a `:latest` tag on a registry that rebuilds nightly, so what a fresh machine or a re-pulled image gets is whatever was published that day. Nothing in the registration pins a version, nothing reports which build is running, and the moment of change is the registry's rather than the user's — the inverse of what this row asks for. Which is [the same reason the definition does not repeat](./same-definition.md#flake-pilot).
 
-## podman
+## bunkerbox
 
-Partial: a pulled image stays until something pulls again, but the tag it was pulled by has already moved, `--pull=always` and a fresh host both take the new one, and nothing reports which of the two is running.
+Yes: the environment is an archive on disk, imported from a fixed path the runtime config names, and nothing re-checks anything upstream at start. It changes when a new package is installed, which is a decision somebody made. The same yes flake-pilot's firecracker route earns, and for the same reason — a local artifact does not move on its own.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `podman` 5.x on 2026-08-18.
+[^read]: Read at `vivarium` `ceb0027` and `flake-pilot` `main` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

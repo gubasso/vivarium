@@ -20,8 +20,8 @@ At the `krun` route there is a second unit below the whole environment. A delta 
 
 No: configuration is one `glaipnir.conf`, in the checkout or under `$XDG_CONFIG_HOME`, per user rather than per concern — there is no unit smaller than that file, and it is the user's own machine-local settings. The hooks directory can be copied by hand, which is file transfer rather than adoption.
 
-## podman
+## bunkerbox
 
-No: a `Containerfile` travels and reproduces its build steps elsewhere, and a published image travels as a pull. Neither is a unit of one concern — the smallest shareable thing is the whole environment, which is the same single-base limit that loses podman [the composition row](./composition.md#podman).
+Yes: a sandbox profile is one file carrying one concern — the binaries, paths, and environment one toolchain needs — and a colleague adopts it by dropping it somewhere and naming its absolute path. It carries no image, no tool, and no runtime policy with it. Whether it then works on their machine is [the next row](./portability-enforced.md#bunkerbox).
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19; `flake-pilot` re-read at `920f41e` on 2026-08-22 for the delta container as a unit smaller than the environment.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` re-read at `920f41e` on 2026-08-22 for the delta container as a unit smaller than the environment; `bunkerbox` `b7f14f3` on 2026-08-25.

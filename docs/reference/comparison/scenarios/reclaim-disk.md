@@ -8,7 +8,7 @@ Record how space is recovered from a sandbox that should keep working.[^read]
 
 ## vivarium
 
-Specified, mostly not built: `viv volume list` reports occupancy today and `viv volume prune` removes orphans; `viv trim`, `viv volume trim`, `viv volume rm`, and `viv gc`'s store sweep are specified and not implemented — the `*`. A loss today against `podman system prune` and `glaipnir clean all`.
+Specified, mostly not built: `viv volume list` reports occupancy today and `viv volume prune` removes orphans; `viv trim`, `viv volume trim`, `viv volume rm`, and `viv gc`'s store sweep are specified and not implemented — the `*`. A loss today against `glaipnir clean all`.
 
 ## flake-pilot
 
@@ -20,4 +20,8 @@ At the `krun` route, partial: `%remove` is one of the call-time pseudo-arguments
 
 Yes, structurally: the container filesystem is disposable and everything durable is a host directory, so deleting a file inside frees host space immediately. `clean <agent>` and `clean <agent> all` cover the images. Holds at the microVM — krun changes the kernel, not where the bytes live.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18.
+## bunkerbox
+
+No, and the cap is why. The overlay upper layer is a loopback ext4 image created at its quota before boot, so deleting a file inside frees space inside the image and returns none of it to the host; the same holds for the session image the persisted home uses. Neither shrinks, no verb asks either to, and the way space comes back is deleting `.bunkerbox/` — a teardown. The trade is deliberate and the other half of it is [the write-cap row](./host-write-cap.md#bunkerbox): a fixed-size image is what makes the ceiling real.
+
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

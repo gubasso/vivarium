@@ -20,8 +20,8 @@ The `krun` route has a placeholder where the firecracker route has a literal —
 
 No: there is no shared unit for a check to apply to, and the hooks that can be copied by hand are shell scripts that may name anything. `shellcheck` validates them as shell, which is not the same question.
 
-## podman
+## bunkerbox
 
-No: nothing reads a `Containerfile` for a host path the colleague does not have, and a `-v` or `Volume=` line naming one is ordinary. The build succeeds and the run is what fails.
+No, and the shareable unit is the one made of host paths. A profile's `bin` maps command names to absolute host locations and its `paths` list names host directories, so a toolchain outside the standard locations is a personal path by construction — upstream's own custom-profile example is `/opt/toolchain`, and the way a project config adopts one is by absolute path, illustrated in the documentation with a path under a named user's home. Nothing checks any of it. The first run on the colleague's machine is where it surfaces, as a missing binary rather than a message about a shared unit.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

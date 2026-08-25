@@ -29,15 +29,8 @@ That the decision was recorded once rather than retyped is a real property and i
 
 Yes: the invocation's workspace crosses with no argument naming it, and a workspace equal to `$HOME` is refused and falls back rather than crossing wholesale. Where it lands is [the next row](./host-path.md#glaipnir), and it is not where it came from.
 
-## podman
+## bunkerbox
 
-No: `-v` is the only route and it is typed at the call site every time. Nothing reads the current directory, and a run that omits the flag starts a container that cannot see the project at all.
+Yes: the tool resolves the repository root from the working directory and mounts it, and no configuration file or argument anywhere carries a host path. Typing the packaged command inside a project is the whole of it. Where it lands is [the next row](./host-path.md#bunkerbox), and it is not where it came from.
 
-Both halves are typed at every start, and a run that omits them starts a guest with no project in it:
-
-```bash
-cd ~/projects/my-thing
-podman run --rm -it --runtime krun -v "$PWD:$PWD" -w "$PWD" docker.io/library/node:22 bash
-```
-
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19. The `flake-pilot` `krun` route and the protocol's registration step were added at `920f41e` on 2026-08-21. `vivarium` re-read at `162f230` on 2026-08-22, where the derived workspace became a declared one.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25. The `flake-pilot` `krun` route and the protocol's registration step were added at `920f41e` on 2026-08-21. `vivarium` re-read at `162f230` on 2026-08-22, where the derived workspace became a declared one.

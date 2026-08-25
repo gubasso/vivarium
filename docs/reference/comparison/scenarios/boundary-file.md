@@ -22,8 +22,12 @@ At the `krun` route that reaches the boundary itself. The engine is an option ra
 
 Yes: the weaker boundary is reached by `--no-microvm` and by a failed host probe, and neither is a file. One adjacency is worth naming and is unverified at this revision: `_parse_conf` runs after the argument loop, so a key `glaipnir.conf` parses overwrites the same value given on the command line. Were the microVM selector ever among those keys, a file would not merely reach the boundary — it would outrank the flag.
 
-## podman
+## bunkerbox
 
-No: `containers.conf` sets the default OCI runtime, and both a system-wide copy and a per-user copy apply. An invocation that omits `--runtime` runs at whatever that file says, which is a boundary decided somewhere the command does not mention.
+No, by two files, and neither is the engine. Nothing names the engine — the Kata runtime is a literal in the source, which is why [the flag row](./boundary-flag.md) reads yes.
 
-[^read]: Read at `vivarium` `ceb0027` on 2026-08-19; `flake-pilot` `main` and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+The first is `.bunkerbox/project.conf`, which bunkerbox generates itself on first run. Into it, it writes an auto-detected `passthrough` list — nine build-system detectors, so a repository with a `Cargo.toml` and a `Makefile` gets `cargo *` and `make *` — and leaves `profiles` empty. Both defaults matter together: the first opens the host-command channel, and the second is upstream's own condition for those commands running on the host with no sandbox at all. A first run therefore arrives at a weaker boundary than the one the image provides, through a file the user never opened.
+
+The second is the runtime config the packager installs at `/usr/share/bunkerbox/<command>.conf`. It carries `network`, which may be `host`, and `workspace`, which may be `direct`; a project config may override the second and is forbidden from touching the first.
+
+[^read]: Read at `vivarium` `ceb0027` on 2026-08-19; `flake-pilot` `main` and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

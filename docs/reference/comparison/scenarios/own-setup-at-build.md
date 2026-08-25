@@ -69,21 +69,20 @@ zypper --non-interactive addrepo https://download.opensuse.org/repositories/deve
 zypper --non-interactive --gpg-auto-import-keys refresh
 ```
 
-## podman
+## bunkerbox
 
-Yes: a package is a `RUN` line in a `Containerfile`, and so is anything else, as root, with no restriction on what it does. It is the widest build-time answer in the set, and what it costs is [the same-definition row](./same-definition.md#podman), where the same line names a package and the repository decides the version.
+Yes: the image config's `containerfile` is an ordinary container recipe, so a package and a setup step are both `RUN` lines, as root, unrestricted. Two other keys sit beside it — `build_args` passes values in, and `files` writes extra files into the build context — and the tool's own requirements on the recipe are narrow: a musl base, the two helper binaries copied in, the generated entrypoint, and `/workspace` and the home directory created.
 
-One file covers both halves, and the repository rather than the line decides which version arrives:
+The upstream pattern, with the version the one thing the line pins:
 
 ```dockerfile
-FROM registry.opensuse.org/opensuse/tumbleweed:latest
-RUN zypper --non-interactive addrepo https://download.opensuse.org/repositories/devel:tools/openSUSE_Tumbleweed/ devel-tools
-RUN zypper --non-interactive --gpg-auto-import-keys install ripgrep fd jq
+FROM docker.io/library/alpine:3.22
+ARG MY_TOOL_VERSION
+RUN apk add --no-cache bash ca-certificates curl git \
+      && curl -fsSL "https://example.com/my-tool-linux-musl.tar.gz" -o /tmp/my-tool.tar.gz \
+      && tar -xzf /tmp/my-tool.tar.gz -C /usr/local/bin
 ```
 
-```bash
-podman build -t dev:latest .
-podman run --runtime krun --rm -it dev:latest
-```
+What it costs is [the same-definition row](./same-definition.md#bunkerbox), where those same lines decide the version afresh on every rebuild.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `920f41e`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-20.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `920f41e`, and `glaipnir` `21ef389` on 2026-08-20; `bunkerbox` `b7f14f3` on 2026-08-25.

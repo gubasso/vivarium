@@ -22,14 +22,8 @@ The absence this subject does have is a secrets mechanism, and it is scored wher
 
 Yes: the stance is stated up front and holds in the code — nothing is baked into the image, authentication happens at runtime inside the container, the token lands in a host cache directory the user owns, and the image carries the label `security.credentials="runtime-only"`. Whether anything holds a user to it is [the next row](./secrets-enforced.md#glaipnir), and there the answer changes.
 
-## podman
+## bunkerbox
 
-Reachable, nothing arranges it: `podman build --secret id=…,src=…` mounts a credential at `/run/secrets/<id>` for one `RUN --mount=type=secret` step, and upstream states it will "not end up stored in the final image, or be seen in other stages". That is a real answer and it is the one you have to know about — `ENV TOKEN=…`, a `COPY` of a credential file, or a token on a `RUN` line are all ordinary, all build the image, and all leave it there for anyone who can read the layer. Whether anything catches that is [the next row](./secrets-enforced.md#podman).
+Yes: the documented credential flow is a runtime one. An image config's `encrypt` list names files inside the tool's persisted home, sealed between runs and never present at build time, so nothing in the flow a user is taught puts a credential into the archive. The build itself is an ordinary container build over a `containerfile` with `build_args`, so a credential put there anyway is in the image — and the archive a package installs under `/usr/share/bunkerbox/oci/` is a world-readable file on every machine that installs it. Whether anything catches that is [the next row](./secrets-enforced.md#bunkerbox).
 
-The safe form is the longer one, and nothing pushes a user toward it:
-
-```dockerfile
-RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm install
-```
-
-[^read]: Read at `vivarium` `ceb0027` and `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` `44e3ab2` on 2026-08-20, for the absence [the shipping row](./shipping-a-secret.md#flake-pilot) read at that revision, and re-read at `920f41e` on 2026-08-22 for where an include payload lands and for the absence of any build step; `podman` 5.x on 2026-08-20, from the `podman-build` manual page.
+[^read]: Read at `vivarium` `ceb0027` and `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` `44e3ab2` on 2026-08-20, for the absence [the shipping row](./shipping-a-secret.md#flake-pilot) read at that revision, and re-read at `920f41e` on 2026-08-22 for where an include payload lands and for the absence of any build step; `bunkerbox` `b7f14f3` on 2026-08-25.

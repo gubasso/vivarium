@@ -4,7 +4,7 @@ Two jobs, done four ways, start to finish. Every other question these tools answ
 
 Commands are transcribed from each project's own material; see [`sources.md`](./sources.md). Where vivarium's answer is specified rather than built it is marked `*`, and no command is shown that would refuse.
 
-Both jobs run at the fixed setups [`methodology.md`](./methodology.md) names: vivarium's one microVM, both of flake-pilot's microVM rungs, glaipnir's libkrun microVM, and `podman run --runtime krun`. Container rungs appear only where they teach something, and are named as container rungs when they do, because most of what these tools do comfortably they do with the host kernel.
+Both jobs run at the fixed setups [`methodology.md`](./methodology.md) names: vivarium's one microVM, both of flake-pilot's microVM rungs, glaipnir's libkrun microVM, and bunkerbox's one Kata container. Container rungs appear only where they teach something, and are named as container rungs when they do, because most of what these tools do comfortably they do with the host kernel.
 
 ## W1 — Point an agent at a real project
 
@@ -49,7 +49,7 @@ flake-ctl podman --user register \
     --opt "\-e HOME=%HOME"
 ```
 
-The same switch can be made once for every registration instead, by setting `runtime = "krun"` under `[engine]` in `containers.conf` — which is [where a file rather than a flag reaches the boundary](./scenarios/boundary-file.md#podman).
+The same switch can be made once for every registration instead, by setting `runtime = "krun"` under `[engine]` in `containers.conf` — which is [where a file rather than a flag reaches the boundary](./scenarios/boundary-file.md#flake-pilot).
 
 Rung 3, a firecracker microVM with its own storage overlay:
 
@@ -81,18 +81,20 @@ That one command probes the host, offers to add the missing group and re-execute
 
 On a host that passes, the container name gains a `-microvm` suffix — and a second `glaipnir run claude` on the same project [cannot rejoin it](./scenarios/later-command.md#glaipnir). The script counts what exists and starts a numbered sibling instead.
 
-### podman: assemble it yourself
+### bunkerbox: install the tool, then type its name
 
 ```bash
+sudo bunkerbox setup          # Ubuntu 22.04 or 24.04, x86_64
+make image IMAGE=images/opencode.conf
+make install-image OCI=bunkerbox-opencode-1.17.18.oci
+
 cd ~/projects/my-thing
-podman run --rm -it --runtime krun \
-  -v "$PWD:$PWD" -w "$PWD" \
-  --cap-drop ALL --security-opt no-new-privileges \
-  --userns keep-id --pids-limit 1024 \
-  docker.io/library/node:22 bash
+opencode
 ```
 
-`--runtime krun` is what makes it a microVM, and it is also the first flag forgotten. Nothing here is wrong, and nothing here is remembered. The next project is another line of shell.
+The command is a symlink to the bunkerbox binary, so the last line is the whole of the daily experience: no sandbox is named, no path is typed, and nothing about the project is configured first. bunkerbox resolves the repository root from the working directory, mounts it at `/workspace` over a capped copy-on-write overlay, prepares the tool's own home, applies the packaged network policy, and boots a Kata guest.
+
+What that first run also does is write `.bunkerbox/project.conf` into the repository, with a `passthrough` whitelist auto-detected from the build-system files it finds and `profiles` left empty. From then on the agent can call `cargo` and `make`, and they run on the host — [inside a bubblewrap sandbox once profiles are configured, and unwrapped until then](./scenarios/build-inside-boundary.md#bunkerbox).
 
 ### vivarium: declare the workspace once
 
@@ -110,7 +112,7 @@ The project tree is at the absolute path it occupies on the host, so `git`, edit
 
 - flake-pilot: most flexible, least self-describing — three registrations per agent, two of them behind a kernel of their own, and the isolation strength lives in shell history rather than in the project.
 - glaipnir: fastest path to a working sandbox, bought by deciding the boundary for you.
-- podman: everything is possible, nothing is remembered.
+- bunkerbox: the best daily ergonomics in the set — you type the agent's name — bought twice over, once with a host setup nobody would call one command, and once with a first run that writes a policy file you did not open.
 - vivarium: slowest to first run, and the only one where "what is this environment" is a file you can read. Against either microVM rung it is a fair fight, and the two rungs lose it differently: rung 3 boots a kernel and leaves the work behind as a copy, rung 2 boots a kernel and keeps the work in view but at a directory somebody typed once. vivarium types a directory too, and the difference is where: the tree is named in the project's own definition beside everything else the environment is made of, and one manifest may name several, rather than in a system file keyed by a registered command name.
 
 ## W2 — Get the same environment back next month
@@ -127,9 +129,9 @@ What it does not have is a way back or a way to re-derive. A description can exi
 
 `Containerfile.agent` starts `FROM` a per-agent image at `:latest` on an OBS registry, then installs whatever `PACKAGES=(...)` names and runs whatever build hooks were given. Two of those three inputs move without notice, and this is the same at both rungs — the microVM changes the kernel, not the image.
 
-### podman
+### bunkerbox
 
-Pinning a digest works and nothing arranges it. A `Containerfile`'s `RUN` steps re-execute against whatever the network serves that day.
+The unit is an OCI archive on disk, so nothing moves until a new package is installed — the same not-a-mechanism answer flake-pilot's firecracker rung reaches. Re-deriving it is where that stops: the image config is a `containerfile` over `alpine:3.22` running `apk add --no-cache` and curling a release tarball, so the same file rebuilt next month builds a different system. One version is pinned, in `build_args`, and it pins the agent rather than the environment around it.
 
 ### vivarium
 
@@ -140,19 +142,19 @@ viv config sources       # which layer set what
 
 The manifest plus the lockfile the first evaluation writes is the unit, and the [pure-build rule](../spec/08-invariants-and-guarantees.md) fixes that the same closure and lock evaluate to the same store output on any machine at any later time. Updating is a verb rather than a default.
 
-Getting an older environment back is specified and not built: `viv generations list`\*, `viv generations rollback`\*, and `viv start --generation <n>`\* are what [`spec/11`](../spec/11-generations-and-build-history.md) fixes, with each retained generation pinned by a GC root so an ordinary store collection cannot eat the history. The one alternative that answers at all is podman, and it answers by not collecting: the image the old tag pointed at is still on disk, untagged, until [a prune removes it](./scenarios/rollback.md#podman).
+Getting an older environment back is specified and not built: `viv generations list`\*, `viv generations rollback`\*, and `viv start --generation <n>`\* are what [`spec/11`](../spec/11-generations-and-build-history.md) fixes, with each retained generation pinned by a GC root so an ordinary store collection cannot eat the history. No alternative in this set answers it at all: [every other column reads `❌`](./scenarios/rollback.md), and the nearest thing to a way back is an old archive that happens to still be on disk under its versioned filename.
 
 ### What the difference costs
 
 Not the clean sweep the container rungs suggest. The difference that survives is what you hold:
 
 - flake-pilot holds a tarball — it reaches "it will not change until I say so" by having no mechanism for changing, a real answer arrived at from the other side.
-- podman holds a digest, if you remembered to write one down.
+- bunkerbox holds an OCI archive, reaching the same answer the same way, and a recipe that will not rebuild it.
 - glaipnir holds a `Containerfile` whose inputs move without notice.
 - vivarium holds a manifest and a lock — a definition rather than a copy, which is why it is the only one here where getting last month's back could be specified at all.
 
-## One idea worth stealing, with no row of its own
+## One idea worth stealing
 
 glaipnir classifies the software inside the sandbox. Five agents are trusted; `hermes-agent` is not, and naming it for a `build` or a `run` triggers an interactive disclaimer that exits on anything but yes — while `clean` and `status` pass without prompting, so the classification costs nothing until it would matter.
 
-No other tool in this set has anything like it, which is why it is not a table row. vivarium's nearest surface classifies artifacts by layer, shared against personal, rather than classifying the software those artifacts carry.
+No other tool in this set has anything like it, which is why it lived here for a while instead of in the tables: a row one column wide did not qualify. It does now, and the detail belongs to [its own scenario](./scenarios/trust-classification.md). What stays worth saying here is why it is worth stealing rather than merely worth scoring — vivarium's nearest surface classifies artifacts by layer, shared against personal, and has no opinion at all about the software those artifacts carry.

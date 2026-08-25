@@ -22,8 +22,8 @@ The route with the weaker in-guest story is the one that wins this row, and the 
 
 No: a running krun container cannot be entered at all, so `run` cannot resume into one. The script counts what exists and starts a numbered sibling instead. The `podman exec` and `podman start -ai` resume path that `run` does have is the container backend's.
 
-## podman
+## bunkerbox
 
-No: `podman exec` cannot enter a krun container — there is no in-guest agent to inject a process into. The container keeps running and remains listed; what cannot happen is getting back inside it. The exec that works is the shared-kernel runtime's.
+No: the container runs under `ctr run --rm --tty`, so it lives exactly as long as the command that started it and is deleted when that returns. There is no re-entry verb on the CLI, and the vsock channels that do exist carry the toolchain proxy and the status client rather than a session. Typing the command again boots a second container.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

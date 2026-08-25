@@ -21,4 +21,10 @@ This rung is also where both microVM routes land when the boundary is unavailabl
 
 Yes: rootless podman is the baseline and the microVM is an upgrade on top. `--no-microvm` selects the baseline outright; a failed probe lands on it with a warning; on macOS it is the only mode.
 
-[^read]: Read at `vivarium` `ceb0027` on 2026-08-18; `flake-pilot` `main` on 2026-08-18, re-read 2026-08-20; `glaipnir` `21ef389` on 2026-08-18.
+## bunkerbox
+
+No: the runtime is `io.containerd.kata.v2` and nothing selects another, so the workload has a kernel of its own or does not start.
+
+The row is worth reading beside [the build row](./build-inside-boundary.md#bunkerbox), which measures something this one does not. bunkerbox has no shared-kernel mode for the workload, and it does route part of the workload onto the host kernel: a whitelisted passthrough command runs there, under bubblewrap when profiles are configured and unwrapped when they are not. That is not a mode a user selects; it is where the build lands.
+
+[^read]: Read at `vivarium` `ceb0027` on 2026-08-18; `flake-pilot` `main` on 2026-08-18, re-read 2026-08-20; `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

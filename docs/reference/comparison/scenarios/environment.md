@@ -22,4 +22,10 @@ What both lack is a policy of their own. A `%VAR` placeholder with no matching v
 
 No: an explicit list crosses rather than a wholesale copy — `TERM` and `COLORTERM`, `GOOGLE_CLOUD_PROJECT` and `VERTEX_LOCATION` when set, plus five computed `AI_*` values — but the list is the tool's rather than the caller's. The four host-sourced names are forwarded whenever they exist, and there is no argument or key that adds a fifth. A closed set is a real guarantee; it is not this row's question.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18.
+## bunkerbox
+
+No, and for the same reason as glaipnir's, more tightly drawn. Two host names cross, `TERM` and `COLORTERM` when set, alongside the tool's own `BUNKERBOX_*` values; no flag and no configuration key adds a third.
+
+The interesting half runs the other way. Passthrough carries the guest's environment out to the host command, and there the policy is a project setting: `relaxed`, the default, forwards everything except `HOME`, `PATH`, `XDG_*`, and `BUNKERBOX_*`, while `paranoid` drops the guest environment entirely and, upstream notes, is what stops the agent setting `LD_PRELOAD`, `RUSTFLAGS`, or `PYTHONPATH` on a host toolchain. So the caller does not choose what enters, and until they choose `paranoid` the guest largely chooses what leaves.
+
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

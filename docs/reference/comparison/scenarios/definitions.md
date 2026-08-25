@@ -20,8 +20,8 @@ This holds at both routes: `flake-ctl list` reports every registration whichever
 
 Yes: `status` reports the agents and images that exist, and the roster is fixed, so the set is small and fully known by construction. Enumeration is easy for the same reason [an agent outside the roster cannot run](./per-tool-credentials.md#glaipnir).
 
-## podman
+## bunkerbox
 
-Yes: `podman images` lists every image on the machine, from any directory.
+No: the CLI has a `list`, and it lists the tool's embedded YAML sequences rather than anything a user defined. Runtime configs are files under `/usr/share/bunkerbox` and project configs are files inside repositories; both are found with `ls` and `find`, which is the absence this row is asking about.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

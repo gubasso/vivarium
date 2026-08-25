@@ -21,8 +21,8 @@ At the `krun` route, reachable and nothing checks it: the upstream registration'
 
 No: since 1.0.0 a workspace under `$HOME` mounts at `/home/aiuser/<path relative to $HOME>` — a mirror of the tail, not of the path. The change answers the same failure class vivarium's [host-symmetric mount rule](../../spec/08-invariants-and-guarantees.md) does and stops short of it: an agent that stored `/home/you/api` reads a path that is not there, and a project outside `$HOME` has no tail to mirror.
 
-## podman
+## bunkerbox
 
-Reachable, nothing arranges it: `-v /host/path:/host/path` mirrors any single path exactly, and under krun the mount crosses as virtiofs, so it holds at the compared setup. The user types the path twice at every invocation, nothing refuses a mismatch, and published examples usually pick a different target.
+No: the project is bind-mounted at `/workspace`, a constant, and there is no setting that moves it. The tail is not mirrored either, so an agent that stored `/home/you/thing/src` finds nothing at that path — the cost [the workspace row](./workspace-mount.md#bunkerbox) buys the derived mount with.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `podman` 5.x on 2026-08-19. `vivarium` re-read at `162f230` on 2026-08-22, where mirroring generalized from one tree to a declared set.
+[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25. `vivarium` re-read at `162f230` on 2026-08-22, where mirroring generalized from one tree to a declared set.

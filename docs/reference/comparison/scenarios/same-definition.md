@@ -20,14 +20,16 @@ The other is the description, and it is published: [`appstore/firecracker/claude
 
 Upstream states the position rather than leaving it implicit: the builder is the user's choice, and trust is anchored at the image source, which is what the https-only fetch and its documented escape hatch express. Published is not reproduced, and that gap is the partial.
 
-At the `krun` route, no: the unit the registration names is `public.ecr.aws/b9k1j9y6/ai/claude:latest`, a moving tag on a registry publishing nightly builds. Two colleagues registering the same command on two days hold two different environments and nothing tells either of them so. The exact answer exists at this engine — [an image referenced by digest is one artifact](#podman) — and the registration upstream publishes is the one nobody is pointed at. This is the row where the two routes separate most sharply, because the firecracker route reaches its partial by having no mechanism for moving at all.
+At the `krun` route, no: the unit the registration names is `public.ecr.aws/b9k1j9y6/ai/claude:latest`, a moving tag on a registry publishing nightly builds. Two colleagues registering the same command on two days hold two different environments and nothing tells either of them so. The exact answer exists at this engine, since an image referenced by digest is one artifact, and the registration upstream publishes is the one nobody is pointed at. This is the row where the two routes separate most sharply, because the firecracker route reaches its partial by having no mechanism for moving at all.
 
 ## glaipnir
 
 No: `Containerfile.agent` starts `FROM` a per-agent image at `:latest`, then installs whatever `PACKAGES=(...)` names and runs whatever build hooks were given. Two of those three inputs move without notice, and there is nothing to hand a second user that fixes any of them.
 
-## podman
+## bunkerbox
 
-Reachable, nothing arranges it: an image referenced by digest is exactly one artifact, and a colleague given the digest gets it. The published form is a tag, the documented flow is a tag, and a `Containerfile` rebuilt a month later re-executes its `RUN` steps against whatever the network serves that day. The exact answer exists and is the one nobody is pointed at.
+No: the unit is a tag, and what stands behind it does not hold still. An image config names its output and its tag, `overwrite: true` replaces an existing archive rather than refusing, and the recipe is a `containerfile` over `alpine:3.22` that runs `apk add --no-cache` and curls a release tarball. Rebuilt a month later, the same file re-executes those lines against whatever the network serves that day. What is pinned is the one thing the author typed — a version in `build_args`, like `OPENCODE_VERSION: "1.17.18"` — and it pins the tool rather than the environment around it.
 
-[^read]: Read at `vivarium` `ceb0027`, `glaipnir` `21ef389`, and `podman` 5.x on 2026-08-18; `flake-pilot` `920f41e` on 2026-08-20, re-read at the same revision on 2026-08-22 for where upstream anchors trust in an image, and the KIS checksum path re-read at `main` on 2026-08-24, where a digest published beside each appstore tarball had appeared since that revision. The appstore descriptions behind both routes were read at `920f41e` the same day.
+A second person given an archive that was already built does get exactly that artifact, because an OCI archive is a file. That is a copy travelling, not a definition reproducing, which is the distinction this row is built on.
+
+[^read]: Read at `vivarium` `ceb0027` and `glaipnir` `21ef389` on 2026-08-18; `flake-pilot` `920f41e` on 2026-08-20, re-read at the same revision on 2026-08-22 for where upstream anchors trust in an image, and the KIS checksum path re-read at `main` on 2026-08-24, where a digest published beside each appstore tarball had appeared since that revision. The appstore descriptions behind both routes were read at `920f41e` the same day. `bunkerbox` read at `b7f14f3` on 2026-08-25.
