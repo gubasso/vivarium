@@ -6,18 +6,20 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## later
 
+- 031 a-declared-agent-channel-reaches-the-guest — later — 2 sessions — first of the chain the 2026-08-25 owner review ordered; the transport, guest end, and parked pool are already host-proven, so the slice is the host-side hops that make them reachable
+- 032 a-build-roots-itself — later — 3 sessions — second of that chain; moved out of the decided-not-funded phase by slice 015's measurement that the current build was reachable from no root, and by the hand-added gcroot it found beside it
 - 025 the-fleet-is-visible — later — 3 sessions — needs 021 (done; the rekey every row carries)
+- 027 the-stop-ladder-is-whole — later — 3 sessions — needs 025 (the reader the sweep enumerates through); carries `Q-018` and `Q-021`, and was moved ahead of 026 because ending a day is a daily act and refusing a launch is not
 - 026 a-start-checks-the-room — later — 3 sessions — needs 025 (the fleet term admission reads)
-- 027 the-stop-ladder-is-whole — later — 3 sessions — needs 025 (the reader the sweep enumerates through)
+- 018 the-user-owns-the-image — later — 4 sessions — moved ahead of 028 and 024: it owns `viv update` and the shipped base a user takes over, which is what a first daily-driver image is built from
 - 028 memory-comes-back-without-a-stop — later — 4 sessions — needs 025 (the readings its record joins)
+- 024 installing-vivarium-takes-one-command — later — 5 sessions
+- 023 a-declared-port-crosses-inward — later — 3 sessions — deprioritized 2026-08-25 by the owner, whose sandbox use does not involve reaching a service from the host; the slice stays shaped and funded, and `Q-033` stays open until it closes
 - 005 cli-runtime-plumbing — later — 2 sessions
 - 006 generate-config-contract — later — 2 sessions
 - 007 build-test-lanes — later — 4 sessions
 - 008 enforce-implementation-status — later — 2 sessions
 - 009 automate-backend-advisories — later — 2 sessions
-- 018 the-user-owns-the-image — later — 4 sessions
-- 023 a-declared-port-crosses-inward — later — 3 sessions
-- 024 installing-vivarium-takes-one-command — later — 5 sessions
 
 ## closed
 
