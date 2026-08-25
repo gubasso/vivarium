@@ -1,0 +1,399 @@
+#!/usr/bin/env bash
+#
+# Slice 032's store-side acceptance: a build appends a generation whose symlink
+# is a root Nix follows, a real collection leaves the rooted build intact — and
+# the observation is REPEATED, because one clean run is evidence of possibility,
+# not reliability — a prune makes exactly the unlinked path reclaimable, and a
+# destroy leaves nothing of the project for a collection to spare.
+#
+# Why this is a separate script, and not more trials in `user_workflows.rs`:
+#
+#   - It COLLECTS THE HOST STORE. `viv gc` is a whole-store sweep: it reclaims
+#     every dead path on this machine, not just this lane's, which costs later
+#     builds their dead-but-warm paths. The acceptance harness runs from the
+#     pre-push hook and must never do that casually. Its sibling in spirit is
+#     `store-gc-interlock-check`, the only other lane that removes from the
+#     store.
+#   - The trial half already exists: `workflow_24_generations_retention` proves
+#     root registration, listing, switching, the `75` guard, and prune
+#     selection through the harness. What only a host lane can add is the
+#     demonstration by collecting — the acceptance's own words — rather than by
+#     asserting the root exists.
+#
+# METHOD: every survival claim is demonstrated by a sweep that reclaimed
+# SOMETHING ELSE in the same pass. A canary — an unrooted path added for the
+# purpose — is what proves each collection actually collected; a sweep that
+# deleted nothing would otherwise read as "the build survived". A build held
+# beside a reclaimed canary is the invariant: `viv gc` reclaims exactly what no
+# root pins.
+#
+# STATED GAP: the sweeps run against the invoking user's real store, so what
+# each one reclaims beyond its canary depends on the machine's history; the
+# summary lines are emitted as [RECORD] results rather than asserted.
+#
+# The shared plumbing below (counters, helpers, tier gate) is DUPLICATED from
+# the sibling lanes on purpose; blocks intended for a future extraction are
+# marked `# DUP:`. See docs/reference/microvm-verification-harness.md.
+
+# DUP: no `set -euo pipefail`. Every check captures its own exit status and
+# turns it into a result line; a failing check must not abort the run.
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
+FLAKE_REF="path:$REPO_ROOT?dir=nix"
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+RECORD_COUNT=0
+
+# DUP: the scratch root is `disk-preflight`'s answer, and NOT under $TMPDIR —
+# this scratch directory is the workspace handed to the launcher, and N24
+# refuses a workspace under /tmp, /var/tmp, or the runtime dir.
+set_roots() {
+  TEMP_BASE=${VIVARIUM_GENERATIONS_TEMP_BASE:-$1/generations-check}
+}
+set_roots "$("$SCRIPT_DIR/disk-preflight" --locate --images)"
+
+if [[ ${1:-} == --clean ]]; then
+  removed=0
+  for dir in "$TEMP_BASE"/run.*; do
+    [[ -d $dir ]] || continue
+    rm -rf -- "$dir" && removed=$((removed + 1))
+  done
+  printf 'removed %d retained scratch root(s)\n' "$removed"
+  exit 0
+fi
+
+# DUP: before anything writes. This lane builds a guest closure twice and then
+# sweeps, and the honest moment to ask where the gigabytes go is while
+# deferring is still free (AGENTS.md).
+if ! heavy_root=$("$SCRIPT_DIR/disk-preflight" --need 8 --label "the generations lane" --images); then
+  printf '\nnothing ran: disk preflight refused\n'
+  exit 1
+fi
+set_roots "$heavy_root"
+
+mkdir -p "$TEMP_BASE" 2>/dev/null
+TEMP_ROOT=$(mktemp -d "$TEMP_BASE/run.XXXXXX" 2>/dev/null || true)
+if [[ -z $TEMP_ROOT ]]; then
+  printf '[FAIL] cannot create a private scratch directory under %s\n' "$TEMP_BASE" >&2
+  exit 1
+fi
+WORKSPACE=$TEMP_ROOT/workspace
+mkdir -p "$WORKSPACE"
+
+# DUP
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+  GREEN=$'\033[32m'
+  RED=$'\033[31m'
+  YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'
+  RESET=$'\033[0m'
+else
+  GREEN=
+  RED=
+  YELLOW=
+  BLUE=
+  RESET=
+fi
+
+# DUP
+pass() {
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"
+}
+fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"
+  # sed prefixes every line of multiline evidence.
+  # shellcheck disable=SC2001
+  [[ -n ${2:-} ]] && sed 's/^/       /' <<<"$2"
+}
+skip() {
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+  printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"
+}
+record() {
+  RECORD_COUNT=$((RECORD_COUNT + 1))
+  printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"
+}
+
+# Every check this script can emit, in order, so a run that skips wholesale
+# reports the same inventory as a run that completes.
+ALL_CHECKS=(
+  generations-binaries-built
+  generations-first-start
+  generations-profile-shape
+  generations-root-registered
+  generations-sweep-1-collected
+  generations-sweep-1-build-held
+  generations-sweep-2-collected
+  generations-sweep-2-build-held
+  generations-second-build
+  generations-prune-unroots
+  generations-sweep-3-collected
+  generations-sweep-3-build-held
+  generations-sweep-3-pruned-reclaimed
+  generations-destroy-unroots
+  generations-sweep-4-collected
+  generations-sweep-4-reclaimed
+)
+skip_remaining() {
+  local reason=$1 first=$2 seen=no check
+  for check in "${ALL_CHECKS[@]}"; do
+    [[ $check == "$first" ]] && seen=yes
+    [[ $seen == yes ]] && skip "$check: $reason"
+  done
+}
+
+# ---- generations-binaries-built --------------------------------------------
+CARGO_BIN_DIR=${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug
+VIV=$CARGO_BIN_DIR/viv
+if cargo build --quiet --features host --bin viv --bin vivarium-supervisor 2>"$TEMP_ROOT/cargo.err"; then
+  pass "generations-binaries-built: $VIV"
+else
+  fail "generations-binaries-built: could not build the host-side binaries" "$(tail -n 20 "$TEMP_ROOT/cargo.err")"
+  VIV=
+fi
+
+printf -- '\n--- host tier -----------------------------------------------------------\n'
+
+# DUP: the tier gate, stated out loud. `/dev/kvm` because a `viv start` boots.
+missing=()
+[[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
+command -v nix >/dev/null 2>&1 || missing+=("nix")
+[[ -r /dev/kvm && -w /dev/kvm ]] || missing+=("/dev/kvm openable read/write")
+systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
+[[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
+[[ -n ${VIV:-} && -x ${VIV:-/nonexistent} ]] || missing+=("built viv")
+# The unit name this lane's sandbox id produces must be free, or a stop would
+# reach a unit this run did not create.
+if [[ $(systemctl --user show vivarium-gens-check-default.service -p LoadState --value 2>/dev/null) == loaded ]]; then
+  missing+=("the unit name vivarium-gens-check-default.service (already loaded)")
+fi
+
+# The two baseline inputs, pinned from this repository's own lock through local
+# store paths — a lane that must reach the forge to prove a local fact reports
+# on the network (AGENTS.md).
+NIXPKGS_PIN=
+MICROVM_PIN=
+archive=$(nix flake archive --json --extra-experimental-features 'nix-command flakes' "$FLAKE_REF" 2>"$TEMP_ROOT/archive.err")
+if [[ -n $archive ]]; then
+  NIXPKGS_PIN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["inputs"]["nixpkgs"]["path"])' <<<"$archive" 2>/dev/null)
+  MICROVM_PIN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["inputs"]["microvm"]["path"])' <<<"$archive" 2>/dev/null)
+fi
+[[ -n $NIXPKGS_PIN && -n $MICROVM_PIN ]] || missing+=("archived baseline inputs")
+
+if ((${#missing[@]})); then
+  reason=$(
+    IFS=', '
+    echo "${missing[*]}"
+  )
+  skip_remaining "missing prerequisites: $reason" generations-first-start
+  printf '\nSummary\nPASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+  printf 'VERDICT: PASS (nothing ran; every check needs a capable host)\n'
+  exit 0
+fi
+
+# The scratch installation: its own XDG roots, one manifest, the lane's
+# directory as the declared workspace. `HOME` is scratch too, so nothing this
+# run writes lands in the developer's own dotfiles.
+SCRATCH=$TEMP_ROOT/xdg
+mkdir -p "$SCRATCH/config/vivarium/manifests" "$SCRATCH/config/vivarium/images" \
+  "$SCRATCH/state" "$SCRATCH/data" "$SCRATCH/cache" "$SCRATCH/home"
+cat >"$SCRATCH/config/vivarium/manifests/gens-check.toml" <<EOF
+image = "minimal"
+
+[[workspaces]]
+source = '$WORKSPACE'
+EOF
+printf '{ ... }: { }\n' >"$SCRATCH/config/vivarium/images/minimal.nix"
+
+# `viv` reads the invoking directory, so the wrapper runs from the workspace.
+run_viv() {
+  (
+    cd "$WORKSPACE" || exit 74
+    env -u VIVARIUM_MANIFEST \
+      XDG_CONFIG_HOME="$SCRATCH/config" \
+      XDG_STATE_HOME="$SCRATCH/state" \
+      XDG_DATA_HOME="$SCRATCH/data" \
+      XDG_CACHE_HOME="$SCRATCH/cache" \
+      HOME="$SCRATCH/home" \
+      VIVARIUM_BASELINE_NIXPKGS="path:$NIXPKGS_PIN" \
+      VIVARIUM_BASELINE_MICROVM="path:$MICROVM_PIN" \
+      "$VIV" "$@" 2>&1
+  )
+}
+
+# Best-effort teardown on every exit: the VM, then the project state, then the
+# scratch tree. A destroy that fails leaves the evidence for `--clean`.
+# shellcheck disable=SC2329  # invoked through the EXIT trap below
+cleanup() {
+  run_viv stop >/dev/null 2>&1
+  run_viv destroy --yes >/dev/null 2>&1
+  rm -rf -- "$TEMP_ROOT" 2>/dev/null
+}
+trap cleanup EXIT
+
+PROFILE=$SCRATCH/state/vivarium/projects/gens-check/default
+
+# A sweep with a canary: proves the collection collected, then answers whether
+# the named build survived it. The canary is an unrooted store path added for
+# the purpose, unique per sweep so a second run can never find the first's.
+sweep() {
+  local label=$1 build=$2 canary_file canary summary started
+  canary_file=$TEMP_ROOT/canary-$label
+  printf 'vivarium-generations-check canary %s %s %s\n' "$label" "$$" "$RANDOM" >"$canary_file"
+  canary=$(nix-store --add "$canary_file" 2>/dev/null)
+  if [[ -z $canary ]]; then
+    fail "generations-sweep-$label-collected: could not add a canary path"
+    return 1
+  fi
+  started=$SECONDS
+  summary=$(run_viv gc)
+  local gc_status=$?
+  record "sweep $label: ${summary:-no summary} (exit $gc_status, $((SECONDS - started))s)"
+  if ((gc_status != 0)); then
+    fail "generations-sweep-$label-collected: viv gc failed (exit $gc_status)" "$summary"
+    return 1
+  fi
+  if [[ -e $canary ]]; then
+    fail "generations-sweep-$label-collected: the unrooted canary survived the sweep" "$canary"
+    return 1
+  fi
+  pass "generations-sweep-$label-collected: the sweep reclaimed the unrooted canary"
+  if [[ -n $build ]]; then
+    if [[ -e $build ]]; then
+      pass "generations-sweep-$label-build-held: the rooted build survived the collection"
+    else
+      fail "generations-sweep-$label-build-held: the collection took the rooted build" "$build"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# ---- generations-first-start -----------------------------------------------
+started=$SECONDS
+start_log=$(run_viv start)
+start_status=$?
+if ((start_status == 0)); then
+  pass "generations-first-start: viv start built and booted ($((SECONDS - started))s)"
+else
+  fail "generations-first-start: viv start failed" "$start_log"
+  skip_remaining "no build to retain" generations-profile-shape
+  printf '\nSummary\nPASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+  printf 'VERDICT: FAIL (%d hard check(s) failed)\n' "$FAIL_COUNT"
+  exit 1
+fi
+run_viv stop >/dev/null
+
+# ---- generations-profile-shape ---------------------------------------------
+build_1=$(readlink "$PROFILE/generations/1" 2>/dev/null)
+current_target=$(readlink "$PROFILE/current" 2>/dev/null)
+if [[ -n $build_1 && $current_target == generations/1 && -f $PROFILE/metadata/1.json && -f $PROFILE/metadata/1.lock ]]; then
+  pass "generations-profile-shape: current -> generations/1, record and lock snapshot beside it"
+else
+  fail "generations-profile-shape: the profile does not carry spec/11's layout" \
+    "$(ls -lR "$PROFILE" 2>&1)"
+fi
+
+# ---- generations-root-registered -------------------------------------------
+# Asserted against the store rather than the filesystem: a symlink that is not
+# registered is the exact defect this slice removes. The `2>/dev/null` matters:
+# `--roots` prints stale-root housekeeping to stderr.
+roots_1=$(nix-store --query --roots "$build_1" 2>/dev/null)
+if grep -qF "$PROFILE/generations/1" <<<"$roots_1"; then
+  pass "generations-root-registered: nix-store -q --roots names the generation symlink"
+  record "roots of $build_1: $(tr '\n' ' ' <<<"$roots_1")"
+else
+  fail "generations-root-registered: no root names the generation symlink" \
+    "roots reported: ${roots_1:-none}"
+fi
+
+# ---- the repeated collection (acceptance: one clean run is not the claim) ---
+sweep 1 "$build_1"
+sweep 2 "$build_1"
+
+# ---- generations-second-build ----------------------------------------------
+# A changed image reaches the built output, so the profile gains generation 2.
+printf '{ ... }: { environment.etc."generation-mark".text = "two"; }\n' \
+  >"$SCRATCH/config/vivarium/images/minimal.nix"
+started=$SECONDS
+start_log=$(run_viv start)
+start_status=$?
+if ((start_status == 0)); then
+  run_viv stop >/dev/null
+  build_2=$(readlink "$PROFILE/generations/2" 2>/dev/null)
+  if [[ -n $build_2 && $build_2 != "$build_1" ]]; then
+    pass "generations-second-build: the changed image appended generation 2 ($((SECONDS - started))s)"
+  else
+    fail "generations-second-build: no distinct second generation appeared" \
+      "$(run_viv generations list --json)"
+  fi
+else
+  fail "generations-second-build: the second start failed" "$start_log"
+  build_2=
+fi
+
+# ---- generations-prune-unroots ---------------------------------------------
+if [[ -n $build_2 ]]; then
+  prune_log=$(run_viv generations prune --keep 1)
+  roots_after=$(nix-store --query --roots "$build_1" 2>/dev/null)
+  if grep -qF "$PROFILE/generations/1" <<<"$roots_after"; then
+    fail "generations-prune-unroots: the pruned generation still roots its build" "$roots_after"
+  else
+    pass "generations-prune-unroots: prune --keep 1 unlinked generation 1's root"
+    record "prune: $(tr '\n' ' ' <<<"$prune_log")"
+  fi
+
+  # The pruned path is reclaimable and the kept one is not — one sweep answers
+  # both, which is exactly the separation spec/11 fixes between unlinking and
+  # reclaiming.
+  if sweep 3 "$build_2"; then
+    if [[ -e $build_1 ]]; then
+      fail "generations-sweep-3-pruned-reclaimed: the pruned build survived the sweep" "$build_1"
+    else
+      pass "generations-sweep-3-pruned-reclaimed: the collection reclaimed the pruned build"
+    fi
+  fi
+else
+  skip "generations-prune-unroots: no second generation to prune against"
+  skip "generations-sweep-3-collected: no second generation"
+  skip "generations-sweep-3-build-held: no second generation"
+  skip "generations-sweep-3-pruned-reclaimed: no second generation"
+fi
+
+# ---- generations-destroy-unroots -------------------------------------------
+destroy_log=$(run_viv destroy --yes)
+destroy_status=$?
+if ((destroy_status == 0)); then
+  last_build=${build_2:-$build_1}
+  roots_left=$(nix-store --query --roots "$last_build" 2>/dev/null | grep -F "$PROFILE" || true)
+  if [[ -z $roots_left ]]; then
+    pass "generations-destroy-unroots: no generation of the destroyed project is reachable from any root"
+  else
+    fail "generations-destroy-unroots: a root survived destroy" "$roots_left"
+  fi
+  if sweep 4 ""; then
+    if [[ -e $last_build ]]; then
+      fail "generations-sweep-4-reclaimed: the destroyed build survived the sweep" "$last_build"
+    else
+      pass "generations-sweep-4-reclaimed: the collection reclaimed the destroyed project's build"
+    fi
+  fi
+else
+  fail "generations-destroy-unroots: viv destroy failed" "$destroy_log"
+  skip "generations-sweep-4-collected: nothing destroyed"
+  skip "generations-sweep-4-reclaimed: nothing destroyed"
+fi
+
+printf '\nSummary\n'
+printf 'PASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+if ((FAIL_COUNT == 0)); then
+  printf 'VERDICT: PASS (RECORD findings are measurements; SKIPs require a capable host)\n'
+  exit 0
+else
+  printf 'VERDICT: FAIL (%d hard check(s) failed)\n' "$FAIL_COUNT"
+  exit 1
+fi

@@ -11,6 +11,7 @@
 
 mod destroy;
 pub mod doctor;
+mod generations;
 pub mod grammar;
 pub mod lifecycle;
 mod prompt;
@@ -30,7 +31,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticId, Locus, Namespace};
 use crate::exit::ExitKind;
 use crate::ui::Ui;
 use crate::ui::style::Palette;
-use grammar::{Deferred, Invocation, Output, UsageError};
+use grammar::{Invocation, Output, UsageError};
 
 /// The only target a project has today (spec/15).
 const DEFAULT_TARGET: &str = "default";
@@ -155,9 +156,10 @@ pub fn run<E: Environment>(
         Invocation::Start {
             rebuild,
             no_rebuild,
+            generation,
             attach,
             ..
-        } => lifecycle::start(context, *rebuild, *no_rebuild, *attach),
+        } => lifecycle::start(context, *rebuild, *no_rebuild, *generation, *attach),
         Invocation::Status { global, output } => {
             let report = lifecycle::status(context, *global)?;
             Ok(Success::plain(if output.is_json() {
@@ -183,7 +185,17 @@ pub fn run<E: Environment>(
             yes,
             output,
         } => destroy::destroy(context, *keep_volumes, *yes, *output),
-        Invocation::Deferred { verb, .. } => deferred(context, *verb),
+        Invocation::GenerationsList { output } => generations::list(context, *output),
+        Invocation::GenerationsPrune {
+            keep,
+            older_than_seconds,
+            output,
+        } => generations::prune(context, *keep, *older_than_seconds, *output),
+        Invocation::GenerationsActivate { number, output } => {
+            generations::activate(context, Some(*number), *output)
+        }
+        Invocation::GenerationsRollback { output } => generations::activate(context, None, *output),
+        Invocation::Gc { output } => generations::gc(context, *output),
         // The caller performs all five. The first three are the async half of this program and
         // nothing else here needs a runtime; a session additionally returns a code this signature
         // cannot express — the guest's own — and streams bytes rather than accumulating a string.
@@ -286,6 +298,14 @@ struct Evaluated {
     analysis: config::merged::Analysis,
     /// The generated tree this evaluation prepared, which is also what a launch builds from.
     flake_directory: PathBuf,
+    /// The lock in force for this evaluation, as bytes rather than a path (ADR-0059).
+    ///
+    /// Read from the staged copy the moment this process published the tree, deliberately: the
+    /// durable lock can move while a build runs, and the generated tree's pathname is a shared
+    /// cache another manifest-reading command may republish (ADR-0058) — a path read later can
+    /// name either. Bytes captured at evaluation time are the definition of what a generation
+    /// retains, whatever happens beside it afterwards.
+    lock_snapshot: Vec<u8>,
 }
 
 /// The path both config readers travel, up to the point where they disagree.
@@ -365,7 +385,26 @@ fn evaluate_resolved<E: Environment>(
         manifest,
         notes,
         analysis,
+        lock_snapshot: read_staged_lock(&prepared.directory)?,
         flake_directory: prepared.directory,
+    })
+}
+
+/// The staged lock's bytes, read the moment this process published the tree it evaluated.
+///
+/// Present in every case by this point: an existing or override lock was staged into the tree,
+/// and a first evaluation created one there before `persist_first_pin` copied it out.
+fn read_staged_lock(flake_directory: &Path) -> Result<Vec<u8>, Failure> {
+    let path = flake_directory.join("flake.lock");
+    std::fs::read(&path).map_err(|source| {
+        diagnosed(
+            Namespace::State,
+            "generation-lock-snapshot",
+            "could not read the lock this evaluation was pinned by",
+            Locus::File(path),
+            source.to_string(),
+            ExitKind::IoErr,
+        )
     })
 }
 
@@ -496,23 +535,6 @@ fn manifest_show<E: Environment>(
     } else {
         render::manifest_show_human(name, &selected, &manifest)
     }))
-}
-
-/// The one verb this slice parses and does not perform.
-///
-/// `gc` is a whole-store sweep across every project, so it needs no binding and answers no `78` —
-/// which is why the binding check that used to guard this went away with the two verbs it guarded.
-fn deferred<E: Environment>(context: &Context<'_, E>, verb: Deferred) -> Result<Success, Failure> {
-    let _ = context;
-    Err(Failure::Diagnosed {
-        diagnostic: Box::new(Diagnostic::new(
-            DiagnosticId::new(Namespace::Internal, "not-implemented"),
-            format!("`viv {}` is not implemented yet", verb.as_str()),
-            Locus::Named("command surface"),
-            "this verb belongs to a later slice; its grammar and fail-closed paths are settled",
-        )),
-        code: ExitKind::Software,
-    })
 }
 
 /// The fail-closed answer when no override or uniquely declaring manifest applies.
@@ -733,6 +755,8 @@ pub(super) struct LaunchInputs {
     /// Carried out of the one command that evaluates so the read-only volume verbs never have to.
     /// See `config::volumes` for why that split exists rather than each verb asking Nix.
     pub(super) volumes: Vec<config::volumes::DeclaredVolume>,
+    /// The lock in force for this evaluation, which the appended generation retains (ADR-0059).
+    pub(super) lock_snapshot: Vec<u8>,
 }
 
 /// Why the one resolution routine could not answer.
@@ -1237,6 +1261,7 @@ pub(super) fn evaluate_resolved_for_launch<E: Environment>(
         flake_directory: evaluated.flake_directory,
         resources: merged_resources(&evaluated.analysis),
         volumes: merged_volumes(&evaluated.analysis),
+        lock_snapshot: evaluated.lock_snapshot,
     })
 }
 

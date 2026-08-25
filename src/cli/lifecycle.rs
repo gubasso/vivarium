@@ -93,6 +93,8 @@ pub struct Report {
     /// Meaningful only while `running` (ADR-0030): freshness derives from the store output path.
     pub stale: bool,
     pub store_path: Option<String>,
+    /// The retained generation `current` points at, `None` for a project never built (spec/11).
+    pub generation: Option<u64>,
     pub uptime_seconds: Option<u64>,
     pub resources: Option<Resources>,
     /// The launch schema a running VM's boot record carries when it is not this binary's own.
@@ -248,51 +250,58 @@ impl Drop for TargetLock {
     }
 }
 
-/// The file `start` writes so a later `status` or `--no-rebuild` can name the last build.
-///
-/// Deliberately not a generation: spec/11's generation record, its retention, and its GC roots are
-/// out of this slice's scope. This is one path, written after a successful build, and it is what
-/// makes `built` distinguishable from `absent` after a clean stop.
-fn last_build_path(roots: &config::XdgRoots, sandbox_id: &str, target: &str) -> PathBuf {
-    build_record(roots, sandbox_id, target, "last-build")
-}
-
 /// The build the currently running VM was launched from, written just before the launcher runs.
 ///
-/// Under the data root rather than in the runtime directory, and deliberately: the supervisor's
-/// cleanup sweep removes only its own allowlist and aborts on anything else, so a freshness record
-/// written beside the sockets would make every teardown fail with an unknown-artifact refusal.
+/// Under the state root — what a run produces — beside the generation profile it may diverge
+/// from, and not in the runtime directory, deliberately: the supervisor's cleanup sweep removes
+/// only its own allowlist and aborts on anything else, so a record written beside the sockets
+/// would make every teardown fail with an unknown-artifact refusal. Slice 032 moved it here from
+/// the data root, which spec/02 reserves for pinned inputs.
 fn running_build_path(roots: &config::XdgRoots, sandbox_id: &str, target: &str) -> PathBuf {
-    build_record(roots, sandbox_id, target, "running-build")
-}
-
-fn build_record(roots: &config::XdgRoots, sandbox_id: &str, target: &str, name: &str) -> PathBuf {
     roots
-        .data
+        .state
         .join("projects")
         .join(sandbox_id)
         .join(target)
-        .join(name)
+        .join("running-build")
 }
 
-/// Reads the recorded build output, and only if it still exists in the store.
+/// What this project last built: the current generation of its spec/11 profile.
 ///
-/// The existence check is the point: a recorded path whose output has been collected is not a
-/// build a `--no-rebuild` could boot, and reporting `built` for one would be a state that cannot
-/// be acted on.
+/// A reader of the profile rather than a second record — slice 032 retired the `last-build` text
+/// file so exactly one answer to "what did this project last build" exists, and made that answer
+/// a registered garbage-collector root. The collected-output guard lives in the profile reader:
+/// a pinned path can still be gone on a store wiped by hand, and reporting `built` for one would
+/// be a state that cannot be acted on.
 pub(super) fn last_build(
     roots: &config::XdgRoots,
     sandbox_id: &str,
     target: &str,
 ) -> Option<String> {
-    read_build_record(&last_build_path(roots, sandbox_id, target))
+    config::generations::current_store_path(&generation_paths(roots, sandbox_id, target))
 }
 
-/// The same read for the running VM's own build, used only to answer freshness.
-fn running_build(roots: &config::XdgRoots, sandbox_id: &str, target: &str) -> Option<String> {
+/// The one spelling of where a project target's generation profile lives.
+pub(super) fn generation_paths(
+    roots: &config::XdgRoots,
+    sandbox_id: &str,
+    target: &str,
+) -> config::generations::GenerationPaths {
+    config::generations::GenerationPaths::new(&roots.state, sandbox_id, target)
+}
+
+/// The same read for the running VM's own build: freshness for `status`, and the boot record
+/// the prune guard reads (ADR-0085) — `boot.json` carries no store path.
+pub(super) fn running_build(
+    roots: &config::XdgRoots,
+    sandbox_id: &str,
+    target: &str,
+) -> Option<String> {
     read_build_record(&running_build_path(roots, sandbox_id, target))
 }
 
+/// Reads a recorded store path, and only if that output still exists — the same guard the
+/// profile reader applies, for the same reason.
 fn read_build_record(path: &Path) -> Option<String> {
     let recorded = std::fs::read_to_string(path).ok()?;
     let trimmed = recorded.trim();
@@ -523,6 +532,7 @@ pub fn start<E: Environment>(
     context: &Context<'_, E>,
     rebuild: bool,
     no_rebuild: bool,
+    generation: Option<u64>,
     attach: bool,
 ) -> Result<Success, Failure> {
     // Refused by name rather than accepted and dropped. spec/10 makes `--attach` a console-stream
@@ -586,7 +596,9 @@ pub fn start<E: Environment>(
     );
 
     // Step 4.
-    let store_path = if no_rebuild {
+    let store_path = if let Some(number) = generation {
+        retained_boot(&context.roots, &sandbox_id, number, running)?
+    } else if no_rebuild {
         // The fast path spec/10 fixes: no evaluation at all, boot the last build as it stands. A
         // live VM short-circuits here because there is nothing to compare it against — asking for
         // no evaluation is asking not to learn whether it drifted.
@@ -666,6 +678,59 @@ pub fn start<E: Environment>(
     Ok(Success::plain(String::new()))
 }
 
+/// The retained-boot source `--generation <n>` selects (spec/11): no evaluation, one named
+/// generation.
+///
+/// A running VM refuses rather than short-circuits, because unlike `--no-rebuild` the user named
+/// a build that may not be the one running, and a `start` that quietly kept the other would
+/// report success for something it did not do. `75`: clearable in one step.
+fn retained_boot(
+    roots: &config::XdgRoots,
+    sandbox_id: &str,
+    number: u64,
+    running: bool,
+) -> Result<String, Failure> {
+    if running {
+        return Err(diagnosed(
+            Namespace::Vm,
+            "generation-swap",
+            "this project's VM is already running",
+            Locus::Named("build history"),
+            "booting a named generation replaces the VM, and `start` never \
+            replaces a running one",
+            ExitKind::TempFail,
+        )
+        .with_hint(format!(
+            "`viv stop` first, then `viv start --generation {number}`"
+        )));
+    }
+    let paths = generation_paths(roots, sandbox_id, DEFAULT_TARGET);
+    match fs::read_link(paths.link(number)) {
+        Err(_) => Err(diagnosed(
+            Namespace::State,
+            "no-build",
+            format!("generation {number} is not retained"),
+            Locus::Named("build history"),
+            "`--generation` boots a retained build, and no generation \
+            with this number exists for this project",
+            ExitKind::DataErr,
+        )
+        .with_hint("`viv generations list` names what is retained")),
+        // spec/11: a missing pin is a legible error, not a silent rebuild.
+        Ok(target) if !target.exists() => Err(diagnosed(
+            Namespace::State,
+            "no-build",
+            format!("generation {number}'s build output is gone from the store"),
+            Locus::File(target),
+            "the recorded output was collected out from under its root, \
+            which no ordinary `nix-collect-garbage` does",
+            ExitKind::DataErr,
+        )
+        .with_hint("run `viv start` to evaluate and build a fresh generation")),
+        Ok(target) => Ok(target.to_string_lossy().into_owned()),
+    }
+}
+
 /// spec/10 step 4: evaluate the merged configuration and build the runner it publishes.
 ///
 /// Shared rather than repeated, because `viv start` and a session that must cold-start are the same
@@ -678,10 +743,32 @@ fn evaluate_and_build<E: Environment>(
     let composition = config::volumes::Composition::of(&resolved.manifest);
     let evaluated = super::evaluate_resolved_for_launch(context, sandbox_id, resolved)?;
     let built = build_runner(&evaluated.flake_directory, context.ui)?;
-    write_build_record(
-        &last_build_path(&context.roots, sandbox_id, DEFAULT_TARGET),
-        &built,
-    )?;
+    // The result is recorded as a generation (spec/10 step 4): a numbered symlink registered as
+    // a garbage-collector root, with the record and the lock in force retained beside it. Under
+    // the per-target lock this function already runs beneath, which is what makes the number
+    // allocation safe. An output the current generation already pins is not appended again — a
+    // build's freshness key is its store path (N4), so an unchanged evaluation is the same build,
+    // and a history entry per `viv start` of it would be rows that all name one thing.
+    let paths = generation_paths(&context.roots, sandbox_id, DEFAULT_TARGET);
+    if config::generations::current_store_path(&paths).as_deref() != Some(built.as_str()) {
+        let record = config::generations::GenerationRecord {
+            store_path: built.clone(),
+            // Filled by `append` from the published snapshot, so the digest and the retained
+            // bytes cannot disagree.
+            lock_digest: String::new(),
+            manifest: sandbox_id.to_owned(),
+            backend: crate::launch::BACKEND.to_owned(),
+            built_at: config::generations::rfc3339_utc(epoch_now()),
+        };
+        config::generations::append(
+            &paths,
+            &record,
+            &evaluated.lock_snapshot,
+            lock_digest,
+            register_root,
+        )
+        .map_err(|error| super::registry_failure(&error))?;
+    }
     // Written on this path only. `--no-rebuild` evaluates nothing, so it has no provenance to
     // record and must leave the previous answer standing rather than publish an empty one — an
     // empty record would orphan every piece-declared volume the moment someone skipped a rebuild.
@@ -1262,6 +1349,57 @@ const fn nix_system() -> &'static str {
     } else {
         "x86_64-linux"
     }
+}
+
+/// The digest recorded beside a generation: a content hash of the retained lock snapshot.
+///
+/// Through `nix-hash` rather than a hashing dependency: the build path already requires the Nix
+/// toolchain two lines earlier, the flag set is the stable CLI, and the digest is computed once
+/// per build — `generations list` reads it back from the record. Shaped for `append`'s closure
+/// slot, which runs it against the published snapshot so the digest names the retained bytes.
+fn lock_digest(lock_path: &Path) -> Result<String, String> {
+    let output = Command::new("nix-hash")
+        .args(["--flat", "--base32", "--type", "sha256"])
+        .arg(lock_path)
+        .output()
+        .map_err(|source| source.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    let digest = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if digest.is_empty() {
+        return Err("`nix-hash` printed nothing".to_owned());
+    }
+    Ok(format!("sha256:{digest}"))
+}
+
+/// Registers one generation symlink as a root Nix follows.
+///
+/// `nix-store --realise` on an already-built path is a cheap lookup whose `--add-root` creates
+/// the symlink at its final pathname and records the indirect root under
+/// `/nix/var/nix/gcroots/auto` (ADR-0014). The link must be born at that pathname — the
+/// registration names it, so a stage-and-rename would leave a root Nix no longer follows, which
+/// is the one outcome slice 032 forbids.
+fn register_root(link: &Path, store_path: &str) -> Result<(), String> {
+    let output = Command::new("nix-store")
+        .arg("--realise")
+        .arg(store_path)
+        .arg("--add-root")
+        .arg(link)
+        .output()
+        .map_err(|source| source.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+    }
+}
+
+/// Seconds since the epoch, saturating at zero on a clock set before 1970.
+pub(super) fn epoch_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// Publishes one build record, creating the per-target directory the first time.
@@ -1906,6 +2044,11 @@ pub fn status<E: Environment>(context: &Context<'_, E>, global: bool) -> Result<
                     .is_some_and(|current| *current != launched)
             }),
         store_path: recorded,
+        generation: config::generations::current_number(&generation_paths(
+            &context.roots,
+            &sandbox_id,
+            DEFAULT_TARGET,
+        )),
         uptime_seconds: running.then(|| uptime_seconds(&runtime)).flatten(),
         resources: running.then(|| declared_resources(&runtime)),
         record_skew: running

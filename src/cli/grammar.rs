@@ -77,6 +77,8 @@ pub enum Invocation {
     Start {
         rebuild: bool,
         no_rebuild: bool,
+        /// Boot this retained generation instead of the current one, evaluating nothing (spec/11).
+        generation: Option<u64>,
         /// The console-streaming form, whose post-condition differs from the detached one.
         attach: bool,
         output: Output,
@@ -119,13 +121,23 @@ pub enum Invocation {
         yes: bool,
         output: Output,
     },
-    /// A verb this slice parses but does not perform.
-    ///
-    /// Each is owned by a later slice. They are here because their grammar and their fail-closed
-    /// behavior are already contracts — spec/14's matrix commits to `64` for a malformed
-    /// invocation and `78` for an unbound project — and those two answers do not depend on the
-    /// work behind them existing yet.
-    Deferred { verb: Deferred, output: Output },
+    /// The retained generations, read-only (spec/11).
+    GenerationsList { output: Output },
+    /// Unlink retained generations under exactly one retention argument (spec/11).
+    GenerationsPrune {
+        /// Keep this many of the newest generations.
+        keep: Option<u64>,
+        /// Keep every generation younger than this many seconds.
+        older_than_seconds: Option<u64>,
+        output: Output,
+    },
+    /// Move the `current` pointer to a named retained generation (spec/11).
+    GenerationsActivate { number: u64, output: Output },
+    /// Move the `current` pointer to the previous retained generation (spec/11).
+    GenerationsRollback { output: Output },
+    /// Run the whole-store garbage collector — global, so it needs no binding and never
+    /// answers `78` (spec/11).
+    Gc { output: Output },
     /// Diagnose the host and project setup from the shared probe catalog (spec/13).
     Doctor {
         /// Any warn fails the run at exit `1` — the one sanctioned use of `1` (ADR-0023).
@@ -171,26 +183,6 @@ pub struct Session {
     pub pty: bool,
     /// Each `--env` in the order given. `None` is the `KEY` form: copy from the host if it exists.
     pub env: Vec<(OsString, Option<OsString>)>,
-}
-
-/// The verbs whose grammar is settled here and whose work belongs to a later slice.
-///
-/// One left. `gc` is a whole-store sweep across every project, so it needs no binding and never
-/// answers `78` — which is why the "does this verb need a manifest" question that used to live
-/// here went away with the two verbs that answered yes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Deferred {
-    Gc,
-}
-
-impl Deferred {
-    /// The verb as spelled on the command line.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Gc => "gc",
-        }
-    }
 }
 
 /// What the host can tell a command about its own streams.
@@ -258,8 +250,9 @@ where
         Some("exec") => exec(rest, streams),
         Some("stop") => stop(rest),
         Some("volume") => volume(rest, streams),
+        Some("generations") => generations(rest),
         Some("destroy") => destroy(rest, streams),
-        Some("gc") => deferred_flagless(Deferred::Gc, rest, GC_USAGE),
+        Some("gc") => gc(rest),
         Some("doctor") => doctor(rest),
         _ => Err(UsageError::new(
             format!("unknown command `{}`", verb.to_string_lossy()),
@@ -286,9 +279,11 @@ struct Globals {
 fn takes_value(verb: Option<&str>, flag: &str) -> bool {
     match verb {
         Some("config") => flag == "--manifest",
-        Some("start") => flag == "--spec",
+        Some("start") => matches!(flag, "--spec" | "--generation"),
         Some("exec") => flag == "--env",
         Some("stop") => matches!(flag, "-t" | "--timeout"),
+        // Keyed on the family verb, because the lift never sees the subcommand.
+        Some("generations") => matches!(flag, "--keep" | "--older-than"),
         _ => false,
     }
 }
@@ -351,13 +346,13 @@ fn lift_globals(argv: impl Iterator<Item = OsString>) -> Globals {
     globals
 }
 
-const TOP_USAGE: &str =
-    "viv <config|manifest|start|status|shell|exec|stop|volume|destroy|gc|doctor> [options]";
+const TOP_USAGE: &str = "viv <config|manifest|start|status|shell|exec|stop|generations|volume|\
+destroy|gc|doctor> [options]";
 const CONFIG_USAGE: &str = "viv config [--manifest <name>] [--json]";
 const CONFIG_EVAL_USAGE: &str = "viv config eval [--json]";
 const CONFIG_SOURCES_USAGE: &str = "viv config sources [--json]";
 const MANIFEST_USAGE: &str = "viv manifest <list|show <name>> [--json]";
-const START_USAGE: &str = "viv start [--rebuild|--no-rebuild] [--json]";
+const START_USAGE: &str = "viv start [--rebuild|--no-rebuild] [--generation <n>] [--json]";
 const STATUS_USAGE: &str = "viv status [--json] [-g|--global]";
 const SHELL_USAGE: &str = "viv shell";
 const EXEC_USAGE: &str =
@@ -367,6 +362,12 @@ const VOLUME_USAGE: &str = "viv volume <list|prune> [options]";
 const VOLUME_LIST_USAGE: &str = "viv volume list [--json]";
 const VOLUME_PRUNE_USAGE: &str = "viv volume prune [-n|--dry-run] [-f|--yes] [--json]";
 const DESTROY_USAGE: &str = "viv destroy [-f|--yes] [--keep-volumes] [--json]";
+const GENERATIONS_USAGE: &str = "viv generations <list|activate|rollback|prune> [options]";
+const GENERATIONS_LIST_USAGE: &str = "viv generations list [--json]";
+const GENERATIONS_ACTIVATE_USAGE: &str = "viv generations activate <n> [--json]";
+const GENERATIONS_ROLLBACK_USAGE: &str = "viv generations rollback [--json]";
+const GENERATIONS_PRUNE_USAGE: &str =
+    "viv generations prune (--keep <n> | --older-than <dur>) [--json]";
 const GC_USAGE: &str = "viv gc [--json]";
 const DOCTOR_USAGE: &str = "viv doctor [--json] [--strict] [--list] [--online]";
 
@@ -420,6 +421,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("shell", SHELL_USAGE, "open a shell inside the guest"),
     ("exec", EXEC_USAGE, "run one command inside the guest"),
     ("stop", STOP_USAGE, "bring the VM down"),
+    (
+        "generations",
+        GENERATIONS_USAGE,
+        "list, switch, and prune retained builds",
+    ),
     (
         "volume",
         VOLUME_USAGE,
@@ -537,11 +543,22 @@ fn start(rest: &[OsString]) -> Result<Invocation, UsageError> {
     }
 
     let (mut rebuild, mut no_rebuild, mut attach) = (false, false, false);
+    let mut generation = None;
     let mut output = Output::Human;
-    for token in rest {
+    let mut tokens = rest.iter();
+    while let Some(token) = tokens.next() {
         match token.to_str() {
             Some("--rebuild") => rebuild = true,
             Some("--no-rebuild") => no_rebuild = true,
+            Some("--generation") => {
+                let raw = value(&mut tokens, "--generation", START_USAGE)?;
+                generation = Some(raw.parse().map_err(|_| {
+                    UsageError::new(
+                        format!("`--generation` expects a generation number, got `{raw}`"),
+                        Some(START_USAGE),
+                    )
+                })?);
+            }
             // Parsed, never dropped: spec/10 makes `--attach` a console-streaming form whose
             // post-condition differs from the detached one, so the verb refuses it by name rather
             // than performing a different operation under it. The refusal is in `lifecycle::start`
@@ -558,9 +575,19 @@ fn start(rest: &[OsString]) -> Result<Invocation, UsageError> {
             Some(START_USAGE),
         ));
     }
+    // Both rebuild flags contradict a named generation, each its own way: `--rebuild` asks for a
+    // fresh build and `--no-rebuild` names the current generation, while `--generation` names a
+    // different one. Precedence would perform one of the two requests silently.
+    if generation.is_some() && (rebuild || no_rebuild) {
+        return Err(UsageError::new(
+            "`--generation` conflicts with `--rebuild` and `--no-rebuild`",
+            Some(START_USAGE),
+        ));
+    }
     Ok(Invocation::Start {
         rebuild,
         no_rebuild,
+        generation,
         attach,
         output,
     })
@@ -813,13 +840,128 @@ fn destroy(rest: &[OsString], streams: Streams) -> Result<Invocation, UsageError
     })
 }
 
-fn deferred_flagless(
-    verb: Deferred,
-    rest: &[OsString],
-    usage: &'static str,
-) -> Result<Invocation, UsageError> {
-    let output = flags_only(rest, usage)?;
-    Ok(Invocation::Deferred { verb, output })
+fn gc(rest: &[OsString]) -> Result<Invocation, UsageError> {
+    Ok(Invocation::Gc {
+        output: flags_only(rest, GC_USAGE)?,
+    })
+}
+
+fn generations(rest: &[OsString]) -> Result<Invocation, UsageError> {
+    let Some(sub) = rest.first() else {
+        return Err(UsageError::new(
+            "`viv generations` needs a subcommand",
+            Some(GENERATIONS_USAGE),
+        ));
+    };
+    match sub.to_str() {
+        Some("list") => Ok(Invocation::GenerationsList {
+            output: flags_only(&rest[1..], GENERATIONS_LIST_USAGE)?,
+        }),
+        Some("activate") => {
+            let mut number = None;
+            let mut output = Output::Human;
+            for token in &rest[1..] {
+                match token.to_str() {
+                    Some("--json") => output = Output::Json,
+                    Some(raw) if number.is_none() && !raw.starts_with('-') => {
+                        number = Some(raw.parse().map_err(|_| {
+                            UsageError::new(
+                                format!("`activate` expects a generation number, got `{raw}`"),
+                                Some(GENERATIONS_ACTIVATE_USAGE),
+                            )
+                        })?);
+                    }
+                    _ => return Err(unknown(token, GENERATIONS_ACTIVATE_USAGE)),
+                }
+            }
+            let Some(number) = number else {
+                return Err(UsageError::new(
+                    "`activate` needs the generation number to switch to",
+                    Some(GENERATIONS_ACTIVATE_USAGE),
+                ));
+            };
+            Ok(Invocation::GenerationsActivate { number, output })
+        }
+        Some("rollback") => Ok(Invocation::GenerationsRollback {
+            output: flags_only(&rest[1..], GENERATIONS_ROLLBACK_USAGE)?,
+        }),
+        Some("prune") => {
+            let mut keep = None;
+            let mut older_than_seconds = None;
+            let mut output = Output::Human;
+            let mut tokens = rest[1..].iter();
+            while let Some(token) = tokens.next() {
+                match token.to_str() {
+                    Some("--keep") => {
+                        let raw = value(&mut tokens, "--keep", GENERATIONS_PRUNE_USAGE)?;
+                        keep = Some(raw.parse().map_err(|_| {
+                            UsageError::new(
+                                format!("`--keep` expects a whole number, got `{raw}`"),
+                                Some(GENERATIONS_PRUNE_USAGE),
+                            )
+                        })?);
+                    }
+                    Some("--older-than") => {
+                        let raw = value(&mut tokens, "--older-than", GENERATIONS_PRUNE_USAGE)?;
+                        older_than_seconds = Some(duration_seconds(&raw)?);
+                    }
+                    Some("--json") => output = Output::Json,
+                    _ => return Err(unknown(token, GENERATIONS_PRUNE_USAGE)),
+                }
+            }
+            // Exactly one retention argument, by the spec's own grammar: neither would mean
+            // "remove everything", and both would leave which one decides to precedence.
+            match (keep, older_than_seconds) {
+                (Some(_), Some(_)) => Err(UsageError::new(
+                    "`--keep` and `--older-than` contradict each other",
+                    Some(GENERATIONS_PRUNE_USAGE),
+                )),
+                (None, None) => Err(UsageError::new(
+                    "`prune` needs `--keep <n>` or `--older-than <dur>`",
+                    Some(GENERATIONS_PRUNE_USAGE),
+                )),
+                _ => Ok(Invocation::GenerationsPrune {
+                    keep,
+                    older_than_seconds,
+                    output,
+                }),
+            }
+        }
+        _ => Err(UsageError::new(
+            format!(
+                "`viv generations {}` is not a subcommand",
+                sub.to_string_lossy()
+            ),
+            Some(GENERATIONS_USAGE),
+        )),
+    }
+}
+
+/// `<count><d|h|m|s>`, the suffix required: a bare number would make the unit a guess, and the
+/// guessed reading of a retention window deletes in the unrecoverable direction.
+fn duration_seconds(raw: &str) -> Result<u64, UsageError> {
+    let malformed = || {
+        UsageError::new(
+            format!("`--older-than` expects `<number><d|h|m|s>`, got `{raw}`"),
+            Some(GENERATIONS_PRUNE_USAGE),
+        )
+    };
+    if !raw.is_ascii() || raw.len() < 2 {
+        return Err(malformed());
+    }
+    let (digits, unit) = raw.split_at(raw.len() - 1);
+    let scale: u64 = match unit {
+        "d" => 86_400,
+        "h" => 3_600,
+        "m" => 60,
+        "s" => 1,
+        _ => return Err(malformed()),
+    };
+    if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(malformed());
+    }
+    let count: u64 = digits.parse().map_err(|_| malformed())?;
+    count.checked_mul(scale).ok_or_else(malformed)
 }
 
 /// Accepts `--json` and nothing else, which is the whole grammar of several read-only verbs.
@@ -862,7 +1004,7 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use super::{Deferred, Invocation, Output, Streams, parse};
+    use super::{Invocation, Output, Streams, parse};
 
     fn argv(rest: &[&str]) -> Vec<OsString> {
         std::iter::once("viv")
@@ -907,7 +1049,11 @@ mod tests {
             | Invocation::VolumeList { output }
             | Invocation::VolumePrune { output, .. }
             | Invocation::Destroy { output, .. }
-            | Invocation::Deferred { output, .. }
+            | Invocation::GenerationsList { output }
+            | Invocation::GenerationsPrune { output, .. }
+            | Invocation::GenerationsActivate { output, .. }
+            | Invocation::GenerationsRollback { output }
+            | Invocation::Gc { output }
             | Invocation::Doctor { output, .. } => Some(*output),
             // None carries a `--json` slot: the private handoff predates the published surface,
             // the two session verbs hand their streams to a guest process, and help and version
@@ -1121,21 +1267,10 @@ mod tests {
         assert!(parse(argv(&[]), tty()).is_err());
     }
 
-    /// Pins the two verbs that left `Deferred` as verbs that now parse into real work.
-    ///
-    /// The test this replaces asserted that `volume list` and `destroy` needed a binding while
-    /// `gc` did not — a distinction that existed only to gate the refusal they used to share. Both
-    /// now dispatch, so what is worth pinning is that they no longer reach the not-implemented
-    /// path at all, and that `gc` still does.
+    /// Pins that every published verb now parses into real work — nothing is deferred.
     #[test]
-    fn only_gc_is_still_deferred() {
-        assert!(matches!(
-            parsed(&["gc"]),
-            Ok(Invocation::Deferred {
-                verb: Deferred::Gc,
-                ..
-            })
-        ));
+    fn every_verb_parses_into_real_work() {
+        assert!(matches!(parsed(&["gc"]), Ok(Invocation::Gc { .. })));
         assert!(matches!(
             parsed(&["volume", "list"]),
             Ok(Invocation::VolumeList { .. })
@@ -1148,6 +1283,88 @@ mod tests {
             parsed(&["destroy", "--yes"]),
             Ok(Invocation::Destroy { .. })
         ));
+    }
+
+    /// Pins the `generations` family grammar: forms, values, and the exactly-one retention rule.
+    #[test]
+    fn the_generations_family_parses_and_refuses() {
+        assert!(matches!(
+            parsed(&["generations", "list"]),
+            Ok(Invocation::GenerationsList { .. })
+        ));
+        assert!(matches!(
+            parsed(&["generations", "activate", "3"]),
+            Ok(Invocation::GenerationsActivate { number: 3, .. })
+        ));
+        assert!(matches!(
+            parsed(&["generations", "rollback"]),
+            Ok(Invocation::GenerationsRollback { .. })
+        ));
+        assert!(matches!(
+            parsed(&["generations", "prune", "--keep", "2"]),
+            Ok(Invocation::GenerationsPrune {
+                keep: Some(2),
+                older_than_seconds: None,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parsed(&["generations", "prune", "--older-than", "30d"]),
+            Ok(Invocation::GenerationsPrune {
+                keep: None,
+                older_than_seconds: Some(2_592_000),
+                ..
+            })
+        ));
+        for rejected in [
+            vec!["generations"],                  // no subcommand
+            vec!["generations", "bogus"],         // unknown subcommand
+            vec!["generations", "activate"],      // no number
+            vec!["generations", "activate", "x"], // not a number
+            vec!["generations", "prune"],         // no retention argument
+            vec!["generations", "prune", "--keep", "1", "--older-than", "1d"], // both
+            vec!["generations", "prune", "--keep", "x"], // bad count
+            vec!["generations", "prune", "--older-than", "7"], // no unit
+            vec!["generations", "prune", "--older-than", "d"], // no count
+            vec!["generations", "prune", "--older-than", "7w"], // unknown unit
+        ] {
+            assert!(
+                parse(argv(&rejected), tty()).is_err(),
+                "accepted: {rejected:?}"
+            );
+        }
+    }
+
+    /// Pins `start --generation`: the value survives the lift, and the rebuild pair conflicts.
+    #[test]
+    fn start_generation_takes_a_value_and_conflicts_with_rebuilds() {
+        assert!(matches!(
+            parsed(&["start", "--generation", "2"]),
+            Ok(Invocation::Start {
+                generation: Some(2),
+                ..
+            })
+        ));
+        // The lift must not read `2` as a verb-local token to inspect: `-v` after the value
+        // proves the value was stepped over.
+        assert!(matches!(
+            parsed(&["start", "--generation", "2", "-v"]),
+            Ok(Invocation::Start {
+                generation: Some(2),
+                ..
+            })
+        ));
+        for rejected in [
+            vec!["start", "--generation"],
+            vec!["start", "--generation", "x"],
+            vec!["start", "--generation", "2", "--rebuild"],
+            vec!["start", "--generation", "2", "--no-rebuild"],
+        ] {
+            assert!(
+                parse(argv(&rejected), tty()).is_err(),
+                "accepted: {rejected:?}"
+            );
+        }
     }
 
     /// `--keep-volumes` was parsed and discarded, which is the shape of bug a flag test catches

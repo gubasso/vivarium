@@ -6,7 +6,6 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## later
 
-- 032 a-build-roots-itself — later — 3 sessions — second of that chain; moved out of the decided-not-funded phase by slice 015's measurement that the current build was reachable from no root, and by the hand-added gcroot it found beside it
 - 025 the-fleet-is-visible — later — 3 sessions — needs 021 (done; the rekey every row carries)
 - 027 the-stop-ladder-is-whole — later — 3 sessions — needs 025 (the reader the sweep enumerates through); carries `Q-018` and `Q-021`, and was moved ahead of 026 because ending a day is a daily act and refusing a launch is not
 - 026 a-start-checks-the-room — later — 3 sessions — needs 025 (the fleet term admission reads)
@@ -21,6 +20,8 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 009 automate-backend-advisories — later — 2 sessions
 
 ## closed
+
+- 032 a-build-roots-itself — done — 3 sessions — one pass under the appetite, remainder included: the whole `generations` family, `viv gc`'s sweep, and `start --generation`; the host evidence, the record reconciliation, and the `Q-023` exit are in the slice `Revisions`
 
 - 031 a-declared-agent-channel-reaches-the-guest — done — 2 sessions — one pass under the appetite; the option-surface move, the two-site refusal, the host evidence, and the one cut (`gpg` end-to-end trial) are in the slice `Revisions`
 

@@ -296,8 +296,8 @@ fn nix_store_disk_space(probe: &'static Probe) -> Finding {
                 gigabytes(free),
                 gigabytes(STORE_FLOOR_BYTES)
             ),
-            "reclaim space with `nix-collect-garbage` — note Q-023: a collection can \
-            cost a cold rebuild",
+            "reclaim space with `viv gc`; retained builds are rooted (spec/11) and survive \
+            a collection",
         ),
         Some(free) => Finding::pass(
             probe,
@@ -645,7 +645,7 @@ fn store_roots_intact<E: Environment>(probe: &'static Probe, inputs: &Inputs<'_,
     for sandbox_id in &running {
         let record = inputs
             .roots
-            .data
+            .state
             .join("projects")
             .join(sandbox_id)
             .join("default")

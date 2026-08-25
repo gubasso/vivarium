@@ -30,7 +30,9 @@ Chosen option: one lockfile per project target, under the data root at `projects
 
 ## Status
 
-Accepted
+Implemented
+
+Enacted across two slices: the tool-owned per-target lock under the data root, created by the first successful evaluation and spared by `viv destroy`, is in [`../../src/config/flake.rs`](../../src/config/flake.rs) and [`../../src/config/materialize.rs`](../../src/config/materialize.rs); the amendment to `ADR-0014` — each generation retains the whole lock in force plus its digest — landed with slice 032 in [`../../src/config/generations.rs`](../../src/config/generations.rs).
 
 Amended by [`ADR-0062-override-lock-is-per-manifest-and-update-refuses.md`](./ADR-0062-override-lock-is-per-manifest-and-update-refuses.md) — the shared override lock is per manifest, at `manifests/<name>/flake.lock`, not one file at the config root; and `viv update` refuses (`78`) while it is in force rather than writing the lock it shadows. The retained generation snapshot is the lock in force.
 

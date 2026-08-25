@@ -136,9 +136,11 @@ impl Plan {
             .join(sandbox_id)
             .join(super::DEFAULT_TARGET);
 
-        // The build records go individually rather than with their directory, because their
+        // Two legacy filenames go individually rather than with their directory, because their
         // sibling is the lockfile ADR-0059 put under the data root precisely so this verb spares
-        // it. Removing the parent would be one line shorter and would discard the pin.
+        // it. Slice 032 retired both records from the data root — the generation profile answers
+        // what was last built and `running-build` moved to the state root — and the names stay in
+        // this list so destroying a project that predates the move leaves nothing behind.
         let mut remove = vec![
             data_target.join("last-build"),
             data_target.join("running-build"),
@@ -258,7 +260,12 @@ fn read_failure(path: &Path, source: &std::io::Error) -> Failure {
 }
 
 fn remove_tree(path: &Path) -> Result<(), Failure> {
-    let result = if path.is_dir() {
+    // `symlink_metadata` rather than `is_dir`, because the state tree now holds symlinks whose
+    // targets are directories — a generation's GC root points at a store output. Following one
+    // would ask `remove_dir_all` to delete through the link; the link itself is what this verb
+    // unlinks, and the store contents are a later collection's to reclaim (spec/10).
+    let is_directory = std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir());
+    let result = if is_directory {
         std::fs::remove_dir_all(path)
     } else {
         std::fs::remove_file(path)

@@ -179,6 +179,16 @@ Slice 015's pre-boot refusal, proved on a real host. Like `exec-and-shell-check`
 $ tests/host/contract-skew-check
 ```
 
+## The sibling script: `tests/host/generations-check`
+
+Slice 032's store-side acceptance, proved by collecting rather than by asserting the root exists. It drives a scratch installation of `viv` end to end — start, list, prune, destroy — and between the steps runs `viv gc`, the whole-store sweep, against the invoking user's real store. That is why it is its own script: a sweep reclaims every dead path on the machine, not just the lane's, and must never be a side effect of the routine harness. Its sibling in spirit is `store-gc-interlock-check`, the only other lane that removes from the store.
+
+```console
+$ tests/host/generations-check
+```
+
+Every survival claim is demonstrated beside a canary: an unrooted path added for the purpose, whose reclamation is what proves each collection actually collected. A build held while its canary vanished in the same pass is the invariant — the sweep reclaims exactly what no root pins. The root-registration check reads `nix-store --query --roots`, never the filesystem, because a symlink that is not registered is the defect the slice exists to remove; the collection observation is then repeated, because one clean run is evidence of possibility, not reliability. The trial half of the same slice — append, listing, switching, the `75` guard read from the boot record, prune selection — is `workflow_24_generations_retention` in the acceptance harness.
+
 ## The sibling script: `tests/host/leftovers`
 
 What a round left behind, on both disks, and the command that would clear each pile. It reports and never acts: telling a registered sandbox from an orphaned fixture root is exactly the judgement a person wants to make with their own eyes, and a volume holds user data. Groups are named with a size and a note — the shared compile cache, scratch, fixture roots, retained diagnostics, runtime roots a run did not tear down, vivarium user units still loaded, and the store's own free space, which no gate moves.
@@ -738,6 +748,14 @@ Alive again, the lanes surfaced two checks whose form encoded a wrong assumption
 A third check of the same class turned up once `share-benchmark-check` could run to the end. `share-bench-pool-sizes-distinct` located each launcher's contract by grepping the launcher script for a store path named `vivarium-<image>-launch-arguments.json`. No such derivation exists — `runner.nix` builds the contract with `writeTextDir`, so it is called `launch-arguments.json` — and the pattern therefore matched nothing and compared an empty string against every pool size. Slice 019 moved that JSON to the published `share/vivarium/launch-arguments.json` and updated the sibling lanes' greps to it; this one kept the store-name form. It now reads the published path, which is the reason the published path exists, and the four launchers declare `0`, `1`, `2` and `4` as built.
 
 Result on this host, every lane run to a verdict: `base-image-check` `PASS=42 FAIL=0 SKIP=0` (against `PASS=25 FAIL=1` at the 2026-08-18 reading and nothing at all in between), `store-gc-interlock-check` `PASS=17 FAIL=0 SKIP=0`, `store-pressure-check` `PASS=21 FAIL=0 SKIP=3` (the three skips are arm E's discard chain, which this arm does not exercise), `share-benchmark-check` `PASS=18 FAIL=0 SKIP=0` with all four pool sizes booting and reporting 46 marker lines each, and `exec-and-shell-check` `PASS=5 FAIL=0 SKIP=0`. The same round split `exec-and-shell-check`'s rendering assertion: `--mount` is optional, so the base image renders with no mount declared, and the three facts that do not need a declared share are now asserted against the shipped artifact instead of against a verification image. That closes the open question the call site had been carrying in a comment.
+
+### A retained build now survives the collection that used to cost twenty-nine minutes, measured by collecting
+
+Measured 2026-08-25 on the target host with `/dev/kvm`, a systemd user manager, `$XDG_RUNTIME_DIR`, and `VIVARIUM_HEAVY_DRIVE` set, on Nix 2.34.8. `tests/host/generations-check`, first complete run: `PASS=16 FAIL=0 SKIP=0 RECORD=6`. This is the closing evidence for `Q-023`, whose 2026-08-14 measurement found this repository's own image reachable from no root and already in the dead set.
+
+The figures. A first `viv start` built and booted in 19s and left `current -> generations/1` with the record and lock snapshot beside it; `nix-store --query --roots` named the generation symlink as a root of the base image. Four whole-store sweeps then ran through `viv gc`, taking 24s, 13s, 13s, and 16s, and each reclaimed its unrooted canary in the same pass that left the rooted build byte-for-byte present — the survival observation held on the repeat, which is what the acceptance required beyond the first clean run. A second build appended generation 2 in 28s; `viv generations prune --keep 1` unlinked exactly generation 1's root, after which the third sweep reclaimed the pruned build while the kept one survived it. `viv destroy --yes` left no generation reachable from any root, and the fourth sweep reclaimed what had been the project's current build.
+
+Worth keeping beside the figures: the registration is `nix-store --realise --add-root`, so the root is indirect — removing the symlink is the whole unlink, and the auto root goes stale with it. And `viv gc`'s first draft read the collector's last stderr line as its accounting summary, which on this host is a hard-linking housekeeping note: the accounting line goes to stdout and only the notes to stderr, measured with a canary deletion on this Nix. The verb now relays stdout's last line — one more instance of the register's rule that when a check's subject and its assertion can drift apart, assert on the thing the check is named after.
 
 ## The method note
 

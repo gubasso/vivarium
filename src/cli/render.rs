@@ -52,7 +52,7 @@ pub fn help_human(palette: &Palette, verb: Option<&str>) -> String {
         let _ = writeln!(
             rendered,
             "  {} {blurb}",
-            palette.accent.apply_to(format!("{name:<9}")),
+            palette.accent.apply_to(format!("{name:<12}")),
         );
     }
     let _ = writeln!(rendered, "\n{}", palette.label.apply_to("global flags:"));
@@ -488,6 +488,59 @@ pub fn volume_prune_human(rows: &[String], reclaimed_bytes: u64) -> String {
     rendered
 }
 
+/// `viv generations list --json` — one row per retained generation, wrapped for the reason
+/// every list this CLI emits is (spec/01).
+pub fn generations_list_json(rows: &[Value]) -> String {
+    line(&json!({ "generations": rows }))
+}
+
+/// `viv generations list` — one row per line, oldest first, nothing at all for a project never
+/// built.
+pub fn generations_list_human(rows: &[Vec<String>], palette: &Palette) -> String {
+    volume_list_human(rows, palette)
+}
+
+/// `viv generations prune --json` — the rows unlinked, and how many stayed.
+///
+/// `kept` sits beside the list for the reason `reclaimed_bytes` does on `volume prune`: it is a
+/// property of the run, and nothing-to-do is `{"generations": [], "kept": n}` at `0`.
+pub fn generations_prune_json(rows: &[Value], kept: usize) -> String {
+    line(&json!({ "generations": rows, "kept": kept }))
+}
+
+/// `viv generations prune` — the rows unlinked, then the count that stayed. The count always
+/// prints, including after a run that unlinked nothing: "nothing to prune" is a result.
+pub fn generations_prune_human(rows: &[Vec<String>], kept: usize) -> String {
+    let mut rendered = table::columns(rows);
+    let _ = writeln!(rendered, "kept	{kept}");
+    rendered
+}
+
+/// `viv generations activate`/`rollback` `--json` — what moved, and from where.
+pub fn generations_switch_json(action: &str, current: u64, previous: Option<u64>) -> String {
+    line(&json!({ "action": action, "current": current, "previous": previous }))
+}
+
+/// The human form of the same move: one line naming both ends.
+pub fn generations_switch_human(current: u64, previous: Option<u64>) -> String {
+    match previous {
+        Some(previous) if previous != current => {
+            format!("current: generation {previous} -> generation {current}\n")
+        }
+        _ => format!("current: generation {current}\n"),
+    }
+}
+
+/// `viv gc --json` — the collector's own accounting line, relayed rather than re-derived.
+pub fn gc_json(summary: Option<&str>) -> String {
+    line(&json!({ "summary": summary }))
+}
+
+/// `viv gc` — the same line for a human, with a fallback for a collector that said nothing.
+pub fn gc_human(summary: Option<&str>) -> String {
+    format!("{}\n", summary.unwrap_or("collected"))
+}
+
 /// `viv manifest show --json` — one manifest as authored.
 pub fn manifest_show_json(name: &str, selected: &ResolvedArtifact, manifest: &Manifest) -> String {
     line(&json!({
@@ -584,10 +637,9 @@ const fn egress_mode(mode: EgressMode) -> &'static str {
 
 /// `viv status --json` — one record of operational state (spec/01 "Status output").
 ///
-/// Every key is present whatever the state, because a consumer needs a stable shape. A field this
-/// slice cannot fill honestly is `null` rather than fabricated: `generation` in particular, since
-/// spec/11's generations are out of scope here and a number invented for the slot would be a
-/// different and wrong answer.
+/// Every key is present whatever the state, because a consumer needs a stable shape. A field the
+/// state cannot fill honestly is `null` rather than fabricated: `generation` for a project never
+/// built, `reason` outside `failed`.
 ///
 /// `resources` and `runtime` stay separate objects even when both are absent. spec/01 is explicit
 /// that a consumer must never have to guess which it is holding, so collapsing them while one
@@ -603,7 +655,7 @@ pub fn status_json(report: &Report) -> String {
         // Meaningful only while running (ADR-0030), and reported as a boolean regardless so the
         // key does not appear and disappear.
         "stale": report.stale,
-        "generation": Value::Null,
+        "generation": report.generation,
         "store_path": report.store_path,
         "uptime_seconds": report.uptime_seconds,
         "resources": report.resources.as_ref().map(|resources| json!({

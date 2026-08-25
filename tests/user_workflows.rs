@@ -7,12 +7,12 @@ use std::time::{Duration, Instant};
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use support::{
-    EX_CONFIG, EX_DATAERR, EX_IOERR, EX_USAGE, GateLevel, TempProject, VivOutput, expect_code,
-    expect_derived_manifest_visible, expect_json_array_items, expect_json_array_nonempty,
-    expect_json_fields_at, expect_json_keys, expect_json_map_entries, expect_json_string,
-    expect_no_volume_images, expect_nonzero, expect_stderr_mentions, expect_stdout_lacks,
-    expect_stdout_mentions, expect_tree_unchanged, expect_volume_image, gate, json, run_viv,
-    snapshot_tree, volume_image, write_file,
+    EX_CONFIG, EX_DATAERR, EX_IOERR, EX_TEMPFAIL, EX_UNAVAILABLE, EX_USAGE, GateLevel, TempProject,
+    VivOutput, expect_code, expect_derived_manifest_visible, expect_json_array_items,
+    expect_json_array_nonempty, expect_json_fields_at, expect_json_keys, expect_json_map_entries,
+    expect_json_string, expect_no_volume_images, expect_nonzero, expect_stderr_mentions,
+    expect_stdout_lacks, expect_stdout_mentions, expect_tree_unchanged, expect_volume_image, gate,
+    json, run_viv, snapshot_tree, volume_image, write_file,
 };
 
 type WorkflowRunner = fn() -> Result<(), Failed>;
@@ -23,7 +23,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 28] = [
+const WORKFLOWS: [WorkflowSpec; 30] = [
     (
         "workflow_01_manifest_workspace_resolution_usage",
         GateLevel::Cli,
@@ -163,6 +163,16 @@ const WORKFLOWS: [WorkflowSpec; 28] = [
         "workflow_23_agent_channel_relay",
         GateLevel::Virtualization,
         workflow_23_relay,
+    ),
+    (
+        "workflow_24_generations_usage_surface",
+        GateLevel::Cli,
+        workflow_24_usage,
+    ),
+    (
+        "workflow_24_generations_retention",
+        GateLevel::Virtualization,
+        workflow_24_retention,
     ),
 ];
 
@@ -1774,14 +1784,22 @@ fn workflow_08_usage() -> Result<(), Failed> {
     ))?;
     check(expect_code(&viv(&tp, &["destroy"])?, EX_USAGE))?;
 
-    // `gc` is a global whole-store sweep: it never requires a selected manifest, so it
-    // cannot answer `78` even from an undeclared directory.
+    // `gc` is a global whole-store sweep: it never requires a selected manifest, so it cannot
+    // answer `78` even from an undeclared directory. The sweep itself must not run here — this
+    // suite runs from the hooks, and a real collection takes the store's GC lock under every
+    // concurrently building trial — so the collector is made unreachable instead: with an empty
+    // `PATH` the verb gets exactly as far as spawning `nix-store` and answers `69`, which proves
+    // no manifest gate stood before it. The real sweep is `tests/host/generations-check`'s.
     let global = TempProject::new().map_err(io_failed)?;
-    let gc = viv(&global, &["gc"])?;
-    if gc.status.code() == Some(EX_CONFIG) {
-        return fail("viv gc incorrectly required a selected manifest");
-    }
-    Ok(())
+    let no_tools = global.root().join("no-tools");
+    fs::create_dir_all(&no_tools).map_err(io_failed)?;
+    let gc = viv_with_env(
+        &global,
+        &["gc"],
+        &[("PATH", no_tools.to_str().unwrap_or_default())],
+    )?;
+    check(expect_code(&gc, EX_UNAVAILABLE))?;
+    check(expect_stderr_mentions(&gc, "gc-unavailable"))
 }
 
 // Guide: docs/guides/destroy-cold-rebuild.md
@@ -1796,7 +1814,43 @@ fn workflow_08_rebuild() -> Result<(), Failed> {
         )?,
         0,
     ))?;
+    // The built output, captured before teardown: the unroot assertion below is against the
+    // store, not the filesystem — a symlink that was never registered is slice 032's defect.
+    let status = viv(&tp, &["status", "--json"])?;
+    check(expect_code(&status, 0))?;
+    let record: serde_json::Value = serde_json::from_slice(&status.stdout)
+        .map_err(|error| Failed::from(format!("status --json was not JSON: {error}")))?;
+    let built = record["store_path"]
+        .as_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| Failed::from("status --json reported no store_path before destroy"))?;
     check(expect_code(&viv(&tp, &["destroy", "--yes"])?, 0))?;
+    // Slice 032: no generation of the destroyed project stays reachable from any root.
+    let state_project = tp
+        .state()
+        .join("vivarium")
+        .join("projects")
+        .join("teardown-demo");
+    if state_project.exists() {
+        return fail(format!(
+            "destroy left the generation profile at {}",
+            state_project.display()
+        ));
+    }
+    let roots = std::process::Command::new("nix-store")
+        .args(["--query", "--roots"])
+        .arg(&built)
+        .output()
+        .map_err(io_failed)?;
+    let named = String::from_utf8_lossy(&roots.stdout);
+    if named
+        .lines()
+        .any(|line| line.contains(&state_project.display().to_string()))
+    {
+        return fail(format!(
+            "a destroyed generation is still a root of {built}: {named}"
+        ));
+    }
     // The derived owner survives teardown; no workspace-local identity artifact exists.
     check(expect_derived_manifest_visible(
         &viv(&tp, &["config", "--json"])?,
@@ -1841,11 +1895,11 @@ fn workflow_08_rebuild() -> Result<(), Failed> {
 /// refused before boot, with both numbers and the remedy named.
 ///
 /// The refusal reads the built output — never a compile-time constant — which is why the trial
-/// can seed a plain directory as the "build": `--no-rebuild` selects whatever `last-build`
-/// records, the check reads only `share/vivarium/launch-contract-schema`, and the refusal must
-/// land before anything in the tree is executed. Behind the virtualization gate because `start`
-/// preflights the host before selecting a build, not because anything boots — no case here
-/// reaches a launcher.
+/// can seed a plain directory as the "build": `--no-rebuild` selects whatever the generation
+/// profile's `current` pins, the check reads only `share/vivarium/launch-contract-schema`, and
+/// the refusal must land before anything in the tree is executed. Behind the virtualization
+/// gate because `start` preflights the host before selecting a build, not because anything
+/// boots — no case here reaches a launcher.
 fn workflow_15_contract_skew() -> Result<(), Failed> {
     let ours = vivarium::launch::LAUNCH_SCHEMA_VERSION;
     let theirs = ours - 1;
@@ -1853,7 +1907,8 @@ fn workflow_15_contract_skew() -> Result<(), Failed> {
     arrange_manifest(&tp, "skew-demo", "", "")?;
 
     // A stand-in for an old generation: a tree that publishes an older contract number at the
-    // stable path. `last-build` is a store path as text, and `--no-rebuild` trusts it.
+    // stable path, retained as the profile's `current` — `--no-rebuild` boots whatever that
+    // pins, and the reader is a symlink chain plus an existence check, so no store is needed.
     let build = tp.root().join("stale-build");
     let schema = build
         .join("share")
@@ -1861,15 +1916,7 @@ fn workflow_15_contract_skew() -> Result<(), Failed> {
         .join("launch-contract-schema");
     std::fs::create_dir_all(schema.parent().unwrap_or(&build)).map_err(io_failed)?;
     write_file(&schema, &format!("{theirs}\n")).map_err(io_failed)?;
-    let record = tp
-        .data()
-        .join("vivarium")
-        .join("projects")
-        .join("skew-demo")
-        .join("default")
-        .join("last-build");
-    std::fs::create_dir_all(record.parent().unwrap_or(&build)).map_err(io_failed)?;
-    write_file(&record, &format!("{}\n", build.display())).map_err(io_failed)?;
+    fabricate_generation(&tp, "skew-demo", 1, &build)?;
 
     let refused = viv(&tp, &["start", "--no-rebuild"])?;
     check(expect_code(&refused, 78))?;
@@ -1899,7 +1946,7 @@ fn workflow_15_contract_skew() -> Result<(), Failed> {
 /// The doctored copy stands in for a real old generation, which no test can mint without a
 /// second vivarium version on hand: the store is immutable, so "move the tree so the contract
 /// schema changes" is a copy whose published number is bumped, selected the way any old build
-/// is selected — through `last-build` and `--no-rebuild`.
+/// is selected — through the profile's `current` and `--no-rebuild`.
 fn workflow_15_contract_skew_live() -> Result<(), Failed> {
     let ours = vivarium::launch::LAUNCH_SCHEMA_VERSION;
     let foreign = ours + 1;
@@ -1911,15 +1958,16 @@ fn workflow_15_contract_skew_live() -> Result<(), Failed> {
     check(expect_code(&viv(&tp, &["start"])?, 0))?;
     check(expect_code(&viv(&tp, &["stop"])?, 0))?;
 
-    let record = tp
-        .data()
+    let profile = tp
+        .state()
         .join("vivarium")
         .join("projects")
         .join("skew-live")
-        .join("default")
-        .join("last-build");
-    let built = std::fs::read_to_string(&record).map_err(io_failed)?;
-    let built = built.trim();
+        .join("default");
+    let current = std::fs::read_link(profile.join("current")).map_err(io_failed)?;
+    let built = std::fs::read_link(profile.join(&current)).map_err(io_failed)?;
+    let built = built.to_string_lossy().into_owned();
+    let built = built.as_str();
 
     // The copy: the runner output is a small symlink forest, so copying it moves kilobytes;
     // the schema symlink is replaced by a plain file carrying a number this binary does not
@@ -1948,7 +1996,7 @@ fn workflow_15_contract_skew_live() -> Result<(), Failed> {
         .join("launch-contract-schema");
     std::fs::remove_file(&schema).map_err(io_failed)?;
     write_file(&schema, &format!("{foreign}\n")).map_err(io_failed)?;
-    write_file(&record, &format!("{}\n", doctored.display())).map_err(io_failed)?;
+    fabricate_generation(&tp, "skew-live", 2, &doctored)?;
 
     let refused = viv(&tp, &["start", "--no-rebuild"])?;
     check(expect_code(&refused, 78))?;
@@ -3032,7 +3080,7 @@ fn workflow_23_relay() -> Result<(), Failed> {
     check(expect_code(&refused, EX_CONFIG))?;
     check(expect_stderr_mentions(&refused, "agent-source-unset"))?;
     check(expect_stderr_mentions(&refused, "SSH_AUTH_SOCK"))?;
-    if path_named_exists(tp.data(), "last-build") {
+    if path_named_exists(tp.state(), "generations") {
         return fail(
             "the refusal came after a build; a declared channel refuses before one".to_owned(),
         );
@@ -3158,6 +3206,301 @@ fn expect_resting(tp: &TempProject) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     expect_code(&status, 0)?;
     expect_json_string(&status, "state", "built")
+}
+
+/// Slice 032, the grammar surface: malformed retention arguments answer `64`, an unbound
+/// project `78`, and a never-built project lists the empty envelope at `0` (spec/01, spec/14).
+fn workflow_24_usage() -> Result<(), Failed> {
+    let unbound = TempProject::new().map_err(io_failed)?;
+    check(expect_code(
+        &viv(&unbound, &["generations", "list"])?,
+        EX_CONFIG,
+    ))?;
+
+    let tp = TempProject::with_project_name("generations-usage").map_err(io_failed)?;
+    arrange_manifest(&tp, "generations-usage", "", "")?;
+    for rejected in [
+        vec!["generations"],
+        vec!["generations", "prune"],
+        vec!["generations", "prune", "--keep", "1", "--older-than", "1d"],
+        vec!["generations", "prune", "--older-than", "7"],
+        vec!["generations", "activate"],
+        vec!["start", "--generation", "2", "--rebuild"],
+        vec!["start", "--generation", "2", "--no-rebuild"],
+    ] {
+        check(expect_code(&viv(&tp, &rejected)?, EX_USAGE))?;
+    }
+    // Never built: the empty envelope at `0`, never an error (spec/01).
+    let list = viv(&tp, &["generations", "list", "--json"])?;
+    check(expect_code(&list, 0))?;
+    check(expect_json_keys(&list, &["generations"]))?;
+    // With nothing retained, a switch names nothing and is a malformed request (spec/14).
+    check(expect_code(
+        &viv(&tp, &["generations", "activate", "7"])?,
+        EX_USAGE,
+    ))?;
+    check(expect_code(
+        &viv(&tp, &["generations", "rollback"])?,
+        EX_USAGE,
+    ))?;
+    // The family is published: help names it.
+    let help = viv(&tp, &["--help"])?;
+    check(expect_code(&help, 0))?;
+    check(expect_stdout_mentions(&help, "generations"))
+}
+
+/// Slice 032, the retention core: a build appends a rooted generation, an unchanged build
+/// appends nothing, the profile lists, switches, and prunes, a named generation boots, and the
+/// running VM's own generation refuses to unlink at `75` — decided from the boot record rather
+/// than `current`, which the trial arranges to disagree.
+#[allow(clippy::too_many_lines)] // one retention story told in order, not logic to split
+fn workflow_24_retention() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("generations-project").map_err(io_failed)?;
+    arrange_manifest(&tp, "generations-demo", "", "")?;
+
+    // First build: one generation, current, all seven published keys, rooted in the store.
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+    check(expect_code(&viv(&tp, &["stop"])?, 0))?;
+    let list = viv(&tp, &["generations", "list", "--json"])?;
+    check(expect_code(&list, 0))?;
+    check(expect_json_array_items(
+        &list,
+        "generations",
+        &[
+            "number",
+            "current",
+            "store_path",
+            "manifest",
+            "lock_digest",
+            "backend",
+            "built_at",
+        ],
+    ))?;
+    let rows = generations_rows(&tp)?;
+    let [first] = rows.as_slice() else {
+        return fail(format!(
+            "expected one generation after one build, got {rows:?}"
+        ));
+    };
+    if first["current"] != serde_json::json!(true) {
+        return fail(format!("the only generation is not current: {first}"));
+    }
+    let digest = first["lock_digest"].as_str().unwrap_or_default();
+    if !digest.starts_with("sha256:") {
+        return fail(format!(
+            "lock_digest is not a sha256 content digest: {digest:?}"
+        ));
+    }
+    let number_1 = first["number"].as_u64().unwrap_or_default();
+    let path_1 = first["store_path"]
+        .as_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| Failed::from("the first generation names no store path"))?;
+    check(expect_generation_rooted(
+        &tp,
+        "generations-demo",
+        number_1,
+        &path_1,
+        true,
+    ))?;
+
+    // An unchanged start appends nothing: the freshness key is the store path (N4).
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+    check(expect_code(&viv(&tp, &["stop"])?, 0))?;
+    if generations_rows(&tp)?.len() != 1 {
+        return fail("an unchanged build appended a duplicate generation".to_owned());
+    }
+
+    // A changed image appends the next generation and moves `current` — the change must reach
+    // the built output, which an `[env]` launch-channel value would not.
+    arrange_manifest_with_image(
+        &tp,
+        "generations-demo",
+        "",
+        "",
+        "{ ... }: { environment.etc.\"generation-mark\".text = \"two\"; }\n",
+    )?;
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+    check(expect_code(&viv(&tp, &["stop"])?, 0))?;
+    let rows = generations_rows(&tp)?;
+    let [old, new] = rows.as_slice() else {
+        return fail(format!("expected two generations, got {rows:?}"));
+    };
+    let number_2 = new["number"].as_u64().unwrap_or_default();
+    if number_2 <= number_1
+        || old["current"] != serde_json::json!(false)
+        || new["current"] != serde_json::json!(true)
+    {
+        return fail(format!(
+            "the second build did not append monotonically: {rows:?}"
+        ));
+    }
+
+    // `rollback` steps `current` back; `activate` moves it by name.
+    check(expect_code(&viv(&tp, &["generations", "rollback"])?, 0))?;
+    if generations_rows(&tp)?[0]["current"] != serde_json::json!(true) {
+        return fail("rollback did not move `current` to the previous generation".to_owned());
+    }
+    let activate = number_2.to_string();
+    check(expect_code(
+        &viv(&tp, &["generations", "activate", &activate])?,
+        0,
+    ))?;
+    if generations_rows(&tp)?[1]["current"] != serde_json::json!(true) {
+        return fail("activate did not move `current` back".to_owned());
+    }
+
+    // A named generation boots without evaluating. `current` stays where activate put it, so
+    // the prune guard below can only pass by reading the boot record.
+    let boot_old = number_1.to_string();
+    check(expect_code(
+        &viv(&tp, &["start", "--generation", &boot_old])?,
+        0,
+    ))?;
+    let refused = viv(&tp, &["generations", "prune", "--keep", "1"])?;
+    check(expect_code(&refused, EX_TEMPFAIL))?;
+    check(expect_stderr_mentions(&refused, "generation-in-use"))?;
+    check(expect_code(&viv(&tp, &["stop"])?, 0))?;
+
+    // Stopped, the same prune unlinks exactly what its retention argument selects.
+    check(expect_code(
+        &viv(&tp, &["generations", "prune", "--keep", "1"])?,
+        0,
+    ))?;
+    let rows = generations_rows(&tp)?;
+    if rows.len() != 1 || rows[0]["number"].as_u64() != Some(number_2) {
+        return fail(format!(
+            "prune --keep 1 did not keep exactly the newest: {rows:?}"
+        ));
+    }
+    let metadata = tp
+        .state()
+        .join("vivarium")
+        .join("projects")
+        .join("generations-demo")
+        .join("default")
+        .join("metadata");
+    if metadata.join(format!("{number_1}.json")).exists()
+        || metadata.join(format!("{number_1}.lock")).exists()
+    {
+        return fail("a pruned generation left its metadata or lock snapshot behind".to_owned());
+    }
+    check(expect_generation_rooted(
+        &tp,
+        "generations-demo",
+        number_1,
+        &path_1,
+        false,
+    ))?;
+    // A pruned generation is a legible error to boot, never a silent rebuild (spec/11).
+    check(expect_code(
+        &viv(&tp, &["start", "--generation", &boot_old])?,
+        EX_DATAERR,
+    ))?;
+
+    // Numbers are never reused: the build after a prune steps past the gap.
+    arrange_manifest_with_image(
+        &tp,
+        "generations-demo",
+        "",
+        "",
+        "{ ... }: { environment.etc.\"generation-mark\".text = \"three\"; }\n",
+    )?;
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+    check(expect_code(&viv(&tp, &["stop"])?, 0))?;
+    let numbers: Vec<u64> = generations_rows(&tp)?
+        .iter()
+        .filter_map(|row| row["number"].as_u64())
+        .collect();
+    if numbers != vec![number_2, number_2 + 1] {
+        return fail(format!("numbering reused or skipped wrongly: {numbers:?}"));
+    }
+    Ok(())
+}
+
+/// The parsed rows of `generations list --json`, oldest first as published.
+fn generations_rows(tp: &TempProject) -> Result<Vec<serde_json::Value>, Failed> {
+    let list = viv(tp, &["generations", "list", "--json"])?;
+    check(expect_code(&list, 0))?;
+    let record: serde_json::Value = serde_json::from_slice(&list.stdout)
+        .map_err(|error| Failed::from(format!("generations list --json was not JSON: {error}")))?;
+    record["generations"]
+        .as_array()
+        .cloned()
+        .ok_or_else(|| Failed::from("generations list --json published no `generations` array"))
+}
+
+/// Asserts against the store — `nix-store --query --roots` — whether this generation's link is
+/// among the roots of its output. The store rather than the filesystem, because a symlink that
+/// is not registered is the exact defect slice 032 exists to remove. Only stdout answers:
+/// `--roots` prints stale-root housekeeping to stderr.
+fn expect_generation_rooted(
+    tp: &TempProject,
+    manifest: &str,
+    number: u64,
+    store_path: &str,
+    expected: bool,
+) -> Result<(), String> {
+    let link = tp
+        .state()
+        .join("vivarium")
+        .join("projects")
+        .join(manifest)
+        .join("default")
+        .join("generations")
+        .join(number.to_string());
+    let output = std::process::Command::new("nix-store")
+        .args(["--query", "--roots"])
+        .arg(store_path)
+        .output()
+        .map_err(|error| format!("could not run nix-store --query --roots: {error}"))?;
+    let named = String::from_utf8_lossy(&output.stdout);
+    let rooted = named
+        .lines()
+        .any(|line| line.contains(&link.display().to_string()));
+    if rooted == expected {
+        Ok(())
+    } else if expected {
+        Err(format!(
+            "no root names {}; roots of {store_path}: {named}",
+            link.display()
+        ))
+    } else {
+        Err(format!(
+            "{} still roots {store_path} after its unlink: {named}",
+            link.display()
+        ))
+    }
+}
+
+/// Points the profile's `current` at `build` as generation `number`, standing in for a retained
+/// build the trial did not really produce — the reader is a symlink chain plus an existence
+/// check, so no store is needed.
+fn fabricate_generation(
+    tp: &TempProject,
+    manifest: &str,
+    number: u64,
+    build: &Path,
+) -> Result<(), Failed> {
+    let root = tp
+        .state()
+        .join("vivarium")
+        .join("projects")
+        .join(manifest)
+        .join("default");
+    let generations = root.join("generations");
+    fs::create_dir_all(&generations).map_err(io_failed)?;
+    let link = generations.join(number.to_string());
+    let _ = fs::remove_file(&link);
+    std::os::unix::fs::symlink(build, &link).map_err(io_failed)?;
+    let current = root.join("current");
+    let _ = fs::remove_file(&current);
+    std::os::unix::fs::symlink(
+        PathBuf::from("generations").join(number.to_string()),
+        &current,
+    )
+    .map_err(io_failed)?;
+    Ok(())
 }
 
 fn viv_with_env(

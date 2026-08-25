@@ -11,6 +11,9 @@ mod error;
 // to the noun they belong to — `evaluate::report`, `merged::analyze`.
 pub mod evaluate;
 mod flake;
+// Public as a module because `generations::list` and `generations::append` read best beside the
+// noun they act on, exactly as `volumes` does.
+pub mod generations;
 mod input;
 mod lock;
 mod manifest;

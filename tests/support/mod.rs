@@ -22,6 +22,8 @@ pub const EX_USAGE: i32 = ExitKind::Usage.code() as i32;
 pub const EX_DATAERR: i32 = ExitKind::DataErr.code() as i32;
 pub const EX_CONFIG: i32 = ExitKind::Config.code() as i32;
 pub const EX_IOERR: i32 = ExitKind::IoErr.code() as i32;
+pub const EX_TEMPFAIL: i32 = ExitKind::TempFail.code() as i32;
+pub const EX_UNAVAILABLE: i32 = ExitKind::Unavailable.code() as i32;
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 static GATE: OnceLock<GateDecision> = OnceLock::new();

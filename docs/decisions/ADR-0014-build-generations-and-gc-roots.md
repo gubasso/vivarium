@@ -25,7 +25,9 @@ Each successful `up` build appends a numbered generation to the project's profil
 
 ## Status
 
-Accepted
+Implemented
+
+Enacted by slice 032: [`../../src/config/generations.rs`](../../src/config/generations.rs) owns the profile — each successful build appends a numbered generation whose symlink `nix-store --realise --add-root` registers as an indirect garbage-collector root — and [`../../src/cli/generations.rs`](../../src/cli/generations.rs) carries the `generations` family and `viv gc`. Verified against the store on a real host by [`../../tests/host/generations-check`](../../tests/host/generations-check) and `workflow_24_generations_retention`. The path key is the manifest name per [`ADR-0107-the-sandbox-keys-on-the-manifest.md`](./ADR-0107-the-sandbox-keys-on-the-manifest.md), superseding this record's `<project-id>` spelling.
 
 Amended by [`ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](./ADR-0059-lockfile-is-tool-owned-in-the-data-root.md) — a generation retains a snapshot of the lockfile that built it plus its digest, replacing the bare lock revision in the per-generation record, because a revision alone does not reproduce an evaluation. The profile-and-GC-root mechanism is unchanged.
 
