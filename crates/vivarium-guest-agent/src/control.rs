@@ -1,11 +1,23 @@
 use crate::session;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::CancellationToken;
 use tokio_vsock::{VMADDR_CID_HOST, VsockListener};
 use vivarium::protocol::{
     AgentFrame, ClientFrame, CredentialId, Hello, ProtocolErrorMessage, SCHEMA_VERSION,
-    read_client_frame, write_agent_frame,
+    SessionCount, read_client_frame, write_agent_frame,
 };
+
+/// Decrement-on-drop half of the live-session count, so a session that ends by panic or by
+/// error leaves the number as honest as one that ends cleanly.
+struct SessionLive(Arc<AtomicU64>);
+
+impl Drop for SessionLive {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 pub async fn accept_loop(
     listener: VsockListener,
@@ -13,6 +25,9 @@ pub async fn accept_loop(
     credentials: Vec<CredentialId>,
     cancellation: CancellationToken,
 ) -> Result<(), std::io::Error> {
+    // spec/12: sessions are counted, not tracked. One integer is the entire session state this
+    // loop keeps — no ids, no registry, nothing the host could fall out of sync with.
+    let sessions = Arc::new(AtomicU64::new(0));
     loop {
         tokio::select! {
             () = cancellation.cancelled() => return Ok(()),
@@ -26,8 +41,9 @@ pub async fn accept_loop(
                 }
                 let identity = boot_identity.clone();
                 let credentials = credentials.clone();
+                let sessions = Arc::clone(&sessions);
                 tokio::spawn(async move {
-                    let _ = Box::pin(handle(stream, &identity, &credentials)).await;
+                    let _ = Box::pin(handle(stream, &identity, &credentials, sessions)).await;
                 });
             }
         }
@@ -38,6 +54,7 @@ pub async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
     mut stream: S,
     expected_identity: &str,
     credentials: &[CredentialId],
+    sessions: Arc<AtomicU64>,
 ) -> Result<(), ()> {
     let hello = match read_client_frame(&mut stream).await {
         Ok(ClientFrame::Hello(hello))
@@ -76,8 +93,25 @@ pub async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
                     .map_err(|_| ())?;
                 return Ok(());
             }
+            // A query connection ends like a ping connection: it reports the count and can
+            // never be promoted into a session, so it never counts itself.
+            Ok(ClientFrame::Sessions) => {
+                write_agent_frame(
+                    &mut stream,
+                    &AgentFrame::Sessions(SessionCount {
+                        sessions: sessions.load(Ordering::Relaxed),
+                    }),
+                )
+                .await
+                .map_err(|_| ())?;
+                return Ok(());
+            }
             Ok(ClientFrame::Resize(size)) if initial_size.is_none() => initial_size = Some(size),
             Ok(ClientFrame::Start(request)) => {
+                // A connection becomes a session at its accepted `Start` (spec/12), which is
+                // where the count moves.
+                sessions.fetch_add(1, Ordering::Relaxed);
+                let _live = SessionLive(sessions);
                 return Box::pin(session::run(
                     &mut stream,
                     request,
@@ -123,8 +157,18 @@ mod tests {
 
     /// Open one connection to a fresh session handler and complete the handshake.
     fn connected() -> (DuplexStream, tokio::task::JoinHandle<Result<(), ()>>) {
+        connected_counting(&Arc::new(AtomicU64::new(0)))
+    }
+
+    /// [`connected`], sharing the caller's live-session counter the way [`accept_loop`] does.
+    fn connected_counting(
+        sessions: &Arc<AtomicU64>,
+    ) -> (DuplexStream, tokio::task::JoinHandle<Result<(), ()>>) {
         let (client, server) = duplex(1024 * 1024);
-        (client, tokio::spawn(handle(server, ID, &[])))
+        (
+            client,
+            tokio::spawn(handle(server, ID, &[], Arc::clone(sessions))),
+        )
     }
 
     async fn handshake(client: &mut DuplexStream) {
@@ -346,6 +390,85 @@ mod tests {
     /// between the independent `handle` tasks shows up as a mismatched payload rather than
     /// as a merely plausible pass. The repeat count is what makes an intermittent race
     /// visible; one clean round would only show the outcome is possible.
+    /// One query round trip against a shared counter, on a connection that then ends.
+    async fn count(sessions: &Arc<AtomicU64>) -> u64 {
+        let (mut client, task) = connected_counting(sessions);
+        handshake(&mut client).await;
+        write_client_frame(&mut client, &ClientFrame::Sessions)
+            .await
+            .unwrap();
+        let AgentFrame::Sessions(count) = read_agent_frame(&mut client).await.unwrap() else {
+            panic!("expected a session count");
+        };
+        assert!(task.await.unwrap().is_ok());
+        count.sessions
+    }
+
+    /// The count is sessions, not connections: it moves at `Start`, falls when the session
+    /// ends, and neither a ping nor the query itself is ever in it (spec/12).
+    #[tokio::test]
+    async fn sessions_are_counted_not_tracked() {
+        let sessions = Arc::new(AtomicU64::new(0));
+        assert_eq!(count(&sessions).await, 0);
+
+        // Two live sessions, parked on stdin so they stay live while counted. The printed
+        // sentinel is the synchronization: stdout implies the session spawned, which implies
+        // the count already moved.
+        let mut live = Vec::new();
+        for _ in 0..2 {
+            let (mut client, task) = connected_counting(&sessions);
+            handshake(&mut client).await;
+            write_client_frame(
+                &mut client,
+                &ClientFrame::Start(StartRequest {
+                    mode: SessionMode::Exec,
+                    argv: vec![
+                        UnixBytes::new(b"/bin/sh".to_vec()),
+                        UnixBytes::new(b"-c".to_vec()),
+                        UnixBytes::new(b"printf up; cat >/dev/null".to_vec()),
+                    ],
+                    environment: Vec::new(),
+                    cwd: UnixBytes::new(b"/".to_vec()),
+                    pty: false,
+                }),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                read_agent_frame(&mut client).await.unwrap(),
+                AgentFrame::Stdout(_)
+            ));
+            live.push((client, task));
+        }
+        assert_eq!(count(&sessions).await, 2);
+
+        for (mut client, task) in live {
+            write_client_frame(&mut client, &ClientFrame::StdinEnd)
+                .await
+                .unwrap();
+            loop {
+                if let AgentFrame::Exit(_) = read_agent_frame(&mut client).await.unwrap() {
+                    break;
+                }
+            }
+            assert!(task.await.unwrap().is_ok());
+        }
+        assert_eq!(count(&sessions).await, 0);
+
+        // A ping connection was never a session; the counter does not move for it.
+        let (mut client, task) = connected_counting(&sessions);
+        handshake(&mut client).await;
+        write_client_frame(&mut client, &ClientFrame::Ping)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_agent_frame(&mut client).await.unwrap(),
+            AgentFrame::Pong
+        );
+        assert!(task.await.unwrap().is_ok());
+        assert_eq!(count(&sessions).await, 0);
+    }
+
     #[tokio::test]
     async fn concurrent_sessions_keep_their_own_streams_and_status() {
         for round in 0..20 {

@@ -114,16 +114,17 @@ It costs roughly 3% of the volume, charged whether the inodes are used or not. T
 ```text
 PROJECT          STATE     MEM (used/ceiling)   VCPU  DISK (alloc/virtual)  SESS  UP
 api-gateway      running    2.1 GiB / 8 GiB      8     4.2 GiB / 32 GiB      3    3h12m
-web-frontend     running    5.8 GiB / 8 GiB      8    11.7 GiB / 32 GiB      1    1h04m  (near ceiling)
+web-frontend     running    7.4 GiB / 8 GiB      8    11.7 GiB / 32 GiB      1    1h04m  (near ceiling)
 data-pipeline    running    1.4 GiB / 8 GiB      8     2.9 GiB / 32 GiB      2      22m
 infra-tf         stopped         -  / 8 GiB      -     0.8 GiB / 32 GiB      -       -
 
 host: 9.6 GiB available of 31.2 GiB - memory pressure (60s): 0.4%
 ```
 
-- used is the scope's current memory: the monitor plus every filesystem daemon for that VM.
-- alloc / virtual is the volume image's allocated size against its declared virtual size.
+- used is the scope's current memory charge — the monitor plus every filesystem daemon for that VM — read from the accounting the per-VM scope carries. This is the measurement [`../../decisions/ADR-0082-guest-memory-return-is-measured-on-the-backing-object.md`](../../decisions/ADR-0082-guest-memory-return-is-measured-on-the-backing-object.md) requires rather than the resident-set size it rejects: guest RAM is a shared-memory object, and a shared-memory page stays charged to the scope until the backing object's pages are actually freed, so the charge moves with the hole-punch that returns memory, not with the unmapping that merely hides it. Where the memory controller is not delegated, the figure is reported as unavailable (`null` in JSON, `-` in the table), never as zero.
+- alloc / virtual is the sum over the sandbox's volume images of each sparse image's allocated size against its apparent size — `viv volume list`'s own reading joined, not a second measurement. A sandbox with no images yet reports `0`.
 - sessions is the count of attached `exec`/`shell` sessions ([`12-exec-and-shell.md`](./12-exec-and-shell.md)).
+- near ceiling marks a row whose measured use has reached 90% of its ceiling; `viv status` pairs the same condition with the `viv trim` suggestion above when host memory is also low.
 - Stopped projects report no live figures but still report allocated disk, because volumes persist across `stop` (N18).
 
 The `--json` shape adds a `runtime` object beside the existing declared `resources`, so a consumer can tell a declaration from a measurement; the record is fixed in [`01-command-surface.md`](./01-command-surface.md).

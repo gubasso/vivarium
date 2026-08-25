@@ -139,11 +139,21 @@ async fn main() -> ExitCode {
     {
         return match vivarium::cli::doctor::command(&context, *strict, *list, *online, *output) {
             Ok((success, code)) => {
-                print!("{}", success.stdout);
-                let _ = std::io::stdout().flush();
-                ui.note(&success.notes);
-                let _ = std::io::stderr().flush();
+                deliver(&success, &ui);
                 ExitCode::from(code)
+            }
+            Err(failure) => fail(&failure, *output, &stderr_palette),
+        };
+    }
+
+    // Status is dispatched here because it is async: a report on a running VM asks the guest
+    // agent for its live session count over the control socket (spec/12), and `cli::run` stays
+    // synchronous rather than making every other verb pay for one reader's round trip.
+    if let Invocation::Status { global, output } = &invocation {
+        return match vivarium::cli::status(&context, *global, *output).await {
+            Ok(success) => {
+                deliver(&success, &ui);
+                ExitCode::from(ExitKind::Success)
             }
             Err(failure) => fail(&failure, *output, &stderr_palette),
         };
@@ -168,13 +178,7 @@ async fn main() -> ExitCode {
 
     match vivarium::cli::run(&invocation, &context) {
         Ok(success) => {
-            print!("{}", success.stdout);
-            let _ = std::io::stdout().flush();
-            // A note is not the result, so it never joins stdout: `config sources` marks a tie
-            // and still succeeds, and a consumer piping stdout to `jq` must not receive it. The
-            // face decides whether it prints at all — `-q` is its only suppressor.
-            ui.note(&success.notes);
-            let _ = std::io::stderr().flush();
+            deliver(&success, &ui);
             ExitCode::from(ExitKind::Success)
         }
         Err(failure) => {
@@ -183,6 +187,19 @@ async fn main() -> ExitCode {
             fail(&failure, output, &stderr_palette)
         }
     }
+}
+
+/// Prints a success the way every dispatch arm must: the result to stdout, the notes through
+/// the face.
+///
+/// A note is not the result, so it never joins stdout: `config sources` marks a tie and still
+/// succeeds, and a consumer piping stdout to `jq` must not receive it. The face decides whether
+/// it prints at all — `-q` is its only suppressor.
+fn deliver(success: &vivarium::cli::Success, ui: &Ui) {
+    print!("{}", success.stdout);
+    let _ = std::io::stdout().flush();
+    ui.note(&success.notes);
+    let _ = std::io::stderr().flush();
 }
 
 /// Writes a failure to stderr and converts it into a status.

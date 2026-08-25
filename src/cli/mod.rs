@@ -11,6 +11,7 @@
 
 mod destroy;
 pub mod doctor;
+mod fleet;
 mod generations;
 pub mod grammar;
 pub mod lifecycle;
@@ -160,14 +161,6 @@ pub fn run<E: Environment>(
             attach,
             ..
         } => lifecycle::start(context, *rebuild, *no_rebuild, *generation, *attach),
-        Invocation::Status { global, output } => {
-            let report = lifecycle::status(context, *global)?;
-            Ok(Success::plain(if output.is_json() {
-                render::status_json(&report)
-            } else {
-                render::status_human(&report, context.ui.palette_out())
-            }))
-        }
         Invocation::Stop {
             all,
             force,
@@ -196,20 +189,47 @@ pub fn run<E: Environment>(
         }
         Invocation::GenerationsRollback { output } => generations::activate(context, None, *output),
         Invocation::Gc { output } => generations::gc(context, *output),
-        // The caller performs all five. The first three are the async half of this program and
+        // The caller performs all six. The first four are the async half of this program and
         // nothing else here needs a runtime; a session additionally returns a code this signature
-        // cannot express — the guest's own — and streams bytes rather than accumulating a string.
-        // Help and version are the opposite edge: they must answer on a host where nothing else
-        // does, so `main` renders them before this module's `Context` can fail to build. Doctor
-        // returns a code this signature cannot express — a report at `69` is still a report — so
-        // `main` dispatches it through [`doctor::command`].
+        // cannot express — the guest's own — and streams bytes rather than accumulating a string,
+        // while `status` asks a live agent for its session count and so is dispatched through
+        // [`status`]. Help and version are the opposite edge: they must answer on a host where
+        // nothing else does, so `main` renders them before this module's `Context` can fail to
+        // build. Doctor returns a code this signature cannot express — a report at `69` is still
+        // a report — so `main` dispatches it through [`doctor::command`].
         Invocation::StartSpec { .. }
         | Invocation::Exec(_)
         | Invocation::Shell(_)
+        | Invocation::Status { .. }
         | Invocation::Help { .. }
         | Invocation::Version
         | Invocation::Doctor { .. } => Ok(Success::plain(String::new())),
     }
+}
+
+/// `viv status`, both faces: the project-local report and the `-g` fleet enumeration.
+///
+/// Async because a report on a running VM asks the guest agent for its live session count
+/// (spec/12), and dispatched from `main` beside the session verbs for the same reason they are.
+///
+/// # Errors
+///
+/// Returns [`Failure`] for an unbound project (`78`), an unusable runtime root, or — under
+/// `-g` — an unreadable manifest library or index (`74`).
+pub async fn status<E: Environment + Sync>(
+    context: &Context<'_, E>,
+    global: bool,
+    output: Output,
+) -> Result<Success, Failure> {
+    if global {
+        return fleet::report(context, output).await;
+    }
+    let report = lifecycle::status(context).await?;
+    Ok(Success::plain(if output.is_json() {
+        render::status_json(&report)
+    } else {
+        render::status_human(&report, context.ui.palette_out())
+    }))
 }
 
 /// The binding record: what is in force, which source said so, and where everything lives.

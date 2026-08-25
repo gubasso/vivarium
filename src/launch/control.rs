@@ -103,6 +103,47 @@ async fn handshake(
     }
 }
 
+/// The agent's own count of live sessions, or `None` when the question cannot be answered.
+///
+/// `None` covers every non-answer alike — no connection, a timeout, and an agent old enough to
+/// answer the query tag with its framing error — because `status` reports a count or reports
+/// unavailable, and a failed reading is not a fault worth failing a read-only report over
+/// (spec/12: counted, not tracked; spec/01 renders the absence as `null`).
+pub async fn session_count(
+    control_socket: &Path,
+    metadata: &BootMetadata,
+    timeout: Duration,
+) -> Option<u64> {
+    let query = async {
+        let mut stream = hybrid::connect(control_socket, CONTROL_PORT, timeout)
+            .await
+            .ok()?;
+        write_client_frame(
+            &mut stream,
+            &ClientFrame::Hello(Hello {
+                schema_version: SCHEMA_VERSION,
+                boot_identity: metadata.boot_identity.clone(),
+            }),
+        )
+        .await
+        .ok()?;
+        match read_agent_frame(&mut stream).await.ok()? {
+            AgentFrame::Hello(hello)
+                if hello.schema_version == SCHEMA_VERSION
+                    && hello.boot_identity == metadata.boot_identity => {}
+            _ => return None,
+        }
+        write_client_frame(&mut stream, &ClientFrame::Sessions)
+            .await
+            .ok()?;
+        match read_agent_frame(&mut stream).await.ok()? {
+            AgentFrame::Sessions(count) => Some(count.sessions),
+            _ => None,
+        }
+    };
+    tokio::time::timeout(timeout, query).await.ok().flatten()
+}
+
 /// How one session ended.
 ///
 /// The three are not degrees of the same thing. A status is the guest's own answer and vivarium
@@ -209,9 +250,10 @@ impl<O: AsyncWrite + Unpin, E: AsyncWrite + Unpin> Session<'_, O, E> {
                     Some(AgentFrame::Stderr(bytes)) => write_out(&mut self.stderr, &bytes).await?,
                     Some(AgentFrame::Exit(status)) => break SessionOutcome::Exited(status.status),
                     Some(AgentFrame::Error(error)) => break SessionOutcome::Refused(error.code),
-                    // `Hello` and `Pong` belong to the opening and to a ping connection; either one
-                    // arriving mid-session means the ends disagree about what this connection is.
-                    Some(AgentFrame::Hello(_) | AgentFrame::Pong) => {
+                    // `Hello`, `Pong`, and a session count belong to the opening and to the
+                    // ping-shaped connections; any of them arriving mid-session means the ends
+                    // disagree about what this connection is.
+                    Some(AgentFrame::Hello(_) | AgentFrame::Pong | AgentFrame::Sessions(_)) => {
                         break SessionOutcome::Lost("a session frame");
                     }
                     None => break SessionOutcome::Lost("the guest's exit status"),
@@ -402,6 +444,94 @@ mod tests {
             .unwrap();
         server.await.unwrap();
         let _ = std::fs::remove_file(path);
+    }
+
+    /// One hybrid preamble + greeting, shared by the fake agents the count tests stand up.
+    async fn accept_and_greet(listener: &UnixListener) -> tokio::net::UnixStream {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut line = [0; 14];
+        stream.read_exact(&mut line).await.unwrap();
+        assert_eq!(&line, b"CONNECT 52000\n");
+        stream.write_all(b"OK 40000\n").await.unwrap();
+        let ClientFrame::Hello(hello) = read_client_frame(&mut stream).await.unwrap() else {
+            unreachable!()
+        };
+        write_agent_frame(
+            &mut stream,
+            &AgentFrame::Hello(Hello {
+                schema_version: SCHEMA_VERSION,
+                boot_identity: hello.boot_identity,
+            }),
+        )
+        .await
+        .unwrap();
+        stream
+    }
+
+    #[tokio::test]
+    async fn session_count_reads_the_agent_answer() {
+        let path = socket_path();
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let mut stream = accept_and_greet(&listener).await;
+            assert_eq!(
+                read_client_frame(&mut stream).await.unwrap(),
+                ClientFrame::Sessions
+            );
+            write_agent_frame(
+                &mut stream,
+                &AgentFrame::Sessions(crate::protocol::SessionCount { sessions: 3 }),
+            )
+            .await
+            .unwrap();
+        });
+        let count = session_count(
+            &path,
+            &metadata("01234567-89ab-cdef-0123-456789abcdef"),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(count, Some(3));
+        server.await.unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// An agent that does not know the tag answers with its framing error; the count is then
+    /// unavailable, never a fault — the degradation an older running guest relies on.
+    #[tokio::test]
+    async fn session_count_degrades_on_error_and_on_eof() {
+        for answer in ["error", "eof"] {
+            let path = socket_path();
+            let listener = UnixListener::bind(&path).unwrap();
+            let answered = answer.to_owned();
+            let server = tokio::spawn(async move {
+                let mut stream = accept_and_greet(&listener).await;
+                let _ = read_client_frame(&mut stream).await;
+                if answered == "error" {
+                    write_agent_frame(
+                        &mut stream,
+                        &AgentFrame::Error(crate::protocol::ProtocolErrorMessage {
+                            code: "framing".to_owned(),
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                }
+                drop(stream);
+            });
+            let count = session_count(
+                &path,
+                &metadata("01234567-89ab-cdef-0123-456789abcdef"),
+                Duration::from_secs(1),
+            )
+            .await;
+            assert_eq!(
+                count, None,
+                "a non-answer ({answer}) must read as unavailable"
+            );
+            server.await.unwrap();
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     const IDENTITY: &str = "01234567-89ab-cdef-0123-456789abcdef";

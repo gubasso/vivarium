@@ -16,6 +16,10 @@ mod host;
 mod network;
 mod project;
 
+// The one-reader rule spec/17 puts on host memory: `status` reads the same parse the
+// `host-memory-headroom` probe does rather than growing a sibling.
+pub(crate) use host::{available_memory_bytes, total_memory_bytes};
+
 use std::path::PathBuf;
 
 use crate::config::{Environment, Manifest, ResolvedArtifact, XdgRoots};

@@ -2,9 +2,10 @@
 
 use super::message::{
     AgentFrame, CONTROL_PAYLOAD_MAX, ClientFrame, ExitStatus, Hello, ProtocolErrorMessage,
-    STREAM_PAYLOAD_MAX, SignalRequest, StartRequest, TAG_AGENT_HELLO, TAG_CLIENT_HELLO, TAG_ERROR,
-    TAG_EXIT, TAG_PING, TAG_PONG, TAG_RESIZE, TAG_SIGNAL, TAG_START, TAG_STDERR, TAG_STDIN,
-    TAG_STDIN_END, TAG_STDOUT, TerminalSize,
+    STREAM_PAYLOAD_MAX, SessionCount, SignalRequest, StartRequest, TAG_AGENT_HELLO,
+    TAG_CLIENT_HELLO, TAG_ERROR, TAG_EXIT, TAG_PING, TAG_PONG, TAG_RESIZE, TAG_SESSION_COUNT,
+    TAG_SESSIONS_QUERY, TAG_SIGNAL, TAG_START, TAG_STDERR, TAG_STDIN, TAG_STDIN_END, TAG_STDOUT,
+    TerminalSize,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -129,6 +130,7 @@ pub async fn write_client_frame<W: AsyncWrite + Unpin>(
         ClientFrame::StdinEnd => (TAG_STDIN_END, Vec::new()),
         ClientFrame::Resize(value) => (TAG_RESIZE, json(value)?),
         ClientFrame::Signal(value) => (TAG_SIGNAL, json(value)?),
+        ClientFrame::Sessions => (TAG_SESSIONS_QUERY, Vec::new()),
     };
     write_raw(writer, tag, &payload).await
 }
@@ -148,6 +150,7 @@ pub async fn write_agent_frame<W: AsyncWrite + Unpin>(
         AgentFrame::Stderr(value) => (TAG_STDERR, value.clone()),
         AgentFrame::Exit(value) => (TAG_EXIT, json(value)?),
         AgentFrame::Error(value) => (TAG_ERROR, json(value)?),
+        AgentFrame::Sessions(value) => (TAG_SESSION_COUNT, json(value)?),
     };
     write_raw(writer, tag, &payload).await
 }
@@ -168,10 +171,10 @@ pub async fn read_client_frame<R: AsyncRead + Unpin>(
         TAG_STDIN_END if payload.is_empty() => Ok(ClientFrame::StdinEnd),
         TAG_RESIZE => Ok(ClientFrame::Resize(from_json::<TerminalSize>(&payload)?)),
         TAG_SIGNAL => Ok(ClientFrame::Signal(from_json::<SignalRequest>(&payload)?)),
-        TAG_AGENT_HELLO | TAG_PONG | TAG_STDOUT | TAG_STDERR | TAG_EXIT | TAG_ERROR => {
-            Err(FrameError::WrongDirection)
-        }
-        TAG_PING | TAG_STDIN_END => Err(FrameError::MalformedControl),
+        TAG_SESSIONS_QUERY if payload.is_empty() => Ok(ClientFrame::Sessions),
+        TAG_AGENT_HELLO | TAG_PONG | TAG_STDOUT | TAG_STDERR | TAG_EXIT | TAG_ERROR
+        | TAG_SESSION_COUNT => Err(FrameError::WrongDirection),
+        TAG_PING | TAG_STDIN_END | TAG_SESSIONS_QUERY => Err(FrameError::MalformedControl),
         _ => Err(FrameError::UnknownTag),
     }
 }
@@ -193,8 +196,9 @@ pub async fn read_agent_frame<R: AsyncRead + Unpin>(
         TAG_ERROR => Ok(AgentFrame::Error(from_json::<ProtocolErrorMessage>(
             &payload,
         )?)),
+        TAG_SESSION_COUNT => Ok(AgentFrame::Sessions(from_json::<SessionCount>(&payload)?)),
         TAG_CLIENT_HELLO | TAG_PING | TAG_START | TAG_STDIN | TAG_STDIN_END | TAG_RESIZE
-        | TAG_SIGNAL => Err(FrameError::WrongDirection),
+        | TAG_SIGNAL | TAG_SESSIONS_QUERY => Err(FrameError::WrongDirection),
         TAG_PONG => Err(FrameError::MalformedControl),
         _ => Err(FrameError::UnknownTag),
     }
@@ -232,7 +236,7 @@ mod tests {
 
     /// Pin the exact encoding of every tag in `spec/12`'s table.
     ///
-    /// This is the line the specification's tag table encodes, so all thirteen appear here
+    /// This is the line the specification's tag table encodes, so all fifteen appear here
     /// with their literal payloads: a tag that only round-trips through this crate's own
     /// codec would still be free to drift, and the argv and environment wire shape (a JSON
     /// array of byte values, from `UnixBytes` being `serde(transparent)`) is a contract a
@@ -300,8 +304,12 @@ mod tests {
             encoded_client(ClientFrame::Signal(SignalRequest { signal: 15 })).await,
             framed(0x09, br#"{"signal":15}"#)
         );
+        assert_eq!(
+            encoded_client(ClientFrame::Sessions).await,
+            framed(0x0e, b"")
+        );
 
-        // Agent direction, tags 0x02, 0x04, and 0x0a through 0x0d.
+        // Agent direction, tags 0x02, 0x04, 0x0a through 0x0d, and 0x0f.
         assert_eq!(
             encoded_agent(AgentFrame::Hello(hello)).await,
             framed(0x02, hello_json)
@@ -325,6 +333,10 @@ mod tests {
             }))
             .await,
             framed(0x0d, br#"{"code":"framing"}"#)
+        );
+        assert_eq!(
+            encoded_agent(AgentFrame::Sessions(SessionCount { sessions: 3 })).await,
+            framed(0x0f, br#"{"sessions":3}"#)
         );
     }
 

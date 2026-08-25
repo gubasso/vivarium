@@ -241,17 +241,19 @@ An `<input>` is one of vivarium's baseline input names — `nixpkgs` and `microv
 
 `viv status` reports operational VM state (the lifecycle states in [`10-vm-lifecycle.md`](./10-vm-lifecycle.md)); it obeys the same stream and `--json` rules and, like the readers above, emits a single keyed JSON object with no `schema_version`. It runs no build or preflight.
 
-- `viv status` (workspace-local) — human output names the selected manifest and the current state, and when running adds the generation, store path, uptime, and the resource ceilings beside what is actually being used ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)); a stale running VM is flagged with the remedy (`viv start --rebuild`). `--json` emits one record:
+- `viv status` (workspace-local) — human output names the selected manifest and the current state, and when running adds the generation, store path, uptime, the session count, and the resource ceilings beside what is actually being used ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)); a stale running VM is flagged with the remedy (`viv start --rebuild`). `--json` emits one record:
 
   ```json
   {
     "manifest": "rust-web",
     "state": "running",
+    "reason": null,
     "stale": true,
     "generation": 42,
     "store_path": "/nix/store/…-vivarium",
     "uptime_seconds": 8100,
     "resources": { "mem_mib": 8192, "vcpu": 8 },
+    "record_schema_skew": null,
     "runtime": {
       "mem_used_bytes": 2254857830,
       "disk_allocated_bytes": 4509715660,
@@ -262,24 +264,33 @@ An `<input>` is one of vivarium's baseline input names — `nixpkgs` and `microv
   }
   ```
 
-  `manifest` is the sandbox key (as in the `config` family). `state` is one of `absent`, `built`, `starting`, `running`, `stopping`, `failed`. `stale` is meaningful only while `running`. When `state` is `failed`, a `reason` field carries the cause (`crashed`, `boot-timeout`, …) and the liveness fields (`generation` aside) are `null`. The reason set is open and grows as vivarium learns to tell one cause from another, so a consumer MUST treat an unrecognized reason as an unclassified failure rather than an error, and MUST NOT assume the named values are exhaustive. Any reported state — including `failed` — exits `0`; the state is data, not a command failure. No manifest selected fails closed `78`; a state that cannot be confirmed (backend unreachable) is `69` ([`14-exit-codes.md`](./14-exit-codes.md)).
+  `manifest` is the sandbox key (as in the `config` family). `state` is one of `absent`, `built`, `starting`, `running`, `stopping`, `failed`. `stale` is meaningful only while `running`. When `state` is `failed`, `reason` carries the cause (`crashed`, `boot-timeout`, …) and the liveness fields (`generation` aside) are `null`. The reason set is open and grows as vivarium learns to tell one cause from another, so a consumer MUST treat an unrecognized reason as an unclassified failure rather than an error, and MUST NOT assume the named values are exhaustive. `record_schema_skew` is `null` except for a running VM whose boot record another vivarium version wrote, where it carries `{ "record": n, "binary": m }` naming both launch schemas — reported beside `running` because `status` keeps answering where the session verbs refuse with `78` ([`14-exit-codes.md`](./14-exit-codes.md)). Any reported state — including `failed` — exits `0`; the state is data, not a command failure. No manifest selected fails closed `78`; a state that cannot be confirmed (backend unreachable) is `69`.
 
-  `resources` and `runtime` are deliberately separate objects: `resources` is what was declared or resolved — the ceiling — and `runtime` is what is measured right now. A consumer must never have to guess which it is holding. `resources` fields carry the values in force for this VM, so they are never `null` while it runs (see the resolution rule below). `runtime` is present only while `running`/`stopping`, except `disk_*`, which survive a stop because volumes do (N18); `pressure_some_avg60` may be omitted where the host does not expose it.
+  `resources` and `runtime` are deliberately separate objects: `resources` is what was declared or resolved — the ceiling — and `runtime` is what is measured right now. A consumer must never have to guess which it is holding. `resources` reports the values a launch put in force, read back from that launch's own record; when the record of a running VM cannot be read or parsed, the object is `null`, because the only honest value for an unknown ceiling is no value — a substituted constant would be a fabrication a reader reads as the ceiling in force. (Compatibility note: this retracts an earlier guarantee that `resources` is never `null` while the VM runs; a consumer that read the field unconditionally must now tolerate `null` in this one broken-bookkeeping case, in which the VM is genuinely running and `stop` and `exec` still reach it.)
 
-- `viv status -g` / `--global` — enumerate every manifest-keyed sandbox represented by retained state ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)). `-g` is scoped to `status`, not a global flag — it is the only flag that reports across sandboxes; the one other fleet form, `viv stop --all`, acts rather than enumerates and keeps its own spelling. `--json` wraps the list under a named key, matching `images`/`manifests`, and carries the same `resources` / `runtime` split per row:
+  `runtime` is always an object with every key present and per-field `null` where a reading is honestly unavailable. `mem_used_bytes` is the sandbox scope's current memory charge — the monitor plus every filesystem daemon — measured as [`17-resources-and-capacity.md`](./17-resources-and-capacity.md)'s reporting section defines, and `null` where the memory controller is not delegated, never `0`. `sessions` is the agent's own count of attached `exec`/`shell` sessions ([`12-exec-and-shell.md`](./12-exec-and-shell.md)), `null` when the agent cannot be asked. Both, with `pressure_some_avg60` (the scope's own pressure-stall share, `null` where the host does not expose it), are `null` outside `running`/`stopping`. The `disk_*` pair sums the sandbox's volume images' allocated and apparent sizes — `viv volume list`'s own reading joined — and survives a stop because volumes do (N18); `0` is a sandbox whose images occupy nothing, which is a reading, and `null` is volume state that could not be read. A failed reading never becomes an exit: `status` is the verb that keeps answering, and the codes in [`14-exit-codes.md`](./14-exit-codes.md) stay what they are.
+
+- `viv status -g` / `--global` — enumerate every manifest-keyed sandbox represented by retained state: a row per manifest in the library whose sandbox has state under the state root or live runtime records ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)). A manifest never started is configuration, visible in `viv manifest list`, not yet a sandbox; retained state whose manifest is gone is the `state-manifest-orphans` doctor probe's to report, not a row. `-g` is scoped to `status`, not a global flag — it is the only flag that reports across sandboxes; the one other fleet form, `viv stop --all`, acts rather than enumerates and keeps its own spelling. `--json` wraps the list under a named key, matching `images`/`manifests`, and each row carries the same `resources` / `runtime` split and the same `runtime` object shape as the workspace-local record:
 
   ```json
-  { "projects": [ { "manifest": "rust-web", "project_path": "/home/alice/backend",
-                    "state": "running", "stale": false, "path_missing": false, "generation": 42,
+  { "projects": [ { "manifest": "rust-web",
+                    "workspaces": ["/home/alice/backend", "/home/alice/frontend"],
+                    "path_missing": [],
+                    "state": "running", "stale": false, "generation": 42,
+                    "uptime_seconds": 8100,
                     "resources": { "mem_mib": 8192, "vcpu": 8 },
-                    "runtime": { "mem_used_bytes": 2254857830, "sessions": 3 } } ],
+                    "runtime": { "mem_used_bytes": 2254857830, "disk_allocated_bytes": 4509715660,
+                                 "disk_virtual_bytes": 34359738368, "sessions": 3,
+                                 "pressure_some_avg60": 0.1 } } ],
     "host": { "mem_available_bytes": 10307921510, "mem_total_bytes": 33506172928,
               "pressure_some_avg60": 0.4 } }
   ```
 
-  An empty fleet emits `{ "projects": [], "host": { … } }` and exits `0`; a state I/O failure is `74` and malformed state is `78` ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)). `host` is always present — it is what lets the enumeration answer "am I overcommitted?" without a second command.
+  `workspaces` is the sandbox's declared workspace set — the expanded, canonicalized `[[workspaces]]` sources in manifest order ([`../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md`](../../decisions/ADR-0108-a-workspace-is-owned-by-one-manifest.md)); a source whose variable cannot expand is omitted here, because that defect is `viv doctor`'s to diagnose. A running row's `resources` reports what its launch recorded, under the same `null`-when-unreadable rule as the local record. A resting row reports the ceiling resolved from the manifest's own `[resources]` table and the host by [`17-resources-and-capacity.md`](./17-resources-and-capacity.md)'s arithmetic, and `null` when the manifest itself no longer resolves; the merged `vivarium.resources` channel a piece may propose ([`04-composition-and-determinism.md`](./04-composition-and-determinism.md)) is applied by evaluation and observable only from a launch's own record, and enumeration deliberately runs none — so a resting figure is the declaration in reach, `viv config eval` is where the merged view lives, and the running row is where the applied value appears. `host` is always present, its fields `null` where the host will not say — it is what lets the enumeration answer "am I overcommitted?" without a second command.
 
-  `path_missing` is `true` when a declared workspace directory no longer exists; such a row also reports `state: "absent"`. The two flags are unrelated and easy to confuse: `stale` means a running VM is behind its build, `path_missing` means a declared tree is gone.
+  An empty fleet emits `{ "projects": [], "host": { … } }` and exits `0`. An unreadable manifest library or derived index is `74`; a malformed index is a cache miss that rebuilds, never an error ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md)). A row's own readings never fail the enumeration: each degrades to its own `null`, for the keep-answering reason above.
+
+  `path_missing` names each declared workspace directory that no longer exists, and is empty for a sandbox whose declared trees are all present. It is independent of `state` — a VM can run while one of its declared directories sits on an unmounted filesystem. The two indicators are unrelated and easy to confuse: `stale` means a running VM is behind its build, `path_missing` means a declared tree is gone.
 
   A missing workspace is reported, never removed — enumerating is read-only. The human face warns on stderr (so `viv status -g --json | jq` stays clean), names each affected declaration rather than a count, and says why nothing was removed:
 

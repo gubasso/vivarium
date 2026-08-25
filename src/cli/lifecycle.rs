@@ -97,6 +97,7 @@ pub struct Report {
     pub generation: Option<u64>,
     pub uptime_seconds: Option<u64>,
     pub resources: Option<Resources>,
+    pub runtime: RuntimeReadings,
     /// The launch schema a running VM's boot record carries when it is not this binary's own.
     ///
     /// Reported beside `running` rather than folded into a refusal, because `status` is the one
@@ -112,6 +113,23 @@ pub struct Report {
 pub struct Resources {
     pub mem_mib: u64,
     pub vcpu: u64,
+}
+
+/// What is measured right now — the `runtime` object, opposite [`Resources`] in spec/01's split.
+///
+/// Every field is `None` where the reading is honestly unavailable: no delegated memory
+/// controller, an agent that cannot answer, a host without PSI, a VM that is not running, or
+/// volume state that cannot be read. The disk pair survives a stop because volumes do (N18),
+/// and `0` there is a reading — a sandbox whose images occupy nothing — not an absence. Nothing
+/// here refuses: `status` is the verb that keeps answering, and spec/14's status rows admit no
+/// code for a reading that failed, so a failed reading is a `null` rather than an exit.
+#[derive(Clone, Copy, Default)]
+pub struct RuntimeReadings {
+    pub mem_used_bytes: Option<u64>,
+    pub disk_allocated_bytes: Option<u64>,
+    pub disk_virtual_bytes: Option<u64>,
+    pub sessions: Option<u64>,
+    pub pressure_some_avg60: Option<f64>,
 }
 
 /// Where one target's runtime files live, and the unit that owns them.
@@ -151,6 +169,19 @@ impl Runtime {
             .with_hint("use a shorter `XDG_RUNTIME_DIR` or a shorter manifest name"));
         }
         Ok(runtime)
+    }
+
+    /// [`Runtime::locate`] without the socket-length refusal, for enumeration only.
+    ///
+    /// The 108-byte check exists to refuse before a launch binds the socket; an enumeration
+    /// never binds, and refusing the whole fleet because one manifest name renders an over-long
+    /// path would un-enumerate a sandbox that exists. Such a row simply cannot be asked for its
+    /// session count — a `null`, not a fault.
+    pub(super) fn for_report(runtime_root: &Path, sandbox_id: &str, target: &str) -> Self {
+        Self {
+            directory: runtime_root.join(sandbox_id).join(target),
+            unit: format!("vivarium-{sandbox_id}-{target}.service"),
+        }
     }
 
     fn boot_json(&self) -> PathBuf {
@@ -416,6 +447,89 @@ fn unit_active_state(unit: &str) -> Option<String> {
         .ok()?;
     let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     (!value.is_empty()).then_some(value)
+}
+
+/// The unit's measured memory and its cgroup path, from one `systemctl show` round trip.
+///
+/// spec/17 fixes what the figure is: the scope's own current memory charge — the monitor plus
+/// every filesystem daemon — from the accounting `MemoryAccounting=yes` turns on. The manager is
+/// asked rather than `/sys/fs/cgroup` walked because unit-name escaping and slice placement are
+/// the manager's own, and `ControlGroup` is its answer to where the scope lives.
+pub(super) fn unit_memory_and_cgroup(unit: &str) -> (Option<u64>, Option<String>) {
+    let Ok(output) = Command::new("systemctl")
+        .args([
+            "--user",
+            "show",
+            "-p",
+            "MemoryCurrent",
+            "-p",
+            "ControlGroup",
+            unit,
+        ])
+        .output()
+    else {
+        return (None, None);
+    };
+    if !output.status.success() {
+        return (None, None);
+    }
+    parse_unit_memory_show(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The property-line half of [`unit_memory_and_cgroup`], as a total function of what `show` said.
+///
+/// Key-prefixed lines rather than `--value`, because with two properties the value form leaves
+/// line order as the only binding between number and name.
+fn parse_unit_memory_show(shown: &str) -> (Option<u64>, Option<String>) {
+    let mut memory = None;
+    let mut cgroup = None;
+    for line in shown.lines() {
+        if let Some(value) = line.strip_prefix("MemoryCurrent=") {
+            memory = parse_memory_current(value);
+        } else if let Some(value) = line.strip_prefix("ControlGroup=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                cgroup = Some(value.to_owned());
+            }
+        }
+    }
+    (memory, cgroup)
+}
+
+/// One `MemoryCurrent` value, with every unavailable spelling collapsed to `None`.
+///
+/// spec/17 requires unavailable rather than zero where the controller is not delegated, and the
+/// manager has three spellings for unavailable: an empty value, `[not set]`, and the `u64`
+/// ceiling it uses as infinity.
+fn parse_memory_current(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() || value == "[not set]" {
+        return None;
+    }
+    let parsed = value.parse::<u64>().ok()?;
+    (parsed != u64::MAX).then_some(parsed)
+}
+
+/// The `some avg60` share of a pressure-stall file, host-wide and per-scope alike.
+fn parse_pressure_some_avg60(pressure: &str) -> Option<f64> {
+    pressure
+        .lines()
+        .find(|line| line.starts_with("some"))?
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix("avg60="))?
+        .parse::<f64>()
+        .ok()
+}
+
+/// The scope's own memory-pressure reading, from the cgroup path the manager named.
+pub(super) fn scope_pressure_some_avg60(cgroup: &str) -> Option<f64> {
+    let path = format!("/sys/fs/cgroup{cgroup}/memory.pressure");
+    parse_pressure_some_avg60(&std::fs::read_to_string(path).ok()?)
+}
+
+/// The host's own memory-pressure reading; absent where the kernel does not expose PSI.
+pub(super) fn host_pressure_some_avg60() -> Option<f64> {
+    parse_pressure_some_avg60(&std::fs::read_to_string("/proc/pressure/memory").ok()?)
 }
 
 /// ADR-0030's discriminator, as a pure function of what the runtime directory and the store say.
@@ -1169,7 +1283,7 @@ async fn ping(runtime: &Runtime, boot: &BootMetadata, timeout: Duration) -> bool
 }
 
 /// What one read of `boot.json` can find, with skew separated from corruption (spec/14).
-enum BootRecord {
+pub(super) enum BootRecord {
     /// No record — the ordinary cold case.
     Absent,
     /// A record this binary cannot make sense of at all: the corruption case.
@@ -1185,7 +1299,7 @@ enum BootRecord {
 /// The envelope parses forever, so a record another vivarium version wrote yields its number
 /// here instead of collapsing into `Unreadable` — which is the collapse that let a launch
 /// report success against a record the running tool could not read.
-fn read_boot_record(runtime: &Runtime) -> BootRecord {
+pub(super) fn read_boot_record(runtime: &Runtime) -> BootRecord {
     let bytes = match fs::read(runtime.boot_json()) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return BootRecord::Absent,
@@ -1914,7 +2028,7 @@ pub(super) fn volume_directory(
 /// spec/10 step 5 puts this moment at ensure-running and spec/17 fixes the arithmetic, both for
 /// the same reason: a host-derived ceiling is launch-channel, never a build input (N3, N19), so
 /// two hosts building one manifest boot it with different ceilings and the same store path.
-fn effective_resources(declared: Option<&config::Resources>) -> Resources {
+pub(super) fn effective_resources(declared: Option<&config::Resources>) -> Resources {
     Resources {
         mem_mib: declared
             .and_then(|declared| declared.mem_mib)
@@ -1931,20 +2045,12 @@ fn host_mem_mib() -> u64 {
     const FLOOR: u64 = 4 * 1024;
     const CEILING: u64 = 16 * 1024;
 
-    // `MemTotal` is physical memory in kibibytes, which is the only reading this needs — the
-    // available figure is what admission control asks about, and that gate is slice 005's.
+    // `MemTotal` is physical memory, which is the only reading this needs — the available figure
+    // is what admission control asks about, and that gate is slice 026's.
     let total_mib = std::fs::read_to_string("/proc/meminfo")
         .ok()
-        .and_then(|meminfo| {
-            meminfo
-                .lines()
-                .find_map(|line| line.strip_prefix("MemTotal:"))?
-                .split_whitespace()
-                .next()?
-                .parse::<u64>()
-                .ok()
-        })
-        .map(|kibibytes| kibibytes / 1024);
+        .and_then(|meminfo| crate::doctor::total_memory_bytes(&meminfo))
+        .map(|bytes| bytes / (1024 * 1024));
     // A host that will not say how much memory it has gets the floor rather than a guess: the
     // clamp's lower bound is the one value spec/17 already calls safe for a real toolchain.
     let Some(total_mib) = total_mib else {
@@ -1967,26 +2073,19 @@ fn host_vcpu() -> u64 {
 ///
 /// This is `status`'s reader, never a launch's: spec/01 requires the `resources` object to report
 /// what is in force for the running VM, and the launch specification is the one artifact that
-/// records it. The fallback covers a VM whose specification cannot be read; it is operational data
-/// derived from no running VM, which spec/01's "never `null` while it runs" leaves no better answer
-/// to today. Q-015 owns the choice between this floor and admitting `null` for the one case where
-/// the record is unreadable; a `failed` state is not the alternative, because this VM is running.
-fn declared_resources(runtime: &Runtime) -> Resources {
-    let fallback = Resources {
-        mem_mib: 4096,
-        vcpu: 4,
-    };
-    let Ok(raw) = std::fs::read_to_string(runtime.launch_spec()) else {
-        return fallback;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return fallback;
-    };
+/// records it. A specification that cannot be read or parsed yields `None`, which spec/01 renders
+/// as `null` — the exit Q-015 chose, because the only honest value for an unknown integer is no
+/// integer, and a fabricated floor is a constant where a reader reads the ceiling in force. A
+/// `failed` state is not the alternative: a VM with a live process and an active unit is running,
+/// and only this bookkeeping is broken.
+pub(super) fn declared_resources(runtime: &Runtime) -> Option<Resources> {
+    let raw = std::fs::read_to_string(runtime.launch_spec()).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
     let resources = &value["resources"];
-    Resources {
-        mem_mib: resources["memoryMiB"].as_u64().unwrap_or(fallback.mem_mib),
-        vcpu: resources["vcpus"].as_u64().unwrap_or(fallback.vcpu),
-    }
+    Some(Resources {
+        mem_mib: resources["memoryMiB"].as_u64()?,
+        vcpu: resources["vcpus"].as_u64()?,
+    })
 }
 
 /// What the project's VM is doing. Read-only, and any reported state exits `0`.
@@ -1994,20 +2093,9 @@ fn declared_resources(runtime: &Runtime) -> Resources {
 /// # Errors
 ///
 /// Returns [`Failure`] for an unbound project (`78`) or an unusable runtime root.
-pub fn status<E: Environment>(context: &Context<'_, E>, global: bool) -> Result<Report, Failure> {
-    // `-g` enumerates the registry (spec/01). It has no trial in this slice and is the first
-    // thing the appetite would cut, so it is refused by name rather than half-answered.
-    if global {
-        return Err(diagnosed(
-            Namespace::Internal,
-            "not-implemented",
-            "`viv status --global` is not implemented yet",
-            Locus::Named("command surface"),
-            "the project-local form is this slice's; the cross-project enumeration is not",
-            ExitKind::Software,
-        ));
-    }
-
+pub(super) async fn status<E: Environment + Sync>(
+    context: &Context<'_, E>,
+) -> Result<Report, Failure> {
     // Manifest first, then the runtime root, and the order is the contract rather than a
     // preference: ADR-0109 makes the undeclared-directory refusal one routine every
     // manifest-resolving verb fails fast through, so it has to be the first thing that can fail.
@@ -2024,6 +2112,12 @@ pub fn status<E: Environment>(context: &Context<'_, E>, global: bool) -> Result<
     let state = discriminate(&runtime, recorded.is_some());
 
     let running = matches!(state, State::Running | State::Stopping);
+    let record = if running {
+        read_boot_record(&runtime)
+    } else {
+        BootRecord::Absent
+    };
+    let readings = runtime_readings(context, &runtime, &sandbox_id, running, &record).await;
     Ok(Report {
         manifest: Some(resolved.binding.manifest),
         state,
@@ -2050,18 +2144,52 @@ pub fn status<E: Environment>(context: &Context<'_, E>, global: bool) -> Result<
             DEFAULT_TARGET,
         )),
         uptime_seconds: running.then(|| uptime_seconds(&runtime)).flatten(),
-        resources: running.then(|| declared_resources(&runtime)),
-        record_skew: running
-            .then(|| match read_boot_record(&runtime) {
-                BootRecord::Skewed(theirs) => Some(theirs),
-                BootRecord::Absent | BootRecord::Unreadable | BootRecord::Ready(_) => None,
-            })
-            .flatten(),
+        resources: running.then(|| declared_resources(&runtime)).flatten(),
+        runtime: readings,
+        record_skew: match record {
+            BootRecord::Skewed(theirs) => Some(theirs),
+            BootRecord::Absent | BootRecord::Unreadable | BootRecord::Ready(_) => None,
+        },
     })
 }
 
+/// The measured half of one sandbox's report — spec/17's readings, assembled the same way for
+/// the local report and for a fleet row. Every reading degrades to `None` rather than failing:
+/// an unanswerable question is a `null` in a report, not a reason to refuse one, and spec/14's
+/// status rows admit no exit code for it.
+pub(super) async fn runtime_readings<E: Environment + Sync>(
+    context: &Context<'_, E>,
+    runtime: &Runtime,
+    sandbox_id: &str,
+    running: bool,
+    record: &BootRecord,
+) -> RuntimeReadings {
+    let disk = super::volume::disk_totals(&context.roots, sandbox_id).ok();
+    let (mem_used_bytes, cgroup) = if running {
+        unit_memory_and_cgroup(&runtime.unit)
+    } else {
+        (None, None)
+    };
+    // The count is asked of this boot's own agent, so a record that names another version's
+    // schema — or none — leaves the question unaskable and the field honestly `null`.
+    let sessions = match record {
+        BootRecord::Ready(boot) if running => {
+            crate::launch::control::session_count(&runtime.control_socket(), boot, PING_TIMEOUT)
+                .await
+        }
+        _ => None,
+    };
+    RuntimeReadings {
+        mem_used_bytes,
+        disk_allocated_bytes: disk.map(|(allocated, _)| allocated),
+        disk_virtual_bytes: disk.map(|(_, apparent)| apparent),
+        sessions,
+        pressure_some_avg60: cgroup.as_deref().and_then(scope_pressure_some_avg60),
+    }
+}
+
 /// How long the VM has been up, from the age of the record the supervisor writes at boot.
-fn uptime_seconds(runtime: &Runtime) -> Option<u64> {
+pub(super) fn uptime_seconds(runtime: &Runtime) -> Option<u64> {
     let metadata = std::fs::metadata(runtime.boot_json()).ok()?;
     let modified = metadata.modified().ok()?;
     modified.elapsed().ok().map(|elapsed| elapsed.as_secs())
@@ -2305,7 +2433,8 @@ mod tests {
     use super::{
         BootMetadata, BootRecord, LAUNCH_SCHEMA_VERSION, Runtime, State, classify, config,
         discriminate, effective_resources, grace_seconds, host_mem_mib, host_vcpu, ownership_of,
-        read_boot_record, require_current_contract, vm_is_alive, volume_directory,
+        parse_memory_current, parse_pressure_some_avg60, parse_unit_memory_show, read_boot_record,
+        require_current_contract, vm_is_alive, volume_directory,
     };
     use crate::test_support::ScratchDirectory;
     use std::fs;
@@ -2693,5 +2822,47 @@ mod tests {
             volume_directory(&roots, "api", "default"),
             std::path::Path::new("/s/projects/api/default/volumes")
         );
+    }
+
+    /// Every spelling the manager has for "no reading" is `None`; zero is a reading (spec/17).
+    #[test]
+    fn memory_current_collapses_unavailable_and_keeps_zero() {
+        assert_eq!(parse_memory_current("2254857830"), Some(2_254_857_830));
+        assert_eq!(parse_memory_current("0"), Some(0));
+        assert_eq!(parse_memory_current(""), None);
+        assert_eq!(parse_memory_current("[not set]"), None);
+        assert_eq!(parse_memory_current("18446744073709551615"), None);
+        assert_eq!(parse_memory_current("weather"), None);
+    }
+
+    /// The two `show` properties bind by key, not by line order, and empty values vanish.
+    #[test]
+    fn unit_memory_show_reads_by_key() {
+        let shown = concat!(
+            "ControlGroup=/user.slice/vivarium.slice/vivarium-api-default.service\n",
+            "MemoryCurrent=1048576\n"
+        );
+        let (memory, cgroup) = parse_unit_memory_show(shown);
+        assert_eq!(memory, Some(1_048_576));
+        assert_eq!(
+            cgroup.as_deref(),
+            Some("/user.slice/vivarium.slice/vivarium-api-default.service")
+        );
+        assert_eq!(
+            parse_unit_memory_show("MemoryCurrent=[not set]\nControlGroup=\n"),
+            (None, None)
+        );
+    }
+
+    /// The PSI parse takes the `some` line's `avg60` share and nothing else.
+    #[test]
+    fn pressure_parse_takes_some_avg60() {
+        let pressure = concat!(
+            "some avg10=0.00 avg60=0.40 avg300=0.12 total=417963\n",
+            "full avg10=0.00 avg60=0.11 avg300=0.05 total=205931\n"
+        );
+        assert_eq!(parse_pressure_some_avg60(pressure), Some(0.40));
+        assert_eq!(parse_pressure_some_avg60("full avg10=0 avg60=0.1\n"), None);
+        assert_eq!(parse_pressure_some_avg60(""), None);
     }
 }

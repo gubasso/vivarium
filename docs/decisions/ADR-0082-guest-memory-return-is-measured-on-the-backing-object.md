@@ -29,6 +29,6 @@ Chosen option: allocated blocks of the backing memory object.
 
 ## Status
 
-Accepted
+Implemented
 
-Gives [`ADR-0035-elastic-guest-memory-model.md`](./ADR-0035-elastic-guest-memory-model.md) the method that verifies its headline; the reading itself is recorded in [`../reference/microvm-verification-harness.md`](../reference/microvm-verification-harness.md). Implemented by `tests/host/first-microvm-check` and the guest phase markers in `nix/guest.nix`.
+Gives [`ADR-0035-elastic-guest-memory-model.md`](./ADR-0035-elastic-guest-memory-model.md) the method that verifies its headline; the reading itself is recorded in [`../reference/microvm-verification-harness.md`](../reference/microvm-verification-harness.md). Implemented by `tests/host/first-microvm-check` and the guest phase markers in `nix/guest.nix`. The reported `mem_used_bytes` figure consumes this record through the scope's memory charge, which moves only on the actual free of the backing object's pages; the reconciliation and the labeling this record demands are written in [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md)'s reporting section.

@@ -71,7 +71,7 @@ Three things therefore do not exist, and adding any of them would be a defect ra
 - No socket created per session, and no port allocated per session.
 - No session registry the host must keep in sync with the guest.
 
-Sessions are counted, not tracked: `viv status` reports the number of live connections ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)). Several sessions attached to one VM is the ordinary case — one project, many terminals — and it is unrelated to `<target>`, which names VM instances, not sessions.
+Sessions are counted, not tracked: `viv status` reports the number of live sessions ([`17-resources-and-capacity.md`](./17-resources-and-capacity.md)). The count is the agent's own — one integer that rises when a connection's `Start` is accepted and falls when that session ends — and it is read over the `Sessions` query pair in the tag table above. A connection becomes a session at its accepted `Start`, so a `Ping` connection and the query connection itself are never in the number, and nothing about it is a registry: no ids, no per-session state, nothing the host could fall out of sync with. A host asking an agent that predates the query treats the resulting protocol error as "unavailable", never as a fault. Several sessions attached to one VM is the ordinary case — one project, many terminals — and it is unrelated to `<target>`, which names VM instances, not sessions.
 
 ## Exit status and failures
 
@@ -127,12 +127,14 @@ Each message begins with a four-byte unsigned big-endian length. The length coun
 | `0x0b` | agent  | `Stderr`   |
 | `0x0c` | agent  | `Exit`     |
 | `0x0d` | agent  | `Error`    |
+| `0x0e` | client | `Sessions` |
+| `0x0f` | agent  | `Sessions` |
 
 An unknown tag is a protocol error, not a message to skip — silently ignoring one would let two versions believe they agreed. Direction is part of the contract and is enforced, not merely documented: only the client sends standard input, resize, and signal frames; only the agent sends standard output, standard error, and the exit frame.
 
-The message set is exactly what a session needs and no more: a handshake pair, `Ping`/`Pong`, a request to start the process, the three standard streams with an explicit end-of-input, `Resize`, `Signal`, `Exit`, and `Error`.
+The message set is exactly what a session needs and no more: a handshake pair, `Ping`/`Pong`, a request to start the process, the three standard streams with an explicit end-of-input, `Resize`, `Signal`, `Exit`, `Error`, and the session-count query pair the reporting below rests on.
 
-A client first sends `Hello` with schema version 1 and the boot identity. After the matching agent `Hello`, the connection carries either `Ping`/`Pong` or a single session. `Resize` may precede `Start`. A pre-spawn failure produces `Error`; successful spawn produces streams followed by exactly one `Exit`. There is no `Started` frame, session id, multiplexer, or registry.
+A client first sends `Hello` with schema version 1 and the boot identity. After the matching agent `Hello`, the connection carries either `Ping`/`Pong`, one `Sessions` query and its answer, or a single session. `Resize` may precede `Start`. A pre-spawn failure produces `Error`; successful spawn produces streams followed by exactly one `Exit`. There is no `Started` frame, session id, multiplexer, or registry.
 
 ### Terminal size and signals
 

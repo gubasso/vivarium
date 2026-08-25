@@ -28,6 +28,8 @@ pub const TAG_STDOUT: u8 = 0x0a;
 pub const TAG_STDERR: u8 = 0x0b;
 pub const TAG_EXIT: u8 = 0x0c;
 pub const TAG_ERROR: u8 = 0x0d;
+pub const TAG_SESSIONS_QUERY: u8 = 0x0e;
+pub const TAG_SESSION_COUNT: u8 = 0x0f;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -193,6 +195,13 @@ pub struct ProtocolErrorMessage {
     pub code: String,
 }
 
+/// The agent's own count of live sessions (spec/12: counted, not tracked).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionCount {
+    pub sessions: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientFrame {
     Hello(Hello),
@@ -202,6 +211,7 @@ pub enum ClientFrame {
     StdinEnd,
     Resize(TerminalSize),
     Signal(SignalRequest),
+    Sessions,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -212,6 +222,7 @@ pub enum AgentFrame {
     Stderr(Vec<u8>),
     Exit(ExitStatus),
     Error(ProtocolErrorMessage),
+    Sessions(SessionCount),
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]

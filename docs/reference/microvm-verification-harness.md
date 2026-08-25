@@ -203,6 +203,14 @@ $ tests/host/leftovers
 
 Verified on a real host. Each entry names the version it applies to; nothing here is inferred from an agent's execution environment.
 
+### Measured per-sandbox memory was null on a host whose doctor had said so all along
+
+Measured 2026-08-25 on a real host with `/dev/kvm` and a systemd user manager (systemd 261, openSUSE), while landing slice 025's fleet view. The two-sandbox acceptance trial failed its first run: every running row reported `mem_used_bytes` as `null`, because `systemctl --user show -p MemoryCurrent` answered `[not set]` for every transient unit. That is the degradation spec/17 specifies, working as written — and the `host-cgroup2-delegation` probe had been reporting the shortfall the whole time. The cause sat two layers above vivarium: upstream systemd's `user@.service` carries `Delegate=pids memory cpu`, but the distribution ships `DefaultMemoryAccounting=no`, so the memory controller was never enabled down the slice chain and only `pids` reached the user manager.
+
+The repair was host configuration, not code, and its shape is worth keeping. `systemctl set-property user-1000.slice MemoryAccounting=yes CPUAccounting=yes` (persistent) enabled the controller one level down; `systemctl set-property user@1000.service MemoryAccounting=yes` carried it to the user manager's own cgroup; and neither was sufficient until `systemctl --user daemon-reexec` made the running user manager re-detect what had become available — controller delegation is realized when a manager starts, so enabling it above a running manager changes nothing that manager can see until it re-executes. Verified by `MemoryCurrent` returning a real byte count on a probe unit, and by the trial passing on the rerun: both sandboxes enumerated exactly once, each running row's measured use present, nonzero, and different from its declared ceiling.
+
+The trials this slice adds all pass on this host: `workflow_25_fleet_usage_surface` (enumeration domain, empty fleet, `path_missing` named on stderr with clean JSON on stdout, read-only proof over the config and state roots), `workflow_25_sessions_counted` (the agent's count reads `0`, rises to `1` while a concurrent `viv exec` holds its connection, and returns to `0` on the kill that is a detach), `workflow_25_fleet_two_sandboxes` (the two-readings acceptance above), and the `workflow_20` extension (one row carrying the whole declared workspace set).
+
 ### A session that finished its work and would not exit, and a launch contract that caught a PATH nobody had
 
 Measured 2026-08-12 on a real host with `/dev/kvm`, a systemd user manager, `$XDG_RUNTIME_DIR`, and `VIVARIUM_HEAVY_DRIVE` set. `tests/host/exec-and-shell-check` passes clean on both runs: `PASS=4 FAIL=0 SKIP=0`, with run wall clocks of 30s and 40s against a warm store. `profile.pre-push` runs 23 tests green on the same host with only the three trials later slices own subtracted.

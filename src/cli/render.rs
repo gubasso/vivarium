@@ -25,7 +25,7 @@ use crate::ui::style::Palette;
 use crate::ui::table;
 
 use super::grammar::COMMANDS;
-use super::lifecycle::Report;
+use super::lifecycle::{Report, RuntimeReadings};
 
 /// `viv --help` and `viv <verb> --help` — the summary, or one verb's usage.
 ///
@@ -669,9 +669,23 @@ pub fn status_json(report: &Report) -> String {
             "record": theirs,
             "binary": crate::launch::LAUNCH_SCHEMA_VERSION,
         })),
-        // Measured use, which nothing in this slice measures. Slice 005 owns spec/17's readings.
-        "runtime": Value::Null,
+        "runtime": runtime_json(&report.runtime),
     }))
+}
+
+/// The measured `runtime` object both status faces share (spec/01, spec/17).
+///
+/// Per-field `null` rather than a vanishing object, for the same stable-shape reason the record
+/// itself keeps every key: an unavailable reading and a stopped VM both leave a field a consumer
+/// can still address.
+pub fn runtime_json(readings: &RuntimeReadings) -> Value {
+    json!({
+        "mem_used_bytes": readings.mem_used_bytes,
+        "disk_allocated_bytes": readings.disk_allocated_bytes,
+        "disk_virtual_bytes": readings.disk_virtual_bytes,
+        "sessions": readings.sessions,
+        "pressure_some_avg60": readings.pressure_some_avg60,
+    })
 }
 
 /// `viv status` — the human reading of the same record: dim labels, the state carrying the one
@@ -701,12 +715,41 @@ pub fn status_human(report: &Report, palette: &Palette) -> String {
     if let Some(uptime) = report.uptime_seconds {
         rows.push(("uptime", duration(uptime)));
     }
-    if let Some(resources) = &report.resources {
-        rows.push((
-            "resources",
-            format!("{} MiB · {} vcpu", resources.mem_mib, resources.vcpu),
-        ));
+    // The ceiling beside what is actually being used (spec/17): a row appears as soon as either
+    // half exists, and the half that does not reads `-` rather than a fabricated number.
+    if report.resources.is_some() || report.runtime.mem_used_bytes.is_some() {
+        let used = report
+            .runtime
+            .mem_used_bytes
+            .map_or_else(|| "-".to_owned(), bytes);
+        let ceiling = report.resources.as_ref().map_or_else(
+            || "-".to_owned(),
+            |resources| bytes(resources.mem_mib * 1024 * 1024),
+        );
+        rows.push(("memory", format!("{used} used / {ceiling} ceiling")));
     }
+    if let Some(resources) = &report.resources {
+        rows.push(("vcpu", resources.vcpu.to_string()));
+    }
+    if let Some(sessions) = report.runtime.sessions {
+        rows.push(("sessions", sessions.to_string()));
+    }
+    // Present in every state, because volumes persist across `stop` (N18) and zero occupancy is
+    // a reading; `-` is volume state that could not be read.
+    rows.push((
+        "disk",
+        match (
+            report.runtime.disk_allocated_bytes,
+            report.runtime.disk_virtual_bytes,
+        ) {
+            (Some(allocated), Some(apparent)) => format!(
+                "{} allocated / {} virtual",
+                bytes(allocated),
+                bytes(apparent)
+            ),
+            _ => "-".to_owned(),
+        },
+    ));
     let mut rendered = table::record(palette, &rows);
     if report.stale {
         // The remedy beside the fact, because a stale VM is a state a user acts on rather than one
@@ -732,8 +775,68 @@ fn state_view(state: &str, palette: &Palette) -> String {
     format!("{} {state}", style.apply_to("●"))
 }
 
+/// A byte count in the table's own units: GiB to one decimal from a gibibyte up (a whole GiB
+/// unadorned), whole MiB below that, raw bytes below a mebibyte. The JSON face keeps the raw
+/// number.
+pub(super) fn bytes(count: u64) -> String {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    const MIB: u64 = 1024 * 1024;
+    if count >= GIB {
+        let tenths = count / (GIB / 10);
+        if tenths.is_multiple_of(10) {
+            format!("{} GiB", tenths / 10)
+        } else {
+            format!("{}.{} GiB", tenths / 10, tenths % 10)
+        }
+    } else if count >= MIB {
+        format!("{} MiB", count / MIB)
+    } else {
+        format!("{count} B")
+    }
+}
+
+/// `viv status -g --json` — the fleet under its named key beside the host's own reading.
+///
+/// `host` is always present, even over an empty fleet: it is what lets one command answer
+/// whether the host is overcommitted (spec/01).
+pub fn fleet_json(projects: &[Value], host: &Value) -> String {
+    line(&json!({ "projects": projects, "host": host }))
+}
+
+/// `viv status -g` — the fleet table under its header, then the host line (spec/17).
+///
+/// An empty fleet renders the host line alone: the table would be a header over nothing.
+pub fn fleet_human(rows: &[Vec<String>], host_line: &str, palette: &Palette) -> String {
+    let mut rendered = String::new();
+    if rows.len() > 1 {
+        let styled: Vec<Vec<String>> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                row.iter()
+                    .enumerate()
+                    .map(|(column, cell)| {
+                        if index == 0 {
+                            palette.label.apply_to(cell).to_string()
+                        } else if column == 0 {
+                            palette.accent.apply_to(cell).to_string()
+                        } else {
+                            cell.clone()
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        rendered.push_str(&table::columns(&styled));
+        rendered.push('\n');
+    }
+    rendered.push_str(host_line);
+    rendered.push('\n');
+    rendered
+}
+
 /// Seconds, humanized: `13s`, `2m 14s`, `3h 21m`. The JSON face keeps the raw number.
-fn duration(seconds: u64) -> String {
+pub(super) fn duration(seconds: u64) -> String {
     let (hours, minutes, rest) = (seconds / 3600, (seconds % 3600) / 60, seconds % 60);
     if hours > 0 {
         format!("{hours}h {minutes}m")
@@ -940,4 +1043,20 @@ fn display(path: &Path) -> String {
 /// read it without knowing how long it is.
 fn line(value: &Value) -> String {
     format!("{value}\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bytes;
+
+    /// The unit ladder spec/17's table shows: GiB to one decimal, MiB whole, bytes raw.
+    #[test]
+    fn bytes_take_the_tables_units() {
+        assert_eq!(bytes(2_254_857_830), "2.1 GiB");
+        assert_eq!(bytes(8 * 1024 * 1024 * 1024), "8 GiB");
+        assert_eq!(bytes(34_359_738_368), "32 GiB");
+        assert_eq!(bytes(512 * 1024 * 1024), "512 MiB");
+        assert_eq!(bytes(900), "900 B");
+        assert_eq!(bytes(0), "0 B");
+    }
 }

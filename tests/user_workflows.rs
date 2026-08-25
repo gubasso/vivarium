@@ -23,7 +23,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 30] = [
+const WORKFLOWS: [WorkflowSpec; 33] = [
     (
         "workflow_01_manifest_workspace_resolution_usage",
         GateLevel::Cli,
@@ -173,6 +173,21 @@ const WORKFLOWS: [WorkflowSpec; 30] = [
         "workflow_24_generations_retention",
         GateLevel::Virtualization,
         workflow_24_retention,
+    ),
+    (
+        "workflow_25_fleet_usage_surface",
+        GateLevel::Cli,
+        workflow_25_fleet_usage,
+    ),
+    (
+        "workflow_25_sessions_counted",
+        GateLevel::Virtualization,
+        workflow_25_sessions_count,
+    ),
+    (
+        "workflow_25_fleet_two_sandboxes",
+        GateLevel::Virtualization,
+        workflow_25_fleet_two_sandboxes,
     ),
 ];
 
@@ -2604,6 +2619,7 @@ fn workflow_17_worktree() -> Result<(), Failed> {
 ///
 /// Neither declaration is privileged. The second `start` exercises the reuse predicate phase 2
 /// repaired against the complete recorded workspace set.
+#[allow(clippy::too_many_lines)] // One sandbox story: the fleet-row assertions share its VM.
 fn workflow_20_many_workspaces() -> Result<(), Failed> {
     let tp = TempProject::with_project_name("wf20-anchor").map_err(io_failed)?;
     let first = tp.root().join("owned-first");
@@ -2695,6 +2711,40 @@ fn workflow_20_many_workspaces() -> Result<(), Failed> {
             second_subdir.display()
         ));
     }
+    // Slice 025: the fleet view names this multi-workspace sandbox as one row carrying the
+    // whole declared set, never as one row per workspace (ADR-0108).
+    let fleet = viv_at(&tp, &second, &["status", "-g", "--json"])?;
+    check(expect_code(&fleet, 0))?;
+    let projects = fleet_rows(&fleet)?;
+    let rows: Vec<&serde_json::Value> = projects
+        .iter()
+        .filter(|row| row["manifest"] == "anchor-outside")
+        .collect();
+    if rows.len() != 1 {
+        return fail(format!(
+            "the sandbox appeared {} times in the fleet",
+            rows.len()
+        ));
+    }
+    let listed: Vec<&str> = rows[0]["workspaces"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect()
+        })
+        .unwrap_or_default();
+    for tree in [&first, &second] {
+        let owned = tree.canonicalize().map_err(io_failed)?;
+        if !listed.contains(&owned.to_string_lossy().as_ref()) {
+            return fail(format!(
+                "the row's workspace set {listed:?} lost {}",
+                owned.display()
+            ));
+        }
+    }
+
     check(expect_code(&viv_at(&tp, &second, &["stop"])?, 0))
 }
 
@@ -3416,6 +3466,375 @@ fn workflow_24_retention() -> Result<(), Failed> {
         return fail(format!("numbering reused or skipped wrongly: {numbers:?}"));
     }
     Ok(())
+}
+
+/// Slice 025, the enumeration surface without a VM: an empty fleet is `{"projects":[],"host":…}`
+/// at `0`, a never-started manifest is configuration rather than a row, fabricated retained
+/// state makes a manifest a row exactly once with its declared ceiling and honest nulls, a
+/// vanished workspace directory is named and never removed, and the local report's `runtime`
+/// object holds shape on a project that has never built (spec/01, spec/17).
+#[allow(clippy::too_many_lines)] // One enumeration story: the legs share fixtures and ordering.
+fn workflow_25_fleet_usage() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("wf25-anchor").map_err(io_failed)?;
+
+    // An empty library enumerates an empty fleet beside a populated host object.
+    let empty = viv(&tp, &["status", "-g", "--json"])?;
+    check(expect_code(&empty, 0))?;
+    check(expect_json_keys(&empty, &["projects", "host"]))?;
+    check(expect_json_fields_at(
+        &empty,
+        "host",
+        &[
+            "mem_available_bytes",
+            "mem_total_bytes",
+            "pressure_some_avg60",
+        ],
+    ))?;
+    if json::array_len(&empty.stdout, "projects").map_err(Failed::from)? != 0 {
+        return fail("an empty library enumerated a sandbox");
+    }
+    let host: serde_json::Value = serde_json::from_slice(&empty.stdout)
+        .map_err(|error| Failed::from(format!("status -g --json was not JSON: {error}")))?;
+    if host["host"]["mem_available_bytes"].as_u64().is_none()
+        || host["host"]["mem_total_bytes"].as_u64().is_none()
+    {
+        return fail("the host object reported no memory readings on a Linux host");
+    }
+
+    // Two manifests, each owning its own tree.
+    let first = tp.root().join("fleet-first");
+    let second = tp.root().join("fleet-second");
+    fs::create_dir_all(&first).map_err(io_failed)?;
+    fs::create_dir_all(&second).map_err(io_failed)?;
+    arrange_manifest(
+        &tp,
+        "fleet-a",
+        "\n[resources]\nmem_mib = 2048\nvcpu = 2\n",
+        &format!("\n[[workspaces]]\nsource = '{}'\n", first.display()),
+    )?;
+    arrange_manifest(
+        &tp,
+        "fleet-b",
+        "",
+        &format!("\n[[workspaces]]\nsource = '{}'\n", second.display()),
+    )?;
+
+    // A manifest never started is configuration, not a row (spec/01's enumeration domain).
+    let configured = viv(&tp, &["status", "-g", "--json"])?;
+    check(expect_code(&configured, 0))?;
+    if json::array_len(&configured.stdout, "projects").map_err(Failed::from)? != 0 {
+        return fail("a never-started manifest was enumerated as a sandbox");
+    }
+
+    // Retained state is what makes a sandbox: fabricate what a start would leave behind.
+    for name in ["fleet-a", "fleet-b"] {
+        fs::create_dir_all(
+            tp.state()
+                .join("vivarium")
+                .join("projects")
+                .join(name)
+                .join("default"),
+        )
+        .map_err(io_failed)?;
+    }
+    let config_before = snapshot_tree(tp.config()).map_err(io_failed)?;
+    let state_before = snapshot_tree(tp.state()).map_err(io_failed)?;
+
+    let fleet = viv(&tp, &["status", "-g", "--json"])?;
+    check(expect_code(&fleet, 0))?;
+    check(expect_json_array_items(
+        &fleet,
+        "projects",
+        &[
+            "manifest",
+            "workspaces",
+            "path_missing",
+            "state",
+            "stale",
+            "generation",
+            "uptime_seconds",
+            "resources",
+            "runtime",
+        ],
+    ))?;
+    let projects = fleet_rows(&fleet)?;
+    let mut names: Vec<&str> = projects
+        .iter()
+        .filter_map(|row| row["manifest"].as_str())
+        .collect();
+    names.sort_unstable();
+    if names != ["fleet-a", "fleet-b"] {
+        return fail(format!("the fleet enumerated {names:?}"));
+    }
+    let row_a = projects
+        .iter()
+        .find(|row| row["manifest"] == "fleet-a")
+        .ok_or("fleet-a lost its row")?;
+    if row_a["state"] != "absent" {
+        return fail(format!("a never-built sandbox reported {}", row_a["state"]));
+    }
+    // The resting ceiling is the declaration in force at the next launch; the undeclared
+    // sibling resolves from the host, so only the declared one is pinned here.
+    if row_a["resources"]["mem_mib"].as_u64() != Some(2048)
+        || row_a["resources"]["vcpu"].as_u64() != Some(2)
+    {
+        return fail(format!(
+            "the declared ceiling did not survive to the row: {}",
+            row_a["resources"]
+        ));
+    }
+    if !row_a["runtime"]["mem_used_bytes"].is_null() || !row_a["runtime"]["sessions"].is_null() {
+        return fail("a resting row fabricated a liveness reading");
+    }
+    if row_a["runtime"]["disk_allocated_bytes"].as_u64() != Some(0) {
+        return fail("a sandbox with no images reported occupied disk");
+    }
+    let owned = first.canonicalize().map_err(io_failed)?;
+    let workspaces_a: Vec<&str> = row_a["workspaces"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect()
+        })
+        .unwrap_or_default();
+    if workspaces_a != [owned.to_string_lossy().as_ref()] {
+        return fail(format!("fleet-a's workspace set was {workspaces_a:?}"));
+    }
+    check(expect_tree_unchanged(tp.config(), &config_before))?;
+    check(expect_tree_unchanged(tp.state(), &state_before))?;
+
+    // An unreadable derived index answers `74` (spec/14's `status -g` row); a malformed one is a
+    // cache miss that rebuilds and is exercised by `workflow_02_derived_workspace_index`.
+    let index = tp.cache().join("vivarium").join("workspace-index.json");
+    let readable = fs::metadata(&index).map_err(io_failed)?.permissions();
+    fs::set_permissions(&index, fs::Permissions::from_mode(0o000)).map_err(io_failed)?;
+    let unreadable = viv(&tp, &["status", "-g", "--json"])?;
+    fs::set_permissions(&index, readable).map_err(io_failed)?;
+    check(expect_code(&unreadable, EX_IOERR))?;
+    check(expect_stderr_mentions(&unreadable, "index"))?;
+
+    // A vanished declared directory: the row survives, names the path, and nothing is removed.
+    fs::remove_dir_all(&second).map_err(io_failed)?;
+    let missing = viv(&tp, &["status", "-g", "--json"])?;
+    check(expect_code(&missing, 0))?;
+    let projects = fleet_rows(&missing)?;
+    let row_b = projects
+        .iter()
+        .find(|row| row["manifest"] == "fleet-b")
+        .ok_or("a sandbox with a missing workspace was dropped from the enumeration")?;
+    let absent: Vec<&str> = row_b["path_missing"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect()
+        })
+        .unwrap_or_default();
+    if absent != [second.to_string_lossy().as_ref()] {
+        return fail(format!("path_missing named {absent:?}"));
+    }
+    check(expect_stderr_mentions(&missing, "fleet-b"))?;
+    check(expect_stderr_mentions(&missing, "unmounted filesystem"))?;
+    check(expect_stdout_lacks(&missing, "warning"))?;
+
+    // The local report holds the same runtime shape on a project that has never built.
+    let local = viv_at(&tp, &first, &["status", "--json"])?;
+    check(expect_code(&local, 0))?;
+    check(expect_json_fields_at(
+        &local,
+        "runtime",
+        &[
+            "mem_used_bytes",
+            "disk_allocated_bytes",
+            "disk_virtual_bytes",
+            "sessions",
+            "pressure_some_avg60",
+        ],
+    ))?;
+    let record: serde_json::Value = serde_json::from_slice(&local.stdout)
+        .map_err(|error| Failed::from(format!("status --json was not JSON: {error}")))?;
+    if !record["runtime"]["mem_used_bytes"].is_null()
+        || record["runtime"]["disk_allocated_bytes"].as_u64() != Some(0)
+        || !record["resources"].is_null()
+    {
+        return fail(format!(
+            "a never-built local report fabricated a reading: {}",
+            record["runtime"]
+        ));
+    }
+
+    // Volume state that cannot be read degrades to `null` disk fields rather than an exit:
+    // spec/14's status rows admit no code for a failed reading, and `status` keeps answering.
+    let volumes = tp
+        .state()
+        .join("vivarium")
+        .join("projects")
+        .join("fleet-a")
+        .join("default")
+        .join("volumes");
+    fs::create_dir_all(&volumes).map_err(io_failed)?;
+    fs::set_permissions(&volumes, fs::Permissions::from_mode(0o000)).map_err(io_failed)?;
+    let degraded = viv_at(&tp, &first, &["status", "--json"]);
+    fs::set_permissions(&volumes, fs::Permissions::from_mode(0o755)).map_err(io_failed)?;
+    let degraded = degraded?;
+    check(expect_code(&degraded, 0))?;
+    let degraded: serde_json::Value = serde_json::from_slice(&degraded.stdout)
+        .map_err(|error| Failed::from(format!("status --json was not JSON: {error}")))?;
+    if !degraded["runtime"]["disk_allocated_bytes"].is_null()
+        || !degraded["runtime"]["disk_virtual_bytes"].is_null()
+    {
+        return fail(format!(
+            "unreadable volume state did not degrade to null: {}",
+            degraded["runtime"]
+        ));
+    }
+    Ok(())
+}
+
+/// Slice 025, sessions counted not tracked: a fresh boot reports zero, an attached session
+/// raises the count, and the detach returns it to zero (spec/12, spec/17).
+fn workflow_25_sessions_count() -> Result<(), Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+    arrange_manifest(
+        &tp,
+        "wf25-sess",
+        "\n[resources]\nmem_mib = 2048\nvcpu = 2\n",
+        "",
+    )?;
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+    poll_sessions(&tp, 0)?;
+
+    // One held session, spawned concurrently and then killed: the kill closes the client's
+    // connection, which is exactly what a detach is (spec/12's per-connection sessions).
+    let mut held = spawn_viv_session(&tp)?;
+    let raised = poll_sessions(&tp, 1);
+    let _ = held.kill();
+    let _ = held.wait();
+    raised?;
+    poll_sessions(&tp, 0)?;
+    check(expect_code(&viv(&tp, &["stop"])?, 0))
+}
+
+/// Slice 025's acceptance: two sandboxes from different manifests running at once are both
+/// named exactly once, and a running row's measured use is a reading that differs from its
+/// declared ceiling — two numbers, not one printed twice (spec/17). The one trial that holds
+/// two guests at the same time, and therefore this slice's flake-risk trial under host memory
+/// pressure.
+fn workflow_25_fleet_two_sandboxes() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("wf25-two").map_err(io_failed)?;
+    let first = tp.root().join("two-first");
+    let second = tp.root().join("two-second");
+    fs::create_dir_all(&first).map_err(io_failed)?;
+    fs::create_dir_all(&second).map_err(io_failed)?;
+    for (name, tree) in [("two-a", &first), ("two-b", &second)] {
+        arrange_manifest(
+            &tp,
+            name,
+            "\n[resources]\nmem_mib = 2048\nvcpu = 2\n",
+            &format!("\n[[workspaces]]\nsource = '{}'\n", tree.display()),
+        )?;
+    }
+    check(expect_code(&viv_at(&tp, &first, &["start"])?, 0))?;
+    check(expect_code(&viv_at(&tp, &second, &["start"])?, 0))?;
+
+    let fleet = viv_at(&tp, &first, &["status", "-g", "--json"])?;
+    check(expect_code(&fleet, 0))?;
+    let projects = fleet_rows(&fleet)?;
+    let mut names: Vec<&str> = projects
+        .iter()
+        .filter_map(|row| row["manifest"].as_str())
+        .collect();
+    names.sort_unstable();
+    if names != ["two-a", "two-b"] {
+        return fail(format!("the running fleet enumerated {names:?}"));
+    }
+    for row in &projects {
+        if row["state"] != "running" {
+            return fail(format!(
+                "{} reported {} while its VM runs",
+                row["manifest"], row["state"]
+            ));
+        }
+        let Some(used) = row["runtime"]["mem_used_bytes"].as_u64() else {
+            return fail(format!(
+                "{} reported no measured memory on a delegated host",
+                row["manifest"]
+            ));
+        };
+        // The two-readings acceptance: a measurement, not the declaration echoed back.
+        if used == 0 || used == 2048 * 1024 * 1024 {
+            return fail(format!("{} measured `{used}`", row["manifest"]));
+        }
+        if row["runtime"]["sessions"].as_u64() != Some(0) {
+            return fail(format!(
+                "{} counted sessions {}",
+                row["manifest"], row["runtime"]["sessions"]
+            ));
+        }
+    }
+
+    let human = viv_at(&tp, &first, &["status", "-g"])?;
+    check(expect_code(&human, 0))?;
+    check(expect_stdout_mentions(&human, "two-a"))?;
+    check(expect_stdout_mentions(&human, "two-b"))?;
+    check(expect_stdout_mentions(&human, "host:"))?;
+
+    check(expect_code(&viv_at(&tp, &first, &["stop"])?, 0))?;
+    check(expect_code(&viv_at(&tp, &second, &["stop"])?, 0))
+}
+
+/// The parsed rows of `status -g --json`, in published order.
+fn fleet_rows(out: &VivOutput) -> Result<Vec<serde_json::Value>, Failed> {
+    let record: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|error| Failed::from(format!("status -g --json was not JSON: {error}")))?;
+    record["projects"]
+        .as_array()
+        .cloned()
+        .ok_or_else(|| Failed::from("status -g --json published no `projects` array"))
+}
+
+/// Reads `runtime.sessions` out of the local report, `None` when the agent could not answer.
+fn session_reading(tp: &TempProject) -> Result<Option<u64>, Failed> {
+    let status = viv(tp, &["status", "--json"])?;
+    check(expect_code(&status, 0))?;
+    let record: serde_json::Value = serde_json::from_slice(&status.stdout)
+        .map_err(|error| Failed::from(format!("status --json was not JSON: {error}")))?;
+    Ok(record["runtime"]["sessions"].as_u64())
+}
+
+/// Polls the count toward `expected`: attach and detach are asynchronous on both ends, so a
+/// single reading would race the transition it asserts.
+fn poll_sessions(tp: &TempProject, expected: u64) -> Result<(), Failed> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last = None;
+    while Instant::now() < deadline {
+        last = session_reading(tp)?;
+        if last == Some(expected) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    fail(format!(
+        "the session count never reached {expected}; last reading {last:?}"
+    ))
+}
+
+/// A concurrently held `viv exec` session: spawned, not awaited, so the trial can observe the
+/// count while the session lives.
+fn spawn_viv_session(tp: &TempProject) -> Result<std::process::Child, Failed> {
+    let mut command = std::process::Command::new(gate().viv());
+    command
+        .args(["exec", "--", "sleep", "600"])
+        .current_dir(tp.project())
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command.envs(support::viv_environment(tp));
+    command.spawn().map_err(io_failed)
 }
 
 /// The parsed rows of `generations list --json`, oldest first as published.

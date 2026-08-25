@@ -167,6 +167,28 @@ pub(super) fn prune<E: Environment>(
     record(&candidates, reclaimed)
 }
 
+/// The two disk sums `status` reports: what one sandbox's images occupy, against their apparent
+/// sizes.
+///
+/// Only images on disk are summed — a declared ceiling with no image occupies nothing yet, and
+/// arms 1 and 2 of [`enumerate`] contribute no image — so the pair is exactly `viv volume list`'s
+/// arm-3 reading joined, never a second measurement (spec/17). A sandbox with no images reports
+/// `0`, which is a reading, not an absence.
+pub(super) fn disk_totals(
+    roots: &config::XdgRoots,
+    sandbox_id: &str,
+) -> Result<(u64, u64), Failure> {
+    let directory = lifecycle::volume_directory(roots, sandbox_id, super::DEFAULT_TARGET);
+    let mut allocated: u64 = 0;
+    let mut apparent: u64 = 0;
+    for image in images_in(&directory)? {
+        let metadata = std::fs::metadata(&image).map_err(|source| stat_failure(&image, &source))?;
+        allocated += metadata.blocks() * 512;
+        apparent += metadata.len();
+    }
+    Ok((allocated, apparent))
+}
+
 /// The binding and rows — the part `list` and `prune` share exactly.
 fn survey<E: Environment>(context: &Context<'_, E>) -> Result<(Vec<Row>, String), Failure> {
     // spec/01: both read the project's own state and both need a bound manifest, failing closed

@@ -383,10 +383,23 @@ fn host_memory_headroom<E: Environment>(probe: &'static Probe, inputs: &Inputs<'
 }
 
 /// `MemAvailable` in bytes, from `/proc/meminfo`'s text. Pure for the parse's own tests.
-fn available_memory_bytes(meminfo: &str) -> Option<u64> {
+///
+/// `pub(crate)` because spec/17's reporting requires one reader for host memory: `status`'s
+/// `host` object reads this same parse rather than growing a sibling.
+pub fn available_memory_bytes(meminfo: &str) -> Option<u64> {
+    meminfo_bytes(meminfo, "MemAvailable:")
+}
+
+/// `MemTotal` in bytes, from `/proc/meminfo`'s text, shared for the same one-reader reason.
+pub fn total_memory_bytes(meminfo: &str) -> Option<u64> {
+    meminfo_bytes(meminfo, "MemTotal:")
+}
+
+/// One `/proc/meminfo` field in bytes: the values are kibibytes whatever the printed unit says.
+fn meminfo_bytes(meminfo: &str, field: &str) -> Option<u64> {
     meminfo
         .lines()
-        .find(|line| line.starts_with("MemAvailable:"))
+        .find(|line| line.starts_with(field))
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|kib| kib.parse::<u64>().ok())
         .map(|kib| kib * 1024)
@@ -841,5 +854,7 @@ mod tests {
         let meminfo = "MemTotal: 32456568 kB\nMemFree: 1413812 kB\nMemAvailable: 13648760 kB\n";
         assert_eq!(available_memory_bytes(meminfo), Some(13_648_760 * 1024));
         assert_eq!(available_memory_bytes("MemTotal: 1 kB\n"), None);
+        assert_eq!(total_memory_bytes(meminfo), Some(32_456_568 * 1024));
+        assert_eq!(total_memory_bytes("MemAvailable: 1 kB\n"), None);
     }
 }
