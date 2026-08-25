@@ -1,5 +1,6 @@
 //! Closed launch policy and lifetime ownership.
 
+pub mod agent_source;
 mod command;
 mod console;
 // The guest control plane, which is both the supervisor's readiness handshake and the host end of

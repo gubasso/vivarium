@@ -148,6 +148,11 @@ pub fn config_eval_human(analysis: &Analysis) -> String {
     let mut rendered = String::new();
     table(
         &mut rendered,
+        "credentials",
+        &[("agents", analysis.effective("credentials.agents"))],
+    );
+    table(
+        &mut rendered,
         "resources",
         &[
             ("mem_mib", analysis.effective("resources.mem_mib")),

@@ -178,9 +178,9 @@ let
   # The guest module and its build inputs, published so a generated flake can
   # compose the same guest a diagnostic image composes. Slice 012's item 1
   # measured the alternative: a manifest-built guest carries no vivarium shares,
-  # no volumes, no store overlay and no `vivarium.credentials` option, so
-  # `launch-arguments.nix` throws on the first `shareByTag`. The difference is the
-  # input, not the launcher, so the input is what moves.
+  # no volumes and no store overlay, so `launch-arguments.nix` throws on the
+  # first `shareByTag`. The difference is the input, not the launcher, so the
+  # input is what moves.
   guestModule = ./guest.nix;
 
   # The tool's own option surface, published for the same reason `guestModule` is:

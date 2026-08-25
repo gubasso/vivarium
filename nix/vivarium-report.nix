@@ -85,6 +85,11 @@ let
   };
 
   listPaths = {
+    "credentials.agents" = [
+      "vivarium"
+      "credentials"
+      "agents"
+    ];
     "mounts" = [
       "vivarium"
       "mounts"

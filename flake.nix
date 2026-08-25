@@ -62,6 +62,9 @@
             pkgs.cargo-nextest
             pkgs.cargo-deny
             pkgs.cargo-audit
+            # The credential-relay acceptance trial arranges a real host agent:
+            # ssh-agent, ssh-add, and ssh-keygen come from here, not the host.
+            pkgs.openssh
             pkgs.just
             pkgs.pre-commit
             # Nix owns runtimes; pre-commit owns hooks. markdownlint-cli2 uses

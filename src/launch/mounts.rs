@@ -11,7 +11,8 @@
 //! The mount list itself is read from the selected build's published contract
 //! (`share/vivarium/launch-arguments.json`) rather than from the manifest: a piece-declared mount
 //! exists only in the merged evaluation, and `--no-rebuild` evaluates nothing, so the built
-//! artifact is the one place the list exists on every path.
+//! artifact is the one place the list exists on every path. The declared credential ids ride the
+//! same contract for the same reason, so this module is also where the launcher reads them.
 
 use crate::launch::spec::MountPlanKind;
 use serde::Deserialize;
@@ -31,6 +32,8 @@ pub struct BuiltShare {
 #[serde(rename_all = "camelCase")]
 struct BuiltContract {
     share_launch: Vec<BuiltShare>,
+    #[serde(default)]
+    credential_ids: Vec<crate::protocol::CredentialId>,
 }
 
 /// The declared shares of a built contract, in `shareLaunch` order.
@@ -39,21 +42,34 @@ struct BuiltContract {
 ///
 /// Returns the read or parse error verbatim; the caller owns the diagnostic.
 pub fn declared_shares(store_path: &str) -> Result<Vec<BuiltShare>, std::io::Error> {
-    shares_by_origin(store_path, "declared")
+    Ok(read_contract(store_path)?
+        .share_launch
+        .into_iter()
+        .filter(|share| share.origin == "declared")
+        .collect())
 }
 
-fn shares_by_origin(store_path: &str, origin: &str) -> Result<Vec<BuiltShare>, std::io::Error> {
+/// The credential channels the built contract declares (`credentialIds`).
+///
+/// Read from the same artifact as the mounts and for the same reason: a piece-declared channel
+/// exists only in the merged evaluation, and `--no-rebuild` evaluates nothing.
+///
+/// # Errors
+///
+/// Returns the read or parse error verbatim; the caller owns the diagnostic.
+pub fn declared_credentials(
+    store_path: &str,
+) -> Result<Vec<crate::protocol::CredentialId>, std::io::Error> {
+    Ok(read_contract(store_path)?.credential_ids)
+}
+
+fn read_contract(store_path: &str) -> Result<BuiltContract, std::io::Error> {
     let path = Path::new(store_path)
         .join("share")
         .join("vivarium")
         .join("launch-arguments.json");
     let raw = std::fs::read(&path)?;
-    let contract: BuiltContract = serde_json::from_slice(&raw).map_err(std::io::Error::other)?;
-    Ok(contract
-        .share_launch
-        .into_iter()
-        .filter(|share| share.origin == origin)
-        .collect())
+    serde_json::from_slice(&raw).map_err(std::io::Error::other)
 }
 
 /// A declared mount resolved against the host: what the runner's `--mount` argument group and the

@@ -218,18 +218,6 @@ let
   egressMode = config.sandbox.egress.mode or "open";
 in
 {
-  options.vivarium.credentials.agents = lib.mkOption {
-    type = lib.types.listOf (
-      lib.types.enum [
-        "ssh"
-        "gpg"
-      ]
-    );
-    default = [ ];
-    apply = lib.unique;
-    description = "Closed set of credential relays built into this guest image.";
-  };
-
   # The bind table this module derives, published so `launch-arguments.nix` reads
   # the guest's own answer rather than re-deriving `mnt<index>` from the same
   # option list. Two independent derivations of one index is how a share's
@@ -648,7 +636,9 @@ in
             NoNewPrivileges = true;
             Restart = "on-failure";
             ExecStart = "${lib.getExe' guestAgentPackage "vivarium-guest-agent"}${
-              lib.concatMapStrings (id: " --credential ${id}") config.vivarium.credentials.agents
+              # `or`-defaulted like `egressMode` above: the option surface lives in
+              # `nix/vivarium-options.nix`, which only a generated flake composes.
+              lib.concatMapStrings (id: " --credential ${id}") (config.vivarium.credentials.agents or [ ])
             }";
           };
         };

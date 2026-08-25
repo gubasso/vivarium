@@ -23,8 +23,9 @@ use crate::diagnostic::{Locus, Namespace};
 use crate::exit::ExitKind;
 use crate::launch::{
     BootMetadata, GuestSession, LAUNCH_SCHEMA_VERSION, LaunchSpec, MountPlanKind, VersionEnvelope,
-    mounts, secure_fs,
+    agent_source, mounts, secure_fs,
 };
+use crate::protocol::CredentialId;
 use crate::ui::{Ui, watch};
 
 /// The only target a project has today (spec/15).
@@ -1300,18 +1301,8 @@ fn resolve_declared_mounts<E: Environment>(
     context: &Context<'_, E>,
     store_path: &str,
 ) -> Result<Vec<mounts::ResolvedMount>, Failure> {
-    let contract_path = Path::new(store_path).join("share/vivarium/launch-arguments.json");
-    let declared = mounts::declared_shares(store_path).map_err(|error| {
-        diagnosed(
-            Namespace::Vm,
-            "launch-contract-unreadable",
-            "the selected build's launch contract cannot be read",
-            Locus::File(contract_path.clone()),
-            error.to_string(),
-            ExitKind::Config,
-        )
-        .with_hint("`viv start --rebuild` rebuilds the selected build with this version")
-    })?;
+    let declared = mounts::declared_shares(store_path)
+        .map_err(|error| launch_contract_unreadable(store_path, &error))?;
     if declared.is_empty() {
         return Ok(Vec::new());
     }
@@ -1339,6 +1330,20 @@ fn resolve_declared_mounts<E: Environment>(
                 .map_err(|defect| mount_source_failure(share, defect))
         })
         .collect()
+}
+
+/// The contract both pre-boot readers depend on being legible, refused identically so the two
+/// reads cannot drift in wording.
+fn launch_contract_unreadable(store_path: &str, error: &std::io::Error) -> Failure {
+    diagnosed(
+        Namespace::Vm,
+        "launch-contract-unreadable",
+        "the selected build's launch contract cannot be read",
+        Locus::File(Path::new(store_path).join("share/vivarium/launch-arguments.json")),
+        error.to_string(),
+        ExitKind::Config,
+    )
+    .with_hint("`viv start --rebuild` rebuilds the selected build with this version")
 }
 
 /// The diagnostic id for one declared-mount source defect.
@@ -1448,6 +1453,104 @@ fn source_failure(share: &mounts::BuiltShare, defect: mounts::MountSourceDefect)
     }
 }
 
+/// The diagnostic id for one declared credential channel's host-source defect.
+///
+/// Ids are a published surface (ADR-0075): literals, so a grep finds the emitting site. The four
+/// are spec/13's four faults, which have four different repairs.
+const fn agent_source_id(defect: &agent_source::AgentSourceDefect) -> &'static str {
+    use agent_source::AgentSourceDefect as Defect;
+    match defect {
+        Defect::Unset { .. } => "agent-source-unset",
+        Defect::Missing { .. } => "agent-source-missing",
+        Defect::NotSocket { .. } => "agent-source-not-socket",
+        Defect::NotOwned { .. } => "agent-source-not-owned",
+    }
+}
+
+/// One diagnostic per broken credential-source invariant, every one `78`: a declared channel
+/// whose host source is unusable is a launch-tier configuration refusal (spec/06's two-tier
+/// shape, spec/14), not an unavailable service — the missing agent belongs to the host user, and
+/// the repair is theirs. A sibling of [`source_failure`] rather than a parameterization of it:
+/// the two fault sets are disjoint, and a channel has no declared spelling to quote — the id
+/// `ssh`/`gpg` is the whole declaration.
+fn agent_source_failure(id: CredentialId, defect: agent_source::AgentSourceDefect) -> Failure {
+    use agent_source::AgentSourceDefect as Defect;
+    let sources_hint = "`viv config sources` names the layer that declares this channel";
+    let diagnostic_id = agent_source_id(&defect);
+    let noun = format!("the declared `{id}` credential channel");
+    match defect {
+        Defect::Unset { consulted } => diagnosed(
+            Namespace::Host,
+            diagnostic_id,
+            format!("{noun} has no host agent socket to resolve"),
+            Locus::Named("credential channels"),
+            format!(
+                "`{consulted}` names nothing on this host, and `{id}` resolves from it and \
+                nothing else (spec/07)"
+            ),
+            ExitKind::Config,
+        )
+        .with_hint(format!(
+            "start the agent, or remove the declaration; {sources_hint}"
+        )),
+        Defect::Missing { path } => diagnosed(
+            Namespace::Host,
+            diagnostic_id,
+            format!("{noun} resolves to a path that does not exist"),
+            Locus::File(path),
+            "the agent this socket belonged to is no longer running there (spec/07)".to_owned(),
+            ExitKind::Config,
+        )
+        .with_hint(format!(
+            "restart the agent, or remove the declaration; {sources_hint}"
+        )),
+        Defect::NotSocket { path } => diagnosed(
+            Namespace::Host,
+            diagnostic_id,
+            format!("{noun} does not resolve to a socket"),
+            Locus::File(path),
+            "a credential leg names the exact socket object, never a file or a symlink to one \
+                (spec/07)"
+                .to_owned(),
+            ExitKind::Config,
+        )
+        .with_hint(sources_hint),
+        Defect::NotOwned { path, owner, uid } => diagnosed(
+            Namespace::Host,
+            diagnostic_id,
+            format!("{noun} resolves to another user's socket"),
+            Locus::File(path),
+            format!(
+                "the socket is owned by uid {owner}, not this user ({uid}); forwarding it \
+                would relay someone else's agent"
+            ),
+            ExitKind::Config,
+        )
+        .with_hint(sources_hint),
+    }
+}
+
+/// Resolve every declared credential channel against this host, or refuse by name.
+///
+/// Called twice by design: from the evaluating path before anything is built — the acceptance's
+/// "refuses before it builds" — and from [`execute_runner`] against the built contract, which is
+/// the only source of the list under `--no-rebuild`. The one outcome both sites forbid is a start
+/// that proceeds with a declared channel silently absent, because a relay that is missing rather
+/// than refused is discovered as an authentication failure inside the guest.
+pub(super) fn resolve_declared_agent_sockets(
+    ids: &[CredentialId],
+) -> Result<Vec<agent_source::ResolvedAgentSource>, Failure> {
+    let lookup =
+        |name: &str| std::env::var_os(name).map(|value| value.to_string_lossy().into_owned());
+    let uid = config::effective_uid();
+    ids.iter()
+        .map(|id| {
+            agent_source::resolve_and_check(*id, &lookup, uid)
+                .map_err(|defect| agent_source_failure(*id, defect))
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_lines)]
 fn execute_runner<E: Environment>(
     context: &Context<'_, E>,
@@ -1476,6 +1579,13 @@ fn execute_runner<E: Environment>(
     // piece-declared mount exists only in the merged evaluation and `--no-rebuild`
     // evaluates nothing.
     let declared_mounts = resolve_declared_mounts(context, store_path)?;
+
+    // The credential channels ride the same contract as the mounts and refuse on the same
+    // pre-boot surface. The evaluating path already refused before the build; this site is the
+    // one gate under `--no-rebuild`, and the resolution the runner arguments below carry.
+    let declared_credentials = mounts::declared_credentials(store_path)
+        .map_err(|error| launch_contract_unreadable(store_path, &error))?;
+    let agent_sockets = resolve_declared_agent_sockets(&declared_credentials)?;
 
     let volumes = volume_directory(&context.roots, sandbox_id, DEFAULT_TARGET);
     std::fs::create_dir_all(&volumes).map_err(|source| {
@@ -1528,6 +1638,16 @@ fn execute_runner<E: Environment>(
             })
             .arg(&mount.share_source)
             .arg(mount.entry.as_deref().unwrap_or("-"));
+    }
+    for credential in &agent_sockets {
+        // The host socket the relay serves, resolved above; the runner's own guard re-checks the
+        // pair against the contract's `credentialIds`.
+        command
+            .arg(match credential.id {
+                CredentialId::Ssh => "--ssh-agent-socket",
+                CredentialId::Gpg => "--gpg-agent-socket",
+            })
+            .arg(&credential.host_socket);
     }
     let output = watch::output(&mut command, &step).map_err(|source| {
         diagnosed(

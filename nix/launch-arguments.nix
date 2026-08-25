@@ -357,7 +357,9 @@ in
       socket = share.socketToken;
     }) shareLaunch;
   };
-  credentialIds = config.vivarium.credentials.agents;
+  # `or`-defaulted because the option surface lives in `nix/vivarium-options.nix`,
+  # which only a generated flake composes (see `nix/guest.nix`'s twin readers).
+  credentialIds = config.vivarium.credentials.agents or [ ];
   # Cloud Hypervisor v53.0's `VmConfig` JSON, submitted to `ch-remote create`
   # before the separate `boot` call. Field spellings are asserted in
   # contract.nix so a backend pin move cannot silently collapse this ordering.

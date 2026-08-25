@@ -1228,6 +1228,11 @@ pub(super) fn evaluate_resolved_for_launch<E: Environment>(
     if let Some(failure) = defect_failure(&evaluated.analysis) {
         return Err(failure);
     }
+    // A declared credential channel refuses before the build, not merely before the boot: a cold
+    // start costs minutes, and the acceptance forbids spending them on a launch whose host agent
+    // is already known unusable. The resolution is discarded — `execute_runner` resolves again
+    // from the built contract, which is the only source under `--no-rebuild`.
+    lifecycle::resolve_declared_agent_sockets(&merged_credentials(&evaluated.analysis))?;
     Ok(LaunchInputs {
         flake_directory: evaluated.flake_directory,
         resources: merged_resources(&evaluated.analysis),
@@ -1280,6 +1285,25 @@ fn merged_volumes(analysis: &config::merged::Analysis) -> Vec<config::volumes::D
         }
     }
     declared
+}
+
+/// The credential channels the merge declared, in merge order.
+///
+/// Read from the effective list rather than the contributors because no provenance is needed
+/// here — the refusal names the channel id, and `viv config sources` is the provenance surface.
+/// An unparsable member cannot occur: the option is a closed enum the evaluation already
+/// refused, so the filter is shape tolerance, not policy.
+fn merged_credentials(analysis: &config::merged::Analysis) -> Vec<crate::protocol::CredentialId> {
+    analysis
+        .effective("credentials.agents")
+        .and_then(serde_json::Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter_map(|id| id.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The launch-channel `resources` the merge produced, in the shape the manifest declares them.

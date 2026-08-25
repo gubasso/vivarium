@@ -71,6 +71,23 @@ in
 {
   options = {
     vivarium = {
+      # A closed enum rather than a host path, and that is the whole design: a
+      # member of a closed set is not personal data, so a shared piece may opt
+      # a team into the channel without violating N11 (spec/07, ADR-0071). The
+      # host resolves each id to its own agent socket at launch and never
+      # earlier, so no build output can depend on the answer (N19).
+      credentials.agents = mkOption {
+        type = types.listOf (
+          types.enum [
+            "ssh"
+            "gpg"
+          ]
+        );
+        default = [ ];
+        apply = lib.unique;
+        description = "Closed set of credential relays built into this guest image.";
+      };
+
       env = mkOption {
         type = types.attrsOf types.str;
         default = { };

@@ -23,7 +23,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 26] = [
+const WORKFLOWS: [WorkflowSpec; 28] = [
     (
         "workflow_01_manifest_workspace_resolution_usage",
         GateLevel::Cli,
@@ -153,6 +153,16 @@ const WORKFLOWS: [WorkflowSpec; 26] = [
         "workflow_15_contract_skew_live",
         GateLevel::Virtualization,
         workflow_15_contract_skew_live,
+    ),
+    (
+        "workflow_23_agent_channel_config_surface",
+        GateLevel::ConfigEval,
+        workflow_23_config,
+    ),
+    (
+        "workflow_23_agent_channel_relay",
+        GateLevel::Virtualization,
+        workflow_23_relay,
     ),
 ];
 
@@ -2829,6 +2839,287 @@ fn workflow_22_file_mount_confinement() -> Result<(), Failed> {
         ],
     )?))?;
     check(expect_tree_unchanged(&secrets, &before))?;
+    check(expect_code(&viv(&tp, &["stop"])?, 0))
+}
+
+/// The declared channel is visible on both config surfaces: `config eval` renders the effective
+/// list and `config sources` names the layer that opted the user in — which is what makes a
+/// piece-declared channel legible rather than a surprise (spec/07, slice 031).
+fn workflow_23_config() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("agent-channel-config").map_err(io_failed)?;
+    write_piece(
+        &tp,
+        "credentials-ssh",
+        "{ ... }: { vivarium.credentials.agents = [ \"ssh\" ]; }\n",
+    )?;
+    arrange_manifest(
+        &tp,
+        "agent-channel-config",
+        "pieces = [ \"credentials-ssh\" ]\n",
+        "",
+    )?;
+
+    let eval = viv(&tp, &["config", "eval", "--json"])?;
+    check(expect_code(&eval, 0))?;
+    check(expect_json_fields_at(
+        &eval,
+        "config.credentials",
+        &["agents"],
+    ))?;
+    check(expect_stdout_mentions(&eval, "\"ssh\""))?;
+
+    let human = viv(&tp, &["config", "eval"])?;
+    check(expect_code(&human, 0))?;
+    check(expect_stdout_mentions(&human, "[credentials]"))?;
+    check(expect_stdout_mentions(&human, "agents"))?;
+
+    let sources = viv(&tp, &["config", "sources", "--json"])?;
+    check(expect_code(&sources, 0))?;
+    check(expect_json_map_entries(
+        &sources,
+        "values",
+        &["effective", "winner", "contributors"],
+    ))?;
+    check(expect_stdout_mentions(&sources, "credentials.agents"))?;
+    check(expect_stdout_mentions(&sources, "credentials-ssh"))?;
+
+    // The acceptance's doctor clause: with a channel declared and the harness environment
+    // holding no agent, `agent-source-usable` is a real finding naming the fault — never the
+    // `not-applicable` skip — and a soft warn still exits `0`.
+    let doctor = viv(&tp, &["doctor", "--json"])?;
+    check(expect_code(&doctor, 0))?;
+    check(expect_stdout_mentions(&doctor, "agent-source-usable"))?;
+    check(expect_stdout_mentions(&doctor, "$SSH_AUTH_SOCK"))?;
+    check(expect_stdout_lacks(
+        &doctor,
+        "no composed layer declares an agent channel",
+    ))?;
+
+    // The same clause through the manifest's own bounded module: the declaration moves into a
+    // directory-form manifest's `extends` and the piece adoption is dropped, so only the extends
+    // text can put the channel in view. Extends is a composed layer evaluation honors, and a
+    // probe reading pieces alone would answer `not-applicable` here.
+    let manifests = tp.config().join("vivarium").join("manifests");
+    fs::remove_file(manifests.join("agent-channel-config.toml")).map_err(io_failed)?;
+    let directory = manifests.join("agent-channel-config");
+    write_file(
+        &directory.join("default.toml"),
+        &format!(
+            "image = \"minimal\"\nextends = \"agents.nix\"\n\n[[workspaces]]\nsource = '{}'\n",
+            tp.project().display()
+        ),
+    )
+    .map_err(io_failed)?;
+    write_file(
+        &directory.join("agents.nix"),
+        "{ ... }: { vivarium.credentials.agents = [ \"ssh\" ]; }\n",
+    )
+    .map_err(io_failed)?;
+    let extends_doctor = viv(&tp, &["doctor", "--json"])?;
+    check(expect_code(&extends_doctor, 0))?;
+    check(expect_stdout_mentions(
+        &extends_doctor,
+        "agent-source-usable",
+    ))?;
+    check(expect_stdout_mentions(&extends_doctor, "$SSH_AUTH_SOCK"))?;
+    check(expect_stdout_lacks(
+        &extends_doctor,
+        "no composed layer declares an agent channel",
+    ))
+}
+
+/// Kills the wrapped child on drop, so a failing leg cannot leak a host agent process.
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// A live host `ssh-agent` holding one throwaway key, dead when this is dropped.
+struct HostAgent {
+    _process: KillOnDrop,
+    socket: PathBuf,
+    fingerprint: String,
+}
+
+/// Arrange the host half the relay forwards: a real agent holding a generated key. The socket
+/// sits under the runtime root for the 108-byte `SUN_LEN` budget, the same reason the product's
+/// own sockets live there.
+fn arrange_host_agent(tp: &TempProject) -> Result<HostAgent, Failed> {
+    let key = tp.root().join("wf23-key");
+    let generated = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "wf23", "-f"])
+        .arg(&key)
+        .status()
+        .map_err(io_failed)?;
+    if !generated.success() {
+        return fail("ssh-keygen could not create the fixture key".to_owned());
+    }
+    let socket = tp.runtime().join("wf23-agent.sock");
+    let process = KillOnDrop(
+        std::process::Command::new("ssh-agent")
+            .arg("-D")
+            .arg("-a")
+            .arg(&socket)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(io_failed)?,
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !socket.exists() {
+        if Instant::now() > deadline {
+            return fail("the fixture ssh-agent never bound its socket".to_owned());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let added = std::process::Command::new("ssh-add")
+        .arg(&key)
+        .env("SSH_AUTH_SOCK", &socket)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(io_failed)?;
+    if !added.success() {
+        return fail("ssh-add could not hand the fixture key to the agent".to_owned());
+    }
+    let listed = std::process::Command::new("ssh-keygen")
+        .arg("-lf")
+        .arg(key.with_extension("pub"))
+        .output()
+        .map_err(io_failed)?;
+    let fingerprint = String::from_utf8_lossy(&listed.stdout)
+        .split_whitespace()
+        .nth(1)
+        .map(str::to_owned)
+        .ok_or_else(|| Failed::from("ssh-keygen printed no fingerprint for the fixture key"))?;
+    Ok(HostAgent {
+        _process: process,
+        socket,
+        fingerprint,
+    })
+}
+
+/// Slice 031's acceptance, end to end as the user: a declared channel refuses by name before
+/// build and boot when the host agent is absent, relays a real agent when it is present, and
+/// leaves no private key material in the guest — asserted by inspection, because an operation
+/// succeeding cannot tell a relay from a key that was copied in.
+fn workflow_23_relay() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("agent-channel").map_err(io_failed)?;
+    write_piece(
+        &tp,
+        "credentials-ssh",
+        "{ ... }: { vivarium.credentials.agents = [ \"ssh\" ]; }\n",
+    )?;
+    // `ssh-add` inside the guest is the operation only a working relay completes; the shipped
+    // guest carries Nix and direnv alone (spec/06), so the image adds the client tools.
+    arrange_manifest_with_image(
+        &tp,
+        "agent-channel",
+        "pieces = [ \"credentials-ssh\" ]\n",
+        "",
+        "{ pkgs, ... }: { environment.systemPackages = [ pkgs.openssh ]; }\n",
+    )?;
+
+    // Refused before build and boot: the harness clears the child's environment, so
+    // `SSH_AUTH_SOCK` is deterministically unset — spec/07's first fault — and no build record
+    // may exist afterwards, because a refusal delivered after minutes of `nix build` would
+    // satisfy a weaker assertion than the acceptance makes.
+    let refused = viv(&tp, &["start"])?;
+    check(expect_code(&refused, EX_CONFIG))?;
+    check(expect_stderr_mentions(&refused, "agent-source-unset"))?;
+    check(expect_stderr_mentions(&refused, "SSH_AUTH_SOCK"))?;
+    if path_named_exists(tp.data(), "last-build") {
+        return fail(
+            "the refusal came after a build; a declared channel refuses before one".to_owned(),
+        );
+    }
+
+    let agent = arrange_host_agent(&tp)?;
+
+    // Cold start through the ordinary ensure-running path, with the agent now resolvable. The
+    // guest listing the host agent's key is an answer only a working relay can produce: the key
+    // was never written anywhere the guest can read.
+    let socket_value = agent.socket.to_string_lossy().into_owned();
+    let with_agent: &[(&str, &str)] = &[("SSH_AUTH_SOCK", &socket_value)];
+    let guest_list = viv_with_env(&tp, &["exec", "--", "ssh-add", "-l"], with_agent)?;
+    check(expect_code(&guest_list, 0))?;
+    check(expect_stdout_mentions(&guest_list, &agent.fingerprint))?;
+
+    // The guest's variable is the tool-generated fixed path, never the host's own (N17).
+    let guest_variable = viv_with_env(
+        &tp,
+        &["exec", "--", "sh", "-lc", "printf %s \"$SSH_AUTH_SOCK\""],
+        with_agent,
+    )?;
+    check(expect_code(&guest_variable, 0))?;
+    let reported = String::from_utf8_lossy(&guest_variable.stdout);
+    if reported.trim() != "/run/vivarium/ssh-agent.sock" {
+        return fail(format!(
+            "the guest's SSH_AUTH_SOCK is `{}`, not the fixed relay path",
+            reported.trim()
+        ));
+    }
+
+    // No private key material in the guest, by inspection. The scan must be able to see before
+    // its emptiness means anything (the harness method note), so a decoy proves the instrument
+    // and is removed before the real pass. `/nix` is outside the scan on purpose: the read-only
+    // store is shared, key material there would be an N10 violation no launch-time relay could
+    // produce, and scanning it costs minutes for a claim this trial does not make.
+    let scan = "find /home /root /run /tmp /var /etc -xdev -type f \
+        -exec grep -l \"PRIVATE KEY\" {} + 2>/dev/null; true";
+    let control = viv_with_env(
+        &tp,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-lc",
+            &format!("printf %s \"FAKE PRIVATE KEY\" > /tmp/wf23-decoy && {scan}"),
+        ],
+        with_agent,
+    )?;
+    check(expect_code(&control, 0))?;
+    check(expect_stdout_mentions(&control, "/tmp/wf23-decoy"))?;
+    let swept = viv_with_env(
+        &tp,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-lc",
+            &format!("rm /tmp/wf23-decoy && {scan}"),
+        ],
+        with_agent,
+    )?;
+    check(expect_code(&swept, 0))?;
+    let findings = String::from_utf8_lossy(&swept.stdout);
+    if !findings.trim().is_empty() {
+        return fail(format!(
+            "the guest holds files matching private key material:\n{findings}"
+        ));
+    }
+    // And the conventional landing place is empty, listed rather than inferred.
+    let ssh_dir = viv_with_env(
+        &tp,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-lc",
+            "ls -A \"$HOME/.ssh\" 2>/dev/null; true",
+        ],
+        with_agent,
+    )?;
+    check(expect_code(&ssh_dir, 0))?;
+    let entries = String::from_utf8_lossy(&ssh_dir.stdout);
+    if !entries.trim().is_empty() {
+        return fail(format!("the guest's ~/.ssh is not empty:\n{entries}"));
+    }
+
     check(expect_code(&viv(&tp, &["stop"])?, 0))
 }
 

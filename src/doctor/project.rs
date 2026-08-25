@@ -1,7 +1,7 @@
 //! The project-scope probes: early warnings about the bound composition.
 //!
 //! Every one is soft and every one is a reader; the authoritative refusals live at evaluation
-//! (`65`) and launch (`78`), where spec/13 places them. The three textual lints never evaluate
+//! (`65`) and launch (`78`), where spec/13 places them. The textual lints never evaluate
 //! and never expand — a fault that only appears after host-side expansion is invisible here by
 //! design, so a clean lint is not a promise. The judgments are pure functions their tests
 //! exercise; the file reads around them are the only impure part.
@@ -10,6 +10,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::config::{self, ArtifactForm, ArtifactKind, Environment, Manifest, ResolvedArtifact};
+use crate::launch::agent_source;
+use crate::protocol::CredentialId;
 
 use super::{Finding, Inputs, Probe, ProjectInputs};
 
@@ -26,7 +28,7 @@ pub(super) fn run<E: Environment>(
         "manifest-no-inline-secret" => manifest_no_inline_secret(probe, project),
         "mount-source-not-session-dir" => mount_sources(probe, project),
         "lock-covers-declared-inputs" => lock_covers_inputs(probe, project, inputs),
-        "agent-source-usable" => agent_source_usable(probe),
+        "agent-source-usable" => agent_source_usable(probe, project, inputs),
         _ => Finding::skipped(probe, "not-applicable", "not a project probe"),
     }
 }
@@ -319,16 +321,130 @@ fn lock_node_names(lock_text: &str) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-fn agent_source_usable(probe: &'static Probe) -> Finding {
-    // The manifest grammar declares no agent channel yet — `ssh`/`gpg` relays are composed by
-    // the guest-agent slice's fixtures, not by anything a manifest can say — so there is no
-    // declaration for this probe to check. Skipped rather than passed: "no channel is declarable"
-    // and "every declared channel is usable" are different answers, and this is the honest one.
-    Finding::skipped(
+/// Whether every declared agent channel has a usable host source: spec/13's four faults, named
+/// one at a time because "unset", "missing", "wrong type", and "wrong owner" have four repairs.
+///
+/// The declaration is found textually, like this file's other lints: a channel a layer computes
+/// rather than writes is invisible here, and a clean answer is not a promise. Every composed
+/// layer's text the probe can reach is read — the image, the pieces, and the manifest's own
+/// `extends` module, which is a composed layer too (spec/04) even though the personal-layer
+/// lints deliberately skip it. The source check itself is the launch path's own resolver, so the
+/// warning and the `78` refusal cannot drift — but the probe stops at the socket's existence and
+/// ownership. It never connects and never asks an agent to sign or decrypt, because `doctor`
+/// changes nothing (spec/13).
+fn agent_source_usable<E: Environment>(
+    probe: &'static Probe,
+    project: &ProjectInputs,
+    inputs: &Inputs<'_, E>,
+) -> Finding {
+    let mut declared: Vec<CredentialId> = Vec::new();
+    let collect = |text: &str, declared: &mut Vec<CredentialId>| {
+        for id in declared_agents_lint(text) {
+            if !declared.contains(&id) {
+                declared.push(id);
+            }
+        }
+    };
+    for artifact in shared_artifacts(project, inputs) {
+        let Ok(text) = std::fs::read_to_string(&artifact.path) else {
+            continue;
+        };
+        collect(&text, &mut declared);
+    }
+    // The same lexical join `resolve_extends` performs; validation is its job, not this lint's.
+    if let (Ok(manifest), Ok(artifact)) = (&project.parsed, &project.artifact)
+        && let Some(extends) = &manifest.extends
+        && let Some(directory) = artifact.path.parent()
+        && let Ok(text) = std::fs::read_to_string(directory.join(extends))
+    {
+        collect(&text, &mut declared);
+    }
+    if declared.is_empty() {
+        return Finding::skipped(
+            probe,
+            "not-applicable",
+            "no composed layer declares an agent channel",
+        );
+    }
+    let lookup =
+        |name: &str| std::env::var_os(name).map(|value| value.to_string_lossy().into_owned());
+    let uid = config::effective_uid();
+    for id in declared {
+        use agent_source::AgentSourceDefect as Defect;
+        let Err(defect) = agent_source::resolve_and_check(id, &lookup, uid) else {
+            continue;
+        };
+        let (fault, hint) = match defect {
+            Defect::Unset { consulted } => (
+                format!("`{consulted}` names nothing on this host"),
+                "start the agent that serves this channel",
+            ),
+            Defect::Missing { path } => (
+                format!("`{}` does not exist", path.display()),
+                "restart the agent; its socket is gone",
+            ),
+            Defect::NotSocket { path } => (
+                format!("`{}` is not a socket", path.display()),
+                "point the source at the agent's socket object itself",
+            ),
+            Defect::NotOwned { path, owner, uid } => (
+                format!(
+                    "`{}` is owned by uid {owner}, not this user ({uid})",
+                    path.display()
+                ),
+                "use your own agent's socket, never another user's",
+            ),
+        };
+        return Finding::tripped(
+            probe,
+            format!("the declared `{id}` channel's host source is not usable: {fault}"),
+            hint,
+        );
+    }
+    Finding::pass(
         probe,
-        "not-applicable",
-        "no agent channel is declarable in this manifest grammar yet",
+        "every declared agent channel names a usable host socket",
     )
+}
+
+/// The credential ids a layer's text declares under `credentials.agents`.
+///
+/// Textual and best-effort per spec/13: the canonical spelling every guide shows —
+/// `vivarium.credentials.agents = [ "ssh" ]`, single or multi line — is read, comment lines are
+/// skipped, and anything computed is invisible. The authoritative reader is the evaluation the
+/// report performs.
+fn declared_agents_lint(text: &str) -> Vec<CredentialId> {
+    let mut declared: Vec<CredentialId> = Vec::new();
+    let mut collecting = false;
+    for raw in text.lines() {
+        let line = raw.trim_start();
+        if line.starts_with('#') {
+            continue;
+        }
+        let mut segment = line;
+        if !collecting {
+            let Some(index) = segment.find("credentials.agents") else {
+                continue;
+            };
+            segment = &segment[index..];
+            collecting = true;
+        }
+        let (scan, closed) = segment
+            .find(']')
+            .map_or((segment, false), |end| (&segment[..end], true));
+        for name in ["ssh", "gpg"] {
+            if scan.contains(&format!("\"{name}\""))
+                && let Ok(id) = name.parse::<CredentialId>()
+                && !declared.contains(&id)
+            {
+                declared.push(id);
+            }
+        }
+        if closed {
+            collecting = false;
+        }
+    }
+    declared
 }
 
 #[cfg(test)]
@@ -346,6 +462,34 @@ mod tests {
             None
         );
         assert!(personal_path_lint("path = '/Users/bob/code'").is_some());
+    }
+
+    #[test]
+    fn the_agents_lint_reads_the_canonical_spellings_and_skips_comments() {
+        // Single line, multi line, and the id set deduplicated across layers of one text.
+        assert_eq!(
+            declared_agents_lint("{ vivarium.credentials.agents = [ \"ssh\" ]; }\n"),
+            vec![CredentialId::Ssh]
+        );
+        assert_eq!(
+            declared_agents_lint(
+                "vivarium.credentials.agents = [\n  \"ssh\"\n  \"gpg\"\n  \"ssh\"\n];\n"
+            ),
+            vec![CredentialId::Ssh, CredentialId::Gpg]
+        );
+        // A comment is not a declaration, and text outside the list is not a member.
+        assert_eq!(
+            declared_agents_lint("# vivarium.credentials.agents = [ \"ssh\" ]\n"),
+            Vec::<CredentialId>::new()
+        );
+        assert_eq!(
+            declared_agents_lint("packages = [ \"ssh\" ];\ndescription = \"gpg\";\n"),
+            Vec::<CredentialId>::new()
+        );
+        assert_eq!(
+            declared_agents_lint("vivarium.credentials.agents = [ ];\nother = \"ssh\";\n"),
+            Vec::<CredentialId>::new()
+        );
     }
 
     #[test]
