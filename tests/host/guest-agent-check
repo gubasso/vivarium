@@ -118,7 +118,7 @@ if ! command -v nix >/dev/null 2>&1; then
   skip "agent runner realised: nix is unavailable"
   runner=
 else
-  build_log=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm-agent-check" 2>&1)
+  build_log=$(nix build --no-link --print-out-paths "$FLAKE_REF#base-image-agent-check" 2>&1)
   build_status=$?
   if ((build_status == 0)); then
     # `--print-out-paths` writes the store path to stdout and progress to stderr,
@@ -132,7 +132,7 @@ else
 
   # The runner's name comes from `writeShellApplication` in nix/runner.nix, not
   # from the flake attribute, so it is spelled out rather than derived.
-  runner="${out:+$out/bin/vivarium-first-microvm}"
+  runner="${out:+$out/bin/vivarium-base-image}"
   if [[ -n $runner && -x $runner ]]; then
     pass "agent runner realised: $runner"
   else

@@ -15,7 +15,7 @@
   expect,
 }:
 
-pkgs.runCommand "vivarium-first-microvm-contract" {
+pkgs.runCommand "vivarium-base-image-contract" {
   nativeBuildInputs = [
     pkgs.binutils
     pkgs.findutils

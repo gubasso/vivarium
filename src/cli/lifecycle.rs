@@ -1493,7 +1493,7 @@ fn execute_runner<E: Environment>(
 
     let program = Path::new(store_path)
         .join("bin")
-        .join("vivarium-first-microvm");
+        .join("vivarium-base-image");
     let step = context.ui.step("rendering the launch specification");
     let mut command = Command::new(&program);
     command

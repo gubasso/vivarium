@@ -14,7 +14,7 @@ trap 'echo "contract failed at line $LINENO" >&2' ERR
 # copy rather than a published one and a divergent inlined one.
 launcher_json=$VIVARIUM_RUNNER/share/vivarium/launch-arguments.json
 test -r "$launcher_json"
-grep -qF "$(readlink -f "$launcher_json")" "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"
+grep -qF "$(readlink -f "$launcher_json")" "$VIVARIUM_RUNNER/bin/vivarium-base-image"
 test "$(jq -r .schemaVersion "$launcher_json")" = 12
 test "$(jq -r .descriptorBudget.limit "$launcher_json")" = 524288
 test "$(jq -r .descriptorBudget.workerPoolSize "$launcher_json")" = "$VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE"
@@ -56,10 +56,10 @@ test "$(jq -r .network.dnsForwardAddress "$launcher_json")" != "$(jq -r .network
 # ends at writing the launch specification — it execs nothing and names no built
 # `viv` — and the supervisor enters the specification from the running
 # installation at launch time, so the build JSON carries no `.supervisor`.
-if grep -qE '(^|[^a-z])exec |@vivPath@' "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"; then exit 1; fi
+if grep -qE '(^|[^a-z])exec |@vivPath@' "$VIVARIUM_RUNNER/bin/vivarium-base-image"; then exit 1; fi
 test "$(jq -r '.supervisor // "absent"' "$launcher_json")" = absent
-if grep -qF -- '--no-landlock' "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"; then exit 1; fi
-if grep -Eq 'pids=|trap .*EXIT|wait .*pid|ulimit -n' "$VIVARIUM_RUNNER/bin/vivarium-first-microvm"; then exit 1; fi
+if grep -qF -- '--no-landlock' "$VIVARIUM_RUNNER/bin/vivarium-base-image"; then exit 1; fi
+if grep -Eq 'pids=|trap .*EXIT|wait .*pid|ulimit -n' "$VIVARIUM_RUNNER/bin/vivarium-base-image"; then exit 1; fi
 # The stable path spec/10's pre-boot refusal reads, agreeing with the launcher's
 # own JSON — two artifacts of one build.
 test "$(cat "$VIVARIUM_RUNNER/share/vivarium/launch-contract-schema")" = "$(jq -r .schemaVersion "$launcher_json")"

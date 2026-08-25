@@ -274,7 +274,7 @@ async fn cleanup_is_allowlisted_and_idempotent() {
     // first. This test wrote only `launch_spec` while the allowlist was missing
     // cloud-hypervisor's `api.sock.lock`, so it passed on a set that never
     // included the entry that aborted every real cleanup. The list below is what
-    // `tests/host/first-microvm-check` observed retained on a capable host; the
+    // `tests/host/base-image-check` observed retained on a capable host; the
     // daemon-created names are the ones worth the duplication, because nothing
     // else in this crate names them.
     let paths = &spec.runtime_paths;

@@ -18,7 +18,7 @@ let
   # buildCommand makes post-install substitution ineffective. Pre-commit
   # reports source-relative shellcheck lines; Nix's check is the backstop.
   launcher = pkgs.writeShellApplication {
-    name = "vivarium-first-microvm";
+    name = "vivarium-base-image";
     runtimeInputs = [
       pkgs.coreutils
       pkgs.gnugrep
@@ -35,7 +35,7 @@ in
 # contract than the running binary, and the refusal must name both numbers before
 # boot rather than fail inside the launch.
 pkgs.symlinkJoin {
-  name = "vivarium-first-microvm";
+  name = "vivarium-base-image";
   paths = [
     launcher
     contract

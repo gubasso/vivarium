@@ -51,7 +51,7 @@ let
     gc-interlock = "vivarium-gc-interlock";
     pressure = "vivarium-store-pressure";
     bench = "vivarium-share-benchmark";
-    diagnostic = "vivarium-first-microvm-diagnostic";
+    diagnostic = "vivarium-base-image-diagnostic";
   };
 
   unknown = lib.subtractLists legOrder legs;

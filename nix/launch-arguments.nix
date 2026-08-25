@@ -36,7 +36,7 @@ let
     else if system == "aarch64-linux" then
       "console=ttyAMA0"
     else
-      throw "vivarium first microVM: unsupported system ${system}";
+      throw "vivarium base image: unsupported system ${system}";
   # A list, in `config.microvm.volumes` order, rather than a flat field set per
   # volume. The reason is correctness, not tidiness: cloud-hypervisor assigns
   # /dev/vda, /dev/vdb in `--disk` order and microvm.nix's `withDriveLetters`

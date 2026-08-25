@@ -21,6 +21,8 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## closed
 
+- 030 the-base-image-is-the-base — done — 5 sessions — one pass under the appetite; `Q-030` proved to name four dead lanes rather than one, and the three wrong-assumption checks that surfaced are in the slice `Revisions`
+
 - 029 a-workspace-is-just-a-mount — done — 4 sessions — one pass under the appetite; the host evidence, the three unplanned moves, and the `Q-034` regression are in the slice `Revisions`
 
 - 021 the-manifest-is-the-sandbox — done — 4 sessions — phases 4 through 7 ran as one merged pass under the appetite, remainder included; the host evidence, gate timings, and deviations are in the slice `Revisions`

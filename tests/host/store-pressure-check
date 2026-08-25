@@ -164,7 +164,7 @@ skip_remaining() {
   done
 }
 
-# DUP: see `first-microvm-check` for why `--clean` is opt-in and why a run
+# DUP: see `base-image-check` for why `--clean` is opt-in and why a run
 # directory holding a live pid is kept rather than removed.
 LANE_RUN_PREFIX=store-pressure
 clean_lane() {
@@ -240,7 +240,7 @@ esac
 # the hard way. The scaled variant's numbers are read out of the image rather
 # than restated here, so this script cannot drift from the flake.
 if [[ $ARM == e ]]; then
-  FLAKE_ATTR='first-microvm-scaled'
+  FLAKE_ATTR='base-image-scaled'
   # 64 KiB ballast files, not the 8 KiB arm D uses. A 4 GiB volume at the
   # mandated `-i 8192` has 524,288 inodes, and 3 GiB of 8 KiB files is 393,216 of
   # them plus directories — close enough that an inode ENOSPC would read as "the
@@ -256,7 +256,7 @@ if [[ $ARM == e ]]; then
   # RECORD, not a silent truncation that later reads as "the collector stopped".
   BUDGET_SECONDS=${VIVARIUM_PRESSURE_BUDGET:-2400}
 else
-  FLAKE_ATTR='first-microvm-measurement'
+  FLAKE_ATTR='base-image-measurement'
 fi
 
 # DUP: before anything writes. The arm is settled by now, so the ballast figure
@@ -282,7 +282,124 @@ WORKSPACE=$TEMP_ROOT/workspace
 HANDSHAKE=$WORKSPACE/.vivarium-store-pressure
 mkdir -p "$HANDSHAKE"
 
-trap '[[ -n ${sampler_pid:-} ]] && kill "$sampler_pid" 2>/dev/null; [[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"' EXIT INT TERM
+# The transient unit outlives this script unless something stops it, and since the
+# two-step launch landed it can outlive a FAILURE. `viv start --spec` submits the
+# service with `systemd-run --no-block` and then waits for the supervisor to report
+# ready, so a readiness timeout, a failed read, or an interrupt between the two
+# leaves a VM running, its runtime directory populated, and virtiofsd still serving
+# a scratch tree this trap is about to delete. The old shape could not have that
+# problem and so did not guard against it: the launcher was backgrounded and waited
+# on, and by the time the lane gave up it had exited having booted nothing.
+#
+# Ownership begins with ABSENCE, and is then REMEMBERED. `unit_name` and `runtime_dir`
+# both derive from this shell's pid, so on a reused pid a retained unit from an older
+# lane matches this run on both the name and the launch-spec path, and nothing observed
+# afterwards can separate them. Only proving the name was free before submitting can —
+# and that proof is worth nothing unless it is kept, because a refused claim followed by
+# an unconditional stop would stop precisely the unit the claim protected. So a claim
+# that succeeds appends to `lane_units_owned` and a claim that fails appends nothing,
+# and the stopper walks that list rather than the current value of `unit_name`. The list
+# rather than a scalar is what makes a sweep correct: a lane that boots four pools owns
+# four units in turn, and a scalar would forget every one but the last.
+# Parallel arrays rather than one delimited string: a runtime directory is a path, and
+# a path may contain any delimiter this file could have chosen.
+lane_units_owned=()
+lane_units_runtime=()
+
+claim_lane_unit() {
+  local load_state
+  load_state=$(systemctl --user show "$unit_name" -p LoadState --value 2>/dev/null || true)
+  if [[ $load_state == loaded ]]; then
+    printf 'ERROR: %s is already loaded; this run will not adopt or stop a unit it did not create\n' \
+      "$unit_name" >&2
+    return 1
+  fi
+  lane_units_owned+=("$unit_name")
+  lane_units_runtime+=("${runtime_dir:-}")
+  return 0
+}
+
+# `is-active` is the wrong predicate here and reading it as "stopped" was a real defect:
+# it answers only whether the unit is ACTIVE, so it reports failure the instant a unit
+# enters `deactivating` — while the VM and virtiofsd are still terminating. Poll the
+# state itself and treat only a terminal one as done.
+lane_unit_settled() {
+  case $(systemctl --user show "$1" -p ActiveState --value 2>/dev/null || true) in
+    "" | inactive | failed) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Stops each unit this run created, and only those. Latches `teardown_failed` when one
+# is still live after the deadline. The latch rather than the return value is what
+# carries across a loop that moves on to the next pool: a caller may ignore one return,
+# but nothing may delete the served scratch tree once any teardown has failed. A VM
+# reading a directory that vanishes underneath it is worse than a retained fixture, and
+# the operator needs the evidence either way.
+stop_lane_unit() {
+  local index unit unit_runtime exec_start _i rc=0
+  ((${#lane_units_owned[@]})) || return 0
+  for index in "${!lane_units_owned[@]}"; do
+    unit=${lane_units_owned[$index]}
+    unit_runtime=${lane_units_runtime[$index]}
+    [[ -n $unit ]] || continue
+    lane_unit_settled "$unit" && continue
+    exec_start=$(systemctl --user show "$unit" -p ExecStart --value 2>/dev/null || true)
+    if [[ -z $unit_runtime || $exec_start != *"$unit_runtime/launch.json"* ]]; then
+      printf 'NOTE: %s is live but this run did not start it; leaving it alone\n' "$unit" >&2
+      continue
+    fi
+    # `--no-block`, so the deadline below is the ONLY wait. Plain `systemctl stop` waits
+    # for the queued job itself, and a unit with a long stop timeout would block well past
+    # the ten seconds this helper advertises before the poll ever began.
+    systemctl --user --no-block stop "$unit" >/dev/null 2>&1 || true
+    for _i in {1..100}; do
+      lane_unit_settled "$unit" && break
+      sleep 0.1
+    done
+    if ! lane_unit_settled "$unit"; then
+      teardown_failed=yes
+      rc=1
+      printf 'WARNING: %s did not settle within 10s; scratch retained at %s for diagnosis\n' \
+        "$unit" "${TEMP_ROOT:-unset}" >&2
+    fi
+  done
+  return $rc
+}
+
+# `tail -f` and the sampler do not stop themselves, and the normal paths kill them
+# explicitly for that reason. On an interrupt those paths are never reached, so the
+# trap has to own the same job or the round leaves readers behind.
+# shellcheck disable=SC2329  # invoked from the trap handler, which shellcheck cannot see.
+kill_lane_readers() {
+  local _pid
+  for _pid in "$@"; do
+    [[ -n $_pid ]] && kill "$_pid" 2>/dev/null
+  done
+  return 0
+}
+
+# shellcheck disable=SC2329  # invoked by the trap below, which shellcheck cannot see.
+lane_cleanup() {
+  kill_lane_readers "${sampler_pid:-}" "${reader_pid:-}"
+  stop_lane_unit || true
+  [[ ${teardown_failed:-no} == yes ]] && return 0
+  [[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"
+}
+# A trap action that merely returns leaves the script running after the signal, which
+# for these lanes now means continuing against a VM that cleanup has just stopped and
+# a scratch tree it has just deleted. EXIT keeps the plain handler; INT and TERM get
+# one that disarms the traps, cleans up once, and exits with the conventional
+# 128+signal status.
+# shellcheck disable=SC2329  # invoked from the trap handlers below.
+lane_on_signal() {
+  trap - EXIT INT TERM
+  lane_cleanup
+  exit $((128 + $1))
+}
+trap lane_cleanup EXIT
+trap 'lane_on_signal 2' INT
+trap 'lane_on_signal 15' TERM
 
 printf 'vivarium store pressure check (ADR-0089/ADR-0091 measurement, arm %s)\n' "$ARM"
 printf '  repo:      %s\n' "$REPO_ROOT"
@@ -328,7 +445,7 @@ if [[ -z $runner_out ]]; then
   fail "store-pressure-runner-built: the runner could not be built" "$(tail -n 20 "$TEMP_ROOT/build.err")"
   launcher=
 else
-  launcher=$runner_out/bin/vivarium-first-microvm
+  launcher=$runner_out/bin/vivarium-base-image
   pass "store-pressure-runner-built: $launcher ($FLAKE_ATTR)"
 fi
 
@@ -368,6 +485,28 @@ else
   pass "store-pressure-thresholds-in-image: min-free=$EXPECT_MIN_FREE max-free=$EXPECT_MAX_FREE gap=$gap vs 0.97-damper re-arm=$rearm"
 fi
 
+# ADR-0102 split a launch in two: the built runner resolves this host's tokens and
+# writes `launch.json`, and the *running installation* spawns the supervisor and
+# waits for its readiness report. `viv` resolves the supervisor beside its own
+# executable, so both come from this working tree and neither comes from the image.
+# Built here so a compile error is reported as a compile error rather than as a
+# missing file in the middle of a boot.
+#
+# This is what Q-030 was about, and it was never only one lane: this script invoked
+# the runner without `--supervisor` and then waited for a console socket, but the
+# runner renders and exits. It had been reporting against a boot that never happened
+# since ADR-0102 landed.
+CARGO_BIN_DIR=${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug
+VIV=$CARGO_BIN_DIR/viv
+SUPERVISOR=$CARGO_BIN_DIR/vivarium-supervisor
+if cargo build --quiet --features host --bin viv --bin vivarium-supervisor 2>"$TEMP_ROOT/cargo.err"; then
+  pass "store-pressure-host-binaries-built: $VIV, $SUPERVISOR"
+else
+  fail "store-pressure-host-binaries-built: could not build the host-side launch binaries" "$(tail -n 20 "$TEMP_ROOT/cargo.err")"
+  VIV=
+  SUPERVISOR=
+fi
+
 printf -- '\n--- host tier -----------------------------------------------------------\n'
 
 # DUP: the same prerequisite set as the sibling scripts, accumulated so the skip
@@ -379,6 +518,8 @@ missing=()
 systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
 [[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
 [[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]] || missing+=("realised launcher")
+[[ -n ${VIV:-} && -x ${VIV:-/nonexistent} ]] || missing+=("built viv")
+[[ -n ${SUPERVISOR:-} && -x ${SUPERVISOR:-/nonexistent} ]] || missing+=("built supervisor")
 
 if ((${#missing[@]})); then
   reason=$(
@@ -455,53 +596,35 @@ else
   # that had exited 0 seconds into a leg budgeted for forty minutes. The unit is
   # the lifetime; `--sandbox-id`/`--target` are what make its name predictable.
   launch_args=(--mount mnt0 dir "$WORKSPACE" - --runtime-dir "$runtime_dir" --volume-dir "$volume_dir"
-    --uid "$(id -u)" --gid "$(id -g)" --memory-mib 4096 --vcpu 2
+    --supervisor "$SUPERVISOR" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 4096 --vcpu 2
     --sandbox-id store-pressure --target "$$")
   unit_name="vivarium-store-pressure-$$.service"
 
-  launch_attempt=0
+  # Both halves of ADR-0102's launch, in order and synchronously. The runner renders
+  # and returns; `viv start --spec` is the handoff that starts the transient unit and
+  # blocks until the supervisor reports ready. Neither is backgrounded, because neither
+  # waits for the guest — which is what the old `wait_for_console` poll misread as a
+  # boot in progress. The Landlock-off retry went with it: `--no-landlock` is not a
+  # runner argument, Landlock is a host capability the runner observes and records, and
+  # a retry passing an unknown flag could only ever have produced a usage error.
   launch_vm() {
-    launch_attempt=$((launch_attempt + 1))
-    "$launcher" "${launch_args[@]}" "$@" >"$launch_log" 2>&1 &
-    launch_pid=$!
-  }
-  # `console.log` as well as `console.sock`: the supervisor is the single reader of
-  # the serial socket and the log is what it writes, so the file appearing is the
-  # signal that the console is being captured rather than merely offered.
-  wait_for_console() {
-    for _ in {1..300}; do
-      [[ -S $runtime_dir/console.sock && -f $runtime_dir/console.log ]] && return 0
-      if ! kill -0 "$launch_pid" 2>/dev/null; then
-        wait "$launch_pid" || return 1
-        systemctl --user is-active --quiet "$unit_name" || return 1
-      fi
-      sleep 0.1
-    done
-    return 1
+    claim_lane_unit || return 1
+    "$launcher" "${launch_args[@]}" >"$launch_log" 2>&1 || return 1
+    "$VIV" start --spec "$runtime_dir/launch.json" >>"$launch_log" 2>&1
   }
 
   launch_vm
+  launch_status=$?
   launched=no
-  if wait_for_console; then
+  # `console.log` as well as `console.sock`: the supervisor is the single reader of
+  # the serial socket and the log is what it writes, so the file existing is the
+  # signal that the console is being captured rather than merely offered.
+  if ((launch_status == 0)) && [[ -S $runtime_dir/console.sock && -f $runtime_dir/console.log ]]; then
     launched=yes
     pass "store-pressure-launch: reached the supervisor-owned console stage"
   else
-    wait "$launch_pid"
-    launch_status=$?
-    launch_output=$(<"$launch_log")
-    if grep -Eqi 'systemd-run|unknown option|may not be combined|Failed to (start|create) transient' <<<"$launch_output"; then
-      fail "store-pressure-launch: could not start (not Landlock evidence)" "$launch_output"
-    else
-      record "Landlock-on launch failed, retrying once without it; exit=$launch_status; output=$launch_output"
-      : >"$launch_log"
-      launch_vm --no-landlock
-      if wait_for_console; then
-        launched=yes
-        pass "store-pressure-launch: reached the supervisor-owned console stage with Landlock off"
-      else
-        fail "store-pressure-launch: failed with Landlock off as well" "$(<"$launch_log")"
-      fi
-    fi
+    fail "store-pressure-launch: could not start" "exit=$launch_status; output=$(<"$launch_log")"
+    stop_lane_unit
   fi
 
   if [[ $launched != yes ]]; then

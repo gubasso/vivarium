@@ -1,5 +1,5 @@
 {
-  description = "vivarium's first microVM: the buildable guest, its launcher, and their contract";
+  description = "vivarium's base image: the buildable guest, its launcher, and their contract";
 
   # Deliberately a flake of its own, separate from the repository root's.
   #
@@ -25,7 +25,7 @@
   #
   # These outputs exist as a *flake* rather than as bare `nix-build` targets for
   # one reason worth stating, because it looks like ceremony and is not:
-  # `tests/host/first-microvm-check`'s three strongest evaluation-tier checks
+  # `tests/host/base-image-check`'s three strongest evaluation-tier checks
   # evaluate `packages.<system>.<attr>.drvPath` and subject it to environment,
   # cwd and location metamorphism. An `--impure --expr` construction cannot be
   # subjected to environment metamorphism by construction, so moving off flake

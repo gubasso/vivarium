@@ -344,7 +344,7 @@ repos:
       # keeps empty, so its trigger and its subject disagreed (the
       # assumption-shaped-check class the harness method note records).
       # Neither hook builds a guest: the product checks are guest builds,
-      # and that lane is tests/host/first-microvm-check behind
+      # and that lane is tests/host/base-image-check behind
       # disk-preflight — a separation the disk-preflight rule requires,
       # not an omission.
       - id: dev-flake-check
@@ -393,7 +393,7 @@ repos:
   #
   # This guard exists because the boundary was crossed twice, and both times by a
   # single line that read as reasonable in isolation — a `microvm` input here, a
-  # `packages.first-microvm` there. A file acquires responsibilities one plausible
+  # `packages.base-image` there. A file acquires responsibilities one plausible
   # addition at a time, and prose alone is enforced by whoever remembers it.
   #
   # It asserts on the flake's own EVALUATED attribute names rather than on the

@@ -2,7 +2,7 @@
 
 `tests/` verifies product behavior across Rust, Nix, and host lanes. `scripts/` contains repository operations such as release helpers and structural gates.
 
-`tests/host/first-microvm-check` builds the first microVM, boots it on a real host, and checks the things only a real host can answer — including that the project is reachable inside the guest at its own host path, read once from the bind unit's console claim and once from the guest's own mount table so the two can be seen to disagree. It is the base the host lane of [`testing-lanes.md`](./testing-lanes.md) grows from, and it is run by hand today.
+`tests/host/base-image-check` builds the base image, boots it on a real host, and checks the things only a real host can answer — including that a declared tree is bound where the build says it is, read once from the bind unit's console claim and once from the guest's own mount table so the two can be seen to disagree. Host symmetry itself — the project appearing in the guest at its own host path — is asserted by `workflow_09_round_trip` rather than here, because this lane boots a verification image whose declared tree is a synthetic path a statically-evaluated image can know. It is the base the host lane of [`testing-lanes.md`](./testing-lanes.md) grows from, and it is run by hand today.
 
 `tests/host/store-gc-interlock-check` is its sibling, described below: same shapes, separate script because it mutates the host store.
 
@@ -12,7 +12,7 @@
 
 `tests/host/share-benchmark-check` is the fifth, and the only one that boots more than once per invocation: it sweeps virtiofsd's worker-pool size across four launcher variants that share one guest closure, and measures what working through a share costs against the guest's own volume.
 
-Since ADR-0095, every probe unit lives in a measurement image rather than the shipped one. The lanes that boot build `nix#first-microvm-measurement` or a purpose-built variant; `packages.first-microvm` — the artifact a user gets — contains no probe, no upstream test hook, and no way to stop itself. That last point is deliberate: the harness stops it with `ch-remote power-button` over the API socket, which is the path a user's `stop` will take.
+Since ADR-0095, every probe unit lives in a measurement image rather than the shipped one. The lanes that boot build `nix#base-image-measurement` or a purpose-built variant; `packages.base-image` — the artifact a user gets — contains no probe, no upstream test hook, and no way to stop itself. That last point is deliberate: the harness stops it with `ch-remote power-button` over the API socket, which is the path a user's `stop` will take.
 
 The microVM is its own flake, at `nix/flake.nix`. The repository root's flake is the development environment — Rust toolchain, pre-commit runtimes, the devShell direnv activates — and carries no product input or output, which is why every lane resolves `path:$REPO_ROOT?dir=nix` and only the lint checks reach back to the root for their tools. The `?dir=` form addresses the same flake file at `nix/flake.nix` with the same lock, but makes the repository its source tree, which is what lets the product build read the Rust crate at its default layout instead of a duplicated snapshot; `path:$REPO_ROOT/nix` pins the tree one level too deep and the crate becomes unreachable under pure evaluation.
 
@@ -23,7 +23,7 @@ Each script also accepts `--clean`, which removes that lane's retained images, l
 ## Running it
 
 ```console
-$ tests/host/first-microvm-check
+$ tests/host/base-image-check
 ```
 
 The sibling lanes below are invoked the same way and are listed with what each proves. No arguments. It resolves the flake from its own location, so it works from any working directory. Output is one `[PASS]` / `[FAIL]` / `[SKIP]` / `[RECORD]` line per check plus a verdict, and the whole run is meant to be pasted into a review.
@@ -83,7 +83,7 @@ The split is the gate, not the topic.
 | Evaluation | Nix present                                                              | Facts about Nix artifacts, and nothing else |
 | Host       | `/dev/kvm`, systemd as PID 1, a systemd user manager, `$XDG_RUNTIME_DIR` | Facts about a booted guest on this host     |
 
-`first-microvm-check` additionally needs `python3`, for the memfd sampler that reads the VMM's backing object once a second. The other lanes needed it for their own console readers and no longer do: they follow the supervisor's `console.log` instead of connecting to the serial socket.
+`base-image-check` additionally needs `python3`, for the memfd sampler that reads the VMM's backing object once a second. The other lanes needed it for their own console readers and no longer do: they follow the supervisor's `console.log` instead of connecting to the serial socket.
 
 An evaluation-tier result says nothing about target-host behaviour. A skipped host-tier check is unproven, never absent. This distinction is the same one `AGENTS.md` draws when it forbids promoting an observation of an execution environment into a fact about a host.
 
@@ -113,7 +113,7 @@ An evaluation-tier result says nothing about target-host behaviour. A skipped ho
 
 ## The sibling script: `tests/host/store-gc-interlock-check`
 
-ADR-0085's measurement runs from its own script, not from `first-microvm-check`, because it deletes from the invoking user's real host store — which must never be a side effect of the routine harness — and because it needs a prerequisite the harness does not: a store this user may delete from. It emits the same four result kinds and the same stable check inventory.
+ADR-0085's measurement runs from its own script, not from `base-image-check`, because it deletes from the invoking user's real host store — which must never be a side effect of the routine harness — and because it needs a prerequisite the harness does not: a store this user may delete from. It emits the same four result kinds and the same stable check inventory.
 
 ```console
 $ tests/host/store-gc-interlock-check
@@ -124,7 +124,7 @@ Two properties are worth knowing before reading a result from it.
 - `FAIL` means the experiment could not be performed — no read before the deletion, no handshake, no deletion, no console. A symptom is never a `FAIL`: ADR-0085 has no prediction to falsify, so every symptom is a `[RECORD]` and the run derives one `symptom-class` line from them.
 - Two gates decide whether any symptom is attributable at all. A control path is realised, never touched by the guest, and deleted in the same host step; if the guest can still read it, the deletion did not propagate and every symptom check is emitted as `[SKIP]`. And the guest must have genuinely read the target before the deletion — removing a path nothing cached proves nothing — which is a hard `FAIL` if it did not. Both gates were confirmed to fire by deliberate-negative runs: a rooted canary skips the whole lane rather than passing, and a suppressed before-phase read fails rather than reporting symptoms.
 
-The guest half is the `vivarium-gc-interlock` unit, which is inert in the ordinary lane: with no instruction file in the workspace it reports `no-instruction` and exits, writing nothing. A plain `first-microvm-check` run is unchanged by its presence.
+The guest half is the `vivarium-gc-interlock` unit, which is inert in the ordinary lane: with no instruction file in the workspace it reports `no-instruction` and exits, writing nothing. A plain `base-image-check` run is unchanged by its presence.
 
 ## The sibling script: `tests/host/guest-agent-check`
 
@@ -221,7 +221,7 @@ Measured 2026-08-12 on a real host with `/dev/kvm`, a systemd user manager, `$XD
 
 Two things follow for any lane written after this. A path that a developer's machine makes short is a precondition nothing checks, so runtime sockets belong under `$XDG_RUNTIME_DIR` by construction rather than by inheriting whatever scratch root a lane was given. And a pin that enumerates inputs by name goes stale the moment an input is added, with no failure until the network answers differently — which is a reason to notice when the generated flake's input set changes, not a reason to trust the pin because it exists.
 
-After the three fixes, every heavy lane passes on this host: `first-microvm-check` 40/0, `guest-agent-check` 4/0 across both runs, `guest-system-check` 5/0/1, `share-benchmark-check` 17/0, `store-density-check` 10/0, `store-gc-interlock-check` 16/0, `store-pressure-check` 20/0/3.
+After the three fixes, every heavy lane passes on this host: `base-image-check` 40/0, `guest-agent-check` 4/0 across both runs, `guest-system-check` 5/0/1, `share-benchmark-check` 17/0, `store-density-check` 10/0, `store-gc-interlock-check` 16/0, `store-pressure-check` 20/0/3.
 
 ### A manifest-built guest reached the launcher only after the guest module was composed into the generated flake
 
@@ -295,15 +295,15 @@ The `socat -t 30` linger in the depletion assertion also went to `-t 5`. It was 
 
 ### The 2026-08-10 sweep: the pin move was inert, and four host lanes were already failing
 
-The backend pin moved, so every host runbook was re-run under `tracking.yaml`'s own cadence rather than as extra caution. `store-density-check` passed. `first-microvm-check`, `store-gc-interlock-check`, `share-benchmark-check` and `store-pressure-check` all failed, and the important result is what caused it.
+The backend pin moved, so every host runbook was re-run under `tracking.yaml`'s own cadence rather than as extra caution. `store-density-check` passed. `base-image-check`, `store-gc-interlock-check`, `share-benchmark-check` and `store-pressure-check` all failed, and the important result is what caused it.
 
 Not the pin. Reverting `nix/flake.lock` alone to the previous nixpkgs and re-running produced identical failures — same checks, same counts, at cloud-hypervisor 52.0 and Nix 2.34.7. Not slice 003 either: a clean worktree at `a81140d`, the commit before the guest-agent work, fails `store-pressure-check` harder still, launching not at all where the current tree at least boots. These lanes were failing on this host before either change, and the sweep is how that was discovered rather than something it caused.
 
-The failures fell in two clusters. `store-gc-interlock-check`, `store-pressure-check` and `share-benchmark-check` booted a guest that never printed its diagnostic marker and was then read as having exited `0`. `first-microvm-check`'s guest did complete, and its remaining failures were about posture instead. All four retained their runtime directory contents after shutdown. Consequences reached past the lanes themselves — [KI-0001](./known-issues/KI-0001/investigation.md)'s recheck was due at Nix 2.34.8 and could not be performed, because its two checks skip when no collection is announced.
+The failures fell in two clusters. `store-gc-interlock-check`, `store-pressure-check` and `share-benchmark-check` booted a guest that never printed its diagnostic marker and was then read as having exited `0`. `base-image-check`'s guest did complete, and its remaining failures were about posture instead. All four retained their runtime directory contents after shutdown. Consequences reached past the lanes themselves — [KI-0001](./known-issues/KI-0001/investigation.md)'s recheck was due at Nix 2.34.8 and could not be performed, because its two checks skip when no collection is announced.
 
 Two details of that first reading are corrected by the entry below, and both mattered. The consoles were not zero-byte: the retained logs hold about 19 kB each and stop moments after the leg starts, which is a capture that was cut short rather than one that never attached. And the failing transient-unit property was never `IOWeight`, which the check requires to be absent. Reading a symptom from a summary rather than from the run is how both survived.
 
-One `first-microvm-check` failure was resolved rather than filed. Its launch-spec invariance check normalises every runtime path in `vmCreate` before comparing two launches, and slice 003 added a `vsock` device carrying one without extending the list, so the check compared two different `--runtime-dir` values and reported the difference it exists to ignore. It had been failing since that device landed, unnoticed because nothing re-ran the lane. That is the failure mode to expect from a normaliser: a new device makes it fail for a reason that is not a contract violation.
+One `base-image-check` failure was resolved rather than filed. Its launch-spec invariance check normalises every runtime path in `vmCreate` before comparing two launches, and slice 003 added a `vsock` device carrying one without extending the list, so the check compared two different `--runtime-dir` values and reported the difference it exists to ignore. It had been failing since that device landed, unnoticed because nothing re-ran the lane. That is the failure mode to expect from a normaliser: a new device makes it fail for a reason that is not a contract violation.
 
 Nothing here is attributed to a version delta, and no figure in the entries below was refreshed from these runs; a lane that cannot report is not evidence that its earlier figures still hold. Those entries keep the versions they were measured at, which is why they still read 52.0 and 6.18.38.
 
@@ -311,11 +311,11 @@ Nothing here is attributed to a version delta, and no figure in the entries belo
 
 Measured 2026-08-10 on a real host with `/dev/kvm`, a systemd user manager and systemd 261, guest kernel 6.18.43, Nix 2.34.8, cloud-hypervisor 53.0 and virtiofsd 1.14.0. Volume images and scratch were placed on an external filesystem through `XDG_STATE_HOME` and `TMPDIR`; the runtime directory stays on `XDG_RUNTIME_DIR`, which is tmpfs and bounded by a 108-byte socket path.
 
-[ADR-0097](../decisions/ADR-0097-the-transient-user-service-owns-the-vm-lifetime.md) moved the VM's lifetime to a manager-owned transient user service. The launcher creates that unit, waits for readiness and exits, so the launcher process is the handoff. Only `first-microvm-check` was taught this. The other three still wrapped the launcher in a caller-owned `systemd-run --scope` — the exact shape ADR-0097 rejects, because a scope is caller-parented — and waited on that pid as though it were the guest. It returned within seconds, so each lane concluded the guest had exited `0`, killed its console reader and tore down while the guest was still working. That is the whole of the missing-marker cluster, and it is also the whole of "pools 1, 2 and 4 never started while pool 0 did": `share-benchmark-check` polled `kill -0` on the handoff pid every 10 ms while waiting for the console socket, which is a race the handoff usually wins, so which pools appeared to start was arbitrary.
+[ADR-0097](../decisions/ADR-0097-the-transient-user-service-owns-the-vm-lifetime.md) moved the VM's lifetime to a manager-owned transient user service. The launcher creates that unit, waits for readiness and exits, so the launcher process is the handoff. Only `base-image-check` was taught this. The other three still wrapped the launcher in a caller-owned `systemd-run --scope` — the exact shape ADR-0097 rejects, because a scope is caller-parented — and waited on that pid as though it were the guest. It returned within seconds, so each lane concluded the guest had exited `0`, killed its console reader and tore down while the guest was still working. That is the whole of the missing-marker cluster, and it is also the whole of "pools 1, 2 and 4 never started while pool 0 did": `share-benchmark-check` polled `kill -0` on the handoff pid every 10 ms while waiting for the console socket, which is a race the handoff usually wins, so which pools appeared to start was arbitrary.
 
-The same three also attached their own reader to `console.sock`. The supervisor is that socket's single reader and writes `console.log`, so a second connector competes for a stream the VMM does not duplicate. All three now follow the file, which is what `first-microvm-check` was already doing.
+The same three also attached their own reader to `console.sock`. The supervisor is that socket's single reader and writes `console.log`, so a second connector competes for a stream the VMM does not duplicate. All three now follow the file, which is what `base-image-check` was already doing.
 
-Repaired, on this host, every lane passes. `store-gc-interlock-check` went from 19,175 captured bytes and no markers to 1,133,722 bytes and 34, and answered ADR-0085's question for the first time: MIXED, with 2 loud symptoms, 8 silent and 0 corrupt, against a control the guest could not read after deletion. `share-benchmark-check` boots all four pool sizes, each reporting 46 marker lines. `store-pressure-check --arm c` records ADR-0089's trigger firing twice. `first-microvm-check` reaches `PASS=40 FAIL=0 SKIP=0`.
+Repaired, on this host, every lane passes. `store-gc-interlock-check` went from 19,175 captured bytes and no markers to 1,133,722 bytes and 34, and answered ADR-0085's question for the first time: MIXED, with 2 loud symptoms, 8 silent and 0 corrupt, against a control the guest could not read after deletion. `share-benchmark-check` boots all four pool sizes, each reporting 46 marker lines. `store-pressure-check --arm c` records ADR-0089's trigger firing twice. `base-image-check` reaches `PASS=40 FAIL=0 SKIP=0`.
 
 Four checks were reading facts that had moved, and each was settled as a question first:
 
@@ -512,11 +512,11 @@ It failed invisibly. systemd stops writing unit status to the console once boot 
 
 Measured by `tests/host/store-density-check` on a real host, over three populations. Bytes are the sum of regular-file sizes; inodes are counted as directory entries, because a store path is materialised from a NAR and a NAR has no hardlink concept — every link becomes its own file in a guest.
 
-| population                         | paths | aggregate | p10   | median | p90     |
-| ---------------------------------- | ----- | --------- | ----- | ------ | ------- |
-| random host store sample           | 300   | 9,518     | 205   | 3,915  | 150,092 |
-| the `first-microvm` runner closure | 552   | 22,540    | 38    | 4,979  | 112,835 |
-| this repo's devShell closure       | 170   | 18,621    | 1,496 | 20,380 | 732,653 |
+| population                      | paths | aggregate | p10   | median | p90     |
+| ------------------------------- | ----- | --------- | ----- | ------ | ------- |
+| random host store sample        | 300   | 9,518     | 205   | 3,915  | 150,092 |
+| the `base-image` runner closure | 552   | 22,540    | 38    | 4,979  | 112,835 |
+| this repo's devShell closure    | 170   | 18,621    | 1,496 | 20,380 | 732,653 |
 
 All figures are bytes per inode. The aggregate corroborates [`../decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md`](../decisions/ADR-0091-the-store-volume-is-provisioned-for-inodes.md)'s 11 KiB argument well enough — at 9.5–22.5 KiB per inode, bytes bind before inodes at a provisioning ratio of 8192, which is the outcome that decision wants. The median path does not: at 3,915 and 4,979 bytes per inode, two of the three populations sit below 8192, so a guest store dominated by ordinary small paths exhausts inodes while the volume still reports free space — the exact failure ADR-0091 exists to prevent and [`../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md`](../decisions/ADR-0089-the-guest-store-is-collected-on-space-pressure.md)'s block-reading trigger is structurally unable to see.
 
@@ -663,7 +663,7 @@ Best of three repetitions in milliseconds, first run; the second run reproduces 
 
 Two things follow, and the second is the one that moves a decision. A disabled pool is not the serialisation penalty it was argued to be: pool 0 went from 642 ms to 211 ms as the client count went from one to four, so a single serving thread pipelines a full queue rather than stalling behind it. And a non-zero pool never won a single cell — its per-request dispatch is a real cost with nothing to recover it. [`../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md`](../decisions/ADR-0051-share-worker-pool-small-non-zero-uniform.md) is superseded by [`../decisions/ADR-0096-the-share-worker-pool-takes-the-daemon-default.md`](../decisions/ADR-0096-the-share-worker-pool-takes-the-daemon-default.md) on this evidence.
 
-The shipped image was rebuilt at the new value and re-verified by `tests/host/first-microvm-check` on the same host: `PASS=33 FAIL=0 SKIP=1`, identical to the result recorded for the previous constant, with the launcher's own arguments carrying `virtiofsdThreadPoolSize=0`.
+The shipped image was rebuilt at the new value and re-verified by `tests/host/base-image-check` on the same host: `PASS=33 FAIL=0 SKIP=1`, identical to the result recorded for the previous constant, with the launcher's own arguments carrying `virtiofsdThreadPoolSize=0`.
 
 Stated boundary, and it is what keeps this honest. The host page cache is warm throughout by construction, so every request the daemon serves is satisfied from memory. The case a pool exists for — a request that blocks long enough to hold the queue — is not present in this measurement and remains unmeasured. What is measured is that no pool size above the daemon's own default helped on any workload this project has been able to run.
 
@@ -693,7 +693,7 @@ Publishing different measurements under upstream's names would be this register'
 
 ### The base image boots and stops without carrying anything that measures it
 
-Measured on a real host after the probe units moved out of the shipped image. `nix#first-microvm` reached `Reached target Multi-User System` 7.1 s after the launcher was executed, with its console showing ordinary systemd status and no vivarium unit but `vivarium-volume-prepare.service`. The host then stopped it with `ch-remote power-button` over the API socket: the guest ran its full shutdown transaction and reached `System Power Off` 2.0 s later, and the runtime directory was empty afterwards.
+Measured on a real host after the probe units moved out of the shipped image. `nix#base-image` reached `Reached target Multi-User System` 7.1 s after the launcher was executed, with its console showing ordinary systemd status and no vivarium unit but `vivarium-volume-prepare.service`. The host then stopped it with `ch-remote power-button` over the API socket: the guest ran its full shutdown transaction and reached `System Power Off` 2.0 s later, and the runtime directory was empty afterwards.
 
 Two things this closes. The ACPI power-button path was unverified — the guest module configures no `logind` policy and no ACPI handling, so whether a power button reached a poweroff depended on kernel and `systemd-logind` defaults neither of which had been confirmed by booting. It does. And it is the mechanism [`../decisions/ADR-0095-measurement-services-live-in-a-measurement-image.md`](../decisions/ADR-0095-measurement-services-live-in-a-measurement-image.md) relies on, since the shipped image deliberately has no way to stop itself.
 
@@ -707,7 +707,7 @@ The three legs that produced this register's existing entries — `vivarium-stor
 
 Two deltas are intended and are the point of the change: the shipped image's unit set is now exactly `vivarium-volume-prepare.service`, with no upstream Nix test hook on its store daemon and no `systemctl poweroff` anywhere; and a composed `vivarium-measurement-stop` unit owns stopping, so an image built with any leg selection stops instead of only the one that happened to include the diagnostic.
 
-Confirmed by boot: `tests/host/first-microvm-check` against the measurement image returned `PASS=33 FAIL=0 SKIP=1`, identical to the cold-boot result recorded for the pre-refactor image.
+Confirmed by boot: `tests/host/base-image-check` against the measurement image returned `PASS=33 FAIL=0 SKIP=1`, identical to the cold-boot result recorded for the pre-refactor image.
 
 ### The slice 019 re-run found the manager-owned launch block dead since ADR-0102, and one artifact of measuring while editing
 
@@ -723,6 +723,21 @@ Measured 2026-08-18 on the target host — kernel 7.1.4, pinned `virtiofsd 1.14.
 - The descriptor forms of the new mount API do not help here: `open_tree(fd, "", OPEN_TREE_CLONE|AT_EMPTY_PATH)` on an `O_PATH` descriptor returns `EINVAL`, as does every directory-relative form tried, while `open_tree(AT_FDCWD, <absolute path>, OPEN_TREE_CLONE)` with `move_mount` works and resolves a pathname exactly as `MS_BIND` does. Probed through a `ctypes` wrapper rather than a C reproducer, so the `EINVAL` is recorded as observed rather than as a kernel rule.
 
 The trial that carries this forward, `workflow_22_file_mount_serves_only_its_file`, was run against a deliberately broken build as well as a correct one: with the staging step removed, it fails naming all three entries of the source's parent, including the planted sibling. A confinement check that has never been shown failing is not evidence of confinement.
+
+### Four boot lanes had been reporting on a boot that never happened, and two checks encoded wrong assumptions
+
+Measured 2026-08-24 on the target host, taking `Q-030`'s exit. The question named one lane; the sweep that answered it found four. `base-image-check`, `store-pressure-check`, `store-gc-interlock-check` and `share-benchmark-check` each invoked the built runner without `--supervisor` and then waited for a console socket — but `ADR-0102` ended the runner's job at writing the launch specification, so it renders and exits. Confirmed rather than inferred: the runner answers that argument set with its usage line and exit `64`. Every check behind those blocks had been reporting against a guest that never booted, since `ADR-0102` landed.
+
+The repair is the two-step launch `tests/guest_agent_host.rs` was already performing and no shell lane had been taught: render with the runner, then boot with `viv start --spec`, both synchronous and neither backgrounded. The Landlock-off retry went with the old shape — `--no-landlock` is not a runner argument at all, Landlock is a host capability the runner observes and records, so the retry could only ever have produced a second usage error. `launch_attempt` went too, having become a counter nothing read.
+
+Alive again, the lanes surfaced two checks whose form encoded a wrong assumption — the defect class `base-image-check`'s own header enumerates three of, and both invisible while the lane could not reach them:
+
+- The confinement contract required every capability-holding process to sit in a user namespace whose `uid_map` reads exactly `<uid> <uid> 1`. `src/net/netns.rs` builds the VMM's network pair with `--map-root-user`, because the tap, the ruleset and the route need root inside the namespace, so cloud-hypervisor's map reads `0 <uid> 1` — one host identity wide, and confining for exactly that reason. The check now compares the host side and the length and ignores the inner id, which is what the confinement actually rests on.
+- The mirror check compared the guest's bind target against this repository's own path. `ADR-0110` made the bind target build output, and a verification image's declared tree is the synthetic `/VIVARIUM_VERIFICATION_WORKSPACE` because a statically-evaluated image cannot know the host directory a checkout occupies. Host symmetry became unprovable here when that landed; it is `workflow_09_round_trip` that proves it, by comparing the guest session's own `pwd` against the project's host path. The lane now asserts what remains in reach and worth a boot — that the bind unit and the kernel agree, on the target the build published — with the moved coverage named at the call site rather than left to be inferred.
+
+A third check of the same class turned up once `share-benchmark-check` could run to the end. `share-bench-pool-sizes-distinct` located each launcher's contract by grepping the launcher script for a store path named `vivarium-<image>-launch-arguments.json`. No such derivation exists — `runner.nix` builds the contract with `writeTextDir`, so it is called `launch-arguments.json` — and the pattern therefore matched nothing and compared an empty string against every pool size. Slice 019 moved that JSON to the published `share/vivarium/launch-arguments.json` and updated the sibling lanes' greps to it; this one kept the store-name form. It now reads the published path, which is the reason the published path exists, and the four launchers declare `0`, `1`, `2` and `4` as built.
+
+Result on this host, every lane run to a verdict: `base-image-check` `PASS=42 FAIL=0 SKIP=0` (against `PASS=25 FAIL=1` at the 2026-08-18 reading and nothing at all in between), `store-gc-interlock-check` `PASS=17 FAIL=0 SKIP=0`, `store-pressure-check` `PASS=21 FAIL=0 SKIP=3` (the three skips are arm E's discard chain, which this arm does not exercise), `share-benchmark-check` `PASS=18 FAIL=0 SKIP=0` with all four pool sizes booting and reporting 46 marker lines each, and `exec-and-shell-check` `PASS=5 FAIL=0 SKIP=0`. The same round split `exec-and-shell-check`'s rendering assertion: `--mount` is optional, so the base image renders with no mount declared, and the three facts that do not need a declared share are now asserted against the shipped artifact instead of against a verification image. That closes the open question the call site had been carrying in a comment.
 
 ## The method note
 
@@ -742,7 +757,7 @@ A check that fails is cheap. A check that passes vacuously, or fails for the wro
 
 The last three are worth separating from the first three, because they are not about assertions at all. Inert is not absent. A knob set to a harmless value is still a knob in the path, and an experiment that needs the path clear must remove it rather than neutralise it. A value that is "not applicable" is not a value: before treating a reading as a quantity, check that the thing being read has one. And a workload is not a workload until it reaches its subject — when a share performs like a local disk, suspect the measurement before believing the result.
 
-These are all defects in checks. The same round produced one in the repository's own shape, and it is worth naming beside them because the failure mode is identical: the root flake had been accumulating product outputs one plausible line at a time, until a dev-environment file was building guests. Prose alone would not have caught the next one, so `scripts/check-flake-boundary` now asserts it as a pre-commit hook — on the flake's evaluated attribute names, not its source text, because an output merged in with `//` is invisible to a grep and that is exactly the shape that got through. The rule itself lives in `AGENTS.md`. A later sweep found a second repository-shape instance, downstream of that very guard: a `nix flake check` hook fired on every `.nix` file in the repository while evaluating only the root flake — whose `checks` the boundary guard keeps empty — so it ran on changes to files its subject did not contain and asserted nothing about them. Its trigger and its subject named different flakes. It is now two hooks, each filtered to exactly the files its flake contains, with the product half instantiating checks under `--no-build` because the guest build belongs to `tests/host/first-microvm-check` behind the disk preflight.
+These are all defects in checks. The same round produced one in the repository's own shape, and it is worth naming beside them because the failure mode is identical: the root flake had been accumulating product outputs one plausible line at a time, until a dev-environment file was building guests. Prose alone would not have caught the next one, so `scripts/check-flake-boundary` now asserts it as a pre-commit hook — on the flake's evaluated attribute names, not its source text, because an output merged in with `//` is invisible to a grep and that is exactly the shape that got through. The rule itself lives in `AGENTS.md`. A later sweep found a second repository-shape instance, downstream of that very guard: a `nix flake check` hook fired on every `.nix` file in the repository while evaluating only the root flake — whose `checks` the boundary guard keeps empty — so it ran on changes to files its subject did not contain and asserted nothing about them. Its trigger and its subject named different flakes. It is now two hooks, each filtered to exactly the files its flake contains, with the product half instantiating checks under `--no-build` because the guest build belongs to `tests/host/base-image-check` behind the disk preflight.
 
 Two probe-authoring facts belong beside these, because each produced a check that looked correct and reported nothing true. `systemd.services.<name>.path` replaces the unit's PATH rather than extending it, so a probe that lists one tool loses every other tool it did not name — `awk` went missing this way. And `systemctl show -p MainPID` reads `0` for a socket-activated unit that is serving requests, so a liveness check written on `MainPID` reports a healthy `nix-daemon` as dead.
 

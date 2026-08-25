@@ -3,7 +3,7 @@
 # Measure what a Nix store's *density* actually is, and read the store volume's
 # inode table directly. Two questions, both host-only, neither needing a boot.
 #
-# WHY THIS IS A SEPARATE SCRIPT, and not more checks in `first-microvm-check`:
+# WHY THIS IS A SEPARATE SCRIPT, and not more checks in `base-image-check`:
 # nothing here boots a guest or needs /dev/kvm. Both measurements are arithmetic
 # over the host's own store plus one `mkfs` of a throwaway image, so they run in
 # minutes on any machine with Nix and answer questions that the microVM lane was
@@ -174,7 +174,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# DUP: see `first-microvm-check` for why `--clean` is opt-in. This lane retains
+# DUP: see `base-image-check` for why `--clean` is opt-in. This lane retains
 # nothing by design — its scratch base is removed on every exit — so `--clean`
 # exists only to collect a base left behind by a killed run.
 clean_lane() {
@@ -303,7 +303,7 @@ fi
 # Population 2 — the runner closure. This is the material the guest actually
 # carries at boot, so it is the closest thing measurable from the host to "what
 # a guest store is made of".
-runner_out=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm" 2>"$TEMP_ROOT/build.err" | tail -n1)
+runner_out=$(nix build --no-link --print-out-paths "$FLAKE_REF#base-image" 2>"$TEMP_ROOT/build.err" | tail -n1)
 if [[ -z $runner_out ]]; then
   skip "store-density-runner-closure: the runner could not be built"
   record "build stderr: $(tail -n 5 "$TEMP_ROOT/build.err" | tr '\n' '|' | tail -c 300)"
@@ -313,7 +313,7 @@ else
   measure_paths "$TEMP_ROOT/runner.list" "$TEMP_ROOT/runner.data"
   runner_summary=$(summarise "$TEMP_ROOT/runner.data")
   record "store-density-runner-closure: $runner_summary"
-  pass "store-density-runner-closure: measured the first-microvm runner's full closure"
+  pass "store-density-runner-closure: measured the base-image runner's full closure"
 fi
 
 # Population 3 — a dev shell's dependency closure, via `inputDerivation`. This is

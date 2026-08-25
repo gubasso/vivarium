@@ -1,4 +1,4 @@
-# The deterministic first-microVM diagnostic: the leg that reads the guest's own
+# The deterministic base-image diagnostic: the leg that reads the guest's own
 # view of every contract the launcher claims to have set up, and prints it to the
 # console for the host harness to parse.
 #
@@ -9,10 +9,10 @@
 { pkgs, verificationWorkspaceInternal, ... }:
 
 {
-  systemd.services.vivarium-first-microvm-diagnostic = {
+  systemd.services.vivarium-base-image-diagnostic = {
     enableStrictShellChecks = true;
     environment.VIVARIUM_WORKSPACE_INTERNAL = verificationWorkspaceInternal;
-    description = "Deterministic first-microVM diagnostic";
+    description = "Deterministic base-image diagnostic";
     wantedBy = [ "multi-user.target" ];
     after = [ "vivarium-volume-prepare.service" ];
     requires = [ "vivarium-volume-prepare.service" ];

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Boot the first microVM and check what only a real host can answer.
+# Boot the base image and check what only a real host can answer.
 #
 # Two tiers, and the split is the *gate*, not the topic:
 #
@@ -66,7 +66,7 @@ VOLUME_DIR=$("$SCRIPT_DIR/disk-preflight" --locate --images)/diagnostics
 # `store.img`. That is what the guest mounts and what `viv volume list` reads, so
 # a lane may not rename them — it gets its own directory instead. Lanes share
 # `$VOLUME_DIR`, and without this two of them would boot each other's disks.
-LANE_VOLUME_DIR=$VOLUME_DIR/first-microvm
+LANE_VOLUME_DIR=$VOLUME_DIR/base-image
 
 # DUP: before anything writes. This realises the guest closure and boots it,
 # which measures in gigabytes, and the honest moment to ask where those go is
@@ -75,14 +75,14 @@ LANE_VOLUME_DIR=$VOLUME_DIR/first-microvm
 # way, which is why the preflight checks that separately and refuses when it will
 # not fit. `--clean` is exempt because it only removes.
 if [[ ${1:-} != --clean ]]; then
-  if ! heavy_scratch=$("$SCRIPT_DIR/disk-preflight" --need 8 --label "the first-microVM check"); then
+  if ! heavy_scratch=$("$SCRIPT_DIR/disk-preflight" --need 8 --label "the base-image check"); then
     printf '\n0 passed, 0 failed, 0 skipped (nothing ran: disk preflight refused)\n'
     exit 1
   fi
   [[ -n $heavy_scratch ]] && export TMPDIR="$heavy_scratch"
 fi
 
-TEMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/vivarium-first-microvm.XXXXXX" 2>/dev/null || true)
+TEMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/vivarium-base-image.XXXXXX" 2>/dev/null || true)
 if [[ -z $TEMP_ROOT ]]; then
   printf '[FAIL] cannot create a private temporary directory\n' >&2
   exit 1
@@ -102,7 +102,124 @@ else
   RESET=
 fi
 
-trap '[[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"' EXIT INT TERM
+# The transient unit outlives this script unless something stops it, and since the
+# two-step launch landed it can outlive a FAILURE. `viv start --spec` submits the
+# service with `systemd-run --no-block` and then waits for the supervisor to report
+# ready, so a readiness timeout, a failed read, or an interrupt between the two
+# leaves a VM running, its runtime directory populated, and virtiofsd still serving
+# a scratch tree this trap is about to delete. The old shape could not have that
+# problem and so did not guard against it: the launcher was backgrounded and waited
+# on, and by the time the lane gave up it had exited having booted nothing.
+#
+# Ownership begins with ABSENCE, and is then REMEMBERED. `unit_name` and `runtime_dir`
+# both derive from this shell's pid, so on a reused pid a retained unit from an older
+# lane matches this run on both the name and the launch-spec path, and nothing observed
+# afterwards can separate them. Only proving the name was free before submitting can —
+# and that proof is worth nothing unless it is kept, because a refused claim followed by
+# an unconditional stop would stop precisely the unit the claim protected. So a claim
+# that succeeds appends to `lane_units_owned` and a claim that fails appends nothing,
+# and the stopper walks that list rather than the current value of `unit_name`. The list
+# rather than a scalar is what makes a sweep correct: a lane that boots four pools owns
+# four units in turn, and a scalar would forget every one but the last.
+# Parallel arrays rather than one delimited string: a runtime directory is a path, and
+# a path may contain any delimiter this file could have chosen.
+lane_units_owned=()
+lane_units_runtime=()
+
+claim_lane_unit() {
+  local load_state
+  load_state=$(systemctl --user show "$unit_name" -p LoadState --value 2>/dev/null || true)
+  if [[ $load_state == loaded ]]; then
+    printf 'ERROR: %s is already loaded; this run will not adopt or stop a unit it did not create\n' \
+      "$unit_name" >&2
+    return 1
+  fi
+  lane_units_owned+=("$unit_name")
+  lane_units_runtime+=("${runtime_dir:-}")
+  return 0
+}
+
+# `is-active` is the wrong predicate here and reading it as "stopped" was a real defect:
+# it answers only whether the unit is ACTIVE, so it reports failure the instant a unit
+# enters `deactivating` — while the VM and virtiofsd are still terminating. Poll the
+# state itself and treat only a terminal one as done.
+lane_unit_settled() {
+  case $(systemctl --user show "$1" -p ActiveState --value 2>/dev/null || true) in
+    "" | inactive | failed) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Stops each unit this run created, and only those. Latches `teardown_failed` when one
+# is still live after the deadline. The latch rather than the return value is what
+# carries across a loop that moves on to the next pool: a caller may ignore one return,
+# but nothing may delete the served scratch tree once any teardown has failed. A VM
+# reading a directory that vanishes underneath it is worse than a retained fixture, and
+# the operator needs the evidence either way.
+stop_lane_unit() {
+  local index unit unit_runtime exec_start _i rc=0
+  ((${#lane_units_owned[@]})) || return 0
+  for index in "${!lane_units_owned[@]}"; do
+    unit=${lane_units_owned[$index]}
+    unit_runtime=${lane_units_runtime[$index]}
+    [[ -n $unit ]] || continue
+    lane_unit_settled "$unit" && continue
+    exec_start=$(systemctl --user show "$unit" -p ExecStart --value 2>/dev/null || true)
+    if [[ -z $unit_runtime || $exec_start != *"$unit_runtime/launch.json"* ]]; then
+      printf 'NOTE: %s is live but this run did not start it; leaving it alone\n' "$unit" >&2
+      continue
+    fi
+    # `--no-block`, so the deadline below is the ONLY wait. Plain `systemctl stop` waits
+    # for the queued job itself, and a unit with a long stop timeout would block well past
+    # the ten seconds this helper advertises before the poll ever began.
+    systemctl --user --no-block stop "$unit" >/dev/null 2>&1 || true
+    for _i in {1..100}; do
+      lane_unit_settled "$unit" && break
+      sleep 0.1
+    done
+    if ! lane_unit_settled "$unit"; then
+      teardown_failed=yes
+      rc=1
+      printf 'WARNING: %s did not settle within 10s; scratch retained at %s for diagnosis\n' \
+        "$unit" "${TEMP_ROOT:-unset}" >&2
+    fi
+  done
+  return $rc
+}
+
+# `tail -f` and the sampler do not stop themselves, and the normal paths kill them
+# explicitly for that reason. On an interrupt those paths are never reached, so the
+# trap has to own the same job or the round leaves readers behind.
+# shellcheck disable=SC2329  # invoked from the trap handler, which shellcheck cannot see.
+kill_lane_readers() {
+  local _pid
+  for _pid in "$@"; do
+    [[ -n $_pid ]] && kill "$_pid" 2>/dev/null
+  done
+  return 0
+}
+
+# shellcheck disable=SC2329  # invoked by the trap below, which shellcheck cannot see.
+lane_cleanup() {
+  kill_lane_readers "${console_follower_pid:-}" "${sampler_pid:-}"
+  stop_lane_unit || true
+  [[ ${teardown_failed:-no} == yes ]] && return 0
+  [[ -n ${TEMP_ROOT:-} && -d $TEMP_ROOT ]] && rm -rf -- "$TEMP_ROOT"
+}
+# A trap action that merely returns leaves the script running after the signal, which
+# for these lanes now means continuing against a VM that cleanup has just stopped and
+# a scratch tree it has just deleted. EXIT keeps the plain handler; INT and TERM get
+# one that disarms the traps, cleans up once, and exits with the conventional
+# 128+signal status.
+# shellcheck disable=SC2329  # invoked from the trap handlers below.
+lane_on_signal() {
+  trap - EXIT INT TERM
+  lane_cleanup
+  exit $((128 + $1))
+}
+trap lane_cleanup EXIT
+trap 'lane_on_signal 2' INT
+trap 'lane_on_signal 15' TERM
 
 pass() {
   PASS_COUNT=$((PASS_COUNT + 1))
@@ -150,7 +267,7 @@ run_check() {
 # — an orphan is a directory whose daemons are gone, and deleting a live run's
 # sockets out from under it would be a far worse failure than leaving a stale
 # directory behind.
-LANE_RUN_PREFIX=first-microvm
+LANE_RUN_PREFIX=base-image
 lane_artefacts() {
   local volume_dir=$1
   printf '%s\n' \
@@ -195,9 +312,9 @@ if [[ ${1:-} == --clean ]]; then
   exit 0
 fi
 
-printf 'vivarium first microVM check\n'
+printf 'vivarium base image check\n'
 printf 'repository: %s\n' "$REPO_ROOT"
-printf 'guest workspace mount: %s (mirrored from the host, ADR-0100)\n' "$REPO_ROOT"
+printf 'declared tree source: %s (served into the guest at the bind target the build publishes, ADR-0110)\n' "$REPO_ROOT"
 printf 'system: %s\n' "$SYSTEM"
 printf 'kernel: %s\n' "$(uname -sr 2>/dev/null || echo unavailable)"
 printf 'nix: %s\n' "$(nix --version 2>/dev/null || echo unavailable)"
@@ -213,7 +330,7 @@ if ! command -v nix >/dev/null 2>&1; then
   done
 else
   drv_file=$TEMP_ROOT/drv-path
-  eval_output=$(nix eval --raw "$FLAKE_REF#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/eval.err")
+  eval_output=$(nix eval --raw "$FLAKE_REF#packages.$SYSTEM.base-image.drvPath" 2>"$TEMP_ROOT/eval.err")
   eval_status=$?
   if ((eval_status == 0)); then
     printf '%s' "$eval_output" >"$drv_file"
@@ -221,7 +338,7 @@ else
   else fail "drv-path evaluation" "$eval_output$(<"$TEMP_ROOT/eval.err")"; fi
 
   if ((eval_status == 0)); then
-    env_drv=$(cd / && env HOME=/homeless-shelter USER=vivarium-canary TMPDIR=/var/empty/vivarium-canary XDG_RUNTIME_DIR=/run/user/424242 XDG_STATE_HOME=/var/empty/vivarium-state nix eval --raw "$FLAKE_REF#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/env-eval.err")
+    env_drv=$(cd / && env HOME=/homeless-shelter USER=vivarium-canary TMPDIR=/var/empty/vivarium-canary XDG_RUNTIME_DIR=/run/user/424242 XDG_STATE_HOME=/var/empty/vivarium-state nix eval --raw "$FLAKE_REF#packages.$SYSTEM.base-image.drvPath" 2>"$TEMP_ROOT/env-eval.err")
     env_status=$?
     if ((env_status == 0)) && [[ $env_drv == "$eval_output" ]]; then
       pass "environment and cwd metamorphism preserves drvPath"
@@ -230,7 +347,7 @@ else
 
   copy_root=$TEMP_ROOT/location-copy
   if cp -a "$REPO_ROOT" "$copy_root" 2>"$TEMP_ROOT/copy.err"; then
-    copy_drv=$(nix eval --raw "path:$copy_root?dir=nix#packages.$SYSTEM.first-microvm.drvPath" 2>"$TEMP_ROOT/copy-eval.err")
+    copy_drv=$(nix eval --raw "path:$copy_root?dir=nix#packages.$SYSTEM.base-image.drvPath" 2>"$TEMP_ROOT/copy-eval.err")
     copy_status=$?
     if ((eval_status == 0 && copy_status == 0)) && [[ $copy_drv == "$eval_output" ]]; then
       pass "location metamorphism preserves drvPath"
@@ -238,7 +355,7 @@ else
   else skip "location metamorphism: worktree copy failed: $(<"$TEMP_ROOT/copy.err")"; fi
 
   graph=$TEMP_ROOT/derivations.json
-  graph_output=$(nix derivation show -r "$FLAKE_REF#first-microvm" 2>"$TEMP_ROOT/graph.err")
+  graph_output=$(nix derivation show -r "$FLAKE_REF#base-image" 2>"$TEMP_ROOT/graph.err")
   graph_status=$?
   if ((graph_status == 0)); then
     printf '%s' "$graph_output" >"$graph"
@@ -274,7 +391,7 @@ else
     # fresh `nix derivation show -r` would only add a full re-evaluation and a
     # second place for the read to fail silently behind `2>/dev/null`.
     graph_names=$(jq -r '.derivations | keys[]' "$graph")
-    if grep -Eq 'vivarium-(store-spike|store-pressure|share-benchmark|first-microvm-diagnostic|measurement-stop)|unit.*vivarium-gc-interlock' <<<"$graph_names"; then
+    if grep -Eq 'vivarium-(store-spike|store-pressure|share-benchmark|base-image-diagnostic|measurement-stop)|unit.*vivarium-gc-interlock' <<<"$graph_names"; then
       fail "shipped derivation graph contains measurement material"
     else
       pass "shipped derivation graph contains no measurement material"
@@ -336,12 +453,12 @@ else
   # page reporting, the store spike, the persistence pair, delete-duplicate,
   # diagnostic completion — is a statement about a probe. Those live in the
   # measurement image now (ADR-0095). The EVALUATION tier above deliberately
-  # stays on `#first-microvm`, because purity, metamorphism and the negative
+  # stays on `#base-image`, because purity, metamorphism and the negative
   # reference are statements about the artifact users actually get.
-  build_output=$(nix build --no-link --print-out-paths "$FLAKE_REF#first-microvm-measurement" 2>"$TEMP_ROOT/build.err")
+  build_output=$(nix build --no-link --print-out-paths "$FLAKE_REF#base-image-measurement" 2>"$TEMP_ROOT/build.err")
   build_status=$?
   if ((build_status == 0)); then
-    launcher=$(printf '%s\n' "$build_output" | tail -n 1)/bin/vivarium-first-microvm
+    launcher=$(printf '%s\n' "$build_output" | tail -n 1)/bin/vivarium-base-image
     pass "launcher and guest closure realised: $launcher"
     closure_output=$(nix path-info -r "$(dirname "$(dirname "$launcher")")" 2>&1)
     closure_status=$?
@@ -457,6 +574,27 @@ else
   cache_check aarch64 virtiofsd
 fi
 
+# ADR-0102 split a launch in two: the built runner resolves this host's tokens and
+# writes `launch.json`, and the *running installation* spawns the supervisor and
+# waits for its readiness report. `viv` resolves the supervisor beside its own
+# executable, so both come from this working tree and neither comes from the
+# image's build. Built here, in the evaluation tier, so a compile error is reported
+# as a compile error rather than as a missing file in the middle of a boot.
+#
+# This is what Q-030 was about. The lane used to invoke the runner and wait for a
+# console socket, but the runner renders and exits — it had been reporting against
+# a boot that never happened since ADR-0102 landed.
+CARGO_BIN_DIR=${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug
+VIV=$CARGO_BIN_DIR/viv
+SUPERVISOR=$CARGO_BIN_DIR/vivarium-supervisor
+if cargo build --quiet --features host --bin viv --bin vivarium-supervisor 2>"$TEMP_ROOT/cargo.err"; then
+  pass "host-side launch binaries built: $VIV, $SUPERVISOR"
+else
+  fail "host-side launch binaries could not be built" "$(tail -n 20 "$TEMP_ROOT/cargo.err")"
+  VIV=
+  SUPERVISOR=
+fi
+
 printf '\nHost tier\n'
 missing=()
 [[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
@@ -466,6 +604,8 @@ systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd u
 [[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
 command -v python3 >/dev/null 2>&1 || missing+=("python3 memfd sampler")
 [[ -n ${launcher:-} && -x ${launcher:-/nonexistent} ]] || missing+=("realised launcher")
+[[ -n ${VIV:-} && -x ${VIV:-/nonexistent} ]] || missing+=("built viv")
+[[ -n ${SUPERVISOR:-} && -x ${SUPERVISOR:-/nonexistent} ]] || missing+=("built supervisor")
 
 if ((${#missing[@]})); then
   reason=$(
@@ -476,7 +616,7 @@ if ((${#missing[@]})); then
     skip "$check: missing prerequisites: $reason"
   done
 else
-  run_id="first-microvm-$$"
+  run_id="base-image-$$"
   runtime_dir=$XDG_RUNTIME_DIR/vivarium/$run_id
   volume_dir=$LANE_VOLUME_DIR
   volume=$volume_dir/default.img
@@ -528,30 +668,26 @@ else
   image_allocated() { stat -c '%b*%B=%s' -- "$1" 2>/dev/null || echo unavailable; }
   store_alloc_before=$(image_allocated "$store_volume")
 
-  launch_args=(--mount mnt0 dir "$REPO_ROOT" - --runtime-dir "$runtime_dir" --volume-dir "$volume_dir" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 --sandbox-id first-microvm --target "$run_id")
-  unit_name="vivarium-first-microvm-$run_id.service"
+  launch_args=(--mount mnt0 dir "$REPO_ROOT" - --runtime-dir "$runtime_dir" --volume-dir "$volume_dir" --supervisor "$SUPERVISOR" --uid "$(id -u)" --gid "$(id -g)" --memory-mib 2048 --vcpu 2 --sandbox-id base-image --target "$run_id")
+  unit_name="vivarium-base-image-$run_id.service"
 
-  launch_attempt=0
+  # Both halves of ADR-0102's launch, in order and synchronously. The runner renders
+  # and returns; `viv start --spec` is the handoff that starts the transient unit and
+  # blocks until the supervisor reports ready. Neither call is backgrounded, because
+  # neither one waits for the guest — which is exactly what the old `wait_for_console`
+  # poll misread as a boot in progress.
   launch_vm() {
-    launch_attempt=$((launch_attempt + 1))
-    "$launcher" "${launch_args[@]}" >"$launch_log" 2>&1 &
-    launch_pid=$!
-  }
-  wait_for_console() {
-    for _ in {1..300}; do
-      [[ -S $runtime_dir/console.sock && -f $runtime_dir/console.log ]] && return 0
-      if ! kill -0 "$launch_pid" 2>/dev/null; then
-        wait "$launch_pid" || return 1
-        systemctl --user is-active --quiet "$unit_name" || return 1
-      fi
-      sleep 0.1
-    done
-    return 1
+    claim_lane_unit || return 1
+    "$launcher" "${launch_args[@]}" >"$launch_log" 2>&1 || return 1
+    "$VIV" start --spec "$runtime_dir/launch.json" >>"$launch_log" 2>&1
   }
 
   launch_vm
-  if wait_for_console; then
-    wait "$launch_pid" || fail "manager-owned launch handoff" "$(<"$launch_log")"
+  launch_status=$?
+  # `console.log` as well as `console.sock`: the supervisor is the single reader of
+  # the serial socket and the log is what it writes, so the file existing is the
+  # signal that the console is being captured rather than merely offered.
+  if ((launch_status == 0)) && [[ -S $runtime_dir/console.sock && -f $runtime_dir/console.log ]]; then
     pass "manager-owned launch reached the supervisor-owned console stage"
     # Deliberately no `CPUAccounting`. systemd deprecated the property: v261
     # answers an assignment with "D-Bus property CPUAccounting is deprecated,
@@ -592,10 +728,9 @@ $unit_properties"
       record "Landlock unavailable: launch contract recorded the soft degradation and no retry flag exists"
     fi
   else
-    wait "$launch_pid"
-    launch_status=$?
-    launch_output=$(<"$launch_log")
-    fail "host-tier manager-owned launch failed; no Landlock-off retry exists" "exit=$launch_status; output=$launch_output"
+    fail "host-tier manager-owned launch failed; no Landlock-off retry exists" "exit=$launch_status; output=$(<"$launch_log")"
+    # A partial handoff can leave the unit up even though readiness never arrived.
+    stop_lane_unit
     launch_args=()
   fi
 
@@ -737,6 +872,26 @@ PY
     # host identity, the invoking user's, so a full capability set inside it
     # reaches nothing the invoking user could not already reach.
     proc_uidmap() { awk '{print $1, $2, $3}' "/proc/$1/uid_map" 2>/dev/null | paste -sd';' - || true; }
+    # What confines a full capability mask is the MAP beside it, and the load-bearing
+    # half of the map is the host side. One line, length one, and the invoking user
+    # outside: such a namespace can act as exactly one host identity no matter what its
+    # mask reads, because a namespace's creator is root of that namespace and of nothing
+    # else.
+    #
+    # The inner id is deliberately not compared. `src/net/netns.rs` builds the VMM's
+    # network pair with `--map-root-user`, because the tap, the ruleset and the route
+    # need root INSIDE the namespace, so cloud-hypervisor's map reads `0 <uid> 1`; a
+    # staged virtiofsd uses `--map-current-user` and reads `<uid> <uid> 1`. This check
+    # used to demand the second spelling literally and therefore reported the first as a
+    # breach — a check whose form encoded a wrong assumption, which is the defect this
+    # file's header enumerates three of. It was unreachable while the lane could not
+    # boot (Q-030), so nothing noticed.
+    single_identity_map() {
+      local map=$1 outer count
+      [[ -n $map && $map != *';'* ]] || return 1
+      read -r _ outer count <<<"$map" || return 1
+      [[ $count == 1 && $outer == "$(id -u)" ]]
+    }
     for status_file in /proc/[0-9]*/status; do
       pid=${status_file#/proc/}
       pid=${pid%/status}
@@ -784,7 +939,7 @@ PY
         # launcher could have caused it.
         [[ $bounding_droppable == no || $cap_bounding == 0000000000000000 ]] \
           || bad_conf+="$role pid=$pid kept bounding set $cap_bounding on a launcher that holds CAP_SETPCAP"$'\n'
-      elif [[ -n $userns && $userns != "$host_userns" && $uidmap == "$(id -u) $(id -u) 1" ]]; then
+      elif [[ -n $userns && $userns != "$host_userns" ]] && single_identity_map "$uidmap"; then
         :
       else
         bad_conf+="$role pid=$pid holds capabilities effective=$caps permitted=$cap_permitted outside a single-identity user namespace (userns=${userns:-unreadable} host=${host_userns:-unreadable} uid-map=${uidmap:-unreadable})"$'\n'
@@ -934,12 +1089,31 @@ rejoined count is below expected, so bytes are genuinely missing rather than spl
       mirror_seen=$(printf '%b' "${mirror_escaped}x")
       mirror_seen=${mirror_seen%x}
     fi
-    if [[ $mirror_path == "$REPO_ROOT" && $mirror_seen == "$REPO_ROOT" ]]; then
-      pass "the project is mirrored into the guest at its own host path ($REPO_ROOT)"
+    # The target is read off the built contract rather than named here, because since
+    # ADR-0110 the bind target IS build output: the guest binds each declared share where
+    # its own `bindTable` says, and the launch supplies only the source. Restating the
+    # value would make this a comparison between two spellings of one constant.
+    #
+    # And it is deliberately NOT `$REPO_ROOT`. This lane boots a verification image, whose
+    # declared tree is the synthetic `/VIVARIUM_VERIFICATION_WORKSPACE` — a path fixed at
+    # build time, because a statically-evaluated image cannot know the host directory this
+    # repository happens to sit in. So N16's host symmetry, which says a declared tree
+    # appears in the guest at its own host path, is a claim only a real manifest can make,
+    # and it is `viv start`'s acceptance trials that make it —
+    # `workflow_09_round_trip` in `tests/user_workflows.rs` compares the guest session's
+    # own `pwd` against the project's host path, which is N16 observed rather than argued. What this boot proves is the half that is
+    # in reach and still worth a boot: the bind unit and the kernel agree, and they agree
+    # on the target the build published. Stated rather than quietly dropped — the coverage
+    # moved when ADR-0110 made the target build output, and a reader deserves to meet that
+    # here rather than infer it.
+    declared_target=$(jq -r 'first(.shareLaunch[] | select(.origin == "declared") | .target)' "$host_launcher_json" 2>/dev/null || true)
+    if [[ -n $declared_target && $mirror_path == "$declared_target" && $mirror_seen == "$declared_target" ]]; then
+      pass "the declared tree is bound where the build says, and the bind unit and the mount table agree ($declared_target)"
+      record "the source virtiofsd serves for that target is this repository ($REPO_ROOT); host symmetry itself is asserted by the acceptance trials, which boot from a real manifest"
     else
-      fail "guest workspace mount" "unit claim: ${mirror_claim:-absent}
+      fail "guest declared-tree mount" "unit claim: ${mirror_claim:-absent}
 mount table: ${mirror_escaped:-absent}
-expected both to name $REPO_ROOT (N16, ADR-0110)"
+expected both to name the bind target the build publishes (${declared_target:-unreadable}) — ADR-0110"
     fi
     free_lines=$(grep -ao 'VIVARIUM_MEM_PHASE=[a-z]* MEMFREE=[0-9]* MEMAVAIL=[0-9]*' "$console_log" || true)
     # VmRSS is not authoritative here and must not be reported as if it were.
@@ -1184,7 +1358,7 @@ supervisor unit: $(systemctl --user show "$unit_name" -p Result -p ExecMainStatu
     else pass "runtime directory empty after shutdown; persistent volume retained at $volume"; fi
     # Checking the directory is empty is not the same as removing it, and for a
     # long time this script did only the former: every run since 2026-07-31 left
-    # its own `$XDG_RUNTIME_DIR/vivarium/first-microvm-<pid>/` behind, 17 of them
+    # its own `$XDG_RUNTIME_DIR/vivarium/base-image-<pid>/` behind, 17 of them
     # by the time anyone counted. Empty directories on a tmpfs cost nothing, which
     # is exactly why nothing noticed. The sibling script has always done this.
     rmdir "$runtime_dir" 2>/dev/null

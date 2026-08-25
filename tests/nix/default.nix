@@ -3,7 +3,7 @@
 # Everything here names the product; nothing under `nix/` may name anything here
 # except the single edge in `nix/flake.nix`, which exists because a flake is a
 # publication surface and has to declare `checks`. `scripts/check-verification-boundary`
-# keeps the cheap half of that rule and `tests/host/first-microvm-check` keeps the
+# keeps the cheap half of that rule and `tests/host/base-image-check` keeps the
 # real one, by asserting the shipped image's derivation graph carries nothing from
 # this tree.
 #
@@ -121,7 +121,17 @@ let
           (builtins.attrNames verificationDefaults) ++ (builtins.attrNames product.imageDefaults)
         )
       })"
-      (image // { contract = contractFor image measurement.units; });
+      (
+        image
+        // {
+          contract = contractFor image measurement.units;
+          # What `extension.nix` is allowed to see this image vary on. Taken from the
+          # override set the caller actually wrote rather than from the difference
+          # between two settings attrsets: a difference cannot tell a deliberate
+          # override from the drift this exists to catch.
+          declaredKeys = builtins.attrNames overrides;
+        }
+      );
 
   poolSizes = [
     0
@@ -132,7 +142,7 @@ let
 
   images = {
     # The shipped image, taken from the product's own thunk rather than rebuilt
-    # here. `packages.first-microvm` and `checks.first-microvm` then name ONE guest
+    # here. `packages.base-image` and `checks.base-image` then name ONE guest
     # evaluation, so the check covers the artifact that is actually published; a
     # second `mkImage { }` would make that coverage a coincidence of the defaults,
     # and nothing would notice the day it stopped holding. It selects no probe unit,
@@ -141,6 +151,7 @@ let
     # specifies (ADR-0095).
     shipped = product.shipped // {
       contract = contractFor product.shipped [ ];
+      declaredKeys = [ ];
     };
 
     # Every probe that has ever been booted, in one image, for the lanes that
@@ -191,29 +202,23 @@ let
     # on the guest to satisfy it, so the load silently no-ops and the positive control fails
     # with an empty echo. `boot.initrd.kernelModules` is what puts the module in the shrunk
     # tree and loads it, which is both halves of what this check needs.
-    agent =
-      let
-        image = product.mkImage {
-          extraModules = [
-            {
-              imports = [ product.optionsModule ];
-              vivarium.mounts = [
-                {
-                  source = verificationWorkspace;
-                  target = verificationWorkspace;
-                  readonly = false;
-                }
-              ];
-            }
-            ({ pkgs, ... }: {
-              vivarium.credentials.agents = [ "ssh" ];
-              environment.systemPackages = [ pkgs.socat ];
-              boot.initrd.kernelModules = [ "vsock_loopback" ];
-            })
-          ];
-        };
-      in
-      image // { contract = contractFor image [ ]; };
+    #
+    # Built through `mkVerification` like every other variant, which is the whole of
+    # `ADR-0111` applied to itself: this image used to call `product.mkImage` directly
+    # and hand-copy the tree block above it, so the one thing every verification image
+    # is supposed to share existed here as a second copy that nothing compared.
+    agent = mkVerification {
+      extraModules = [
+        (
+          { pkgs, ... }:
+          {
+            vivarium.credentials.agents = [ "ssh" ];
+            environment.systemPackages = [ pkgs.socat ];
+            boot.initrd.kernelModules = [ "vsock_loopback" ];
+          }
+        )
+      ];
+    };
 
     # The one image with a volume nothing reserved. Without it every claim about
     # declared volumes — the appended `microvm.volumes` entry, the drive-letter
@@ -261,32 +266,51 @@ let
   };
 
   packages = {
-    first-microvm = images.shipped.runner;
-    first-microvm-measurement = images.measurement.runner;
-    first-microvm-scaled = images.scaled.runner;
-    first-microvm-agent-check = images.agent.runner;
-    first-microvm-bench-threads-0 = images.bench."0".runner;
-    first-microvm-bench-threads-1 = images.bench."1".runner;
-    first-microvm-bench-threads-2 = images.bench."2".runner;
-    first-microvm-bench-threads-4 = images.bench."4".runner;
+    base-image = images.shipped.runner;
+    base-image-measurement = images.measurement.runner;
+    base-image-scaled = images.scaled.runner;
+    base-image-agent-check = images.agent.runner;
+    base-image-bench-threads-0 = images.bench."0".runner;
+    base-image-bench-threads-1 = images.bench."1".runner;
+    base-image-bench-threads-2 = images.bench."2".runner;
+    base-image-bench-threads-4 = images.bench."4".runner;
   };
 
-  # Two checks, not seven. `tests/host/first-microvm-check` runs `nix flake check`
+  # Two checks, not seven. `tests/host/base-image-check` runs `nix flake check`
   # routinely and each check is a guest build; the scaled and bench variants assert
   # themselves as pre-boot gates in the lane that spends the boot, which is the same
   # guarantee at the point of use.
   checks = {
-    first-microvm = images.shipped.contract;
-    first-microvm-measurement = images.measurement.contract;
+    base-image = images.shipped.contract;
+    base-image-measurement = images.measurement.contract;
     # Three, because this one covers a topology the other two cannot: their volume
     # assertions run over the two reserved volumes and would hold with the declared
     # path deleted. It is a guest build like the others, and it is the only place
     # the declared half is checked without spending a boot.
-    first-microvm-declared-volume = images.declared-volume.contract;
+    base-image-declared-volume = images.declared-volume.contract;
     # And four, for exactly the declared-volume reason applied to `[[mounts]]`:
     # every other image's share list is the two reserved entries, so the derived
     # half would pass vacuously without this build.
-    first-microvm-declared-mount = images.declared-mount.contract;
+    base-image-declared-mount = images.declared-mount.contract;
+    # And five, which is the only one of these that is not a guest build: it asserts
+    # the relationship BETWEEN the images rather than anything inside one. It has to
+    # cover every variant rather than the two the contract checks cover, because the
+    # image a lane spends a boot on is exactly the one no cheap check looks at.
+    base-image-extends = import ./extension.nix {
+      inherit (product) lib pkgs;
+      inherit product;
+      base = images.shipped;
+      variants = {
+        inherit (images)
+          measurement
+          scaled
+          agent
+          declared-volume
+          declared-mount
+          ;
+      }
+      // (lib.mapAttrs' (n: v: lib.nameValuePair "bench-threads-${n}" v) images.bench);
+    };
   };
 in
 {
