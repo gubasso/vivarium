@@ -302,8 +302,8 @@ Five columns for four subjects, because flake-pilot reaches the class two ways a
 | Runs on a host without KVM                                               | Backends          | `flake-pilot`, `glaipnir`              |
 | Choose the engine or hypervisor                                          | Backends          | `flake-pilot`                          |
 | Runs on macOS                                                            | Backends          | `glaipnir`                             |
-| The tool derives the workspace mount, with no host path named            | Data              | `vivarium`, `glaipnir`, `bunkerbox`    |
-| Work stays at its host path                                              | Data              | `vivarium`, `glaipnir`                 |
+| Mounts the project you start it in, with no host path named              | Data              | `vivarium`, `glaipnir`, `bunkerbox`    |
+| The project is mounted at its host path                                  | Data              | `vivarium`, `glaipnir`                 |
 | Choose which host paths cross, in a file rather than on the command line | Data              | `vivarium`                             |
 | The caller chooses which host environment variables cross                | Data              | `vivarium`                             |
 | Refuses a mount that would expose the host session                       | Data              | `vivarium`                             |
@@ -473,6 +473,12 @@ stays fixed once chosen`, still carried a presupposition: `once chosen` implies 
 
 That retitle, and the four before it, retire the second of the two label rules above. A label is now required to state a claim a reader can verdict from the table alone, and length yields to that: `The same definition rebuilds the same environment` replaced a six-word label that said less. The first rule stands unchanged — a label states an observable behavior — and it is the one that was ever doing the work. The correction rows above keep the labels they were recorded under.[^rollback-label]
 
+### Two mount labels corrected for what they assumed the reader knew
+
+A reader read the `❌ no` on `Work stays at its host path` for two subjects and asked how those subjects reach the host tree at all. The marks were right and the label had invited the question. Three rows stand on one premise — the project is visible inside — and none of them measures it, so a reader arriving at the table has nothing telling them that visibility is settled before the first row is asked. `Work stays at its host path` compounded that by leaning on `stays`, which is as easily heard as staying reachable as staying at one path. `The project is mounted at its host path` presupposes the mount and asks only about the target, so a `❌` reads as mounted somewhere else — a mirrored tail under `/home/aiuser/` at glaipnir, the constant `/workspace` at bunkerbox.
+
+The row above it went with it. `The tool derives the workspace mount, with no host path named` used `derives` as a term of art for the property being measured, which a reader who does not already know the answer cannot verdict from. `Mounts the project you start it in, with no host path named` names the trigger instead. Two plainer candidates were rejected for changing the question rather than the wording. `cwd` is the wrong noun, because bunkerbox resolves the repository root from the working directory and mounts that, so a reader starting in a subdirectory would verdict a `✅` cell against a claim the row never made. And naming the guest destination would pull back the target question the split of 2026-08-20 moved to the row below. `with no host path named` stays because it is the clause holding the `krun` route down: that registration mounts automatically too, replayed at every start with no argument typed, and what makes it a `❌` is that a person wrote the path once. No verdict moved at any subject, and the correction tables above keep the labels they were recorded under.[^mount-labels]
+
 ### Citations corrected
 
 Three `vivarium` cells cited [`open-questions.md`](../../plan/open-questions.md) in prose without naming an entry, and two of those named no entry because none existed. A citation a reader cannot follow is worse than none: it claims a record is being kept and cannot be checked. All three now name a question, and the two missing ones were logged rather than dropped.
@@ -595,6 +601,8 @@ Two entries left this list when the admission rule relaxed on 2026-08-25. `Trust
 [^egress-label]: Verified: 2026-08-19 — against the egress-defaults-open rule in [`08-invariants-and-guarantees.md`](../spec/08-invariants-and-guarantees.md) and the two egress modes in [`05-networking-and-egress.md`](../spec/05-networking-and-egress.md). Two evidence sections were added in the same pass: the `vivarium` cells in both network-policy rows were the set's only unlinked `✅ yes` on rows where the other subjects carry evidence, and they were the cells where the surprise lived.
 
 [^rollback-label]: Verified: 2026-08-19 — the two upstream phrasings read at <https://nlewo.github.io/nixos-manual-sphinx/administration/rollback.xml.html> and <https://doc.opensuse.org/documentation/leap/reference/html/book-reference/cha-snapper.html>.
+
+[^mount-labels]: Verified 2026-08-25 — both labels re-read against the row rule this document set follows, that a label states a claim a reader can verdict from the table alone. No subject was re-read and no cell moved; what changed is the wording of the question and the presupposition it carries.
 
 [^citations]: Verified: 2026-08-19 — read against [`spec/05-networking-and-egress.md`](../spec/05-networking-and-egress.md), [`spec/00-goals-and-non-goals.md`](../spec/00-goals-and-non-goals.md), and the uplink the launcher builds in [`src/launch/policy.rs`](../../../src/launch/policy.rs).
 

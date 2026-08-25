@@ -46,7 +46,7 @@ Three kinds of no, one qualified yes, and one mark that is not a verdict at all.
 
 Read the bare ones first: they are what a comparison written by the subject would have left out.
 
-A `†` names its authority. Most cells cite a binding invariant; the build rows cite the tool that owns the job instead; `Scopes credentials per app out of the box` cites a design position no invariant states yet, logged as `Q-031` in [`open-questions.md`](../../plan/open-questions.md); and `The tool derives the workspace mount` cites a recorded decision, because it names a position vivarium adopted after these tables were first written.
+A `†` names its authority. Most cells cite a binding invariant; the build rows cite the tool that owns the job instead; `Scopes credentials per app out of the box` cites a design position no invariant states yet, logged as `Q-031` in [`open-questions.md`](../../plan/open-questions.md); and `Mounts the project you start it in` cites a recorded decision, because it names a position vivarium adopted after these tables were first written.
 
 A `‡` keeps a row honest in the other direction: the capability is real and reachable by a documented mechanism, and the tool will not do it for you or notice that you forgot. A reader choosing between "it can" and "it does" needs both halves.
 
