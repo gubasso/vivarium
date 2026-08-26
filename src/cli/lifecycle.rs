@@ -304,12 +304,15 @@ impl TargetLock {
             Err(fs::TryLockError::WouldBlock) => Err(diagnosed(
                 Namespace::Vm,
                 "startup-contended",
-                "another vivarium process is starting this project's VM",
+                // Worded for every holder, not just `start`: `viv update` and the pruning
+                // verbs take this same lock, and a message naming a starting VM would be
+                // wrong from them (spec/14 admits `75` on each).
+                "another vivarium process holds this project's target lock",
                 Locus::File(path),
                 "the per-target startup lock could not be taken promptly",
                 ExitKind::TempFail,
             )
-            .with_hint("retry once the other process has finished starting the VM")),
+            .with_hint("retry once the other process has finished")),
             Err(fs::TryLockError::Error(error)) => Err(diagnosed(
                 Namespace::Vm,
                 "lock-unusable",

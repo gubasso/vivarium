@@ -32,3 +32,5 @@ When the effective lock carries no node for a declared input, `start` and `confi
 Accepted
 
 Specified in [`../reference/spec/04-composition-and-determinism.md`](../reference/spec/04-composition-and-determinism.md), [`../reference/spec/01-command-surface.md`](../reference/spec/01-command-surface.md), [`../reference/spec/14-exit-codes.md`](../reference/spec/14-exit-codes.md), and [`../reference/spec/13-doctor-and-health-checks.md`](../reference/spec/13-doctor-and-health-checks.md).
+
+Amended by [`ADR-0112-the-selected-image-carries-the-base-flake.md`](./ADR-0112-the-selected-image-carries-the-base-flake.md) — "exactly one effective lockfile" now means exactly one lock maintained by the tool: a base flake's own lock, when present, seeds resolution of its subtree and holds those pins. The refusal on a missing node, the no-revision rule, and `64` for an unknown name survive; a requested name that is a `follows` alias updates the input owning its node.

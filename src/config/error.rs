@@ -161,6 +161,9 @@ pub(super) enum GeneratedFlakeErrorKind {
     Io,
     Race,
     Internal,
+    /// A required external program is absent or unusable (`69`), the same boundary
+    /// [`EvaluationError`] draws for the evaluation half.
+    Unavailable,
 }
 
 impl GeneratedFlakeError {
@@ -226,6 +229,7 @@ impl GeneratedFlakeError {
             GeneratedFlakeErrorKind::Io => ExitKind::IoErr,
             GeneratedFlakeErrorKind::Race => ExitKind::TempFail,
             GeneratedFlakeErrorKind::Internal => ExitKind::Software,
+            GeneratedFlakeErrorKind::Unavailable => ExitKind::Unavailable,
         }
     }
 
@@ -773,6 +777,7 @@ mod tests {
             (GeneratedFlakeErrorKind::Io, ExitKind::IoErr),
             (GeneratedFlakeErrorKind::Race, ExitKind::TempFail),
             (GeneratedFlakeErrorKind::Internal, ExitKind::Software),
+            (GeneratedFlakeErrorKind::Unavailable, ExitKind::Unavailable),
         ];
         for (kind, expected) in rows {
             let error = GeneratedFlakeError::plain(

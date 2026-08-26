@@ -40,3 +40,5 @@ Amends [`ADR-0004-toml-manifest-compiles-to-flake.md`](./ADR-0004-toml-manifest-
 Amends [`ADR-0010-secrets-never-in-nix-store.md`](./ADR-0010-secrets-never-in-nix-store.md) — the prohibition now demonstrably reaches the manifest, because compiling it into the flake copies its text into the store. Stated in [`../reference/spec/07-secrets-and-config-sharing.md`](../reference/spec/07-secrets-and-config-sharing.md).
 
 Specified in [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md) and [`../reference/spec/04-composition-and-determinism.md`](../reference/spec/04-composition-and-determinism.md).
+
+Amended by [`ADR-0112-the-selected-image-carries-the-base-flake.md`](./ADR-0112-the-selected-image-carries-the-base-flake.md) — the generated flake gains one flake input, `path:./images/<name>`, pointing into its own materialized `images/` copy when the selected image carries a base flake. Materialize-not-reference survives: the node is relative and hashless, so the lock is not the moving target the rejected absolute form was, and the tree stays self-contained and regenerable.

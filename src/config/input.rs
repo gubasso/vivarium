@@ -90,7 +90,8 @@ pub(super) fn parse_inputs(
                 Some(name_key.span().start),
                 "reserved-input",
                 format!("input name `{name}` is reserved"),
-                "the generated flake owns its baseline inputs",
+                "the generated flake owns its baseline inputs; a project redirects them \
+                through the selected image's own `flake.nix` (ADR-0112)",
                 &[],
             ));
         }

@@ -1262,7 +1262,7 @@ layout: default
 
 <div class="con-item">
   <div class="con-head"><carbon-download /> Security updates come from us</div>
-  <div class="con-text">vivarium fixes every version it builds with. So a fix reaches you when this project ships an update, not when your distro does.</div>
+  <div class="con-text">vivarium names the versions its shipped base builds with. A fix reaches you when this project ships an update — or, once you own the base's inputs, when you move your own pin with <code>viv update</code>.</div>
 </div>
 
 </div>
@@ -1298,11 +1298,13 @@ snooping — so the trade was taken openly, and the alternative was refused
 outright, because giving every VM its own copy of the store would destroy the
 disk property the previous slide sells.
 
-Security updates coming from us is what "we lock every version" costs. Locking is
-why a teammate gets the same VM, and the same mechanism means a fix in the
+Security updates coming from us is what "we lock every version" costs, and the
+unqualified form stopped being true when users gained the base's inputs. Locking
+is why a teammate gets the same VM, and the same mechanism means a fix in the
 hypervisor does not arrive through your package manager. It arrives when this
-project publishes a new lock and you update. That obligation has a named owner
-here rather than being left implicit.
+project publishes a new lock and you update — or, for a fix already reachable
+from a reference you own, when you move your own pin. The shipped default still
+has a named owner rather than being left implicit.
 
 One more if someone asks about upstream risk: importing microvm.nix's guest
 module means depending on option names upstream makes no promise about. A rename

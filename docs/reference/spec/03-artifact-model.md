@@ -16,6 +16,14 @@ An image sets soft defaults with `mkDefault` so the user's manifest — or a pie
 }
 ```
 
+### The base flake: how the selected image owns the build's inputs
+
+A directory-form image may carry a real `flake.nix` beside its `default.nix` — `images/<name>/flake.nix` — and when that image is the manifest's selected `image`, the generated flake takes it as a flake input named after the image ([`../../decisions/ADR-0112-the-selected-image-carries-the-base-flake.md`](../../decisions/ADR-0112-the-selected-image-carries-the-base-flake.md)). A baseline the base declares is followed out of it: declare `nixpkgs` and the whole build — guest system, packages, hypervisor — resolves from your reference rather than vivarium's; declare `microvm` and carry `microvm.inputs.nixpkgs.follows = "nixpkgs"` with it, because a build whose guest and `microvm` resolve two different `nixpkgs` trees is refused after locking (`lock.baseline-split`, `78`). A declaration is an `inputs.<name>` entry or an `outputs` argument; only the explicit form says what it resolves to. Whichever baseline the base does not declare keeps vivarium's own reference.
+
+The base contributes inputs; vivarium keeps the generated flake's outputs. A module layer reaches the base's own outputs as `vivariumInputs.<image-name>.<attr>`, which is how a component the base declares gets into the guest. The file's text is a layer — an edit reaches the next build like any other layer edit — while its declared references are pinned by the effective lock and move only under `viv update` ([`04-composition-and-determinism.md`](./04-composition-and-determinism.md)). A `flake.lock` beside the base is the user's own pin statement: it seeds every re-resolution of the base's subtree, and `viv update` reports pins it holds rather than moving past it. Like `inputs.toml`, the file sits in the artifact's directory without being a library member, and its URLs land in the generated flake, the lock, and the store — a reference embedding a credential is a build-time secret (N10).
+
+A base-bearing image may not be named `self`, `nixpkgs`, or `microvm`, and no artifact may declare an input under the image's own name — either is `78` at resolve (`manifest.image-base-collision`), even for a byte-identical declaration, because a flake and an `inputs.toml` entry have no union to coalesce under. Only the selected image's base flake is read; a piece's `flake.nix`, or a non-selected image's, is inert.
+
 ## Pieces
 
 A piece is a small, single-purpose config fragment, also a NixOS module, layered onto an image. Pieces capture cross-cutting concerns independent of the toolchain: git identity, ssh-agent forwarding, cache mounts, or the egress policy. Pieces contribute to lists (packages, mounts, allowlists) that concatenate across layers, and they set scalars at the priority their role calls for: `mkDefault` to propose a value the user's manifest may still override, `mkForce` only for a floor that must hold for everyone (see [`04-composition-and-determinism.md`](./04-composition-and-determinism.md)). Pieces are shared artifacts, so a team's reproducibility and policy guarantees live here rather than in any one user's manifest ([`07-secrets-and-config-sharing.md`](./07-secrets-and-config-sharing.md)). Example sketch of an egress-restriction piece, whose `mkForce` is exactly such a floor:
@@ -77,7 +85,7 @@ The module beside it consumes the resolved input through a module argument, neve
 Four rules complete it:
 
 - No revision key. Pinning is the lockfile's job and only the lockfile's — a `rev` here would be a second pin fighting the one effective lock ([`04-composition-and-determinism.md`](./04-composition-and-determinism.md), [`../../decisions/ADR-0074-declared-inputs-are-pinned-by-the-effective-lock.md`](../../decisions/ADR-0074-declared-inputs-are-pinned-by-the-effective-lock.md)).
-- vivarium's baseline input names are reserved. The names the generated flake already carries — `nixpkgs` and `microvm` ([`01-command-surface.md`](./01-command-surface.md)) — may not be declared by an artifact. Doing so is `78` at resolve.
+- vivarium's baseline input names are reserved. The names the generated flake already carries — `nixpkgs` and `microvm` ([`01-command-surface.md`](./01-command-surface.md)) — may not be declared by an artifact's `inputs.toml`. Doing so is `78` at resolve. The reservation is about collision between shared artifacts, not ownership: a project redirects the baselines through the selected image's own base flake, where declaring them is the point ([`../../decisions/ADR-0112-the-selected-image-carries-the-base-flake.md`](../../decisions/ADR-0112-the-selected-image-carries-the-base-flake.md)).
 - Declarations union by name. Two artifacts declaring one name identically coalesce to one input. Declaring one name with different values is a resolve-stage defect at `78` naming both artifacts — decidable from authored text alone, which is the line the validation table below draws. vivarium never silently namespaces or picks a winner.
 - `inputs.toml` is not a library member. Like a helper module or a team override lock, it sits in a library directory without being enumerated by it ([`02-config-and-xdg-layout.md`](./02-config-and-xdg-layout.md), [`../../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md`](../../decisions/ADR-0045-config-root-library-layout-and-name-resolution.md)).
 
@@ -171,7 +179,7 @@ Two mount-source faults sit below this table because neither is decidable from d
 
 ### Diagnostic ids
 
-Each parse-stage defect above, including the closed `inputs.toml` grammar, carries a stable `manifest.*` id, documented here because that is where the condition lives ([`14-exit-codes.md`](./14-exit-codes.md)). The id is greppable and never reassigned; a consumer that must branch still branches on the exit code. Authored defects return `78`; an artifact-inspection channel may instead return `74` or `77`.
+Each parse-stage defect above, including the closed `inputs.toml` grammar, carries a stable `manifest.*` id, documented here because that is where the condition lives ([`14-exit-codes.md`](./14-exit-codes.md)). The id is greppable and never reassigned; a consumer that must branch still branches on the exit code. Authored defects return `78`; an artifact-inspection channel may instead return `74` or `77`; the one transient id below returns `75`.
 
 | Id                                        | Condition                                                                     |
 | ----------------------------------------- | ----------------------------------------------------------------------------- |
@@ -188,6 +196,12 @@ Each parse-stage defect above, including the closed `inputs.toml` grammar, carri
 | `manifest.extends-inspect`                | permission prevents inspection of the selected `extends` target               |
 | `manifest.name-too-long`                  | the selected manifest name is too long to key a sandbox                       |
 | `manifest.workspace-undeclared-directory` | the working directory is not declared as a workspace by the selected manifest |
+| `manifest.base-inspect`                   | the selected image's `flake.nix` cannot be inspected                          |
+| `manifest.base-probe`                     | `nix` cannot be run to read the base flake, or its report is undecodable      |
+| `manifest.base-syntax`                    | the base flake beside the selected image does not evaluate                    |
+| `manifest.base-invalid`                   | the base flake's `outputs` is not a function                                  |
+| `manifest.image-base-collision`           | the base input's name collides with a root input or a declared input          |
+| `manifest.input-set-changed`              | a requested update input was invalidated by a mid-run configuration change    |
 
 `manifest.workspace-undeclared-directory` is the refusal every manifest-resolving command shares, and its message is the deliverable rather than a footnote to it: it names the resolved manifest file, the undeclared directory, and the exact `[[workspaces]]` block to add, in the what, where, why, and hint shape. One routine raises it, so every verb refuses identically; [`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md) owns the second consumer, which reports the same finding without refusing.
 

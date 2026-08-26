@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use rustix::fs::RenameFlags;
 
 use super::atomic::{self, Fault, StageFault};
+use super::base::ImageBase;
 use super::error::GeneratedFlakeErrorKind;
 use super::flake::GeneratedEntry;
 use super::{
@@ -50,6 +51,13 @@ pub fn prepare_generated_flake(
         manifest_source,
         manifest,
     )?;
+    // The probe lives here, not in resolution: `resolve` stays pure path-and-text work,
+    // and this seam is the first one every caller of it shares that already runs Nix soon
+    // after (ADR-0112). Binding-only readers never reach it.
+    let base = super::base::probe_selected_image(&composition.image)?;
+    if let Some(base) = &base {
+        super::base::validate_base_collisions(base, &composition.inputs)?;
+    }
     let plan = GeneratedFlakePlan::build(
         roots,
         selected_manifest,
@@ -58,6 +66,7 @@ pub fn prepare_generated_flake(
         workspaces,
         &composition,
         baseline,
+        base.as_ref(),
     )?;
     publish(&plan)
 }
@@ -96,6 +105,9 @@ pub fn persist_created_lock(
             source,
         )
     })?;
+    // The composed check, before anything durable exists: a defect refuses the install and
+    // leaves no owned lock behind, so the remedy (fix the base, re-run) starts clean.
+    composed_lock_failure(&bytes)?;
     let parent = owned_path.parent().ok_or_else(|| {
         GeneratedFlakeError::plain(
             GeneratedFlakeErrorKind::Internal,
@@ -180,6 +192,251 @@ pub fn persist_created_lock(
     result
 }
 
+/// The read-only half of an update's resolution: the declared input names and the base,
+/// with nothing staged and nothing locked.
+///
+/// Separate from [`prepare_update_tree`] because the unknown-name refusal is a usage answer
+/// (`64`) the command owes before it takes the per-target lock or writes anything at all —
+/// a contended lock must not turn a typo into `75`, and a tree must not be rendered for an
+/// invocation that was never well-formed.
+///
+/// # Errors
+///
+/// Returns [`GeneratedFlakeError`] for the same resolution, probe, and collision failures
+/// as [`prepare_update_tree`].
+pub fn resolve_update_inputs(
+    roots: &XdgRoots,
+    sandbox_id: &str,
+    target: &str,
+    selected_manifest: &ResolvedArtifact,
+    manifest_source: &str,
+    manifest: &Manifest,
+) -> Result<(Vec<String>, Option<ImageBase>), GeneratedFlakeError> {
+    let composition = ResolvedComposition::resolve(
+        roots,
+        sandbox_id,
+        target,
+        selected_manifest,
+        manifest_source,
+        manifest,
+    )?;
+    let base = super::base::probe_selected_image(&composition.image)?;
+    if let Some(base) = &base {
+        super::base::validate_base_collisions(base, &composition.inputs)?;
+    }
+    Ok((composition.inputs.keys().cloned().collect(), base))
+}
+
+/// The private tree `viv update` runs Nix against, removed when dropped.
+///
+/// Private rather than the shared published cache, because unlocked readers — `viv config
+/// eval` and `config sources` — republish that tree with `RENAME_EXCHANGE` at any moment,
+/// and Nix must not read a tree that changes under it. The per-target lock serializes an
+/// update against `start` and against another update; it cannot serialize those readers,
+/// so the tree they exchange is simply not the one used here.
+pub struct UpdatePreparation {
+    /// The rendered private tree.
+    pub directory: PathBuf,
+    /// The lock staged inside the tree when one was in force — the reference an update
+    /// re-resolves from. These are the shed bytes when the ADR-0102 migration applied, so
+    /// an update never writes the dead node back.
+    pub staged_reference: Option<PathBuf>,
+    /// The lock decision for this target.
+    pub effective_lock: EffectiveLock,
+    /// The selected image's base flake, when it carries one (ADR-0112).
+    pub base: Option<ImageBase>,
+    /// The artifact-declared input names, for the caller's known-set validation.
+    pub declared: Vec<String>,
+}
+
+impl Drop for UpdatePreparation {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// Resolves and renders the private tree an update runs against; nothing durable is written.
+///
+/// # Errors
+///
+/// Returns [`GeneratedFlakeError`] for the same resolution and rendering failures as
+/// [`prepare_generated_flake`], for a team override lock in force (the caller refuses that
+/// case first and this is the backstop), or for a tree that cannot be written.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_update_tree(
+    roots: &XdgRoots,
+    sandbox_id: &str,
+    target: &str,
+    selected_manifest: &ResolvedArtifact,
+    manifest_source: &str,
+    manifest: &Manifest,
+    workspaces: &[PathBuf],
+    baseline: &BaselineInputs,
+) -> Result<UpdatePreparation, GeneratedFlakeError> {
+    let composition = ResolvedComposition::resolve(
+        roots,
+        sandbox_id,
+        target,
+        selected_manifest,
+        manifest_source,
+        manifest,
+    )?;
+    if let EffectiveLock::Override { path } = &composition.effective_lock {
+        // The caller refuses this case before preparing anything — but the config root is
+        // deliberately unlocked, so a team override can appear between that check and this
+        // resolution. A user condition either way, so it takes the same public refusal
+        // (`78`, both files named) rather than reading as an internal fault (ADR-0062).
+        return Err(GeneratedFlakeError::plain(
+            GeneratedFlakeErrorKind::Config,
+            Namespace::Lock,
+            "override-in-force",
+            Locus::File(path.clone()),
+            "a team override lock is in force",
+            format!(
+                "`{}` is read-only to the tool and shadows `{}`, which this update would \
+                have written; moving a shared pin is the team's own act, outside vivarium",
+                path.display(),
+                composition.paths.owned_lock.display()
+            ),
+        ));
+    }
+    let base = super::base::probe_selected_image(&composition.image)?;
+    if let Some(base) = &base {
+        super::base::validate_base_collisions(base, &composition.inputs)?;
+    }
+    let declared = composition.inputs.keys().cloned().collect();
+    let plan = GeneratedFlakePlan::build(
+        roots,
+        selected_manifest,
+        manifest_source,
+        manifest,
+        workspaces,
+        &composition,
+        baseline,
+        base.as_ref(),
+    )?;
+    let parent = plan.directory.parent().ok_or_else(|| {
+        GeneratedFlakeError::plain(
+            GeneratedFlakeErrorKind::Internal,
+            Namespace::Internal,
+            "generated-parent",
+            Locus::File(plan.directory.clone()),
+            "generated flake directory has no parent",
+            "the path escaped its fixed cache-root layout",
+        )
+    })?;
+    fs::create_dir_all(parent).map_err(|source| {
+        store_io(
+            "create-parent",
+            parent,
+            "could not create generated-flake parent",
+            source,
+        )
+    })?;
+    let temporary = create_temp_directory(parent)?;
+    for entry in &plan.entries {
+        if let Err(error) = apply_entry(&temporary, entry) {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(error);
+        }
+    }
+    let staged_reference = if matches!(plan.effective_lock, EffectiveLock::OwnedMissing { .. }) {
+        None
+    } else {
+        Some(temporary.join("flake.lock"))
+    };
+    Ok(UpdatePreparation {
+        directory: temporary,
+        staged_reference,
+        effective_lock: plan.effective_lock,
+        base: plan.base,
+        declared,
+    })
+}
+
+/// Lifts a composed-lock defect into the refusal both persistence paths share.
+///
+/// The check itself is permissive by design — unparsable bytes pass, because lock validity
+/// is Nix's to name — so a refusal here is exactly the split or gap nothing downstream
+/// would report better than as a guest that fails to boot.
+///
+/// # Errors
+///
+/// Returns [`GeneratedFlakeError`] at `78` when the composed lock resolves no baseline or
+/// resolves the two `nixpkgs` readers to different trees.
+pub fn composed_lock_failure(bytes: &[u8]) -> Result<(), GeneratedFlakeError> {
+    match super::lock::validate_composed(bytes) {
+        Ok(()) => Ok(()),
+        Err(super::lock::ComposedLockDefect::BaselineMissing { name }) => {
+            Err(GeneratedFlakeError::plain(
+                GeneratedFlakeErrorKind::Config,
+                Namespace::Lock,
+                "baseline-missing",
+                Locus::Named("composed lock"),
+                format!("the composed lock resolves no `{name}` for the generated flake"),
+                "every generated flake builds from a `nixpkgs` and a `microvm`; the base \
+                flake redirecting one must actually declare it",
+            ))
+        }
+        Err(super::lock::ComposedLockDefect::BaselineSplit { root, microvm }) => {
+            Err(GeneratedFlakeError::plain(
+                GeneratedFlakeErrorKind::Config,
+                Namespace::Lock,
+                "baseline-split",
+                Locus::Named("composed lock"),
+                format!(
+                    "the guest and `microvm` would build from two different `nixpkgs` trees \
+                    (`{root}` and `{microvm}`)",
+                ),
+                "a split surfaces as a boot failure rather than an evaluation error; a base \
+                flake declaring `microvm` also carries \
+                `microvm.inputs.nixpkgs.follows = \"nixpkgs\"` so both resolve to one tree",
+            ))
+        }
+    }
+}
+
+/// Replaces the owned lock with an update's validated candidate (ADR-0059: only `viv update`
+/// moves a pin, and this is that move).
+///
+/// The candidate is the staged file Nix wrote via `--output-lock-file`, already beside the
+/// owned lock. Separate from [`persist_created_lock`] because that path's `RENAME_NOREPLACE`
+/// is the first-pin contract and must not be relaxed into a flag; an update replaces by
+/// definition. The caller validates the candidate before this move and removes the staged
+/// file on every earlier failure; this function consumes it on success.
+///
+/// # Errors
+///
+/// Returns [`GeneratedFlakeError`] when the staged candidate cannot be flushed, renamed over
+/// the owned lock, or the directory entry made durable.
+pub fn persist_updated_lock(owned_path: &Path, staged: &Path) -> Result<(), GeneratedFlakeError> {
+    let parent = owned_path.parent().ok_or_else(|| {
+        GeneratedFlakeError::plain(
+            GeneratedFlakeErrorKind::Internal,
+            Namespace::Internal,
+            "lock-parent",
+            Locus::File(owned_path.to_path_buf()),
+            "owned lock has no parent directory",
+            "the lock path escaped its fixed data-root layout",
+        )
+    })?;
+    // Nix wrote the bytes; make them durable before the rename publishes them.
+    let file = File::open(staged)
+        .map_err(|source| lock_io("update-open", staged, "could not open staged lock", source))?;
+    file.sync_all()
+        .map_err(|source| lock_io("update-sync", staged, "could not flush staged lock", source))?;
+    drop(file);
+    rename_with(staged, owned_path, RenameFlags::empty()).map_err(|source| {
+        lock_io(
+            "update-publish",
+            owned_path,
+            "could not atomically install updated pin",
+            source,
+        )
+    })?;
+    sync_directory(parent, Namespace::Lock, "update-directory-sync")
+}
+
 fn publish(plan: &GeneratedFlakePlan) -> Result<PreparedFlake, GeneratedFlakeError> {
     let parent = plan.directory.parent().ok_or_else(|| {
         GeneratedFlakeError::plain(
@@ -217,6 +474,7 @@ fn publish(plan: &GeneratedFlakePlan) -> Result<PreparedFlake, GeneratedFlakeErr
             directory: plan.directory.clone(),
             effective_lock: plan.effective_lock.clone(),
             shed_vivarium: plan.migrated_lock.is_some(),
+            base: plan.base.clone(),
         })
     })();
     if prepared.is_err() && temporary.exists() {

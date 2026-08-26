@@ -6,7 +6,6 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## later
 
-- 018 the-user-owns-the-image — later — 4 sessions — moved ahead of 028 and 024: it owns `viv update` and the shipped base a user takes over, which is what a first daily-driver image is built from
 - 028 memory-comes-back-without-a-stop — later — 4 sessions — needs 025 (the readings its record joins)
 - 024 installing-vivarium-takes-one-command — later — 5 sessions
 - 023 a-declared-port-crosses-inward — later — 3 sessions — deprioritized 2026-08-25 by the owner, whose sandbox use does not involve reaching a service from the host; the slice stays shaped and funded, and `Q-033` stays open until it closes
@@ -17,6 +16,8 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 009 automate-backend-advisories — later — 2 sessions
 
 ## closed
+
+- 018 the-user-owns-the-image — done — 4 sessions — one pass under the appetite, remainder included: the base flake a directory-form image carries with the follows composition, `viv update` whole, the base handoff, and the end-to-end lane; the owner's item-2 reshape, the shaping experiments, the acceptance revision, the `Q-037` raise from item 5's failed premise, and the host evidence are in the slice `Revisions`
 
 - 026 a-start-checks-the-room — done — 3 sessions — one pass under the appetite, remainder included: the admission gate over slice 025's readers with the host-level fallback, the withheld `viv trim` line, and `--attach` streaming the capture with `SIGINT` detach; the seam record, the widened enumeration domain, the eager-signal finding, and the warn-tier evidence decision are in the slice `Revisions`
 

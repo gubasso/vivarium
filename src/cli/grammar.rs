@@ -104,6 +104,13 @@ pub enum Invocation {
     /// the published surface: spec/01's `start` is the manifest-driven one, and this is the private
     /// spelling that hands a resolved specification to the async launch half.
     StartSpec { spec: PathBuf },
+    /// Re-resolve the named pinned inputs — every one, with none named — and rewrite the
+    /// tool-owned lock, building nothing (spec/01, ADR-0059, ADR-0112).
+    Update {
+        /// The requested input names, verbatim and in order; empty means every input.
+        inputs: Vec<String>,
+        output: Output,
+    },
     /// What volumes this project has, read-only (spec/01, ADR-0019).
     VolumeList { output: Output },
     /// Remove the volume images no current layer declares (ADR-0067).
@@ -253,6 +260,7 @@ where
         Some("generations") => generations(rest),
         Some("destroy") => destroy(rest, streams),
         Some("gc") => gc(rest),
+        Some("update") => update(rest),
         Some("doctor") => doctor(rest),
         _ => Err(UsageError::new(
             format!("unknown command `{}`", verb.to_string_lossy()),
@@ -347,7 +355,7 @@ fn lift_globals(argv: impl Iterator<Item = OsString>) -> Globals {
 }
 
 const TOP_USAGE: &str = "viv <config|manifest|start|status|shell|exec|stop|generations|volume|\
-destroy|gc|doctor> [options]";
+destroy|gc|update|doctor> [options]";
 const CONFIG_USAGE: &str = "viv config [--manifest <name>] [--json]";
 const CONFIG_EVAL_USAGE: &str = "viv config eval [--json]";
 const CONFIG_SOURCES_USAGE: &str = "viv config sources [--json]";
@@ -370,6 +378,7 @@ const GENERATIONS_ROLLBACK_USAGE: &str = "viv generations rollback [--json]";
 const GENERATIONS_PRUNE_USAGE: &str =
     "viv generations prune (--keep <n> | --older-than <dur>) [--json]";
 const GC_USAGE: &str = "viv gc [--json]";
+pub(crate) const UPDATE_USAGE: &str = "viv update [<input>...] [--json]";
 const DOCTOR_USAGE: &str = "viv doctor [--json] [--strict] [--list] [--online]";
 
 fn doctor(rest: &[OsString]) -> Result<Invocation, UsageError> {
@@ -434,6 +443,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("destroy", DESTROY_USAGE, "remove the VM and its state"),
     ("gc", GC_USAGE, "collect unreferenced build outputs"),
+    (
+        "update",
+        UPDATE_USAGE,
+        "re-resolve pinned build inputs and rewrite the lockfile",
+    ),
     (
         "doctor",
         DOCTOR_USAGE,
@@ -852,6 +866,25 @@ fn gc(rest: &[OsString]) -> Result<Invocation, UsageError> {
     })
 }
 
+/// `viv update [<input>...] [--json]` — positionals accumulate; a repeated name is one
+/// request, deduplicated here so the report carries one row per input (spec/01).
+fn update(rest: &[OsString]) -> Result<Invocation, UsageError> {
+    let mut inputs: Vec<String> = Vec::new();
+    let mut output = Output::Human;
+    for token in rest {
+        match token.to_str() {
+            Some("--json") => output = Output::Json,
+            Some(raw) if !raw.starts_with('-') => {
+                if !inputs.iter().any(|name| name == raw) {
+                    inputs.push(raw.to_owned());
+                }
+            }
+            _ => return Err(unknown(token, UPDATE_USAGE)),
+        }
+    }
+    Ok(Invocation::Update { inputs, output })
+}
+
 fn generations(rest: &[OsString]) -> Result<Invocation, UsageError> {
     let Some(sub) = rest.first() else {
         return Err(UsageError::new(
@@ -1060,6 +1093,7 @@ mod tests {
             | Invocation::GenerationsActivate { output, .. }
             | Invocation::GenerationsRollback { output }
             | Invocation::Gc { output }
+            | Invocation::Update { output, .. }
             | Invocation::Doctor { output, .. } => Some(*output),
             // None carries a `--json` slot: the private handoff predates the published surface,
             // the two session verbs hand their streams to a guest process, and help and version
@@ -1277,6 +1311,7 @@ mod tests {
     #[test]
     fn every_verb_parses_into_real_work() {
         assert!(matches!(parsed(&["gc"]), Ok(Invocation::Gc { .. })));
+        assert!(matches!(parsed(&["update"]), Ok(Invocation::Update { .. })));
         assert!(matches!(
             parsed(&["volume", "list"]),
             Ok(Invocation::VolumeList { .. })
@@ -1289,6 +1324,22 @@ mod tests {
             parsed(&["destroy", "--yes"]),
             Ok(Invocation::Destroy { .. })
         ));
+    }
+
+    /// Pins `update`'s grammar: positionals accumulate in order, a repeated name is one
+    /// request, no name means every input, and an unknown flag stays `64` (spec/01).
+    #[test]
+    fn update_accumulates_names_dedupes_and_refuses_flags() {
+        assert!(matches!(
+            parsed(&["update"]),
+            Ok(Invocation::Update { inputs, .. }) if inputs.is_empty()
+        ));
+        assert!(matches!(
+            parsed(&["update", "nixpkgs", "my-base", "nixpkgs"]),
+            Ok(Invocation::Update { inputs, .. })
+                if inputs == vec!["nixpkgs".to_owned(), "my-base".to_owned()]
+        ));
+        assert!(parsed(&["update", "--bogus"]).is_err());
     }
 
     /// Pins the `generations` family grammar: forms, values, and the exactly-one retention rule.
@@ -1433,6 +1484,8 @@ mod tests {
             vec!["manifest", "list", "--json"],
             vec!["volume", "list", "--json"],
             vec!["stop", "--json"],
+            vec!["update", "--json"],
+            vec!["update", "nixpkgs", "--json"],
         ] {
             let invocation = parse(argv(&rest), tty())
                 .map(|parsed| parsed.invocation)

@@ -37,3 +37,5 @@ Accepted
 Amended by ADR-0079 — the owner role has no backup while vivarium has one maintainer, and the response windows are targets rather than guarantees. The owner role itself, the two clocks, and the boundary trigger are unchanged.
 
 Specified in [`../../SECURITY.md`](../../SECURITY.md) and [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md).
+
+Amended by [`ADR-0112-the-selected-image-carries-the-base-flake.md`](./ADR-0112-the-selected-image-carries-the-base-flake.md) — a backend fix already reachable from a reference the user owns needs no vivarium release, only the user's own `viv update`; the released pin move remains the vehicle for the shipped default, and the owner role, the two clocks, and the boundary trigger are unchanged.

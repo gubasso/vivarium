@@ -29,7 +29,7 @@ const SUPPORTED_SYSTEMS: [(&str, &str); 2] =
 /// Enabled explicitly rather than assumed: the flake interface is still gated in a default Nix
 /// installation, and a user who has not opted in would otherwise get an error about experimental
 /// features for a command that never mentioned them.
-const FEATURE_FLAGS: [&str; 2] = ["--extra-experimental-features", "nix-command flakes"];
+pub(crate) const FEATURE_FLAGS: [&str; 2] = ["--extra-experimental-features", "nix-command flakes"];
 
 /// Everything one evaluation of the report attribute produced.
 #[derive(Clone, Debug, Deserialize)]

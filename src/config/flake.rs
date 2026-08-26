@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use super::base::ImageBase;
 use super::error::GeneratedFlakeErrorKind;
 use super::input::{InputDeclarer, merge_inputs, parse_inputs};
 use super::{
@@ -226,6 +227,8 @@ pub struct GeneratedFlakePlan {
     /// publication to also rewrite the durable owned lock, so the shed happens once rather than
     /// on every preparation forever.
     pub migrated_lock: Option<Vec<u8>>,
+    /// The selected image's base flake, when it carries one (ADR-0112).
+    pub base: Option<ImageBase>,
 }
 
 /// A fully published generated flake, which `evaluate.rs` runs Nix against.
@@ -240,6 +243,8 @@ pub struct PreparedFlake {
     /// Carried out so the caller reports it on stderr: ADR-0059 lets no ordinary build move a
     /// pin, and the one sanctioned exception must never happen silently.
     pub shed_vivarium: bool,
+    /// The selected image's base flake, when it carries one (ADR-0112).
+    pub base: Option<ImageBase>,
 }
 
 impl ResolvedComposition {
@@ -419,6 +424,7 @@ impl GeneratedFlakePlan {
     /// # Errors
     ///
     /// Returns [`GeneratedFlakeError`] if a planned destination is not a safe relative path.
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         roots: &XdgRoots,
         selected_manifest: &ResolvedArtifact,
@@ -427,11 +433,12 @@ impl GeneratedFlakePlan {
         workspaces: &[PathBuf],
         composition: &ResolvedComposition,
         baseline: &BaselineInputs,
+        base: Option<&ImageBase>,
     ) -> Result<Self, GeneratedFlakeError> {
         let mut entries = vec![
             GeneratedEntry::RenderedFile {
                 destination: PathBuf::from(FLAKE_FILE),
-                bytes: render_flake(selected_manifest, composition, baseline).into_bytes(),
+                bytes: render_flake(selected_manifest, composition, baseline, base).into_bytes(),
             },
             GeneratedEntry::RenderedFile {
                 destination: PathBuf::from(OPTIONS_MODULE_FILE),
@@ -523,6 +530,7 @@ impl GeneratedFlakePlan {
             entries,
             effective_lock: composition.effective_lock.clone(),
             migrated_lock,
+            base: base.cloned(),
         })
     }
 }
@@ -732,23 +740,67 @@ fn validate_relative(path: &Path) -> Result<(), GeneratedFlakeError> {
     Ok(())
 }
 
-/// The `inputs` block: the two baseline inputs every generated flake carries, then whatever the
+/// The `inputs` block: the two baseline inputs every generated flake carries — followed out of
+/// the selected image's base flake for whichever it declares (ADR-0112) — then whatever the
 /// composed artifacts declared.
 #[allow(clippy::format_push_string)]
-fn render_inputs(composition: &ResolvedComposition, baseline: &BaselineInputs) -> String {
+fn render_inputs(
+    composition: &ResolvedComposition,
+    baseline: &BaselineInputs,
+    base: Option<&ImageBase>,
+) -> String {
     let mut text = String::from("  inputs = {\n");
-    text.push_str(&format!(
-        "    nixpkgs.url = \"{}\";\n",
-        nix_string(&baseline.nixpkgs)
-    ));
-    text.push_str(&format!(
-        "    microvm.url = \"{}\";\n",
-        nix_string(&baseline.microvm)
-    ));
-    // The `follows` line matters: without it the composed guest would be built against one
-    // nixpkgs and its shares and volumes described against another, which is a mismatch that
-    // surfaces as a boot failure rather than as an evaluation error.
-    text.push_str("    microvm.inputs.nixpkgs.follows = \"nixpkgs\";\n");
+    if let Some(base) = base {
+        // The base input first, since the baselines below may follow into it. The URL is
+        // relative, into the tree's own `images/` copy: the form measured to lock without a
+        // content hash, so the base's text is a layer while its declared references are
+        // pinned nodes (findings register, 2026-08-26). The name needs no escaping — it is
+        // the image's own name, already held to the artifact grammar.
+        text.push_str(&format!(
+            "    {name}.url = \"path:./images/{name}\";\n",
+            name = base.input_name
+        ));
+        if base.declares_nixpkgs {
+            text.push_str(&format!(
+                "    nixpkgs.follows = \"{}/nixpkgs\";\n",
+                base.input_name
+            ));
+        } else {
+            text.push_str(&format!(
+                "    nixpkgs.url = \"{}\";\n",
+                nix_string(&baseline.nixpkgs)
+            ));
+        }
+        if base.declares_microvm {
+            // Deliberately no `microvm.inputs.nixpkgs.follows` beside a `follows` alias:
+            // Nix silently ignores an inputs override on an alias (findings register), and
+            // the coherence that edge carried is `validate_composed`'s to assert after
+            // locking, where it holds no matter who declared what.
+            text.push_str(&format!(
+                "    microvm.follows = \"{}/microvm\";\n",
+                base.input_name
+            ));
+        } else {
+            text.push_str(&format!(
+                "    microvm.url = \"{}\";\n",
+                nix_string(&baseline.microvm)
+            ));
+            text.push_str("    microvm.inputs.nixpkgs.follows = \"nixpkgs\";\n");
+        }
+    } else {
+        text.push_str(&format!(
+            "    nixpkgs.url = \"{}\";\n",
+            nix_string(&baseline.nixpkgs)
+        ));
+        text.push_str(&format!(
+            "    microvm.url = \"{}\";\n",
+            nix_string(&baseline.microvm)
+        ));
+        // The `follows` line matters: without it the composed guest would be built against one
+        // nixpkgs and its shares and volumes described against another, which is a mismatch that
+        // surfaces as a boot failure rather than as an evaluation error.
+        text.push_str("    microvm.inputs.nixpkgs.follows = \"nixpkgs\";\n");
+    }
     for (name, input) in &composition.inputs {
         text.push_str(&format!(
             "    {name} = {{ url = \"{}\";{} }};\n",
@@ -765,12 +817,13 @@ fn render_flake(
     selected_manifest: &ResolvedArtifact,
     composition: &ResolvedComposition,
     baseline: &BaselineInputs,
+    base: Option<&ImageBase>,
 ) -> String {
     let mut text = String::from(concat!(
         "{\n",
         "  description = \"vivarium generated project flake\";\n",
     ));
-    text.push_str(&render_inputs(composition, baseline));
+    text.push_str(&render_inputs(composition, baseline, base));
     text.push_str("  outputs = inputs@{ nixpkgs, microvm, ... }:\n    let\n");
     text.push_str(concat!(
         "      vivariumInputs = builtins.removeAttrs inputs ",
@@ -1213,6 +1266,7 @@ mod tests {
             &[],
             &composition,
             &BaselineInputs::default(),
+            None,
         )?;
         let second = GeneratedFlakePlan::build(
             &roots,
@@ -1222,6 +1276,7 @@ mod tests {
             &[],
             &composition,
             &BaselineInputs::default(),
+            None,
         )?;
         assert_eq!(first, second);
         assert!(first.entries.iter().any(|entry| matches!(
@@ -1292,6 +1347,7 @@ mod tests {
                 &[],
                 &composition,
                 &BaselineInputs::default(),
+                None,
             )?)
         };
 
@@ -1362,6 +1418,7 @@ mod tests {
             &[],
             &composition,
             &BaselineInputs::default(),
+            None,
         )?;
 
         let flake = plan
@@ -1469,6 +1526,7 @@ mod tests {
             &[],
             &composition,
             &BaselineInputs::default(),
+            None,
         ) else {
             return Err("an override lock pinning `vivarium` must refuse".into());
         };
@@ -1581,6 +1639,72 @@ mod tests {
                 .to_string()
                 .contains("manifest.invalid-value")
         );
+        Ok(())
+    }
+
+    /// The four rendered `inputs` cases (ADR-0112). Byte-level, because the rendered bytes
+    /// are part of the freshness key: no base is today's block unchanged; a base that
+    /// declares neither adds only its own input; a declared baseline becomes a `follows`
+    /// into the base; and `microvm.inputs.nixpkgs.follows` exists exactly while `microvm`
+    /// carries its own `url` — beside a `follows` alias Nix silently ignores it, so the
+    /// renderer must never emit that shape (findings register, 2026-08-26).
+    #[test]
+    fn the_inputs_block_renders_all_four_base_cases() -> Result<(), Box<dyn std::error::Error>> {
+        let scratch = fixture()?;
+        fs::create_dir_all(scratch.path().join("config/images"))?;
+        fs::create_dir_all(scratch.path().join("config/pieces"))?;
+        fs::write(scratch.path().join("config/images/base.nix"), "{}")?;
+        let selected = selected(scratch.path(), ArtifactForm::Flat);
+        fs::create_dir_all(selected.path.parent().unwrap_or_else(|| Path::new(".")))?;
+        fs::write(&selected.path, "image = 'base'")?;
+        let manifest = Manifest {
+            image: "base".to_owned(),
+            ..Manifest::default()
+        };
+        let composition = ResolvedComposition::resolve(
+            &roots(scratch.path()),
+            "project",
+            "default",
+            &selected,
+            "image = 'base'",
+            &manifest,
+        )?;
+        let baseline = BaselineInputs::default();
+        let base = |nixpkgs: bool, microvm: bool| crate::config::ImageBase {
+            input_name: "my-base".to_owned(),
+            flake_path: scratch.path().join("config/images/my-base/flake.nix"),
+            declares_nixpkgs: nixpkgs,
+            declares_microvm: microvm,
+        };
+
+        let absent = super::render_inputs(&composition, &baseline, None);
+        assert!(absent.contains("nixpkgs.url = \""));
+        assert!(absent.contains("microvm.url = \""));
+        assert!(absent.contains("microvm.inputs.nixpkgs.follows = \"nixpkgs\";"));
+        assert!(!absent.contains("my-base"));
+
+        let neither = super::render_inputs(&composition, &baseline, Some(&base(false, false)));
+        assert!(neither.contains("my-base.url = \"path:./images/my-base\";"));
+        assert!(neither.contains("nixpkgs.url = \""));
+        assert!(neither.contains("microvm.inputs.nixpkgs.follows = \"nixpkgs\";"));
+
+        let both = super::render_inputs(&composition, &baseline, Some(&base(true, true)));
+        assert!(both.contains("my-base.url = \"path:./images/my-base\";"));
+        assert!(both.contains("nixpkgs.follows = \"my-base/nixpkgs\";"));
+        assert!(both.contains("microvm.follows = \"my-base/microvm\";"));
+        assert!(!both.contains("nixpkgs.url"));
+        assert!(!both.contains("microvm.url"));
+        assert!(!both.contains("microvm.inputs.nixpkgs.follows"));
+
+        let one = super::render_inputs(&composition, &baseline, Some(&base(true, false)));
+        assert!(one.contains("nixpkgs.follows = \"my-base/nixpkgs\";"));
+        assert!(one.contains("microvm.url = \""));
+        assert!(one.contains("microvm.inputs.nixpkgs.follows = \"nixpkgs\";"));
+
+        let other = super::render_inputs(&composition, &baseline, Some(&base(false, true)));
+        assert!(other.contains("nixpkgs.url = \""));
+        assert!(other.contains("microvm.follows = \"my-base/microvm\";"));
+        assert!(!other.contains("microvm.inputs.nixpkgs.follows"));
         Ok(())
     }
 

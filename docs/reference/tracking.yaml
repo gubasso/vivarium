@@ -12,7 +12,7 @@ tracked:
       - docs/plan/slices/007-build-test-lanes/README.md
       - docs/plan/slices/009-automate-backend-advisories/README.md
   - path: docs/reference/microvm-verification-harness.md
-    last_checked: 2026-08-10
+    last_checked: 2026-08-26
     cadence: 90d and on harness or backend-pin changes
     why: Measurements depend on the harness, backend closure, guest closure, and target host.
     revalidate: Rerun the appropriate evaluation and real-host lanes; never infer a target-host fact from an agent environment.

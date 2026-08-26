@@ -135,10 +135,19 @@ Generated-tree and pin failures carry stable ids owned here. Permission-denied f
 | `lock.migrate-write`             | staged migrated-lock bytes cannot be written                         |
 | `lock.migrate-sync`              | staged migrated-lock bytes cannot be flushed                         |
 | `lock.migrate-install`           | a migrated lock cannot be installed over the retained one            |
+| `lock.baseline-missing`          | the composed lock resolves no node for a baseline the flake declares |
+| `lock.baseline-split`            | the guest and `microvm` would build from two different `nixpkgs`     |
+| `lock.override-in-force`         | `viv update` refused whole under a team override lock                |
+| `lock.update-read`               | the lock in force or the update's candidate cannot be read           |
+| `lock.update-undecodable`        | the candidate the update produced is not a readable lock             |
+| `lock.update-open`               | the staged update candidate cannot be opened for flushing            |
+| `lock.update-sync`               | the staged update candidate cannot be flushed                        |
+| `lock.update-publish`            | an updated pin cannot be atomically installed                        |
+| `lock.update-directory-sync`     | the data directory cannot be flushed after an updated pin            |
 
 The private `internal.generated-path`, `internal.artifact-parent`, `internal.manifest-parent`, `internal.generated-parent`, `internal.lock-parent`, and `internal.lock-persist-contract` ids report violated call or tree-shape invariants rather than authored or host failures.
 
-The lockfile is data, not cache, because deleting it does not rebuild anything — it re-resolves, which is exactly what N3 forbids happening by accident. It is created by the first build or the first `viv update`, whichever comes first — each reports what it pinned — and thereafter moves only under `viv update` ([`../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md)). Creating a lock is not re-resolving one: a build may write the file that does not yet exist, but no build ever moves a pin that does. One lock per target rather than one per user: a global lock would make updating one project an unannounced update to every other.
+The lockfile is data, not cache, because deleting it does not rebuild anything — it re-resolves, which is exactly what N3 forbids happening by accident. It is created by the first build or the first `viv update`, whichever comes first — each reports what it pinned — and thereafter moves only under `viv update`, which serializes against `start` and against another update under the same per-target lock startup takes ([`../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](../../decisions/ADR-0059-lockfile-is-tool-owned-in-the-data-root.md)). What the creating resolution resolves to may be seeded by a lock the tool does not own: a base flake's own `flake.lock`, when the selected image carries one, is read as a seed for the base's subtree and never written ([`../../decisions/ADR-0112-the-selected-image-carries-the-base-flake.md`](../../decisions/ADR-0112-the-selected-image-carries-the-base-flake.md)). Creating a lock is not re-resolving one: a build may write the file that does not yet exist, but no build ever moves a pin that does. One lock per target rather than one per user: a global lock would make updating one project an unannounced update to every other.
 
 One migration is sanctioned beside that rule. A retained owned lock from before [`ADR-0102`](../../decisions/ADR-0102-the-installation-supplies-vivarium.md) carries a dead `vivarium` node; the next preparation sheds that node, its root edge, and the nodes only it reached, announces the shed on stderr, and moves no surviving pin. A team override lock carrying one is refused with `78` under `lock.override-carries-vivarium` instead — the override is read-only to the tool, so its owner regenerates it.
 

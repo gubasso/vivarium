@@ -20,6 +20,7 @@ mod prompt;
 mod render;
 // The two verbs the process boundary dispatches itself; see the module's own note on why.
 pub mod session;
+mod update;
 mod volume;
 
 pub use attach::start_attached;
@@ -192,6 +193,7 @@ pub fn run<E: Environment>(
         }
         Invocation::GenerationsRollback { output } => generations::activate(context, None, *output),
         Invocation::Gc { output } => generations::gc(context, *output),
+        Invocation::Update { inputs, output } => update::run(context, inputs, *output),
         // The caller performs all eight. The first six are the async half of this program and
         // nothing else here needs a runtime; a session additionally returns a code this signature
         // cannot express — the guest's own — and streams bytes rather than accumulating a string.
@@ -421,6 +423,14 @@ fn evaluate_resolved<E: Environment>(
             "shed the dead `vivarium` node from this target's lock: {} (no other pin moved)",
             prepared.effective_lock.path().display()
         ));
+    }
+    // Enforcement of the composed rule over the lock in force, before Nix runs against it:
+    // a split baseline is legal Nix and a guest that fails at boot, so nothing downstream
+    // would name it (ADR-0112). A first evaluation has no lock yet; its created pin meets
+    // the same check inside `persist_created_lock` before anything durable exists.
+    if !prepared.effective_lock.may_persist_created() {
+        let staged = read_staged_lock(&prepared.directory)?;
+        config::composed_lock_failure(&staged).map_err(|error| flake_failure(&error))?;
     }
     let report = config::evaluate::report(&prepared, context.ui)
         .map_err(|error| evaluation_failure(&error))?;

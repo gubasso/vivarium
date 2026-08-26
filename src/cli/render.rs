@@ -531,6 +531,21 @@ pub fn generations_switch_human(current: u64, previous: Option<u64>) -> String {
     }
 }
 
+/// `viv update --json` — the lock written and one row per reported input (spec/01): the
+/// requested set whole, including unchanged rows, plus any public input whose pin moved by
+/// following a requested one. `before` is `null` for a newly created pin, and a hashless
+/// relative base reports `null` on both sides because its content is a layer (ADR-0112).
+pub fn update_json(manifest: &str, lock: &Path, rows: &[Value]) -> String {
+    line(&json!({ "manifest": manifest, "lock": lock.display().to_string(), "inputs": rows }))
+}
+
+/// `viv update` — one line per reported input, then the lock that holds the result.
+pub fn update_human(rows: &[Vec<String>], lock: &Path, palette: &Palette) -> String {
+    let mut rendered = volume_list_human(rows, palette);
+    let _ = writeln!(rendered, "lock\t{}", lock.display());
+    rendered
+}
+
 /// `viv gc --json` — the collector's own accounting line, relayed rather than re-derived.
 pub fn gc_json(summary: Option<&str>) -> String {
     line(&json!({ "summary": summary }))

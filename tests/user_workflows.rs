@@ -23,7 +23,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 39] = [
+const WORKFLOWS: [WorkflowSpec; 41] = [
     (
         "workflow_01_manifest_workspace_resolution_usage",
         GateLevel::Cli,
@@ -163,6 +163,16 @@ const WORKFLOWS: [WorkflowSpec; 39] = [
         "workflow_23_agent_channel_relay",
         GateLevel::Virtualization,
         workflow_23_relay,
+    ),
+    (
+        "workflow_18_update_usage_surface",
+        GateLevel::Cli,
+        workflow_18_update_usage,
+    ),
+    (
+        "workflow_18_update_moves_the_pin",
+        GateLevel::ConfigEval,
+        workflow_18_update_pin,
     ),
     (
         "workflow_24_generations_usage_surface",
@@ -3286,6 +3296,197 @@ fn expect_resting(tp: &TempProject) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     expect_code(&status, 0)?;
     expect_json_string(&status, "state", "built")
+}
+/// Slice 018, the update surface that needs no Nix: an unbound project refuses at `78`; an
+/// unknown flag and an unknown input name are `64`, the name decided by vivarium because Nix
+/// answers it with a warning and a successful no-op; a team override lock refuses at `78`
+/// naming both files, emits no JSON, and writes nothing; and the verb is published.
+fn workflow_18_update_usage() -> Result<(), Failed> {
+    let unbound = TempProject::new().map_err(io_failed)?;
+    check(expect_code(&viv(&unbound, &["update"])?, EX_CONFIG))?;
+
+    let tp = TempProject::with_project_name("update-usage").map_err(io_failed)?;
+    arrange_manifest(&tp, "update-usage", "", "")?;
+    check(expect_code(&viv(&tp, &["update", "--bogus"])?, EX_USAGE))?;
+    let unknown = viv(&tp, &["update", "no-such-input"])?;
+    check(expect_code(&unknown, EX_USAGE))?;
+    check(expect_stderr_mentions(&unknown, "no-such-input"))?;
+
+    // The override refusal: a read-only team pin beside a directory-form manifest wins, and
+    // the update refuses whole — both files named, no JSON, and the shadowed per-target
+    // lock not written (ADR-0062, spec/02).
+    let ov = TempProject::with_project_name("update-override").map_err(io_failed)?;
+    let manifest_dir = ov
+        .config()
+        .join("vivarium")
+        .join("manifests")
+        .join("update-override");
+    write_file(
+        &manifest_dir.join("default.toml"),
+        &format!(
+            "image = \"minimal\"\n\n[[workspaces]]\nsource = '{}'\n",
+            ov.project().display()
+        ),
+    )
+    .map_err(io_failed)?;
+    write_file(
+        &ov.config()
+            .join("vivarium")
+            .join("images")
+            .join("minimal.nix"),
+        "{ ... }: { }\n",
+    )
+    .map_err(io_failed)?;
+    write_file(
+        &manifest_dir.join("flake.lock"),
+        "{\"nodes\":{\"root\":{}},\"root\":\"root\",\"version\":7}\n",
+    )
+    .map_err(io_failed)?;
+    let refused = viv(&ov, &["update", "--json"])?;
+    check(expect_code(&refused, EX_CONFIG))?;
+    check(expect_stderr_mentions(&refused, "override-in-force"))?;
+    check(expect_stderr_mentions(&refused, "flake.lock"))?;
+    check(expect_stderr_mentions(&refused, "projects"))?;
+    if !refused.stdout.is_empty() {
+        return Err(Failed::from(
+            "a refused update must emit no JSON at all (spec/01)",
+        ));
+    }
+    let owned = ov
+        .data()
+        .join("vivarium")
+        .join("projects")
+        .join("update-override")
+        .join("default")
+        .join("flake.lock");
+    if owned.exists() {
+        return Err(Failed::from(
+            "a refused update wrote the shadowed per-target lock",
+        ));
+    }
+
+    // The pre-lock precedence, through the command boundary: with the per-target lock held
+    // by another process, an unknown name still answers `64` — the usage refusal precedes
+    // the lock and every write — while a well-formed invocation meets the contention at
+    // `75`. The lock file is the same flock `TargetLock` takes.
+    let lock_dir = tp
+        .runtime()
+        .join("vivarium")
+        .join("update-usage")
+        .join("default");
+    std::fs::create_dir_all(&lock_dir).map_err(io_failed)?;
+    std::fs::set_permissions(&lock_dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(io_failed)?;
+    let holder = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_dir.join("lock"))
+        .map_err(io_failed)?;
+    holder.lock().map_err(io_failed)?;
+    let contended_typo = viv(&tp, &["update", "no-such-input"])?;
+    check(expect_code(&contended_typo, EX_USAGE))?;
+    let contended_valid = viv(&tp, &["update"])?;
+    check(expect_code(&contended_valid, EX_TEMPFAIL))?;
+    drop(holder);
+    let owned = tp
+        .data()
+        .join("vivarium")
+        .join("projects")
+        .join("update-usage")
+        .join("default")
+        .join("flake.lock");
+    if owned.exists() {
+        return Err(Failed::from(
+            "a refused or contended update wrote the owned lock",
+        ));
+    }
+
+    let help = viv(&tp, &["--help"])?;
+    check(expect_code(&help, 0))?;
+    check(expect_stdout_mentions(&help, "update"))
+}
+
+/// Slice 018, the pin-moving core under the `ConfigEval` gate: a first `viv update` creates
+/// the lock and reports `before: null`; the base input renders and its hashless row reports
+/// no pin; a repeat run moves nothing and still reports the requested row; rows never carry
+/// a `changed: true` the fixtures did not arrange; and no staged residue survives beside the
+/// owned lock.
+fn workflow_18_update_pin() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("update-pin").map_err(io_failed)?;
+    let images = tp.config().join("vivarium").join("images").join("my-base");
+    write_file(&images.join("default.nix"), "{ ... }: { }\n").map_err(io_failed)?;
+    // The base declares `nixpkgs` unconditionally, pointing at a local leaf flake, so the
+    // second update below always exercises the follows translation: `viv update nixpkgs`
+    // is run against the base that owns the node, and the reported row must still carry
+    // the name the user passed (spec/01). A leaf suffices — `viv update` locks references
+    // and never evaluates their outputs — and a local `path:` needs no network.
+    let leaf = tp.root().join("fake-nixpkgs");
+    write_file(&leaf.join("flake.nix"), "{ outputs = { self }: { }; }\n").map_err(io_failed)?;
+    write_file(
+        &images.join("flake.nix"),
+        &format!(
+            "{{ inputs.nixpkgs.url = \"path:{}\";\n  \
+            outputs = {{ self, nixpkgs }}: {{ }}; }}\n",
+            leaf.display()
+        ),
+    )
+    .map_err(io_failed)?;
+    write_file(
+        &tp.config()
+            .join("vivarium")
+            .join("manifests")
+            .join("update-pin.toml"),
+        &format!(
+            "image = \"my-base\"\n\n[[workspaces]]\nsource = '{}'\n",
+            tp.project().display()
+        ),
+    )
+    .map_err(io_failed)?;
+
+    let first = viv(&tp, &["update", "--json"])?;
+    check(expect_code(&first, 0))?;
+    check(expect_json_keys(&first, &["manifest", "lock", "inputs"]))?;
+    check(expect_stdout_mentions(&first, "my-base"))?;
+    check(expect_stdout_mentions(&first, "nixpkgs"))?;
+    check(expect_stdout_mentions(&first, "\"before\":null"))?;
+    check(expect_stderr_mentions(&first, "created the pin"))?;
+    let owned = tp
+        .data()
+        .join("vivarium")
+        .join("projects")
+        .join("update-pin")
+        .join("default")
+        .join("flake.lock");
+    if !owned.is_file() {
+        return Err(Failed::from(
+            "the first update did not create the owned lock",
+        ));
+    }
+
+    // The repeat: nothing upstream moved — the baselines are pinned `path:` references —
+    // so every row is `changed: false`, the requested row included, and the run is `0`.
+    let second = viv(&tp, &["update", "nixpkgs", "--json"])?;
+    check(expect_code(&second, 0))?;
+    check(expect_stdout_mentions(&second, "\"changed\":false"))?;
+    check(expect_stdout_lacks(&second, "\"changed\":true"))?;
+    // The requested row carries the user's own string, translation or not (spec/01).
+    check(expect_stdout_mentions(&second, "\"name\":\"nixpkgs\""))?;
+
+    // No staged residue beside the owned lock: the update's temp file is consumed by the
+    // rename or removed on failure, never left for the next reader to misread.
+    let residue: Vec<_> = std::fs::read_dir(owned.parent().ok_or("owned lock parent")?)
+        .map_err(io_failed)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "flake.lock")
+        .collect();
+    if !residue.is_empty() {
+        return Err(Failed::from(format!(
+            "staged residue beside the owned lock: {residue:?}"
+        )));
+    }
+    Ok(())
 }
 
 /// Slice 032, the grammar surface: malformed retention arguments answer `64`, an unbound

@@ -6,6 +6,7 @@
 
 mod artifact;
 mod atomic;
+mod base;
 mod error;
 // Public as modules rather than through flat re-exports: their names say what they mean only next
 // to the noun they belong to — `evaluate::report`, `merged::analyze`.
@@ -33,6 +34,7 @@ mod test_support;
 pub use artifact::{
     ArtifactForm, ArtifactKind, ResolvedArtifact, artifact_names, resolve_artifact,
 };
+pub use base::ImageBase;
 pub use error::{
     EvaluationError, GeneratedFlakeError, InputError, ManifestError, RegistryError, ResolutionError,
 };
@@ -43,11 +45,15 @@ pub use flake::{
     FlakeInput, GeneratedFlakePaths, GeneratedFlakePlan, PreparedFlake, ResolvedComposition,
     target_paths,
 };
+pub use lock::{RootPin, pins as lock_pins};
 pub use manifest::{
     DefaultVolume, Egress, EgressMode, Manifest, ManifestOrigin, Mount, Resources, Volume,
     Workspace, parse_manifest,
 };
-pub use materialize::{persist_created_lock, prepare_generated_flake};
+pub use materialize::{
+    UpdatePreparation, composed_lock_failure, persist_created_lock, persist_updated_lock,
+    prepare_generated_flake, prepare_update_tree, resolve_update_inputs,
+};
 pub use registry::{INDEX_FILE, IndexedManifest, ManifestStamp, WorkspaceIndex, index_path};
 pub use resolve::{
     BindingSource, MANIFEST_VARIABLE, ResolvedBinding, canonical_project, resolve_binding,

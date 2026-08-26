@@ -1,9 +1,11 @@
 # A base image: the guest system every piece and manifest layers onto.
 #
-# Copy it into `$XDG_CONFIG_HOME/vivarium/images/` and edit it. It is an example
-# rather than something vivarium resolves: the config root is the whole search
-# path, so nothing here is found by name until you have copied it
-# (ADR-0061, ADR-0045).
+# Copy the whole `base/` directory into `$XDG_CONFIG_HOME/vivarium/images/` and
+# edit it. It is an example rather than something vivarium resolves: the config
+# root is the whole search path, so nothing here is found by name until you
+# have copied it (ADR-0061, ADR-0045). The `flake.nix` beside this file is
+# what makes the image's build inputs yours — see its own comments; without
+# it this directory is an ordinary module layer.
 #
 # Values here use `lib.mkDefault` because that is the role an image holds in the
 # merge: a base default, which a piece may propose against and which your own

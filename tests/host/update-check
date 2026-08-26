@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+# The slice 018 acceptance lane: a user redirects a guest component through their
+# own base flake, moves its pin with `viv update`, rebuilds, and the guest carries
+# the moved component — with no vivarium release in the path and no unnamed public
+# pin moved (ADR-0112, spec/01).
+#
+# A separate script rather than more `user_workflows.rs` trials because the claim
+# is a booted guest's contents across a pin move, which needs `/dev/kvm`, a
+# systemd user manager, and two real builds — the same reasons `generations-check`
+# is a script.
+#
+# METHOD: the movable component is a local `git+file:` flake the base declares, so
+# every reference this lane resolves offline is local; the baselines are pinned
+# from this repository's own lock through `nix flake archive` store paths. The
+# component surfaces into the guest as `/etc/dep-text` through the base's own
+# outputs (`vivariumInputs.<image>`), so "the guest carries the moved component"
+# is read from inside the booted guest, never inferred from the lock.
+#
+# STATED GAP: the spectrum node microvm.nix declares is still fetched from its
+# upstream on first lock, exactly as the other host lanes accept.
+#
+# DUP: see docs/reference/microvm-verification-harness.md for the shared
+# conventions this lane repeats.
+
+# DUP: no `set -euo pipefail`. Every check captures its own exit status and
+# turns it into a result line; a failing check must not abort the run.
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
+FLAKE_REF="path:$REPO_ROOT?dir=nix"
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+RECORD_COUNT=0
+
+# DUP: the scratch root is `disk-preflight`'s answer, and NOT under $TMPDIR —
+# the workspace handed to the launcher lives here, and N24 refuses a workspace
+# under /tmp, /var/tmp, or the runtime dir.
+set_roots() {
+  TEMP_BASE=${VIVARIUM_UPDATE_TEMP_BASE:-$1/update-check}
+}
+set_roots "$("$SCRIPT_DIR/disk-preflight" --locate --images)"
+
+if [[ ${1:-} == --clean ]]; then
+  removed=0
+  for dir in "$TEMP_BASE"/run.*; do
+    [[ -d $dir ]] || continue
+    rm -rf -- "$dir" && removed=$((removed + 1))
+  done
+  printf 'removed %d retained scratch root(s)\n' "$removed"
+  exit 0
+fi
+
+# DUP: before anything writes. Two guest builds land here, and the honest moment
+# to ask where the gigabytes go is while deferring is still free (AGENTS.md).
+if ! heavy_root=$("$SCRIPT_DIR/disk-preflight" --need 8 --label "the update lane" --images); then
+  printf '\nnothing ran: disk preflight refused\n'
+  exit 1
+fi
+set_roots "$heavy_root"
+
+mkdir -p "$TEMP_BASE" 2>/dev/null
+TEMP_ROOT=$(mktemp -d "$TEMP_BASE/run.XXXXXX" 2>/dev/null || true)
+if [[ -z $TEMP_ROOT ]]; then
+  printf '[FAIL] cannot create a private scratch directory under %s\n' "$TEMP_BASE" >&2
+  exit 1
+fi
+WORKSPACE=$TEMP_ROOT/workspace
+mkdir -p "$WORKSPACE"
+
+# DUP
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+  GREEN=$'\033[32m'
+  RED=$'\033[31m'
+  YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'
+  RESET=$'\033[0m'
+else
+  GREEN=
+  RED=
+  YELLOW=
+  BLUE=
+  RESET=
+fi
+
+# DUP
+pass() {
+  printf '%s[PASS]%s %s\n' "$GREEN" "$RESET" "$1"
+  PASS_COUNT=$((PASS_COUNT + 1))
+}
+fail() {
+  printf '%s[FAIL]%s %s\n' "$RED" "$RESET" "$1"
+  [[ -n ${2:-} ]] && printf '%s\n' "$2" | sed 's/^/       /'
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+}
+skip() {
+  printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$1"
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+}
+record() {
+  printf '%s[RECORD]%s %s\n' "$BLUE" "$RESET" "$1"
+  RECORD_COUNT=$((RECORD_COUNT + 1))
+}
+
+# The stable inventory, so a wholesale skip reports the same checks a run does.
+ALL_CHECKS=(
+  update-binaries-built
+  update-first-run-creates-the-pin
+  update-first-boot-carries-the-component
+  update-upstream-movement-alone-moves-nothing
+  update-moves-the-named-pin-and-no-other
+  update-rebuild-boots-the-moved-component
+  update-second-move-repeats
+)
+skip_remaining() {
+  local reason=$1 from=$2 seen=0
+  for check in "${ALL_CHECKS[@]}"; do
+    [[ $check == "$from" ]] && seen=1
+    ((seen)) && skip "$check: $reason"
+  done
+}
+
+printf -- '--- build tier ----------------------------------------------------------\n'
+
+# ---- update-binaries-built -------------------------------------------------
+CARGO_BIN_DIR=${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug
+VIV=$CARGO_BIN_DIR/viv
+if cargo build --quiet --features host --bin viv --bin vivarium-supervisor 2>"$TEMP_ROOT/cargo.err"; then
+  pass "update-binaries-built: $VIV"
+else
+  fail "update-binaries-built: could not build the host-side binaries" "$(tail -n 20 "$TEMP_ROOT/cargo.err")"
+  VIV=
+fi
+
+printf -- '\n--- host tier -----------------------------------------------------------\n'
+
+# DUP: the tier gate, stated out loud. `/dev/kvm` because a `viv start` boots.
+missing=()
+[[ $(uname -s 2>/dev/null) == Linux ]] || missing+=("Linux")
+command -v nix >/dev/null 2>&1 || missing+=("nix")
+command -v git >/dev/null 2>&1 || missing+=("git")
+[[ -r /dev/kvm && -w /dev/kvm ]] || missing+=("/dev/kvm openable read/write")
+systemctl --user show-environment >/dev/null 2>&1 || missing+=("usable systemd user manager")
+[[ -n ${XDG_RUNTIME_DIR:-} && ${XDG_RUNTIME_DIR:-} = /* && -d ${XDG_RUNTIME_DIR:-/nonexistent} && -w ${XDG_RUNTIME_DIR:-/nonexistent} ]] || missing+=("absolute writable XDG_RUNTIME_DIR")
+[[ -n ${VIV:-} && -x ${VIV:-/nonexistent} ]] || missing+=("built viv")
+if [[ $(systemctl --user show vivarium-update-check-default.service -p LoadState --value 2>/dev/null) == loaded ]]; then
+  missing+=("the unit name vivarium-update-check-default.service (already loaded)")
+fi
+
+# DUP: the two baseline inputs, pinned from this repository's own lock through
+# local store paths — a lane that must reach the forge to prove a local fact
+# reports on the network (AGENTS.md).
+NIXPKGS_PIN=
+MICROVM_PIN=
+archive=$(nix flake archive --json --extra-experimental-features 'nix-command flakes' "$FLAKE_REF" 2>"$TEMP_ROOT/archive.err")
+if [[ -n $archive ]]; then
+  NIXPKGS_PIN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["inputs"]["nixpkgs"]["path"])' <<<"$archive" 2>/dev/null)
+  MICROVM_PIN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["inputs"]["microvm"]["path"])' <<<"$archive" 2>/dev/null)
+fi
+[[ -n $NIXPKGS_PIN && -n $MICROVM_PIN ]] || missing+=("archived baseline inputs")
+
+if ((${#missing[@]})); then
+  reason=$(
+    IFS=', '
+    echo "${missing[*]}"
+  )
+  skip_remaining "missing prerequisites: $reason" update-first-run-creates-the-pin
+  printf '\nSummary\nPASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+  printf 'VERDICT: PASS (nothing ran; every check needs a capable host)\n'
+  exit 0
+fi
+
+# The movable component: a local git flake whose HEAD is the "upstream branch".
+DEP=$TEMP_ROOT/dep
+git init -q "$DEP"
+printf '{ outputs = { self }: { text = "one"; }; }\n' >"$DEP/flake.nix"
+git -C "$DEP" add -A
+git -C "$DEP" -c user.name=lane -c user.email=lane@check commit -qm one
+
+# The scratch installation: its own XDG roots, a directory-form image carrying
+# the base flake the user owns, and the lane's directory as the workspace.
+SCRATCH=$TEMP_ROOT/xdg
+mkdir -p "$SCRATCH/config/vivarium/manifests" "$SCRATCH/config/vivarium/images/update-base" \
+  "$SCRATCH/state" "$SCRATCH/data" "$SCRATCH/cache" "$SCRATCH/home"
+cat >"$SCRATCH/config/vivarium/manifests/update-check.toml" <<EOF
+image = "update-base"
+
+[[workspaces]]
+source = '$WORKSPACE'
+EOF
+# The base the user owns: it redirects both baselines to this repository's own
+# pins and declares the movable component. The internal follows line is the
+# rule the composed-lock check enforces (lock.baseline-split).
+cat >"$SCRATCH/config/vivarium/images/update-base/flake.nix" <<EOF
+{
+  inputs = {
+    nixpkgs.url = "path:$NIXPKGS_PIN";
+    microvm.url = "path:$MICROVM_PIN";
+    microvm.inputs.nixpkgs.follows = "nixpkgs";
+    dep.url = "git+file://$DEP";
+  };
+  outputs = { self, nixpkgs, microvm, dep }: { depText = dep.text; };
+}
+EOF
+cat >"$SCRATCH/config/vivarium/images/update-base/default.nix" <<'EOF'
+{ vivariumInputs, ... }:
+{
+  environment.etc."dep-text".text = vivariumInputs.update-base.depText;
+}
+EOF
+
+# DUP: `viv` reads the invoking directory, so the wrapper runs from the
+# workspace. The baseline env pins are deliberately NOT set: the base flake owns
+# the redirect, which is the claim under test.
+run_viv() {
+  (
+    cd "$WORKSPACE" || exit 74
+    env -u VIVARIUM_MANIFEST \
+      XDG_CONFIG_HOME="$SCRATCH/config" \
+      XDG_STATE_HOME="$SCRATCH/state" \
+      XDG_DATA_HOME="$SCRATCH/data" \
+      XDG_CACHE_HOME="$SCRATCH/cache" \
+      HOME="$SCRATCH/home" \
+      "$VIV" "$@" 2>&1
+  )
+}
+
+# DUP: best-effort teardown on every exit.
+# shellcheck disable=SC2329  # invoked through the EXIT trap below
+cleanup() {
+  run_viv stop >/dev/null 2>&1
+  run_viv destroy --yes >/dev/null 2>&1
+  rm -rf -- "$TEMP_ROOT" 2>/dev/null
+}
+trap cleanup EXIT
+
+OWNED_LOCK=$SCRATCH/data/vivarium/projects/update-check/default/flake.lock
+node_locked() { # node_locked <lock> <node>
+  python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["nodes"].get(sys.argv[2], {}).get("locked", {}), sort_keys=True))' "$1" "$2" 2>/dev/null
+}
+
+# ---- update-first-run-creates-the-pin --------------------------------------
+started=$(date +%s)
+out=$(run_viv update --json)
+status=$?
+if [[ $status -eq 0 && -f $OWNED_LOCK ]] && grep -q '"before":null' <<<"$out"; then
+  pass "update-first-run-creates-the-pin: exit 0, lock at $OWNED_LOCK"
+  record "first update took $(($(date +%s) - started))s; rows: $(grep -o '"name":"[a-z-]*"' <<<"$out" | tr '\n' ' ')"
+else
+  fail "update-first-run-creates-the-pin: status=$status" "$out"
+fi
+DEP_LOCKED_ONE=$(node_locked "$OWNED_LOCK" dep)
+NIXPKGS_LOCKED=$(node_locked "$OWNED_LOCK" nixpkgs)
+
+# ---- update-first-boot-carries-the-component -------------------------------
+started=$(date +%s)
+out=$(run_viv start)
+status=$?
+if [[ $status -ne 0 ]]; then
+  fail "update-first-boot-carries-the-component: start status=$status" "$out"
+  skip_remaining "the first boot failed" update-upstream-movement-alone-moves-nothing
+else
+  record "first start (build and boot) took $(($(date +%s) - started))s"
+  seen=$(run_viv exec -- cat /etc/dep-text)
+  if [[ $seen == one ]]; then
+    pass "update-first-boot-carries-the-component: /etc/dep-text = one"
+  else
+    fail "update-first-boot-carries-the-component: expected 'one'" "$seen"
+  fi
+
+  # ---- update-upstream-movement-alone-moves-nothing ------------------------
+  # The upstream branch moves; nothing else happens. A stop and start later,
+  # the guest still carries the pinned component — no ordinary build
+  # re-resolves (N3), which is exactly why `viv update` has a job.
+  printf '{ outputs = { self }: { text = "two"; }; }\n' >"$DEP/flake.nix"
+  git -C "$DEP" add -A
+  git -C "$DEP" -c user.name=lane -c user.email=lane@check commit -qm two
+  run_viv stop >/dev/null 2>&1
+  out=$(run_viv start)
+  status=$?
+  seen=$(run_viv exec -- cat /etc/dep-text)
+  if [[ $status -eq 0 && $seen == one ]]; then
+    pass "update-upstream-movement-alone-moves-nothing: still 'one' after stop and start"
+  else
+    fail "update-upstream-movement-alone-moves-nothing: status=$status text='$seen'" "$out"
+  fi
+
+  # ---- update-moves-the-named-pin-and-no-other -----------------------------
+  out=$(run_viv update update-base --json)
+  status=$?
+  dep_after=$(node_locked "$OWNED_LOCK" dep)
+  nixpkgs_after=$(node_locked "$OWNED_LOCK" nixpkgs)
+  if [[ $status -eq 0 && $dep_after != "$DEP_LOCKED_ONE" && $nixpkgs_after == "$NIXPKGS_LOCKED" ]] \
+    && grep -q '"name":"update-base"' <<<"$out" && grep -q '"changed":true' <<<"$out"; then
+    pass "update-moves-the-named-pin-and-no-other: dep moved under update-base, nixpkgs untouched"
+  else
+    fail "update-moves-the-named-pin-and-no-other: status=$status" "$out
+dep before: $DEP_LOCKED_ONE
+dep after:  $dep_after
+nixpkgs unchanged: $([[ $nixpkgs_after == "$NIXPKGS_LOCKED" ]] && echo yes || echo no)"
+  fi
+
+  # ---- update-rebuild-boots-the-moved-component ----------------------------
+  started=$(date +%s)
+  run_viv stop >/dev/null 2>&1
+  out=$(run_viv start)
+  status=$?
+  seen=$(run_viv exec -- cat /etc/dep-text)
+  if [[ $status -eq 0 && $seen == two ]]; then
+    pass "update-rebuild-boots-the-moved-component: /etc/dep-text = two"
+    record "rebuild and boot after the move took $(($(date +%s) - started))s"
+  else
+    fail "update-rebuild-boots-the-moved-component: status=$status text='$seen'" "$out"
+  fi
+
+  # ---- update-second-move-repeats ------------------------------------------
+  # One clean run is evidence of possibility, not reliability: the whole move
+  # repeats with a third revision.
+  printf '{ outputs = { self }: { text = "three"; }; }\n' >"$DEP/flake.nix"
+  git -C "$DEP" add -A
+  git -C "$DEP" -c user.name=lane -c user.email=lane@check commit -qm three
+  out=$(run_viv update update-base --json)
+  status=$?
+  run_viv stop >/dev/null 2>&1
+  out2=$(run_viv start)
+  status2=$?
+  seen=$(run_viv exec -- cat /etc/dep-text)
+  if [[ $status -eq 0 && $status2 -eq 0 && $seen == three ]]; then
+    pass "update-second-move-repeats: /etc/dep-text = three"
+  else
+    fail "update-second-move-repeats: update=$status start=$status2 text='$seen'" "$out
+$out2"
+  fi
+fi
+
+printf '\nSummary\nPASS=%d FAIL=%d SKIP=%d RECORD=%d\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RECORD_COUNT"
+if ((FAIL_COUNT > 0)); then
+  printf 'VERDICT: FAIL (%d hard check(s) failed)\n' "$FAIL_COUNT"
+  exit 1
+fi
+printf 'VERDICT: PASS (RECORD findings are measurements; SKIPs require a capable host)\n'

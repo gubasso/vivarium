@@ -204,6 +204,19 @@ Mount faults split by what decides them, which is why they carry two different c
 
 The split is not arbitrary: what the text alone decides is refused as a content defect, and what only host expansion reveals is refused at launch — before anything boots, either way. A socket is refused rather than mounted because a share conveys an inode and not a listener; forwarding an agent is [its own channel](./keep-secrets-out-of-the-store.md).
 
+## Take the base: own what the guest is built from
+
+Everything above chose what goes into the guest; the base flake chooses what all of it is built from. vivarium ships two references compiled into the binary — a `nixpkgs` branch and `microvm.nix` — and a project that never says otherwise builds from them. To own them, give your image the directory form and put a `flake.nix` beside its module:
+
+```console
+$ cp -r examples/images/base "${XDG_CONFIG_HOME:-$HOME/.config}/vivarium/images/"
+$ $EDITOR "${XDG_CONFIG_HOME:-$HOME/.config}/vivarium/images/base/flake.nix"
+```
+
+That file is a real flake, and it is yours: point `nixpkgs` at a release channel, a fork, or a store path; declare anything else your image wants and reach it from `default.nix` as `vivariumInputs.<image-name>.<attr>`. The copy stops tracking vivarium's example the moment it lands in your config root — nothing resolves to `examples/` ([`ADR-0061`](../decisions/ADR-0061-examples-ship-not-a-second-namespace.md)) — and no vivarium release sits between you and a component fix any more: when the fix is on your reference, `viv update` moves your pin and the next `viv start` boots it ([`ADR-0112`](../decisions/ADR-0112-the-selected-image-carries-the-base-flake.md)).
+
+Three facts keep the model straight. The file's text is a layer: edit it and the next `start` rebuilds with the edit, like any other layer edit. Its references are pins: what `nixpkgs` resolves to moves only under `viv update`, reported before and after, never during an ordinary build. And its URLs land in the generated flake, the lock, and the world-readable store — a reference embedding a credential is a build-time secret, exactly as a token in a manifest is (N10, [`keep-secrets-out-of-the-store.md`](./keep-secrets-out-of-the-store.md)).
+
 ## Where to go next
 
 - Put a credential in a sandbox without putting it in the store: [`keep-secrets-out-of-the-store.md`](./keep-secrets-out-of-the-store.md).
@@ -212,4 +225,4 @@ The split is not arbitrary: what the text alone decides is refused as a content 
 
 ## Acceptance coverage
 
-The composition this guide walks is covered by `workflow_03_team_shared_and_personal_override` (a shared piece carrying a mount, adopted by two manifests), `workflow_17_declared_mounts_eval` and `workflow_17_declared_mounts_refusals` (the `65` and `78` tiers above), `workflow_17_declared_mounts_round_trip` (both kinds reach the guest, one daemon per share), `workflow_22_file_mount_serves_only_its_file` (a file share serves that file alone), and `workflow_17_linked_worktree_reaches_main` (the second-workspace piece) in [`user_workflows.rs`](../../tests/user_workflows.rs).
+The base handoff is covered by `workflow_18_update_usage_surface` and `workflow_18_update_moves_the_pin` in [`user_workflows.rs`](../../tests/user_workflows.rs), and end to end — a redirected base, a moved pin, and the booted guest carrying the moved component — by [`tests/host/update-check`](../../tests/host/update-check). The composition this guide walks is covered by `workflow_03_team_shared_and_personal_override` (a shared piece carrying a mount, adopted by two manifests), `workflow_17_declared_mounts_eval` and `workflow_17_declared_mounts_refusals` (the `65` and `78` tiers above), `workflow_17_declared_mounts_round_trip` (both kinds reach the guest, one daemon per share), `workflow_22_file_mount_serves_only_its_file` (a file share serves that file alone), and `workflow_17_linked_worktree_reaches_main` (the second-workspace piece) in [`user_workflows.rs`](../../tests/user_workflows.rs).

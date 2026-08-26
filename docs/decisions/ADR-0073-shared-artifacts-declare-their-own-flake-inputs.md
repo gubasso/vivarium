@@ -32,3 +32,5 @@ The manifest was rejected as the personal layer: a piece that cannot carry its o
 Accepted
 
 Specified in [`../reference/spec/03-artifact-model.md`](../reference/spec/03-artifact-model.md), [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md), and [`../reference/spec/04-composition-and-determinism.md`](../reference/spec/04-composition-and-determinism.md). Pinning and the missing-node refusal are decided separately in [`ADR-0074`](./ADR-0074-declared-inputs-are-pinned-by-the-effective-lock.md).
+
+Amended by [`ADR-0112-the-selected-image-carries-the-base-flake.md`](./ADR-0112-the-selected-image-carries-the-base-flake.md) — the baseline-name reservation survives for every artifact's `inputs.toml`; what moved is that the selected image may now carry a real `flake.nix` declaring the baselines, which is the sanctioned redirect route the reservation's refusal message names, and the image's own name joins the namespace `viv update` accepts.
