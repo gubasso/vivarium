@@ -8,15 +8,14 @@ Record how a user finds every sandbox that is running right now, including ones 
 
 ## vivarium
 
-Specified, not built: `viv status` reports the current project; `viv status -g`, a live-session count, and `viv stop --all` are specified and do not run — the `*`. The machine-wide view is the one thing all three alternatives provide today and vivarium does not.
-
-Per project the surface works today; the machine-wide half is the `*`:
+Yes: `viv status -g` runs from any directory and reports a row per sandbox — its state, its uptime, the agent's own count of attached sessions, and its measured memory beside the declared ceiling — with the host's own reading beside the fleet, so a forgotten VM is found with the evidence that it is running rather than merely defined. The third step has its own verb: `viv stop --all` walks the same stop ladder over every running sandbox, from anywhere.
 
 ```bash
 cd ~/projects/a && viv start
 cd ~/projects/b && viv start
 viv status              # this project
-viv status -g           # every project on the machine - specified, not built
+viv status -g           # every sandbox on the machine, with state and sessions
+viv stop --all          # stop them all, from anywhere
 ```
 
 ## flake-pilot
@@ -31,4 +30,4 @@ Yes: instances are podman containers under the user's ordinary storage, so `stat
 
 No: the CLI has no enumeration verb and no way to stop something it did not start in this terminal. Containers are visible where containerd keeps them, through `sudo ctr containers ls`, which is the engine answering rather than the tool — and the names there are bunkerbox's own, so the information exists and the surface does not.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.
+[^read]: Read at `vivarium` `e1b3c73` on 2026-08-26; `flake-pilot` `main` and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

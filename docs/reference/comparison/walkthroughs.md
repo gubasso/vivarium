@@ -142,7 +142,7 @@ viv config sources       # which layer set what
 
 The manifest plus the lockfile the first evaluation writes is the unit, and the [pure-build rule](../spec/08-invariants-and-guarantees.md) fixes that the same closure and lock evaluate to the same store output on any machine at any later time. Updating is a verb rather than a default.
 
-Getting an older environment back is specified and not built: `viv generations list`\*, `viv generations rollback`\*, and `viv start --generation <n>`\* are what [`spec/11`](../spec/11-generations-and-build-history.md) fixes, with each retained generation pinned by a GC root so an ordinary store collection cannot eat the history. No alternative in this set answers it at all: [every other column reads `❌`](./scenarios/rollback.md), and the nearest thing to a way back is an old archive that happens to still be on disk under its versioned filename.
+Getting an older environment back runs: `viv generations list` names what is retained, `viv generations rollback` moves the pointer, and `viv start --generation <n>` boots the earlier build without evaluating — what [`spec/11`](../spec/11-generations-and-build-history.md) fixes, each retained generation pinned by a GC root so an ordinary store collection cannot eat the history. No alternative in this set answers it at all: [every other column reads `❌`](./scenarios/rollback.md), and the nearest thing to a way back is an old archive that happens to still be on disk under its versioned filename.
 
 ### What the difference costs
 
@@ -151,7 +151,7 @@ Not the clean sweep the container rungs suggest. The difference that survives is
 - flake-pilot holds a tarball — it reaches "it will not change until I say so" by having no mechanism for changing, a real answer arrived at from the other side.
 - bunkerbox holds an OCI archive, reaching the same answer the same way, and a recipe that will not rebuild it.
 - glaipnir holds a `Containerfile` whose inputs move without notice.
-- vivarium holds a manifest and a lock — a definition rather than a copy, which is why it is the only one here where getting last month's back could be specified at all.
+- vivarium holds a manifest and a lock — a definition rather than a copy, which is why it is the only one here that can hand last month's environment back.
 
 ## One idea worth stealing
 

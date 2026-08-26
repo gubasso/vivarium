@@ -8,7 +8,7 @@ Record how space is recovered from a sandbox that should keep working.[^read]
 
 ## vivarium
 
-Specified, mostly not built: `viv volume list` reports occupancy today and `viv volume prune` removes orphans; `viv trim`, `viv volume trim`, `viv volume rm`, and `viv gc`'s store sweep are specified and not implemented — the `*`. A loss today against `glaipnir clean all`.
+Partial: what accumulates outside the guest is reclaimable today, and what accumulates inside a volume is not yet. `viv volume list` reports each volume's occupancy against its ceiling, `viv volume prune` removes exactly the orphans that list surfaces, and `viv gc` sweeps the store, reclaiming every retained build no generation root pins — all without a teardown. The scenario's own measure is the half that waits: a file deleted inside a volume frees space inside its sparse image and returns none of it to the host until `viv trim`, `viv volume trim`, and `viv volume rm` land — specified, not built, the `*`.
 
 ## flake-pilot
 
@@ -24,4 +24,4 @@ Yes, structurally: the container filesystem is disposable and everything durable
 
 No, and the cap is why. The overlay upper layer is a loopback ext4 image created at its quota before boot, so deleting a file inside frees space inside the image and returns none of it to the host; the same holds for the session image the persisted home uses. Neither shrinks, no verb asks either to, and the way space comes back is deleting `.bunkerbox/` — a teardown. The trade is deliberate and the other half of it is [the write-cap row](./host-write-cap.md#bunkerbox): a fixed-size image is what makes the ceiling real.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.
+[^read]: Read at `vivarium` `e1b3c73` on 2026-08-26; `flake-pilot` `main` and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

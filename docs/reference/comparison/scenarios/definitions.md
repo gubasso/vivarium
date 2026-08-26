@@ -8,7 +8,7 @@ Record how a user finds every sandbox that has been defined on the machine, runn
 
 ## vivarium
 
-Specified, not built: there is no machine-wide index of projects today. `viv status` reports the current project, and `viv status -g` together with `viv images list` are specified and do not run — the `*`. A definition lives in the project directory it belongs to, so the filesystem holds the answer and nothing collects it.
+Yes: definitions live in one place — the config library's `manifests/` directory — and `viv manifest list` enumerates every one of them from any directory, each row naming the manifest, its path, its image, and its ordered pieces. `viv status -g` answers the narrower question beside it: which of those definitions have become sandboxes, running or resting. A manifest no command has ever started is configuration and appears only in the first listing, which is exactly the split this row asks about. `viv images list`, the shared-parts listing beside these, is still specified only.
 
 ## flake-pilot
 
@@ -24,4 +24,4 @@ Yes: `status` reports the agents and images that exist, and the roster is fixed,
 
 No: the CLI has a `list`, and it lists the tool's embedded YAML sequences rather than anything a user defined. Runtime configs are files under `/usr/share/bunkerbox` and project configs are files inside repositories; both are found with `ls` and `find`, which is the absence this row is asking about.
 
-[^read]: Read at `vivarium` `ceb0027`, `flake-pilot` `main`, and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.
+[^read]: Read at `vivarium` `e1b3c73` on 2026-08-26; `flake-pilot` `main` and `glaipnir` `21ef389` on 2026-08-18; `bunkerbox` `b7f14f3` on 2026-08-25.

@@ -91,13 +91,13 @@ What it costs to use every day.
 
 Builds, sandboxes, and disk pile up on a machine that gets used. Going back, moving forward on purpose, reclaiming space, and seeing what exists.
 
-| capability                                                                  | `vivarium`                                     | `flake-pilot` firecracker                        | `flake-pilot` krun                                   | `glaipnir`                                     | `bunkerbox`                                    |
-| --------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- |
-| [Boot a previous build when the new one is broken](./scenarios/rollback.md) | [✅ yes*](./scenarios/rollback.md#vivarium)    | [❌ no](./scenarios/rollback.md#flake-pilot)     | [❌ no](./scenarios/rollback.md#flake-pilot)         | [❌ no](./scenarios/rollback.md#glaipnir)      | [❌ no](./scenarios/rollback.md#bunkerbox)     |
-| [Update on purpose](./scenarios/update.md)                                  | [✅ yes*](./scenarios/update.md#vivarium)      | [✅ yes](./scenarios/update.md#flake-pilot)      | [❌ no](./scenarios/update.md#flake-pilot)           | ❌ no                                          | [✅ yes](./scenarios/update.md#bunkerbox)      |
-| [Reclaim disk without a teardown](./scenarios/reclaim-disk.md)              | [❌ no*](./scenarios/reclaim-disk.md#vivarium) | [❌ no](./scenarios/reclaim-disk.md#flake-pilot) | [⚠️ partial](./scenarios/reclaim-disk.md#flake-pilot) | [✅ yes](./scenarios/reclaim-disk.md#glaipnir) | [❌ no](./scenarios/reclaim-disk.md#bunkerbox) |
-| [See every definition on the machine](./scenarios/definitions.md)           | [❌ no*](./scenarios/definitions.md#vivarium)  | [✅ yes](./scenarios/definitions.md#flake-pilot) | [✅ yes](./scenarios/definitions.md#flake-pilot)     | [✅ yes](./scenarios/definitions.md#glaipnir)  | [❌ no](./scenarios/definitions.md#bunkerbox)  |
-| [See every running instance on the machine](./scenarios/instances.md)       | [❌ no*](./scenarios/instances.md#vivarium)    | [❌ no](./scenarios/instances.md#flake-pilot)    | [❌ no](./scenarios/instances.md#flake-pilot)        | [✅ yes](./scenarios/instances.md#glaipnir)    | [❌ no](./scenarios/instances.md#bunkerbox)    |
+| capability                                                                  | `vivarium`                                         | `flake-pilot` firecracker                        | `flake-pilot` krun                                   | `glaipnir`                                     | `bunkerbox`                                    |
+| --------------------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- |
+| [Boot a previous build when the new one is broken](./scenarios/rollback.md) | [✅ yes](./scenarios/rollback.md#vivarium)         | [❌ no](./scenarios/rollback.md#flake-pilot)     | [❌ no](./scenarios/rollback.md#flake-pilot)         | [❌ no](./scenarios/rollback.md#glaipnir)      | [❌ no](./scenarios/rollback.md#bunkerbox)     |
+| [Update on purpose](./scenarios/update.md)                                  | [✅ yes*](./scenarios/update.md#vivarium)          | [✅ yes](./scenarios/update.md#flake-pilot)      | [❌ no](./scenarios/update.md#flake-pilot)           | ❌ no                                          | [✅ yes](./scenarios/update.md#bunkerbox)      |
+| [Reclaim disk without a teardown](./scenarios/reclaim-disk.md)              | [⚠️ partial*](./scenarios/reclaim-disk.md#vivarium) | [❌ no](./scenarios/reclaim-disk.md#flake-pilot) | [⚠️ partial](./scenarios/reclaim-disk.md#flake-pilot) | [✅ yes](./scenarios/reclaim-disk.md#glaipnir) | [❌ no](./scenarios/reclaim-disk.md#bunkerbox) |
+| [See every definition on the machine](./scenarios/definitions.md)           | [✅ yes](./scenarios/definitions.md#vivarium)      | [✅ yes](./scenarios/definitions.md#flake-pilot) | [✅ yes](./scenarios/definitions.md#flake-pilot)     | [✅ yes](./scenarios/definitions.md#glaipnir)  | [❌ no](./scenarios/definitions.md#bunkerbox)  |
+| [See every running instance on the machine](./scenarios/instances.md)       | [✅ yes](./scenarios/instances.md#vivarium)        | [❌ no](./scenarios/instances.md#flake-pilot)    | [❌ no](./scenarios/instances.md#flake-pilot)        | [✅ yes](./scenarios/instances.md#glaipnir)    | [❌ no](./scenarios/instances.md#bunkerbox)    |
 
 ## Beyond the table
 
@@ -111,6 +111,6 @@ Builds, sandboxes, and disk pile up on a machine that gets used. Going back, mov
 
 ## Verified
 
-Read 2026-08-19, with `flake-pilot` partially re-read through 2026-08-22 and `bunkerbox` added 2026-08-25.
+Read 2026-08-19, with `flake-pilot` partially re-read through 2026-08-22, `bunkerbox` added 2026-08-25, and the `vivarium` column partially re-read 2026-08-26 at `e1b3c73`, after slices 031, 032, 025, and 027 closed.
 
 Revisions are not restated here. [`sources.md`](./sources.md) pins each subject to a commit or release and is the one place to change when a subject is re-read; every scenario page carries its own read date in a footnote at its foot.

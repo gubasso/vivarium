@@ -59,7 +59,7 @@ Marked `built` where [`implementation-status.md`](../implementation-status.md) s
 - `built` — host environment deny-by-default against a fixed allowlist
 - `built` — explicit per-invocation `--env`
 - `built` — SSH and GPG relays over a second vsock port, the private key never entering the guest
-- `spec` — a declarable agent channel in the manifest grammar
+- `built` — the declared agent channel: `credentials.agents` names `ssh` or `gpg` in the manifest, resolved against the host and refused before build when unusable
 - `refused` — vivarium decrypting, holding an identity, or brokering a login
 - `refused` — mounting a display or session socket; a share conveys an inode, not a listener
 
@@ -72,15 +72,16 @@ Marked `built` where [`implementation-status.md`](../implementation-status.md) s
 - `built` — `viv volume list` and `viv volume prune`
 - `built` — `viv doctor`, 31 probes, `--json`, `--strict`, `--list`, `--online`
 - `built` — declared resources as ceilings, auto-sized from the host when undeclared
+- `built` — `viv generations list` / `activate` / `rollback` / `prune`, each generation a GC root
+- `built` — `viv start --generation <n>` and `--no-rebuild`, booting a retained build without evaluating
+- `built` — `viv gc`, the whole-store sweep reclaiming what no root pins
+- `built` — `viv status -g`, a row per sandbox with a live-session count and the host's reading beside the fleet
+- `built` — `viv stop --all`, and the first rung of `spec/10`'s ladder — the orderly ask `--timeout` bounds
+- `built` — `--json` records for `viv stop` and `viv destroy`
 - `spec` — `viv images list`, `viv update`, `viv trim`
-- `spec` — `viv generations list` / `activate` / `rollback` / `prune`
-- `spec` — `viv start --generation <n>`, `--no-rebuild`, `--attach`
 - `spec` — `viv volume rm`, `viv volume trim`
-- `spec` — `viv gc`; the grammar runs and the store sweep does not
+- `spec` — `viv start --attach`
 - `spec` — the capacity admission check before launch
-- `spec` — `viv status -g`, and a live-session count
-- `spec` — `viv stop --all`, and the first rung of `spec/10`'s ladder
-- `spec` — `--json` records for `viv stop` and `viv destroy`
 - `refused` — classifying the software inside as trusted or untrusted
 
 ## 2. `flake-pilot`, swept alone

@@ -8,7 +8,7 @@ Record whether a build from a past date can be booted again as it was.[^read]
 
 ## vivarium
 
-Specified, not built: `spec/11` fixes per-project generations, each pinned by a GC root, with `viv generations list`/`activate`/`rollback`/`prune` and `viv start --generation <n>`. None of it runs yet — the `*`. What no alternative has is the same thing kept on purpose: below, the one that answers does it by leaving the old artifact lying around until something collects it.
+Yes: every successful build appends a numbered generation to a per-project profile, pinned by a GC root so an ordinary store collection cannot eat it. `viv generations list` names what is retained, `rollback` and `activate` move the `current` pointer, `viv start --generation <n>` boots a retained build without evaluating, and `prune` unlinks exactly what its retention argument selects while refusing the running VM's own generation. What no alternative has is the past kept on purpose: below, the closest thing to an answer is an old artifact left lying around until something collects it.
 
 ## flake-pilot
 
@@ -26,4 +26,4 @@ No: a rebuild moves the agent's tag and glaipnir's own surface — `run`, `statu
 
 No: nothing keeps a history and nothing asks for an earlier one. What identifies a build is the tag in the runtime config, and `overwrite: true` in an image config replaces the archive that tag was built from. An old archive that happens to survive as a file can be imported again and pointed at by editing the config, which is reinstalling a package rather than a verb the tool offers.
 
-[^read]: Read at `vivarium` `ceb0027` on 2026-08-18; `flake-pilot` `920f41e` and `glaipnir` `21ef389` on 2026-08-20; `bunkerbox` `b7f14f3` on 2026-08-25.
+[^read]: Read at `vivarium` `e1b3c73` on 2026-08-26; `flake-pilot` `920f41e` and `glaipnir` `21ef389` on 2026-08-20; `bunkerbox` `b7f14f3` on 2026-08-25.
