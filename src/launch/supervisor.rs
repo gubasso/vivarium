@@ -64,13 +64,13 @@ const NAMESPACE_PAIR_TIMEOUT: Duration = Duration::from_secs(10);
 /// reporting `teardown-incomplete` for a teardown that had in fact reached its last rung. Two
 /// seconds of headroom is what keeps the escalation path reporting the outcome it actually had.
 ///
-/// It is the whole grace and not the default one, which is a limitation rather than a design.
-/// spec/10 gives the operator `viv stop --timeout` and says `-1` waits indefinitely, but that flag
-/// is read by the CLI at stop time and this supervisor was started at `viv start` — nothing carries
-/// the value across, so a longer request currently buys a longer wait before `systemctl kill`, not
-/// a longer wait before the guest is destroyed. Tracked as `Q-018` in
-/// `docs/plan/open-questions.md`; widening this constant is not the fix, because the default grace
-/// is what it has to fit inside.
+/// The operator's `viv stop --timeout` deliberately does not reach this constant, and since the
+/// ladder gained its first rung that is a design rather than a limitation (the `Q-018` exit): the
+/// flag bounds the orderly ask the CLI makes of the guest agent, whose success never engages this
+/// path at all, while this window bounds only the power-signal fallback beneath it — the rung for
+/// a guest whose agent could not be reached, which no amount of operator patience makes more
+/// reachable. spec/10 states the split; widening this constant is still not a lever, because the
+/// default grace is what it has to fit inside.
 const GUEST_POWEROFF_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// How long the destroyed VM's processes are given to exit before they are killed.
@@ -770,7 +770,8 @@ impl Supervisor {
     }
 
     async fn shutdown_children(&mut self) -> Result<(), LaunchError> {
-        // spec/10's ladder, rungs two and three. `power-button` raises an ACPI event the guest
+        // spec/10's ladder below the agent rung, which is the CLI's. `power-button` raises an
+        // ACPI event the guest
         // handles, so systemd inside it runs its own shutdown transaction and unmounts the volumes
         // — which is the whole of N18's "a stop removes nothing". `shutdown` does not do that: it
         // destroys the VM where it stands, and everything the guest had not yet committed is gone.
@@ -782,10 +783,10 @@ impl Supervisor {
         // shutdown path's, and no volume assertion could have found it.
         let _ = self.remote("power-button", None).await;
         self.await_children(GUEST_POWEROFF_TIMEOUT).await?;
-        // Rung three, and it is reached only when the guest did not take the invitation. This
-        // ladder sits inside spec/10's default ten-second grace, and inside that one only: a
-        // `--timeout` larger than the default does not reach this process, so it does not move
-        // the moment the guest is destroyed (`Q-018`, and the note on `GUEST_POWEROFF_TIMEOUT`).
+        // The hard half, reached only when the guest did not take the invitation. This ladder
+        // sits inside spec/10's default ten-second grace by construction: the operator's
+        // `--timeout` bounds the agent ask above it, never these windows (the `Q-018` exit, and
+        // the note on `GUEST_POWEROFF_TIMEOUT`).
         if self.guest_children_alive()? {
             let _ = self.remote("shutdown", None).await;
             self.await_children(SHUTDOWN_TIMEOUT).await?;

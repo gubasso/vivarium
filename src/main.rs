@@ -146,17 +146,12 @@ async fn main() -> ExitCode {
         };
     }
 
-    // Status is dispatched here because it is async: a report on a running VM asks the guest
-    // agent for its live session count over the control socket (spec/12), and `cli::run` stays
-    // synchronous rather than making every other verb pay for one reader's round trip.
-    if let Invocation::Status { global, output } = &invocation {
-        return match vivarium::cli::status(&context, *global, *output).await {
-            Ok(success) => {
-                deliver(&success, &ui);
-                ExitCode::from(ExitKind::Success)
-            }
-            Err(failure) => fail(&failure, *output, &stderr_palette),
-        };
+    // Status, stop, and destroy are dispatched here because they are async: a status report on a
+    // running VM asks the guest agent for its live session count (spec/12), and the two teardown
+    // verbs walk a ladder whose first rung asks the same agent for an orderly shutdown (spec/10).
+    // `cli::run` stays synchronous rather than making every other verb pay for those round trips.
+    if let Some(code) = agent_readers(&invocation, &context, &ui, &stderr_palette).await {
+        return code;
     }
 
     // The two session verbs, dispatched here for the same reason the handoff above is: they are
@@ -206,6 +201,51 @@ fn deliver(success: &vivarium::cli::Success, ui: &Ui) {
 ///
 /// stderr rather than stdout because stdout carries the result and a failure has none — the rule
 /// that keeps `… --json 2>/dev/null | jq` clean on success and empty on failure.
+/// Dispatches the three verbs that may ask the running guest's agent a question, and `None` for
+/// every other invocation.
+///
+/// `status` reads the live session count; `stop` and `destroy` open their ladder with the
+/// shutdown request. All three are async and deliver one `Success` or fail, so they share this
+/// one shape; held out of `main` so that function stays a dispatcher rather than a verb.
+async fn agent_readers(
+    invocation: &Invocation,
+    context: &Context<'_, ProcessEnvironment>,
+    ui: &Ui,
+    stderr_palette: &Palette,
+) -> Option<ExitCode> {
+    let (result, output) = match invocation {
+        Invocation::Status { global, output } => (
+            vivarium::cli::status(context, *global, *output).await,
+            *output,
+        ),
+        Invocation::Stop {
+            all,
+            force,
+            timeout,
+            output,
+        } => (
+            vivarium::cli::stop(context, *all, *force, *timeout, *output).await,
+            *output,
+        ),
+        Invocation::Destroy {
+            keep_volumes,
+            yes,
+            output,
+        } => (
+            vivarium::cli::destroy(context, *keep_volumes, *yes, *output).await,
+            *output,
+        ),
+        _ => return None,
+    };
+    Some(match result {
+        Ok(success) => {
+            deliver(&success, ui);
+            ExitCode::from(ExitKind::Success)
+        }
+        Err(failure) => fail(&failure, output, stderr_palette),
+    })
+}
+
 fn fail(failure: &Failure, output: Output, palette: &Palette) -> ExitCode {
     eprint!("{}", failure.render(output, palette));
     let _ = std::io::stderr().flush();

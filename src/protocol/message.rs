@@ -30,6 +30,8 @@ pub const TAG_EXIT: u8 = 0x0c;
 pub const TAG_ERROR: u8 = 0x0d;
 pub const TAG_SESSIONS_QUERY: u8 = 0x0e;
 pub const TAG_SESSION_COUNT: u8 = 0x0f;
+pub const TAG_SHUTDOWN_REQUEST: u8 = 0x10;
+pub const TAG_SHUTDOWN_ACK: u8 = 0x11;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -212,6 +214,7 @@ pub enum ClientFrame {
     Resize(TerminalSize),
     Signal(SignalRequest),
     Sessions,
+    Shutdown,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -223,6 +226,7 @@ pub enum AgentFrame {
     Exit(ExitStatus),
     Error(ProtocolErrorMessage),
     Sessions(SessionCount),
+    ShutdownAck,
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]

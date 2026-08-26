@@ -144,6 +144,49 @@ pub async fn session_count(
     tokio::time::timeout(timeout, query).await.ok().flatten()
 }
 
+/// Ask the agent for an orderly guest shutdown; `true` only on its acknowledgement.
+///
+/// The acknowledgement promises motion, never completion — the agent has touched the trigger the
+/// guest's own poweroff rides, and whether the shutdown finishes is observed from outside, as the
+/// VM exiting. Every non-answer is `false` alike — no connection, a timeout, an identity mismatch,
+/// and an agent old enough to answer the tag with its framing error — because `false` means
+/// exactly the next rung: spec/10 falls through to the backend's power signal when the agent
+/// cannot be reached.
+pub async fn request_shutdown(
+    control_socket: &Path,
+    metadata: &BootMetadata,
+    timeout: Duration,
+) -> bool {
+    let ask = async {
+        let mut stream = hybrid::connect(control_socket, CONTROL_PORT, timeout)
+            .await
+            .ok()?;
+        write_client_frame(
+            &mut stream,
+            &ClientFrame::Hello(Hello {
+                schema_version: SCHEMA_VERSION,
+                boot_identity: metadata.boot_identity.clone(),
+            }),
+        )
+        .await
+        .ok()?;
+        match read_agent_frame(&mut stream).await.ok()? {
+            AgentFrame::Hello(hello)
+                if hello.schema_version == SCHEMA_VERSION
+                    && hello.boot_identity == metadata.boot_identity => {}
+            _ => return None,
+        }
+        write_client_frame(&mut stream, &ClientFrame::Shutdown)
+            .await
+            .ok()?;
+        match read_agent_frame(&mut stream).await.ok()? {
+            AgentFrame::ShutdownAck => Some(()),
+            _ => None,
+        }
+    };
+    matches!(tokio::time::timeout(timeout, ask).await, Ok(Some(())))
+}
+
 /// How one session ended.
 ///
 /// The three are not degrees of the same thing. A status is the guest's own answer and vivarium
@@ -250,10 +293,15 @@ impl<O: AsyncWrite + Unpin, E: AsyncWrite + Unpin> Session<'_, O, E> {
                     Some(AgentFrame::Stderr(bytes)) => write_out(&mut self.stderr, &bytes).await?,
                     Some(AgentFrame::Exit(status)) => break SessionOutcome::Exited(status.status),
                     Some(AgentFrame::Error(error)) => break SessionOutcome::Refused(error.code),
-                    // `Hello`, `Pong`, and a session count belong to the opening and to the
-                    // ping-shaped connections; any of them arriving mid-session means the ends
-                    // disagree about what this connection is.
-                    Some(AgentFrame::Hello(_) | AgentFrame::Pong | AgentFrame::Sessions(_)) => {
+                    // `Hello`, `Pong`, a session count, and a shutdown acknowledgement belong
+                    // to the opening and to the ping-shaped connections; any of them arriving
+                    // mid-session means the ends disagree about what this connection is.
+                    Some(
+                        AgentFrame::Hello(_)
+                        | AgentFrame::Pong
+                        | AgentFrame::Sessions(_)
+                        | AgentFrame::ShutdownAck,
+                    ) => {
                         break SessionOutcome::Lost("a session frame");
                     }
                     None => break SessionOutcome::Lost("the guest's exit status"),
@@ -532,6 +580,100 @@ mod tests {
             server.await.unwrap();
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    #[tokio::test]
+    async fn request_shutdown_reads_the_acknowledgement() {
+        let path = socket_path();
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let mut stream = accept_and_greet(&listener).await;
+            assert_eq!(
+                read_client_frame(&mut stream).await.unwrap(),
+                ClientFrame::Shutdown
+            );
+            write_agent_frame(&mut stream, &AgentFrame::ShutdownAck)
+                .await
+                .unwrap();
+        });
+        let acked = request_shutdown(
+            &path,
+            &metadata("01234567-89ab-cdef-0123-456789abcdef"),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(acked);
+        server.await.unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// An agent that does not know the tag answers with its framing error; the ask then reads
+    /// as unacknowledged — the fall-through an older running guest relies on, never a fault.
+    #[tokio::test]
+    async fn request_shutdown_degrades_on_error_and_on_eof() {
+        for answer in ["error", "eof"] {
+            let path = socket_path();
+            let listener = UnixListener::bind(&path).unwrap();
+            let answered = answer.to_owned();
+            let server = tokio::spawn(async move {
+                let mut stream = accept_and_greet(&listener).await;
+                let _ = read_client_frame(&mut stream).await;
+                if answered == "error" {
+                    write_agent_frame(
+                        &mut stream,
+                        &AgentFrame::Error(crate::protocol::ProtocolErrorMessage {
+                            code: "framing".to_owned(),
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                }
+                drop(stream);
+            });
+            let acked = request_shutdown(
+                &path,
+                &metadata("01234567-89ab-cdef-0123-456789abcdef"),
+                Duration::from_secs(1),
+            )
+            .await;
+            assert!(
+                !acked,
+                "a non-answer ({answer}) must read as unacknowledged"
+            );
+            server.await.unwrap();
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// An agent that accepts and greets but never answers the request: the ask times out to
+    /// `false`, which is the budget boundary the ladder's fallback must survive.
+    #[tokio::test]
+    async fn request_shutdown_times_out_on_a_silent_agent() {
+        let path = socket_path();
+        let listener = UnixListener::bind(&path).unwrap();
+        let (done, wait) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let mut stream = accept_and_greet(&listener).await;
+            let _ = read_client_frame(&mut stream).await;
+            // Hold the connection open, answering nothing, until the client gave up.
+            let _ = wait.await;
+            drop(stream);
+        });
+        let started = std::time::Instant::now();
+        let acked = request_shutdown(
+            &path,
+            &metadata("01234567-89ab-cdef-0123-456789abcdef"),
+            Duration::from_millis(300),
+        )
+        .await;
+        assert!(!acked, "a silent agent must read as unacknowledged");
+        assert!(
+            started.elapsed() >= Duration::from_millis(300),
+            "the non-answer must cost the whole ask budget, never less"
+        );
+        drop(done);
+        server.await.unwrap();
+        let _ = std::fs::remove_file(path);
     }
 
     const IDENTITY: &str = "01234567-89ab-cdef-0123-456789abcdef";

@@ -23,7 +23,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 33] = [
+const WORKFLOWS: [WorkflowSpec; 37] = [
     (
         "workflow_01_manifest_workspace_resolution_usage",
         GateLevel::Cli,
@@ -188,6 +188,26 @@ const WORKFLOWS: [WorkflowSpec; 33] = [
         "workflow_25_fleet_two_sandboxes",
         GateLevel::Virtualization,
         workflow_25_fleet_two_sandboxes,
+    ),
+    (
+        "workflow_27_stop_destroy_records",
+        GateLevel::Cli,
+        workflow_27_records,
+    ),
+    (
+        "workflow_27_stop_agent_rung_evidence",
+        GateLevel::Virtualization,
+        workflow_27_agent_rung,
+    ),
+    (
+        "workflow_27_stop_slow_guest_grace",
+        GateLevel::Virtualization,
+        workflow_27_slow_guest,
+    ),
+    (
+        "workflow_27_stop_all_sweep",
+        GateLevel::Virtualization,
+        workflow_27_sweep,
     ),
 ];
 
@@ -2715,7 +2735,7 @@ fn workflow_20_many_workspaces() -> Result<(), Failed> {
     // whole declared set, never as one row per workspace (ADR-0108).
     let fleet = viv_at(&tp, &second, &["status", "-g", "--json"])?;
     check(expect_code(&fleet, 0))?;
-    let projects = fleet_rows(&fleet)?;
+    let projects = project_rows(&fleet)?;
     let rows: Vec<&serde_json::Value> = projects
         .iter()
         .filter(|row| row["manifest"] == "anchor-outside")
@@ -3557,7 +3577,7 @@ fn workflow_25_fleet_usage() -> Result<(), Failed> {
             "runtime",
         ],
     ))?;
-    let projects = fleet_rows(&fleet)?;
+    let projects = project_rows(&fleet)?;
     let mut names: Vec<&str> = projects
         .iter()
         .filter_map(|row| row["manifest"].as_str())
@@ -3619,7 +3639,7 @@ fn workflow_25_fleet_usage() -> Result<(), Failed> {
     fs::remove_dir_all(&second).map_err(io_failed)?;
     let missing = viv(&tp, &["status", "-g", "--json"])?;
     check(expect_code(&missing, 0))?;
-    let projects = fleet_rows(&missing)?;
+    let projects = project_rows(&missing)?;
     let row_b = projects
         .iter()
         .find(|row| row["manifest"] == "fleet-b")
@@ -3742,7 +3762,7 @@ fn workflow_25_fleet_two_sandboxes() -> Result<(), Failed> {
 
     let fleet = viv_at(&tp, &first, &["status", "-g", "--json"])?;
     check(expect_code(&fleet, 0))?;
-    let projects = fleet_rows(&fleet)?;
+    let projects = project_rows(&fleet)?;
     let mut names: Vec<&str> = projects
         .iter()
         .filter_map(|row| row["manifest"].as_str())
@@ -3786,14 +3806,250 @@ fn workflow_25_fleet_two_sandboxes() -> Result<(), Failed> {
     check(expect_code(&viv_at(&tp, &second, &["stop"])?, 0))
 }
 
-/// The parsed rows of `status -g --json`, in published order.
-fn fleet_rows(out: &VivOutput) -> Result<Vec<serde_json::Value>, Failed> {
-    let record: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .map_err(|error| Failed::from(format!("status -g --json was not JSON: {error}")))?;
-    record["projects"]
+/// The degraded ladder's floor: with the agent out of the picture the supervisor waits its
+/// power-button window (6 s) and its destroy window (2 s) before the VM is gone, so a clean
+/// stop under this figure cannot have been the power path's. The agent rung measures ~2-3 s,
+/// so the margin absorbs host load without admitting the fallback.
+const DEGRADED_LADDER_FLOOR: Duration = Duration::from_secs(8);
+
+/// Slice 027's first-rung acceptance: an agent-reachable stop is initiated through the agent,
+/// distinguished from the backend's power signal by evidence rather than assumption. The
+/// backend's API socket is deleted first, so the power path cannot act at all and its degraded
+/// ladder cannot finish under [`DEGRADED_LADDER_FLOOR`] — a clean stop under that floor whose
+/// record reads `agent` can only have gone through the guest. The unsynced write proves N18
+/// holds through the new rung, and the second leg deletes the control socket instead, forcing
+/// the fall-through the ladder assigns to an unreachable agent.
+fn workflow_27_agent_rung() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("wf27-rung").map_err(io_failed)?;
+    arrange_manifest(&tp, "wf27-rung", "", "")?;
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+    check(expect_code(
+        &viv(
+            &tp,
+            &["exec", "--", "sh", "-lc", "printf u > \"$HOME/unsynced\""],
+        )?,
+        0,
+    ))?;
+
+    // Deleted, never renamed: the supervisor's teardown sweep refuses any runtime-directory
+    // entry it was not told about — and refuses the whole sweep, not the one file.
+    let runtime_dir = tp
+        .runtime()
+        .join("vivarium")
+        .join("wf27-rung")
+        .join("default");
+    fs::remove_file(runtime_dir.join("api.sock")).map_err(io_failed)?;
+    let started = Instant::now();
+    let stopped = viv(&tp, &["stop", "--json"])?;
+    let elapsed = started.elapsed();
+    check(expect_code(&stopped, 0))?;
+    check(expect_json_string(&stopped, "rung", "agent"))?;
+    check(expect_json_string(&stopped, "state", "built"))?;
+    if elapsed >= DEGRADED_LADDER_FLOOR {
+        return fail(format!(
+            "the stop took {elapsed:?}, past the floor the power path cannot get under"
+        ));
+    }
+
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+    check(expect_code(
+        &viv(
+            &tp,
+            &["exec", "--", "sh", "-lc", "test -f \"$HOME/unsynced\""],
+        )?,
+        0,
+    ))?;
+
+    fs::remove_file(runtime_dir.join("control.sock")).map_err(io_failed)?;
+    let fallback = viv(&tp, &["stop", "--json"])?;
+    check(expect_code(&fallback, 0))?;
+    check(expect_json_string(&fallback, "rung", "power-signal"))
+}
+
+/// A guest whose every orderly shutdown deliberately takes ~20 s: a root oneshot's `ExecStop`
+/// sleeps through the default grace, so only a longer `--timeout` lets the transaction finish.
+const SLOW_STOP_IMAGE: &str = concat!(
+    "{ pkgs, ... }:\n",
+    "{\n",
+    "  systemd.services.slow-stop = {\n",
+    "    description = \"Deliberately slow shutdown\";\n",
+    "    wantedBy = [ \"multi-user.target\" ];\n",
+    "    serviceConfig = {\n",
+    "      Type = \"oneshot\";\n",
+    "      RemainAfterExit = true;\n",
+    "      ExecStart = \"${pkgs.coreutils}/bin/true\";\n",
+    "      ExecStop = \"${pkgs.coreutils}/bin/sleep 20\";\n",
+    "    };\n",
+    "  };\n",
+    "}\n"
+);
+
+/// Slice 027's grace acceptance, `Q-018`'s exit made falsifiable. A deliberately slow guest
+/// under `--timeout 40` is allowed its whole shutdown — the stop ends through the agent rung
+/// after more time than the default grace would have permitted — while the same guest under
+/// `--timeout 3` is observably escalated: the acknowledged-then-wedged shutdown is handed to
+/// the power path's compiled window and the VM is down well before its own slow transaction
+/// would have ended, with the record naming the rung that ended it.
+fn workflow_27_slow_guest() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("wf27-slow").map_err(io_failed)?;
+    arrange_manifest_with_image(&tp, "wf27-slow", "", "", SLOW_STOP_IMAGE)?;
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+
+    let started = Instant::now();
+    let patient = viv(&tp, &["stop", "--timeout", "40", "--json"])?;
+    let patient_elapsed = started.elapsed();
+    check(expect_code(&patient, 0))?;
+    check(expect_json_string(&patient, "rung", "agent"))?;
+    if patient_elapsed <= Duration::from_secs(10) {
+        return fail(format!(
+            "the patient stop finished in {patient_elapsed:?}; the guest was not slow"
+        ));
+    }
+
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+    let started = Instant::now();
+    let curt = viv(&tp, &["stop", "--timeout", "3", "--json"])?;
+    let curt_elapsed = started.elapsed();
+    check(expect_code(&curt, 0))?;
+    check(expect_json_string(&curt, "rung", "power-signal"))?;
+    if curt_elapsed >= Duration::from_secs(18) {
+        return fail(format!(
+            "the curt stop took {curt_elapsed:?}; the escalation never cut the shutdown short"
+        ));
+    }
+    Ok(())
+}
+
+/// Slice 027's sweep acceptance: with two sandboxes running, `viv stop --all` from a directory
+/// no manifest declares stops both and exits `0`; a second invocation is a `0` no-op with an
+/// empty record; and an unsynced write survives the sweep, so N18 holds through it. The other
+/// two-guest trial, sharing `workflow_25_fleet_two_sandboxes`'s flake-risk note under host
+/// memory pressure.
+fn workflow_27_sweep() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("wf27-all").map_err(io_failed)?;
+    let first = tp.root().join("all-first");
+    let second = tp.root().join("all-second");
+    fs::create_dir_all(&first).map_err(io_failed)?;
+    fs::create_dir_all(&second).map_err(io_failed)?;
+    for (name, tree) in [("all-a", &first), ("all-b", &second)] {
+        arrange_manifest(
+            &tp,
+            name,
+            "\n[resources]\nmem_mib = 2048\nvcpu = 2\n",
+            &format!("\n[[workspaces]]\nsource = '{}'\n", tree.display()),
+        )?;
+    }
+    check(expect_code(&viv_at(&tp, &first, &["start"])?, 0))?;
+    check(expect_code(&viv_at(&tp, &second, &["start"])?, 0))?;
+    check(expect_code(
+        &viv_at(
+            &tp,
+            &first,
+            &["exec", "--", "sh", "-lc", "printf u > \"$HOME/unsynced\""],
+        )?,
+        0,
+    ))?;
+
+    // From the root the trees hang under, which no manifest declares: the sweep is the one
+    // path that needs no selected manifest (spec/01, spec/10).
+    let swept = viv_at(&tp, tp.root(), &["stop", "--all", "--json"])?;
+    check(expect_code(&swept, 0))?;
+    let rows = project_rows(&swept)?;
+    let mut names: Vec<&str> = rows
+        .iter()
+        .filter_map(|row| row["manifest"].as_str())
+        .collect();
+    names.sort_unstable();
+    if names != ["all-a", "all-b"] {
+        return fail(format!("the sweep acted on {names:?}"));
+    }
+    for row in &rows {
+        if row["state"] != "built" {
+            return fail(format!("{} landed in {}", row["manifest"], row["state"]));
+        }
+        if row["rung"].as_str().is_none() {
+            return fail(format!("{} reported no rung", row["manifest"]));
+        }
+    }
+
+    let again = viv_at(&tp, tp.root(), &["stop", "--all", "--json"])?;
+    check(expect_code(&again, 0))?;
+    if !project_rows(&again)?.is_empty() {
+        return fail("a second sweep re-reported sandboxes it had already stopped");
+    }
+
+    check(expect_code(&viv_at(&tp, &first, &["start"])?, 0))?;
+    check(expect_code(
+        &viv_at(
+            &tp,
+            &first,
+            &["exec", "--", "sh", "-lc", "test -f \"$HOME/unsynced\""],
+        )?,
+        0,
+    ))?;
+    check(expect_code(&viv_at(&tp, tp.root(), &["stop", "--all"])?, 0))
+}
+
+/// Slice 027's record surface (`Q-021`'s exit) at the CLI gate: the stop record's shape for
+/// the idempotent no-op, the destroy record's four keys, and the sweep's empty record from a
+/// directory no manifest declares — none of which needs a VM.
+fn workflow_27_records() -> Result<(), Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+    arrange_manifest(&tp, "records", "", "")?;
+
+    let stopped = viv(&tp, &["stop", "--json"])?;
+    check(expect_code(&stopped, 0))?;
+    check(expect_json_keys(&stopped, &["manifest", "state", "rung"]))?;
+    let record = json_record(&stopped)?;
+    if record["state"] != "absent" || !record["rung"].is_null() {
+        return fail(format!("the no-op stop reported {record}"));
+    }
+
+    // The human face of a side-effect verb says nothing on stdout (spec/01).
+    let human = viv(&tp, &["stop"])?;
+    check(expect_code(&human, 0))?;
+    if !human.stdout.is_empty() {
+        return fail("a human stop printed to stdout");
+    }
+
+    let destroyed = viv(&tp, &["destroy", "--yes", "--json"])?;
+    check(expect_code(&destroyed, 0))?;
+    check(expect_json_keys(
+        &destroyed,
+        &["manifest", "removed", "spared", "volumes_kept"],
+    ))?;
+    let record = json_record(&destroyed)?;
+    if record["volumes_kept"] != false {
+        return fail(format!(
+            "a plain destroy reported {}",
+            record["volumes_kept"]
+        ));
+    }
+    if record["spared"].as_array().is_none_or(Vec::is_empty) {
+        return fail("the destroy record spared nothing");
+    }
+
+    let swept = viv_at(&tp, tp.root(), &["stop", "--all", "--json"])?;
+    check(expect_code(&swept, 0))?;
+    if !project_rows(&swept)?.is_empty() {
+        return fail("a sweep over nothing running reported rows");
+    }
+    Ok(())
+}
+
+/// One `--json` record parsed whole, for the value assertions the key helpers cannot make.
+fn json_record(out: &VivOutput) -> Result<serde_json::Value, Failed> {
+    serde_json::from_slice(&out.stdout)
+        .map_err(|error| Failed::from(format!("stdout was not one JSON record: {error}")))
+}
+
+/// The parsed rows under a record's `projects` key, in published order — `status -g` and the
+/// `stop --all` sweep share the wrapper (spec/01).
+fn project_rows(out: &VivOutput) -> Result<Vec<serde_json::Value>, Failed> {
+    json_record(out)?["projects"]
         .as_array()
         .cloned()
-        .ok_or_else(|| Failed::from("status -g --json published no `projects` array"))
+        .ok_or_else(|| Failed::from("the record published no `projects` array"))
 }
 
 /// Reads `runtime.sessions` out of the local report, `None` when the agent could not answer.

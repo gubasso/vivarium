@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use super::grammar::Output;
 use super::{Context, Failure, ResolvedForLaunch, Success, diagnosed};
 use crate::config::{self, Environment};
 use crate::diagnostic::{Locus, Namespace};
@@ -37,6 +38,25 @@ pub(super) const DEFAULT_TARGET: &str = "default";
 /// there and the agent is healthy, one round trip answers it. A longer budget here would turn every
 /// stale socket into a pause.
 const PING_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// The bounded ask of the ladder's first rung: connect, greet, request the shutdown, read the
+/// acknowledgement (spec/10, spec/12).
+///
+/// Generous for four frames against a healthy agent, and capped at what remains of the
+/// operator's grace at the call site, so a short deadline is never eaten whole by the ask.
+const SHUTDOWN_ASK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The window the backend's power path gets when it is engaged after an acknowledged first rung
+/// outlived the grace.
+///
+/// The supervisor raises the power button, waits its six-second window, destroys the VM and
+/// waits two seconds more (the compiled budgets in `src/launch/supervisor.rs`); this figure is
+/// those two plus slop. Only
+/// a guest that acknowledged an orderly shutdown and then wedged inside it is given this bounded
+/// overshoot past the operator's deadline — the alternative is a group kill at the deadline,
+/// which skips the supervisor's cleanup and turns every acked-but-slow guest into an unconfirmed
+/// teardown where the power path delivers a clean one ten seconds later (spec/10).
+const POWER_SIGNAL_WINDOW_SECONDS: i64 = 10;
 
 /// How long a live VM whose agent has not answered yet is given before it is called unavailable.
 ///
@@ -73,6 +93,29 @@ impl State {
             Self::Running => "running",
             Self::Stopping => "stopping",
             Self::Failed => "failed",
+        }
+    }
+}
+
+/// Which rung of spec/10's ladder ended a stop — the `rung` field of spec/01's stop record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StopRung {
+    /// The guest agent acknowledged the shutdown request and the guest powered itself off.
+    Agent,
+    /// The manager's stop reached the supervisor, whose power signal brought the guest down.
+    PowerSignal,
+    /// The group was killed when the ladder ran out.
+    HardPoweroff,
+}
+
+impl StopRung {
+    /// The spelling spec/01's `rung` field carries.
+    #[must_use]
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::PowerSignal => "power-signal",
+            Self::HardPoweroff => "hard-poweroff",
         }
     }
 }
@@ -345,29 +388,35 @@ fn read_build_record(path: &Path) -> Option<String> {
 /// lifetime owner and the pid is the VM: a unit that is still activating has no VM yet, and that
 /// difference is exactly what separates `starting` from `running`.
 fn vm_is_alive(runtime: &Runtime) -> bool {
-    let Ok(raw) = std::fs::read_to_string(runtime.vm_pid()) else {
-        return false;
-    };
-    let Ok(pid) = raw.trim().parse::<i32>() else {
-        return false;
-    };
+    recorded_pid_liveness(runtime) == Some(true)
+}
+
+/// What the recorded pid actually establishes, with no-evidence kept apart from dead.
+///
+/// `Some(false)` is the one positive death: a pid that parsed and whose process the kernel says
+/// is gone. A missing, unreadable, malformed, or non-positive record is `None` — no evidence
+/// either way — because a live guest does not stop existing when a file goes unreadable, and
+/// [`vm_presence`]'s destructive consumers must not read an absence of evidence as a death.
+fn recorded_pid_liveness(runtime: &Runtime) -> Option<bool> {
+    let raw = std::fs::read_to_string(runtime.vm_pid()).ok()?;
+    let pid = raw.trim().parse::<i32>().ok()?;
     // A record that parses but names no process is a broken record, not a live VM, and it is
     // rejected here rather than resolved to something. Substituting `Pid::INIT` for it — which is
     // what `unwrap_or` did — asked the kernel about pid 1, which always exists and is never ours,
     // so a `vm.pid` holding `0` reported every VM as alive forever. The sign is filtered before
     // `Pid::from_raw` rather than by it, because that constructor debug-asserts on a negative.
-    let Some(pid) = (pid > 0)
+    let pid = (pid > 0)
         .then(|| rustix::process::Pid::from_raw(pid))
-        .flatten()
-    else {
-        return false;
-    };
+        .flatten()?;
     // Signal 0 asks the kernel whether the process exists and whether we may signal it, and sends
-    // nothing. `Errno::PERM` means it exists and belongs to someone else, which for a per-user
-    // runtime directory should not happen — but it is still alive, so it counts as alive.
+    // nothing. `PERM` means it exists and belongs to someone else, which for a per-user runtime
+    // directory should not happen — but it is still alive, so it counts as alive. `SRCH` is the
+    // one errno the kernel gives the meaning "no such process", so it alone is a positive death;
+    // any other answer is a failed probe, which establishes nothing.
     match rustix::process::test_kill_process(pid) {
-        Ok(()) => true,
-        Err(errno) => errno == rustix::io::Errno::PERM,
+        Ok(()) | Err(rustix::io::Errno::PERM) => Some(true),
+        Err(rustix::io::Errno::SRCH) => Some(false),
+        Err(_) => None,
     }
 }
 
@@ -379,7 +428,7 @@ fn vm_is_alive(runtime: &Runtime) -> bool {
 /// as `Dead` — which a boolean forces — spends an unreachable service manager on a teardown of
 /// something that was working.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Presence {
+pub(super) enum Presence {
     /// A process is there and its owning unit says the VM is its.
     Live,
     /// Nothing is there, or the unit that would own it says it is not running.
@@ -392,15 +441,29 @@ enum Presence {
 ///
 /// A live pid is necessary and not sufficient, for the reason [`classify`] already gives: pids are
 /// reused, so records a crashed VM left behind can name a live process that is not this VM at all.
-/// A pid with no process is the one answer the pid alone can give, and it is `Dead`.
-fn vm_presence(runtime: &Runtime) -> Presence {
-    if !vm_is_alive(runtime) {
+/// A pid whose process is positively gone is the one answer the pid alone can give, and it is
+/// `Dead`; a pid record that yields no evidence defers to the unit, and two non-answers together
+/// are `Indeterminate` — never `Dead`, because destructive consumers gate on that word.
+pub(super) fn vm_presence(runtime: &Runtime) -> Presence {
+    let pid = recorded_pid_liveness(runtime);
+    if pid == Some(false) {
         return Presence::Dead;
     }
-    match unit_owns_a_vm(&runtime.unit) {
-        Some(true) => Presence::Live,
-        Some(false) => Presence::Dead,
-        None => Presence::Indeterminate,
+    presence_of(pid, unit_owns_a_vm(&runtime.unit))
+}
+
+/// The presence judgment as a total function of the two facts, testable without a manager.
+pub(super) const fn presence_of(pid_alive: Option<bool>, unit_owns: Option<bool>) -> Presence {
+    match (pid_alive, unit_owns) {
+        // Positive death from either side wins: a recorded process the kernel says is gone (the
+        // pid is the VM, whatever the unit says), or a manager that positively disowns the
+        // records (a live pid beside that answer is a reused pid).
+        (Some(false), _) | (_, Some(false)) => Presence::Dead,
+        (_, Some(true)) => Presence::Live,
+        // No positive answer from either side. `(None, None)` — no pid evidence and an
+        // unaskable manager — must not read as dead: it is exactly the state a live guest is
+        // in when a record went unreadable at the same moment the manager did.
+        (_, None) => Presence::Indeterminate,
     }
 }
 
@@ -771,7 +834,7 @@ pub fn start<E: Environment>(
     // alive, and continuing would overwrite its freshness record with a build it was not launched
     // from — making a still-stale VM report fresh.
     if rebuild {
-        stop_unit(&runtime, false, None, context.ui)?;
+        stop_unit(&runtime, &sandbox_id, false, None, context.ui)?;
     }
 
     // Step 5, ensure running. The selected manifest name keys every artifact below.
@@ -1252,7 +1315,7 @@ fn unreachable(runtime: &Runtime, why: &str) -> Failure {
 fn stale(runtime: &Runtime, ui: &Ui) -> Result<(), Failure> {
     // The unit first, because a failed unit that is never reset keeps the name the next boot needs.
     // Its own teardown removes the runtime artifacts when its supervisor is still alive to do it.
-    stop_unit(runtime, true, None, ui)?;
+    stop_unit(runtime, "the VM", true, None, ui)?;
     // What remains is what a supervisor that died could not sweep. Only the two records
     // `discriminate` reads are removed: they are what make a dead VM look present, and removing
     // more would be inventing a sweep the supervisor already owns.
@@ -2197,26 +2260,18 @@ pub(super) fn uptime_seconds(runtime: &Runtime) -> Option<u64> {
 
 /// Bring the VM down, stopping at the teardown boundary ADR-0018 fixes.
 ///
+/// Async because the ladder's first rung asks the guest agent over the control socket
+/// (spec/10, spec/12), so it is dispatched from `main` beside `status` and the session verbs.
+///
 /// # Errors
 ///
 /// Returns [`Failure`] for an unbound project (`78`), or a stop that cannot be confirmed (`69`).
-pub fn stop<E: Environment>(
+pub(super) async fn stop<E: Environment + Sync>(
     context: &Context<'_, E>,
-    all: bool,
     force: bool,
     timeout: Option<i64>,
+    output: Output,
 ) -> Result<Success, Failure> {
-    if all {
-        return Err(diagnosed(
-            Namespace::Internal,
-            "not-implemented",
-            "`viv stop --all` is not implemented yet",
-            Locus::Named("command surface"),
-            "the cross-project sweep is not this slice's; the project-local stop is",
-            ExitKind::Software,
-        ));
-    }
-
     // Manifest before runtime root, for the reason `status` states above.
     let resolved = super::resolve_manifest_for_launch(context)?;
     let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
@@ -2225,30 +2280,130 @@ pub fn stop<E: Environment>(
     let runtime = Runtime::locate(&runtime_root, &sandbox_id, DEFAULT_TARGET)?;
 
     // Idempotent (spec/10): nothing running is a `0` no-op. Checked against the discriminator
-    // rather than against the unit, so a `failed` VM with dead records still reaches the sweep.
+    // rather than against the unit, so a `failed` VM with dead records still reaches the ladder.
+    // The record's `rung` is `null` here because no rung ran (spec/01).
     let has_build = last_build(&context.roots, &sandbox_id, DEFAULT_TARGET).is_some();
-    if matches!(
-        discriminate(&runtime, has_build),
-        State::Absent | State::Built
-    ) {
-        return Ok(Success::plain(String::new()));
+    let state = discriminate(&runtime, has_build);
+    if matches!(state, State::Absent | State::Built) {
+        return Ok(stop_record(&sandbox_id, state, None, output));
     }
 
-    stop_unit(&runtime, force, timeout, context.ui)?;
+    let rung = stop_one(&runtime, &sandbox_id, force, timeout, context.ui).await?;
 
-    // The post-condition, asserted in the product rather than only in a trial: after a completed
-    // stop the runtime directory holds no entry the allowlisted cleanup is required to remove. The
-    // supervisor removes the directory itself, so the honest test is that it is gone, or holds
-    // nothing but the startup lock. The lock is excluded because the sweep is required *not* to
-    // remove it: it is the per-target mutex (spec/12 step 1) rather than an artifact of the VM, a
-    // caller can be holding it across this very teardown, and unlinking it would end the exclusion
-    // its pathname provides. Counting it here would make every `viv`-driven stop report a teardown
-    // it completed correctly as incomplete.
-    //
-    // An unreadable directory is not an empty one. Counting a failed inspection as zero would make
-    // `stop` claim its post-condition at the one moment it cannot be established, so anything but
-    // "gone" or "readable and holding at most the lock" is the unconfirmed teardown spec/10 assigns
-    // the unavailable code to.
+    // Re-discriminated rather than assumed, so the record reports what a `status` run now would.
+    let state = discriminate(&runtime, has_build);
+    Ok(stop_record(&sandbox_id, state, rung, output))
+}
+
+/// `viv stop --all`: the same ladder, applied to every enumerated sandbox that is up.
+///
+/// The one project-local verb that resolves no manifest — ADR-0109's stated exception, because
+/// the sweep enumerates the index rather than a working directory, and a directory no manifest
+/// declares is exactly where an end of day is allowed to start. Every sandbox is attempted: a
+/// sweep that stopped at the first fault would leave the rest running behind a nonzero exit, so
+/// each failing sandbox is named on stderr as it fails and the first failure is the verb's
+/// result (spec/14).
+///
+/// # Errors
+///
+/// Returns [`Failure`] for an unreadable manifest library or index (`74`, `78`), or — after the
+/// whole sweep ran — the first sandbox whose stop could not be confirmed (`69`).
+pub(super) async fn stop_all<E: Environment + Sync>(
+    context: &Context<'_, E>,
+    force: bool,
+    timeout: Option<i64>,
+    output: Output,
+) -> Result<Success, Failure> {
+    let index = super::workspace_index(context, true)?;
+    let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
+        .map_err(|error| super::resolution_failure(&error))?;
+
+    let mut rows = Vec::new();
+    let mut first_failure = None;
+    for indexed in index.manifests() {
+        // `for_report` rather than `locate`: a control-socket path past the bind limit costs
+        // that sandbox its first rung, and refusing the whole sweep for one long name would
+        // leave everything else running.
+        let runtime = Runtime::for_report(&runtime_root, &indexed.name, DEFAULT_TARGET);
+        let has_build = last_build(&context.roots, &indexed.name, DEFAULT_TARGET).is_some();
+        if matches!(
+            discriminate(&runtime, has_build),
+            State::Absent | State::Built
+        ) {
+            continue;
+        }
+        match stop_one(&runtime, &indexed.name, force, timeout, context.ui).await {
+            Ok(rung) => rows.push(super::render::stop_row(
+                &indexed.name,
+                discriminate(&runtime, has_build).as_str(),
+                rung.map(StopRung::as_str),
+            )),
+            Err(failure) => {
+                // One naming line now, so the continuation does not silence the sandbox that
+                // failed; the full skeleton is the exit's, rendered once (spec/14 keeps the
+                // machine face to one failure object per invocation).
+                context
+                    .ui
+                    .warn(&format!("could not stop `{}`", indexed.name));
+                record_failure(&mut first_failure, failure);
+            }
+        }
+    }
+    if let Some(failure) = first_failure {
+        return Err(failure);
+    }
+    Ok(Success::plain(if output.is_json() {
+        super::render::stop_all_json(&rows)
+    } else {
+        String::new()
+    }))
+}
+
+/// The verb's result: spec/01's stop record under `--json`, empty stdout otherwise.
+fn stop_record(manifest: &str, state: State, rung: Option<StopRung>, output: Output) -> Success {
+    Success::plain(if output.is_json() {
+        super::render::stop_json(manifest, state.as_str(), rung.map(StopRung::as_str))
+    } else {
+        String::new()
+    })
+}
+
+/// The sweep's failure fold: the first failure is the result, later ones never displace it.
+fn record_failure(first: &mut Option<Failure>, failure: Failure) {
+    first.get_or_insert(failure);
+}
+
+/// One sandbox's whole teardown: the ladder, then the post-condition.
+///
+/// The single routine both faces of the verb run. The sweep reporting success for a sandbox is
+/// exactly this function returning `Ok`, which keeps "confirmed stopped" one judgement rather
+/// than two (the outcome the slice's core forbids is a sweep with a cheaper one).
+async fn stop_one(
+    runtime: &Runtime,
+    sandbox_id: &str,
+    force: bool,
+    timeout: Option<i64>,
+    ui: &Ui,
+) -> Result<Option<StopRung>, Failure> {
+    let rung = stop_ladder(runtime, sandbox_id, force, timeout, ui).await?;
+    confirm_teardown(runtime)?;
+    Ok(rung)
+}
+
+/// The post-condition, asserted in the product rather than only in a trial: after a completed
+/// stop the runtime directory holds no entry the allowlisted cleanup is required to remove. The
+/// supervisor removes the directory itself, so the honest test is that it is gone, or holds
+/// nothing but the startup lock. The lock is excluded because the sweep is required *not* to
+/// remove it: it is the per-target mutex (spec/12 step 1) rather than an artifact of the VM, a
+/// caller can be holding it across this very teardown, and unlinking it would end the exclusion
+/// its pathname provides. Counting it here would make every `viv`-driven stop report a teardown
+/// it completed correctly as incomplete.
+///
+/// An unreadable directory is not an empty one. Counting a failed inspection as zero would make
+/// `stop` claim its post-condition at the one moment it cannot be established, so anything but
+/// "gone" or "readable and holding at most the lock" is the unconfirmed teardown spec/10 assigns
+/// the unavailable code to.
+fn confirm_teardown(runtime: &Runtime) -> Result<(), Failure> {
     let lock = runtime.lock();
     let residue = match std::fs::read_dir(&runtime.directory) {
         Ok(entries) => {
@@ -2271,13 +2426,12 @@ pub fn stop<E: Environment>(
             Namespace::Vm,
             "teardown-incomplete",
             "the runtime directory still holds entries after a completed stop",
-            Locus::File(runtime.directory),
+            Locus::File(runtime.directory.clone()),
             format!("{residue} entries survived the allowlisted cleanup"),
             ExitKind::Unavailable,
         ));
     }
-
-    Ok(Success::plain(String::new()))
+    Ok(())
 }
 
 /// A teardown whose post-condition could not be established, because the directory would not read.
@@ -2292,30 +2446,108 @@ fn unconfirmed_teardown(directory: &Path, source: &std::io::Error) -> Failure {
     )
 }
 
-/// The escalation ladder of spec/10 "Stopping", expressed against the transient unit.
+/// The ladder's first rung and the dispatch below it (spec/10 "Stopping").
 ///
-/// Stopping the unit converges every exit route through the supervisor's single cancellation path
-/// (ADR-0097). `KillMode=mixed` means the stop signal reaches the supervisor alone, which is what
-/// lets it raise the guest's ACPI power button and wait — a whole-group signal would kill the VMM
-/// where it stood and lose whatever the guest had not committed.
+/// One deadline, computed from [`grace_seconds`], bounds the orderly ask: the agent is asked for
+/// a guest shutdown, and an acknowledgement means the guest is powering itself off — the VMM
+/// exits, the supervisor reads a clean guest exit, sweeps the runtime directory, and the unit
+/// goes inactive, which is what the poll below watches for. Every non-answer falls through to
+/// [`stop_unit`]'s manager rungs under what remains of the same deadline, exactly the fallback
+/// spec/10 assigns to an unreachable agent. A skewed or unreadable boot record degrades the same
+/// way rather than refusing, because `stop` stays the verb that works on what another vivarium
+/// version left behind.
 ///
-/// Rungs two and three are the supervisor's; rung one does not exist yet. spec/10 opens the ladder
-/// by asking the in-guest agent for an orderly shutdown over the control socket, and
-/// [`crate::protocol::ClientFrame`] carries no such request — so what actually runs starts at the
-/// backend's ACPI signal. That is a real gap and not a shortcut, recorded in
-/// `docs/reference/implementation-status.md`; it is named here because a reader comparing this
-/// function against spec/10 would otherwise count the rungs and reach the wrong conclusion about
-/// which one this deadline bounds. What is decided here is the last one.
-pub(super) fn stop_unit(
+/// An acknowledged ask that outlives the grace is escalated through the power path with the
+/// compiled [`POWER_SIGNAL_WINDOW_SECONDS`] rather than killed at the deadline. That bounded
+/// overshoot is the `Q-018` exit: the operator's flag fully bounds the ask, and the constant
+/// bounds only the escalation beneath it.
+pub(super) async fn stop_ladder(
     runtime: &Runtime,
+    sandbox_id: &str,
     force: bool,
     timeout: Option<i64>,
     ui: &Ui,
-) -> Result<(), Failure> {
-    // The rungs that run are the supervisor's own: stopping the unit runs its single cancellation
-    // path, which raises the guest's ACPI power button and then destroys the VM if the guest did
-    // not take it. What is decided here is the rung after those — how long to wait before pulling
-    // the power — so the stop is issued without waiting and the deadline is enforced here.
+) -> Result<Option<StopRung>, Failure> {
+    let grace = grace_seconds(force, timeout);
+    let deadline = grace.map(|seconds| std::time::Instant::now() + Duration::from_secs(seconds));
+
+    // Rung one, skipped when the operator asked for now (`--force`, `--timeout 0`).
+    if grace != Some(0)
+        && let BootRecord::Ready(metadata) = read_boot_record(runtime)
+    {
+        let ask = deadline.map_or(SHUTDOWN_ASK_TIMEOUT, |deadline| {
+            SHUTDOWN_ASK_TIMEOUT.min(deadline.saturating_duration_since(std::time::Instant::now()))
+        });
+        if !ask.is_zero()
+            && crate::launch::control::request_shutdown(&runtime.control_socket(), &metadata, ask)
+                .await
+        {
+            let step = ui.step(&format!("stopping `{sandbox_id}` · guest shutdown"));
+            let started = std::time::Instant::now();
+            loop {
+                match unit_active_state(&runtime.unit).as_deref() {
+                    None | Some("inactive" | "failed") => {
+                        step.done(&format!("stopped `{sandbox_id}` · guest shutdown"));
+                        return Ok(Some(StopRung::Agent));
+                    }
+                    _ => {}
+                }
+                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                    break;
+                }
+                step.update(&format!(
+                    "stopping `{sandbox_id}` · guest shutdown · {}s",
+                    started.elapsed().as_secs()
+                ));
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            drop(step);
+            // The guest acknowledged and then wedged inside its own shutdown: the power path
+            // gets its compiled window — never the operator's grace again — and the unit
+            // having vanished in between means the acknowledged shutdown finished after all.
+            let rung = stop_unit(
+                runtime,
+                sandbox_id,
+                false,
+                Some(POWER_SIGNAL_WINDOW_SECONDS),
+                ui,
+            )?;
+            return Ok(Some(rung.unwrap_or(StopRung::Agent)));
+        }
+    }
+
+    // No acknowledgement: the manager rungs, under the operator's own grace — deliberately not
+    // reduced by what the ask consumed. The fallback's floor is the supervisor's compiled
+    // transaction (about eight seconds plus cleanup), so deducting a fully-hung ask from the
+    // default ten would hand the power path seven and kill the group mid-cleanup — failing a
+    // stop the fallback was specified to complete. An unanswered ask therefore stretches the
+    // ladder by at most its own two-second budget, the bounded overshoot spec/10 states.
+    stop_unit(runtime, sandbox_id, force, timeout, ui)
+}
+
+/// The manager rungs of spec/10's ladder, expressed against the transient unit.
+///
+/// Stopping the unit converges every exit route through the supervisor's single cancellation
+/// path (ADR-0097). `KillMode=mixed` means the stop signal reaches the supervisor alone, which
+/// is what lets it raise the guest's ACPI power button and wait — a whole-group signal would
+/// kill the VMM where it stood and lose whatever the guest had not committed.
+///
+/// Rung one — the agent's orderly shutdown — is [`stop_ladder`]'s, above this. The two callers
+/// that enter here directly do so deliberately: `start --rebuild` is replacing the guest and the
+/// power signal still runs its full shutdown transaction, and the stale-record repair is
+/// stopping a unit whose VM is already gone. Returns the rung that ended the stop, or `None`
+/// when the unit was already gone when the manager was asked.
+fn stop_unit(
+    runtime: &Runtime,
+    sandbox_id: &str,
+    force: bool,
+    timeout: Option<i64>,
+    ui: &Ui,
+) -> Result<Option<StopRung>, Failure> {
+    // The power rung runs the supervisor's cancellation path, which raises the guest's ACPI
+    // power button and then destroys the VM if the guest did not take it. What is decided here
+    // is the rung after those — how long to wait before pulling the power — so the stop is
+    // issued without waiting and the deadline is enforced here.
     let grace = grace_seconds(force, timeout);
     let mut child = Command::new("systemctl")
         .args(["--user", "--no-block", "stop", &runtime.unit])
@@ -2334,7 +2566,7 @@ pub(super) fn stop_unit(
         let stderr = String::from_utf8_lossy(&child.stderr);
         // A unit that is already gone is the idempotent case, not a failure.
         if stderr.contains("not loaded") || stderr.contains("not found") {
-            return Ok(());
+            return Ok(None);
         }
         return Err(diagnosed(
             Namespace::Vm,
@@ -2350,7 +2582,7 @@ pub(super) fn stop_unit(
     // Poll rather than block, because the deadline is the point. `None` waits indefinitely, which
     // is what `--timeout -1` asks for. The ticking message is the whole feedback for that
     // indefinite wait — without it, `--timeout -1` is indistinguishable from a hang.
-    let step = ui.step("stopping the VM");
+    let step = ui.step(&format!("stopping `{sandbox_id}`"));
     let started = std::time::Instant::now();
     let deadline =
         grace.map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds));
@@ -2358,8 +2590,8 @@ pub(super) fn stop_unit(
         match unit_active_state(&runtime.unit).as_deref() {
             // Gone, or never loaded: the unit's lifetime is over and with it the VM's.
             None | Some("inactive" | "failed") => {
-                step.done("stopped the VM");
-                return Ok(());
+                step.done(&format!("stopped `{sandbox_id}`"));
+                return Ok(Some(StopRung::PowerSignal));
             }
             _ => {}
         }
@@ -2367,12 +2599,12 @@ pub(super) fn stop_unit(
             break;
         }
         step.update(&format!(
-            "stopping the VM · {}s",
+            "stopping `{sandbox_id}` · {}s",
             started.elapsed().as_secs()
         ));
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    step.update("stopping the VM · hard poweroff");
+    step.update(&format!("stopping `{sandbox_id}` · hard poweroff"));
 
     // The last rung, and it is whole-group regardless of `KillMode`: `systemctl kill` defaults to
     // `--kill-whom=all`, so the VMM, every per-share daemon, and any launch helper go away together
@@ -2386,8 +2618,8 @@ pub(super) fn stop_unit(
         for _ in 0..50 {
             match unit_active_state(&runtime.unit).as_deref() {
                 None | Some("inactive" | "failed") => {
-                    step.done("stopped the VM · hard poweroff");
-                    return Ok(());
+                    step.done(&format!("stopped `{sandbox_id}` · hard poweroff"));
+                    return Ok(Some(StopRung::HardPoweroff));
                 }
                 _ => std::thread::sleep(std::time::Duration::from_millis(100)),
             }
@@ -2431,10 +2663,11 @@ pub(super) const fn grace_seconds(force: bool, timeout: Option<i64>) -> Option<u
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
-        BootMetadata, BootRecord, LAUNCH_SCHEMA_VERSION, Runtime, State, classify, config,
-        discriminate, effective_resources, grace_seconds, host_mem_mib, host_vcpu, ownership_of,
-        parse_memory_current, parse_pressure_some_avg60, parse_unit_memory_show, read_boot_record,
-        require_current_contract, vm_is_alive, volume_directory,
+        BootMetadata, BootRecord, ExitKind, LAUNCH_SCHEMA_VERSION, Locus, Namespace, Output,
+        Runtime, State, StopRung, classify, config, diagnosed, discriminate, effective_resources,
+        grace_seconds, host_mem_mib, host_vcpu, ownership_of, parse_memory_current,
+        parse_pressure_some_avg60, parse_unit_memory_show, read_boot_record, record_failure,
+        recorded_pid_liveness, require_current_contract, vm_is_alive, volume_directory,
     };
     use crate::test_support::ScratchDirectory;
     use std::fs;
@@ -2541,7 +2774,20 @@ mod tests {
                 !vm_is_alive(&runtime),
                 "a vm.pid of {raw:?} was read as a live VM"
             );
+            // And three-valued for the destructive consumers: a record that establishes
+            // nothing is no evidence, never a positive death.
+            assert_eq!(
+                recorded_pid_liveness(&runtime),
+                None,
+                "a vm.pid of {raw:?} was read as evidence"
+            );
         }
+        fs::remove_file(runtime.directory.join("vm.pid")).ok();
+        assert_eq!(
+            recorded_pid_liveness(&runtime),
+            None,
+            "a missing vm.pid was read as evidence"
+        );
 
         // The control: this test's own process is unambiguously alive, so the check still says yes
         // when the record names something real. Without this the assertions above would pass just
@@ -2552,6 +2798,20 @@ mod tests {
         )
         .ok();
         assert!(vm_is_alive(&runtime));
+        assert_eq!(recorded_pid_liveness(&runtime), Some(true));
+
+        // The one positive death: a pid that parsed and whose process the kernel says is gone —
+        // a spawned child, reaped before it is asked about. Reading it requires `SRCH` to be
+        // classified as death while every other probe failure stays no-evidence.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        fs::write(runtime.directory.join("vm.pid"), format!("{pid}\n")).ok();
+        assert_eq!(
+            recorded_pid_liveness(&runtime),
+            Some(false),
+            "a reaped child must read as a positive death"
+        );
     }
 
     /// Every row of ADR-0030's discriminator that needs a process or a unit to reach.
@@ -2737,6 +2997,59 @@ mod tests {
         assert_eq!(grace_seconds(false, Some(30)), Some(30));
         // `-1` waits indefinitely, which is the absence of a deadline rather than a long one.
         assert_eq!(grace_seconds(false, Some(-1)), None);
+    }
+
+    /// The sweep's exit is its first failure: later ones are named as they happen, never kept.
+    #[test]
+    fn the_first_failure_is_the_sweeps_result() {
+        let failed = |id: &'static str| {
+            diagnosed(
+                Namespace::Vm,
+                id,
+                "the VM could not be confirmed stopped",
+                Locus::Named("guest teardown"),
+                "trial fixture",
+                ExitKind::Unavailable,
+            )
+        };
+        let mut first = None;
+        record_failure(&mut first, failed("stop-unconfirmed"));
+        record_failure(&mut first, failed("teardown-incomplete"));
+        let kept = first.unwrap();
+        assert!(
+            kept.render(Output::Json, &crate::ui::style::Palette::plain())
+                .contains("stop-unconfirmed"),
+            "a later failure must never displace the first"
+        );
+    }
+
+    /// The three-way presence judgment: only a positive answer may say `Dead`.
+    ///
+    /// The destructive consumers (destroy's unlink gate) key on that word, so the rows where
+    /// evidence is missing — an unreadable pid record, an unaskable manager, or both — must
+    /// land on `Indeterminate` or on the side the one positive answer supports.
+    #[test]
+    fn presence_requires_positive_evidence_of_death() {
+        use super::{Presence, presence_of};
+        // Positive death from either side wins.
+        assert_eq!(presence_of(Some(false), None), Presence::Dead);
+        assert_eq!(presence_of(Some(false), Some(true)), Presence::Dead);
+        assert_eq!(presence_of(None, Some(false)), Presence::Dead);
+        assert_eq!(presence_of(Some(true), Some(false)), Presence::Dead);
+        // A live answer without a disowning manager is live.
+        assert_eq!(presence_of(Some(true), Some(true)), Presence::Live);
+        assert_eq!(presence_of(None, Some(true)), Presence::Live);
+        // No evidence is not death.
+        assert_eq!(presence_of(None, None), Presence::Indeterminate);
+        assert_eq!(presence_of(Some(true), None), Presence::Indeterminate);
+    }
+
+    /// The record's rung spellings are the closed set spec/01 names.
+    #[test]
+    fn rung_spellings_are_the_specified_set() {
+        assert_eq!(StopRung::Agent.as_str(), "agent");
+        assert_eq!(StopRung::PowerSignal.as_str(), "power-signal");
+        assert_eq!(StopRung::HardPoweroff.as_str(), "hard-poweroff");
     }
 
     /// The unit name is the one the runner hands `systemd-run`, because nothing can ask it.

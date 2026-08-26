@@ -19,7 +19,11 @@ use crate::diagnostic::{Locus, Namespace};
 use crate::exit::ExitKind;
 
 /// `viv destroy` (spec/10, ADR-0043, ADR-0080).
-pub(super) fn destroy<E: Environment>(
+///
+/// Async because the stop it begins with walks the whole ladder, whose first rung asks the guest
+/// agent over the control socket; the blocking confirmation prompt below is acceptable in a
+/// single-invocation runtime with nothing else scheduled.
+pub(super) async fn destroy<E: Environment + Sync>(
     context: &Context<'_, E>,
     keep_volumes: bool,
     yes: bool,
@@ -54,15 +58,39 @@ pub(super) fn destroy<E: Environment>(
         // The same ladder `viv stop` walks, at the default grace. Not `--force`: a destroy that
         // killed the guest where it stood would lose the writes spec/10's shutdown transaction
         // exists to commit, and the volumes are usually about to be removed but not always.
-        lifecycle::stop_unit(&runtime, false, None, context.ui)?;
+        lifecycle::stop_ladder(&runtime, &sandbox_id, false, None, context.ui).await?;
+
+        // The unlink happens only beside a VM that is positively dead (spec/10), and the
+        // ladder's own answer is re-checked rather than trusted: its poll reads the unit's
+        // state through `systemctl`, and a manager that cannot be asked answers the same way
+        // as a unit that is gone. The check is spec/12 step 4's own three-way presence
+        // judgment, because the state model's names are the wrong instrument here — a live
+        // pid whose unit cannot be asked reads as `failed` (broken records), and unlinking a
+        // generation root under it is exactly the loss ADR-0085 forbids. Only `Dead` — a
+        // recorded process the kernel says is gone, or a manager that positively disowns the
+        // records — proceeds; a crashed VM is therefore still destroyable, while live,
+        // could-not-tell, and evidence-free all refuse. `stop`'s swept-directory
+        // post-condition is deliberately not reused: a crashed VM legitimately fails it, and
+        // destroy itself clears those records below.
+        if lifecycle::vm_presence(&runtime) != lifecycle::Presence::Dead {
+            return Err(diagnosed(
+                Namespace::Vm,
+                "stop-unconfirmed",
+                "the VM could not be confirmed stopped",
+                Locus::Named("guest teardown"),
+                "the runtime records could not be confirmed dead after the ladder ran",
+                ExitKind::Unavailable,
+            ));
+        }
     }
 
     // Under the lock, which is what the module header promises and what a `viv start` racing this
     // teardown depends on. `start` takes this same lock before it provisions a volume or boots,
     // and releases it once the guest is up — so a removal that ran outside it could delete the
     // images of a VM that had already started, or leave one running with its build records gone.
-    for path in plan.removals()? {
-        remove_tree(&path)?;
+    let removed = plan.removals()?;
+    for path in &removed {
+        remove_tree(path)?;
     }
 
     // The runtime directory last, and its lock file survives. `flock` binds to an inode, so
@@ -74,13 +102,16 @@ pub(super) fn destroy<E: Environment>(
     clear_runtime(&runtime)?;
     drop(lock);
 
-    // spec/10 gives `destroy` empty stdout on success and one record under `--json`. The record is
-    // not written: no page fixes its shape, and `stop` — which spec/10 binds by the same sentence —
-    // does not emit one either, so inventing one here would settle a two-command contract from
-    // inside one of them. Named in `docs/reference/implementation-status.md` rather than left for a
-    // caller to discover by piping an empty stdout into `jq`.
-    let _ = output;
-    Ok(Success::plain(String::new()))
+    // spec/01's destroy record: this run's removal plan as executed — statically named paths
+    // stay listed even when already absent, the `--keep-volumes` carve-out names what was
+    // actually found beside the kept name — beside what this destroy deliberately spared. The
+    // runtime directory's clearing is not itemized; the record reports the data boundary, and
+    // the runtime directory is the VM's, swept on every stop.
+    Ok(Success::plain(if output.is_json() {
+        super::render::destroy_json(&sandbox_id, &removed, &plan.spared, keep_volumes)
+    } else {
+        String::new()
+    }))
 }
 
 /// Removes everything in the runtime directory except the startup lock.

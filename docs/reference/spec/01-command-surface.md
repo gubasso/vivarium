@@ -51,7 +51,7 @@ Cross-cutting settings resolve by a single precedence rule — flag > environmen
 
 The stream and machine-output rules are the same for every command, specified in [`../../decisions/ADR-0015-cli-output-and-failure-contract.md`](../../decisions/ADR-0015-cli-output-and-failure-contract.md):
 
-- stdout carries the result only — a human table/line for data commands (`images list`, `manifest show`, `generations list`, `volume list`, `config`/`config sources`/`config eval`, `status`, `doctor`'s report), a `--json` record in machine mode, and nothing for side-effect commands whose result is a VM state change (`start`, `stop`, `destroy`). `trim`, `volume trim`, `volume prune`, `generations prune`, `generations activate`/`rollback`, and `gc` are the exception that proves the rule: they act, but what a user runs them for is the result they return — a measurement, the rows unlinked, or the moved pointer — so they print it (shape below).
+- stdout carries the result only — a human table/line for data commands (`images list`, `manifest show`, `generations list`, `volume list`, `config`/`config sources`/`config eval`, `status`, `doctor`'s report), a `--json` record in machine mode, and nothing for side-effect commands whose result is a VM state change: `start` prints nothing in either mode, while `stop` and `destroy` keep the empty human face and emit their one record under `--json` (Lifecycle output below, enacting [`10-vm-lifecycle.md`](./10-vm-lifecycle.md)'s one-record sentence). `trim`, `volume trim`, `volume prune`, `generations prune`, `generations activate`/`rollback`, and `gc` are the exception that proves the rule: they act, but what a user runs them for is the result they return — a measurement, the rows unlinked, or the moved pointer — so they print it (shape below).
 - stderr carries everything else — progress, status, prompts, warnings, errors. Progress is shown only when stderr is a TTY, so `… --json 2>/dev/null | jq` is always clean. Progress is also suppressed under `--json` regardless of TTY: a caller that selected machine mode is a machine, and every non-result stderr byte it receives is noise it must filter. This includes the `--json` failure envelope: a failure has no result, so its machine-readable form is one JSON object on stderr, never on stdout. Its shape and the human skeleton beside it are in [`14-exit-codes.md`](./14-exit-codes.md).
 - A diagnostic log file is written by default — a third, structured face separate from stdout and stderr, invisible during normal use. It is the machine/debug channel, fully specified in [`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md).
 - `exec`/`shell` pass guest stdio transparently as specified in [`12-exec-and-shell.md`](./12-exec-and-shell.md); vivarium progress remains on stderr only so guest stdout stays pipeable.
@@ -215,6 +215,42 @@ The library readers (`images list`, `manifest list`, `manifest show`) obey the s
 - `viv generations activate <n>` / `viv generations rollback` — the moved pointer is the result. `--json` emits `{ "action": "activate", "current": 2, "previous": 3 }` (`"rollback"` for the other spelling; `previous` is `null` when no `current` existed); the human form is one line naming both ends.
 
 - `viv gc` — the sweep is global and its accounting belongs to the collector, so the record relays it rather than re-deriving it: `--json` emits `{ "summary": "2 store paths deleted, 4.21 MiB freed" }`, the collector's own final accounting line, `null` when it printed none. No `_bytes` field, deliberately: the figure is the collector's report about the whole store, not a measurement vivarium makes, and a number parsed out of it would be a second answer that drifts with the collector's wording.
+
+## Lifecycle output
+
+`viv stop` and `viv destroy` are side-effect commands, so their human stdout stays empty on success; under `--json` each emits its one record ([`10-vm-lifecycle.md`](./10-vm-lifecycle.md)), following the conventions above — a single keyed JSON object, no `schema_version`. A record documents a performed run: a failure has no result and emits only the failure envelope on stderr ([`14-exit-codes.md`](./14-exit-codes.md)), and a destroy whose prompt was declined performed nothing, so it emits no record and exits `0` with its declining note on stderr.
+
+- `viv stop --json` — one record:
+
+  ```json
+  {
+    "manifest": "rust-web",
+    "state": "built",
+    "rung": "agent"
+  }
+  ```
+
+  `manifest` is the sandbox key (as in the `config` family). `state` is the resulting lifecycle state, re-read after the teardown rather than assumed — `built` after a clean stop, or whatever resting state the idempotent no-op found. `rung` names the rung of [`10-vm-lifecycle.md`](./10-vm-lifecycle.md)'s ladder that ended the stop — `agent`, `power-signal`, or `hard-poweroff` — and is `null` for the no-op, where nothing was running and no rung ran. `hard-poweroff` is honest but rare in a success record: killing the group skips the supervisor's own sweep, so that path ordinarily fails its post-condition at `69` before any record is emitted, and the spelling appears mostly through the acknowledged-then-escalated case the lifecycle page describes.
+
+  `viv stop --all --json` emits the sandboxes the sweep acted on as `{ "projects": [ ... ] }`, each row the record above. A resting sandbox is not a row — it was not stopped by this invocation — and a sweep over nothing running emits `{ "projects": [] }`. A sweep that ends in failure emits no record; the first failure's envelope is the machine-readable result, and each failing sandbox was already named on stderr as it failed.
+
+- `viv destroy --yes --json` — one record:
+
+  ```json
+  {
+    "manifest": "rust-web",
+    "removed": [
+      "/home/u/.local/state/vivarium/projects/rust-web"
+    ],
+    "spared": [
+      "/home/u/.local/share/vivarium/projects/rust-web/default/flake.lock",
+      "/home/u/.cache/vivarium/flakes/rust-web"
+    ],
+    "volumes_kept": false
+  }
+  ```
+
+  `removed` is this run's removal plan as executed. A path the plan names outright stays in the list even when it was already absent — absence is the idempotent success [`10-vm-lifecycle.md`](./10-vm-lifecycle.md) fixes — while the `--keep-volumes` carve-out is expanded by enumerating what actually sits beside the kept name at run time, so a repeated keep-volume destroy reports the boundary that still existed, not the one the first run already cleared. `spared` is what the teardown deliberately left standing: the build lockfile, the regenerable generated tree, and — under `--keep-volumes`, echoed by `volumes_kept` — the volume directory. The runtime directory's clearing is not itemized: the record reports the data boundary [`../../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md`](../../decisions/ADR-0018-lifecycle-verbs-and-teardown-boundary.md) fixes, and the runtime directory belongs to the VM, swept on every stop.
 
 ## Update output
 

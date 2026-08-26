@@ -129,12 +129,16 @@ Each message begins with a four-byte unsigned big-endian length. The length coun
 | `0x0d` | agent  | `Error`    |
 | `0x0e` | client | `Sessions` |
 | `0x0f` | agent  | `Sessions` |
+| `0x10` | client | `Shutdown` |
+| `0x11` | agent  | `Shutdown` |
 
 An unknown tag is a protocol error, not a message to skip — silently ignoring one would let two versions believe they agreed. Direction is part of the contract and is enforced, not merely documented: only the client sends standard input, resize, and signal frames; only the agent sends standard output, standard error, and the exit frame.
 
-The message set is exactly what a session needs and no more: a handshake pair, `Ping`/`Pong`, a request to start the process, the three standard streams with an explicit end-of-input, `Resize`, `Signal`, `Exit`, `Error`, and the session-count query pair the reporting below rests on.
+The message set is exactly what a session needs and no more: a handshake pair, `Ping`/`Pong`, a request to start the process, the three standard streams with an explicit end-of-input, `Resize`, `Signal`, `Exit`, `Error`, the session-count query pair the reporting below rests on, and the shutdown request pair the stop ladder opens with ([`10-vm-lifecycle.md`](./10-vm-lifecycle.md)).
 
-A client first sends `Hello` with schema version 1 and the boot identity. After the matching agent `Hello`, the connection carries either `Ping`/`Pong`, one `Sessions` query and its answer, or a single session. `Resize` may precede `Start`. A pre-spawn failure produces `Error`; successful spawn produces streams followed by exactly one `Exit`. There is no `Started` frame, session id, multiplexer, or registry.
+A client first sends `Hello` with schema version 1 and the boot identity. After the matching agent `Hello`, the connection carries either `Ping`/`Pong`, one `Sessions` query and its answer, one `Shutdown` request and its acknowledgement, or a single session. `Resize` may precede `Start`. A pre-spawn failure produces `Error`; successful spawn produces streams followed by exactly one `Exit`. There is no `Started` frame, session id, multiplexer, or registry.
+
+The shutdown request is one request with one meaning: `viv stop` asks the agent to begin an orderly guest shutdown, which is the first rung of [`10-vm-lifecycle.md`](./10-vm-lifecycle.md)'s ladder — running anything else in the guest is what a session is. The agent makes the shutdown true before claiming it: it hands the request to the guest's own service manager through a root-owned trigger it can reach without privilege, then answers with the acknowledgement, so the acknowledgement promises motion, never completion — whether the shutdown finishes is observed from outside, as the VM exiting. Like a `Ping`, the request's connection ends on the answer and can never become a session. A host asking an agent that predates the request treats the resulting protocol error as "the agent cannot be reached" and falls through to the power signal, never a fault. The trigger is writable by the agent's own guest user, which every session process also runs as, so the widest thing the mechanism admits is a workload powering off its own sandbox — the same outcome that workload could already reach by crashing its guest, and one the host reads as a clean guest exit.
 
 ### Terminal size and signals
 

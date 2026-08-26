@@ -161,23 +161,12 @@ pub fn run<E: Environment>(
             attach,
             ..
         } => lifecycle::start(context, *rebuild, *no_rebuild, *generation, *attach),
-        Invocation::Stop {
-            all,
-            force,
-            timeout,
-            ..
-        } => lifecycle::stop(context, *all, *force, *timeout),
         Invocation::VolumeList { output } => volume::list(context, *output),
         Invocation::VolumePrune {
             dry_run,
             yes,
             output,
         } => volume::prune(context, *dry_run, *yes, *output),
-        Invocation::Destroy {
-            keep_volumes,
-            yes,
-            output,
-        } => destroy::destroy(context, *keep_volumes, *yes, *output),
         Invocation::GenerationsList { output } => generations::list(context, *output),
         Invocation::GenerationsPrune {
             keep,
@@ -189,18 +178,22 @@ pub fn run<E: Environment>(
         }
         Invocation::GenerationsRollback { output } => generations::activate(context, None, *output),
         Invocation::Gc { output } => generations::gc(context, *output),
-        // The caller performs all six. The first four are the async half of this program and
+        // The caller performs all eight. The first six are the async half of this program and
         // nothing else here needs a runtime; a session additionally returns a code this signature
-        // cannot express — the guest's own — and streams bytes rather than accumulating a string,
-        // while `status` asks a live agent for its session count and so is dispatched through
-        // [`status`]. Help and version are the opposite edge: they must answer on a host where
-        // nothing else does, so `main` renders them before this module's `Context` can fail to
-        // build. Doctor returns a code this signature cannot express — a report at `69` is still
-        // a report — so `main` dispatches it through [`doctor::command`].
+        // cannot express — the guest's own — and streams bytes rather than accumulating a string.
+        // `status` asks a live agent for its session count, and `stop` and `destroy` walk a
+        // ladder whose first rung asks the agent for a guest shutdown, so all three are
+        // dispatched through [`status`], [`stop`], and [`destroy`]. Help and version are the
+        // opposite edge: they must answer on a host where nothing else does, so `main` renders
+        // them before this module's `Context` can fail to build. Doctor returns a code this
+        // signature cannot express — a report at `69` is still a report — so `main` dispatches
+        // it through [`doctor::command`].
         Invocation::StartSpec { .. }
         | Invocation::Exec(_)
         | Invocation::Shell(_)
         | Invocation::Status { .. }
+        | Invocation::Stop { .. }
+        | Invocation::Destroy { .. }
         | Invocation::Help { .. }
         | Invocation::Version
         | Invocation::Doctor { .. } => Ok(Success::plain(String::new())),
@@ -230,6 +223,45 @@ pub async fn status<E: Environment + Sync>(
     } else {
         render::status_human(&report, context.ui.palette_out())
     }))
+}
+
+/// `viv stop`, both faces: the project-local ladder and the `--all` sweep.
+///
+/// Async because the ladder's first rung asks the guest agent for an orderly shutdown over the
+/// control socket (spec/10, spec/12), and dispatched from `main` beside `status` for the same
+/// reason.
+///
+/// # Errors
+///
+/// Returns [`Failure`] for an unbound project (`78`), a stop that cannot be confirmed (`69`),
+/// or — under `--all` — an unreadable manifest library or index (`74`, `78`) and, after the
+/// whole sweep ran, its first per-sandbox failure.
+pub async fn stop<E: Environment + Sync>(
+    context: &Context<'_, E>,
+    all: bool,
+    force: bool,
+    timeout: Option<i64>,
+    output: Output,
+) -> Result<Success, Failure> {
+    if all {
+        return lifecycle::stop_all(context, force, timeout, output).await;
+    }
+    lifecycle::stop(context, force, timeout, output).await
+}
+
+/// `viv destroy` — async for the same reason [`stop`] is: the teardown begins with the ladder.
+///
+/// # Errors
+///
+/// Returns [`Failure`] for an unbound project (`78`), a stop that cannot be confirmed (`69`),
+/// or a removal the filesystem refused (`74`, `77`).
+pub async fn destroy<E: Environment + Sync>(
+    context: &Context<'_, E>,
+    keep_volumes: bool,
+    yes: bool,
+    output: Output,
+) -> Result<Success, Failure> {
+    destroy::destroy(context, keep_volumes, yes, output).await
 }
 
 /// The binding record: what is in force, which source said so, and where everything lives.

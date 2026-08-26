@@ -5,6 +5,7 @@ mod process;
 mod session;
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::str::FromStr;
 use tokio_util::sync::CancellationToken;
 use tokio_vsock::{VMADDR_CID_ANY, VsockAddr, VsockListener};
@@ -29,6 +30,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         control_listener,
         boot_identity,
         credentials.iter().copied().collect(),
+        poweroff_trigger(),
         cancellation.clone(),
     );
     let relay = credentials::run(credential_listener, credentials, cancellation.clone());
@@ -39,6 +41,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     cancellation.cancel();
     Ok(())
+}
+
+/// Where a shutdown request lands: the file the guest's root-owned path unit watches.
+///
+/// The agent's unit declares `RuntimeDirectory=vivarium`, so systemd names the directory in
+/// `RUNTIME_DIRECTORY`; the fallback spells the same path for a hand-run agent.
+fn poweroff_trigger() -> PathBuf {
+    std::env::var_os("RUNTIME_DIRECTORY")
+        .map_or_else(|| PathBuf::from("/run/vivarium"), PathBuf::from)
+        .join("poweroff-requested")
 }
 
 fn parse_credentials(

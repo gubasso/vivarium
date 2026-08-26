@@ -1,4 +1,5 @@
 use crate::session;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -23,6 +24,7 @@ pub async fn accept_loop(
     listener: VsockListener,
     boot_identity: String,
     credentials: Vec<CredentialId>,
+    poweroff_trigger: PathBuf,
     cancellation: CancellationToken,
 ) -> Result<(), std::io::Error> {
     // spec/12: sessions are counted, not tracked. One integer is the entire session state this
@@ -42,8 +44,10 @@ pub async fn accept_loop(
                 let identity = boot_identity.clone();
                 let credentials = credentials.clone();
                 let sessions = Arc::clone(&sessions);
+                let trigger = poweroff_trigger.clone();
                 tokio::spawn(async move {
-                    let _ = Box::pin(handle(stream, &identity, &credentials, sessions)).await;
+                    let _ =
+                        Box::pin(handle(stream, &identity, &credentials, sessions, &trigger)).await;
                 });
             }
         }
@@ -55,6 +59,7 @@ pub async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
     expected_identity: &str,
     credentials: &[CredentialId],
     sessions: Arc<AtomicU64>,
+    poweroff_trigger: &Path,
 ) -> Result<(), ()> {
     let hello = match read_client_frame(&mut stream).await {
         Ok(ClientFrame::Hello(hello))
@@ -104,6 +109,20 @@ pub async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
                 )
                 .await
                 .map_err(|_| ())?;
+                return Ok(());
+            }
+            // The one request with one meaning (spec/12): touch the trigger the root-owned
+            // path unit watches, then acknowledge. The order is deliberate — the ack is the
+            // agent's claim that the shutdown is in motion, so it follows the write that
+            // makes that true. Like a ping, this connection can never become a session.
+            Ok(ClientFrame::Shutdown) => {
+                if tokio::fs::write(poweroff_trigger, b"").await.is_err() {
+                    safe_error(&mut stream, "shutdown").await;
+                    return Err(());
+                }
+                write_agent_frame(&mut stream, &AgentFrame::ShutdownAck)
+                    .await
+                    .map_err(|_| ())?;
                 return Ok(());
             }
             Ok(ClientFrame::Resize(size)) if initial_size.is_none() => initial_size = Some(size),
@@ -164,10 +183,24 @@ mod tests {
     fn connected_counting(
         sessions: &Arc<AtomicU64>,
     ) -> (DuplexStream, tokio::task::JoinHandle<Result<(), ()>>) {
+        // A handler that is not asked to shut down never touches the trigger, so a fixed
+        // never-created path keeps every other test honest about that.
+        connected_with_trigger(
+            sessions,
+            std::env::temp_dir().join("vivarium-agent-untouched"),
+        )
+    }
+
+    /// [`connected_counting`], with the poweroff trigger at a caller-chosen path.
+    fn connected_with_trigger(
+        sessions: &Arc<AtomicU64>,
+        trigger: PathBuf,
+    ) -> (DuplexStream, tokio::task::JoinHandle<Result<(), ()>>) {
         let (client, server) = duplex(1024 * 1024);
+        let sessions = Arc::clone(sessions);
         (
             client,
-            tokio::spawn(handle(server, ID, &[], Arc::clone(sessions))),
+            tokio::spawn(async move { handle(server, ID, &[], sessions, &trigger).await }),
         )
     }
 
@@ -231,6 +264,79 @@ mod tests {
             AgentFrame::Pong
         );
         assert!(task.await.unwrap().is_ok());
+    }
+
+    /// A per-test trigger path in the shared temp directory, unique across tests and runs.
+    fn scratch_trigger(name: &str) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "vivarium-agent-poweroff-{name}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    /// The shutdown request touches the trigger before the acknowledgement claims it did.
+    #[tokio::test]
+    async fn shutdown_touches_the_trigger_and_acks() {
+        let trigger = scratch_trigger("acks");
+        let (mut client, task) =
+            connected_with_trigger(&Arc::new(AtomicU64::new(0)), trigger.clone());
+        handshake(&mut client).await;
+        write_client_frame(&mut client, &ClientFrame::Shutdown)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_agent_frame(&mut client).await.unwrap(),
+            AgentFrame::ShutdownAck
+        );
+        assert!(task.await.unwrap().is_ok());
+        assert!(trigger.exists());
+        std::fs::remove_file(trigger).unwrap();
+    }
+
+    /// Like `Ping`, the request is honoured after a stored pre-`Start` `Resize`.
+    #[tokio::test]
+    async fn shutdown_after_resize_still_acks() {
+        let trigger = scratch_trigger("after-resize");
+        let (mut client, task) =
+            connected_with_trigger(&Arc::new(AtomicU64::new(0)), trigger.clone());
+        handshake(&mut client).await;
+        write_client_frame(
+            &mut client,
+            &ClientFrame::Resize(vivarium::protocol::TerminalSize {
+                rows: 24,
+                columns: 80,
+            }),
+        )
+        .await
+        .unwrap();
+        write_client_frame(&mut client, &ClientFrame::Shutdown)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_agent_frame(&mut client).await.unwrap(),
+            AgentFrame::ShutdownAck
+        );
+        assert!(task.await.unwrap().is_ok());
+        assert!(trigger.exists());
+        std::fs::remove_file(trigger).unwrap();
+    }
+
+    /// An unwritable trigger is an error, never a false acknowledgement.
+    #[tokio::test]
+    async fn shutdown_with_unwritable_trigger_reports_error() {
+        let trigger = scratch_trigger("unwritable").join("missing-directory/trigger");
+        let (mut client, task) = connected_with_trigger(&Arc::new(AtomicU64::new(0)), trigger);
+        handshake(&mut client).await;
+        write_client_frame(&mut client, &ClientFrame::Shutdown)
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_agent_frame(&mut client).await.unwrap(),
+            AgentFrame::Error(ProtocolErrorMessage { code }) if code == "shutdown"
+        ));
+        assert!(task.await.unwrap().is_err());
     }
 
     #[tokio::test]

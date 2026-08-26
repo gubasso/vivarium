@@ -6,7 +6,6 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## later
 
-- 027 the-stop-ladder-is-whole — later — 3 sessions — needs 025 (the reader the sweep enumerates through); carries `Q-018` and `Q-021`, and was moved ahead of 026 because ending a day is a daily act and refusing a launch is not
 - 026 a-start-checks-the-room — later — 3 sessions — needs 025 (the fleet term admission reads)
 - 018 the-user-owns-the-image — later — 4 sessions — moved ahead of 028 and 024: it owns `viv update` and the shipped base a user takes over, which is what a first daily-driver image is built from
 - 028 memory-comes-back-without-a-stop — later — 4 sessions — needs 025 (the readings its record joins)
@@ -19,6 +18,8 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 009 automate-backend-advisories — later — 2 sessions
 
 ## closed
+
+- 027 the-stop-ladder-is-whole — done — 3 sessions — one pass under the appetite, remainder included: the agent rung over a new protocol pair with the guest's root-owned poweroff path unit, `--timeout` bounding the orderly ask, the `--all` sweep, and both `--json` records; the `Q-018` and `Q-021` exits, the owner's bounded-escalation revision, and the host evidence are in the slice `Revisions`
 
 - 025 the-fleet-is-visible — done — 3 sessions — one pass under the appetite, remainder included: the measured `runtime` object on both status faces, the session-count protocol pair, the fleet enumeration, and the host reading; the `Q-015` exit, the acceptance revision, and the host delegation finding are in the slice `Revisions`
 

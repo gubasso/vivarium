@@ -547,6 +547,21 @@ in
         }
       ];
 
+      # The unprivileged agent's one bridge to a privileged action (spec/10 rung
+      # one, spec/12's shutdown request): the agent touches a file in its own
+      # private runtime directory, and this root-owned pair does the rest. A path
+      # unit rather than a capability grant or a policy engine keeps the agent's
+      # bounding set empty and the request auditable as one file with one meaning.
+      # Anything that can write the trigger shares the agent's uid, so the widest
+      # thing this admits is a workload powering off its own sandbox — the same
+      # outcome that workload could already reach by crashing its guest, and one
+      # the host reads as a clean exit.
+      paths.vivarium-poweroff = {
+        description = "Watch for the agent's shutdown request";
+        wantedBy = [ "multi-user.target" ];
+        pathConfig.PathExists = "/run/vivarium/poweroff-requested";
+      };
+
       services = {
         # ADR-0020's guest half, and since ADR-0110 the only one: every declared
         # share mounts at a build-time internal point and this unit binds it at its
@@ -640,6 +655,21 @@ in
               # `nix/vivarium-options.nix`, which only a generated flake composes.
               lib.concatMapStrings (id: " --credential ${id}") (config.vivarium.credentials.agents or [ ])
             }";
+            # The agent exits promptly on SIGTERM, but its cgroup also holds every
+            # session process, and a session's outcome rides the agent's own
+            # connection (spec/12) — once the agent is stopping, an orphaned
+            # session can report to no one. Waiting systemd's 90 s default for one
+            # signal-trapping session would stall every orderly shutdown, so the
+            # survivors get the kill five seconds in.
+            TimeoutStopSec = 5;
+          };
+        };
+
+        vivarium-poweroff = {
+          description = "Power the guest off on the agent's request";
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${config.systemd.package}/bin/systemctl poweroff";
           };
         };
 

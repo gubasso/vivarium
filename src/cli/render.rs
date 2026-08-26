@@ -795,6 +795,55 @@ pub(super) fn bytes(count: u64) -> String {
     }
 }
 
+/// `viv stop --json` — the record spec/01 fixes: the resulting state and the rung that ended it.
+///
+/// `rung` is `null` for the idempotent no-op — nothing was running, so no rung ran. The state is
+/// re-discriminated after the teardown, so the record reports what a `status` run now would.
+pub fn stop_json(manifest: &str, state: &str, rung: Option<&'static str>) -> String {
+    line(&stop_row(manifest, state, rung))
+}
+
+/// One sandbox's stop record — the object `stop_json` wraps and the sweep's rows repeat.
+pub fn stop_row(manifest: &str, state: &str, rung: Option<&'static str>) -> Value {
+    json!({
+        "manifest": manifest,
+        "state": state,
+        "rung": rung,
+    })
+}
+
+/// `viv stop --all --json` — the acted-on sandboxes under the fleet's own key (spec/01).
+///
+/// Rows only for sandboxes the sweep acted on: a resting sandbox was not stopped by this
+/// invocation, and an empty sweep renders an empty list rather than nothing.
+pub fn stop_all_json(rows: &[Value]) -> String {
+    line(&json!({ "projects": rows }))
+}
+
+/// `viv destroy --json` — this run's removal plan as executed, beside what it spared.
+///
+/// A path the plan names outright stays in `removed` even when already absent (the idempotent
+/// success spec/10 fixes), while the `--keep-volumes` carve-out reports only what was actually
+/// found beside the kept name at run time (spec/01).
+pub fn destroy_json(
+    manifest: &str,
+    removed: &[std::path::PathBuf],
+    spared: &[std::path::PathBuf],
+    volumes_kept: bool,
+) -> String {
+    let paths = |list: &[std::path::PathBuf]| -> Vec<Value> {
+        list.iter()
+            .map(|path| Value::String(path.display().to_string()))
+            .collect()
+    };
+    line(&json!({
+        "manifest": manifest,
+        "removed": paths(removed),
+        "spared": paths(spared),
+        "volumes_kept": volumes_kept,
+    }))
+}
+
 /// `viv status -g --json` — the fleet under its named key beside the host's own reading.
 ///
 /// `host` is always present, even over an empty fleet: it is what lets one command answer
