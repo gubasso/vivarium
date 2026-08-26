@@ -6,7 +6,6 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## later
 
-- 026 a-start-checks-the-room — later — 3 sessions — needs 025 (the fleet term admission reads)
 - 018 the-user-owns-the-image — later — 4 sessions — moved ahead of 028 and 024: it owns `viv update` and the shipped base a user takes over, which is what a first daily-driver image is built from
 - 028 memory-comes-back-without-a-stop — later — 4 sessions — needs 025 (the readings its record joins)
 - 024 installing-vivarium-takes-one-command — later — 5 sessions
@@ -18,6 +17,8 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 009 automate-backend-advisories — later — 2 sessions
 
 ## closed
+
+- 026 a-start-checks-the-room — done — 3 sessions — one pass under the appetite, remainder included: the admission gate over slice 025's readers with the host-level fallback, the withheld `viv trim` line, and `--attach` streaming the capture with `SIGINT` detach; the seam record, the widened enumeration domain, the eager-signal finding, and the warn-tier evidence decision are in the slice `Revisions`
 
 - 027 the-stop-ladder-is-whole — done — 3 sessions — one pass under the appetite, remainder included: the agent rung over a new protocol pair with the guest's root-owned poweroff path unit, `--timeout` bounding the orderly ask, the `--all` sweep, and both `--json` records; the `Q-018` and `Q-021` exits, the owner's bounded-escalation revision, and the host evidence are in the slice `Revisions`
 

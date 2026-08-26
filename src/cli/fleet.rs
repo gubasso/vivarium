@@ -287,16 +287,168 @@ const fn near_ceiling(used: Option<u64>, ceiling_mib: Option<u64>) -> bool {
     }
 }
 
-/// One `/proc/meminfo` read feeding both host fields — spec/17's one-reader rule.
-fn host_readings() -> HostReadings {
+/// The fleet term spec/17's admission acts on: measured use of the running fleet.
+pub(super) struct FleetUse {
+    /// Sandboxes whose state is `Running` or `Stopping` — the same definition the report uses.
+    pub running: usize,
+    /// The subset of `running` whose unit reports `MemoryCurrent`.
+    pub measured: usize,
+    /// Whether the enumeration saw the whole domain. A runtime subtree that could not be read
+    /// may hide a running member, so an incomplete scan turns the figures below into lower
+    /// bounds rather than counts — silently presenting them as exact is how a warning that
+    /// should fire goes quiet.
+    pub complete: bool,
+    /// The saturating sum over the measured members. `Some(0)` for a fleet that is measurably
+    /// empty — a defined quantity — and `None` when members run and none reports (the
+    /// controller is not delegated) or when an incomplete scan found nothing at all, because a
+    /// figure the host did not measure is unavailable, not zero. When `measured < running` or
+    /// the scan was incomplete, the sum is an honest lower bound, and the warning says so.
+    pub measured_bytes: Option<u64>,
+}
+
+/// The running fleet's measured memory use, enumerated read-only.
+///
+/// The domain is wider than the report's: the union of the indexed sandboxes and the live
+/// runtime target directories, deduplicated by (sandbox, target). The report deliberately keys
+/// on the manifest library (spec/01's enumeration domain); admission measures what is running,
+/// and a VM whose manifest was removed still consumes memory (spec/17 reads the fleet, never
+/// the library).
+///
+/// # Errors
+///
+/// Returns [`Failure`] for an unreadable manifest library or index (`74`) — the same reader the
+/// report opens with. The caller degrades this to a fleet term that is unavailable rather than
+/// refusing a launch over a report.
+pub(super) fn measured_use<E: Environment>(
+    context: &Context<'_, E>,
+    runtime_root: &Path,
+) -> Result<FleetUse, Failure> {
+    let index = super::workspace_index(context, true)?;
+    let mut members: std::collections::BTreeSet<(String, String)> = index
+        .manifests()
+        .iter()
+        .map(|indexed| (indexed.name.clone(), super::DEFAULT_TARGET.to_owned()))
+        .collect();
+    let (runtime_members, complete) = runtime_members(runtime_root);
+    members.extend(runtime_members);
+    let mut fleet = FleetUse {
+        running: 0,
+        measured: 0,
+        complete,
+        measured_bytes: None,
+    };
+    let mut sum: u64 = 0;
+    for (sandbox_id, target) in members {
+        let runtime = lifecycle::Runtime::for_report(runtime_root, &sandbox_id, &target);
+        let has_build = lifecycle::last_build(&context.roots, &sandbox_id, &target).is_some();
+        if !matches!(
+            lifecycle::discriminate(&runtime, has_build),
+            State::Running | State::Stopping
+        ) {
+            continue;
+        }
+        fleet.running += 1;
+        if let (Some(bytes), _) = lifecycle::unit_memory_and_cgroup(&runtime.unit) {
+            fleet.measured += 1;
+            sum = sum.saturating_add(bytes);
+        }
+    }
+    fleet.measured_bytes = fleet_sum(fleet.running, fleet.measured, sum, fleet.complete);
+    Ok(fleet)
+}
+
+/// The live runtime target directories — `<sandbox_id>/<target>` under the runtime root — and
+/// whether the walk saw all of them.
+///
+/// Scan errors are carried, never flattened: a subtree this walk could not read, or an entry
+/// whose type could not be determined, may hide a running member, and pretending the walk was
+/// whole would present a lower bound as a count. `Path::is_dir` is avoided on purpose — it
+/// coerces a metadata failure to `false`. An absent root is the one quiet case: no VM has run
+/// since boot, and that is a reading.
+fn runtime_members(runtime_root: &Path) -> (std::collections::BTreeSet<(String, String)>, bool) {
+    let mut members = std::collections::BTreeSet::new();
+    let mut complete = true;
+    match std::fs::read_dir(runtime_root) {
+        Ok(sandboxes) => {
+            for sandbox in sandboxes {
+                let Ok(sandbox) = sandbox else {
+                    complete = false;
+                    continue;
+                };
+                match sandbox.file_type() {
+                    Ok(kind) if kind.is_dir() => {}
+                    Ok(_) => continue,
+                    Err(_) => {
+                        complete = false;
+                        continue;
+                    }
+                }
+                let Ok(sandbox_id) = sandbox.file_name().into_string() else {
+                    // A non-UTF-8 name cannot be a sandbox id; foreign, not fleet.
+                    continue;
+                };
+                match std::fs::read_dir(sandbox.path()) {
+                    Ok(targets) => {
+                        for target in targets {
+                            let Ok(target) = target else {
+                                complete = false;
+                                continue;
+                            };
+                            match target.file_type() {
+                                Ok(kind) if kind.is_dir() => {}
+                                Ok(_) => continue,
+                                Err(_) => {
+                                    complete = false;
+                                    continue;
+                                }
+                            }
+                            if let Ok(target) = target.file_name().into_string() {
+                                members.insert((sandbox_id.clone(), target));
+                            }
+                        }
+                    }
+                    Err(_) => complete = false,
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => complete = false,
+    }
+    (members, complete)
+}
+
+/// [`FleetUse::measured_bytes`]'s contract as a total function: a measurably empty fleet is a
+/// zero, an incomplete scan that found nothing knows nothing, a fleet nobody measures is
+/// unavailable, and a partial sum stands as the lower bound it is.
+const fn fleet_sum(running: usize, measured: usize, sum: u64, complete: bool) -> Option<u64> {
+    if running == 0 {
+        if complete { Some(0) } else { None }
+    } else if measured > 0 {
+        Some(sum)
+    } else {
+        None
+    }
+}
+
+/// One `/proc/meminfo` read feeding both host figures — spec/17's one-reader rule, shared by
+/// the fleet report and `start`'s admission gate.
+pub(super) fn host_memory() -> (Option<u64>, Option<u64>) {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
-    HostReadings {
-        mem_available_bytes: meminfo
+    (
+        meminfo
             .as_deref()
             .and_then(crate::doctor::available_memory_bytes),
-        mem_total_bytes: meminfo
+        meminfo
             .as_deref()
             .and_then(crate::doctor::total_memory_bytes),
+    )
+}
+
+fn host_readings() -> HostReadings {
+    let (mem_available_bytes, mem_total_bytes) = host_memory();
+    HostReadings {
+        mem_available_bytes,
+        mem_total_bytes,
         pressure_some_avg60: lifecycle::host_pressure_some_avg60(),
     }
 }
@@ -320,8 +472,64 @@ fn host_line(host: &HostReadings) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{missing_note, near_ceiling};
+    use super::{fleet_sum, missing_note, near_ceiling, runtime_members};
     use std::path::PathBuf;
+
+    /// The runtime walk reports every `<sandbox>/<target>` directory pair, skips plain files,
+    /// and calls an absent root a complete, empty reading.
+    #[test]
+    fn runtime_members_walks_sandbox_target_pairs() {
+        let scratch = crate::test_support::ScratchDirectory::new().unwrap();
+        let root = scratch.path().join("vivarium");
+        let (members, complete) = runtime_members(&root);
+        assert!(members.is_empty());
+        assert!(complete);
+
+        std::fs::create_dir_all(root.join("api").join("default")).unwrap();
+        std::fs::create_dir_all(root.join("web").join("default")).unwrap();
+        std::fs::create_dir_all(root.join("web").join("staging")).unwrap();
+        std::fs::write(root.join("stray-file"), b"not a sandbox").unwrap();
+        std::fs::write(root.join("api").join("stray"), b"not a target").unwrap();
+        let (members, complete) = runtime_members(&root);
+        assert!(complete);
+        let expected: Vec<(String, String)> =
+            [("api", "default"), ("web", "default"), ("web", "staging")]
+                .map(|(sandbox, target)| (sandbox.to_owned(), target.to_owned()))
+                .to_vec();
+        assert_eq!(members.into_iter().collect::<Vec<_>>(), expected);
+    }
+
+    /// A sandbox directory the walk cannot read costs completeness, not silence: the members
+    /// that were seen are still reported, and the walk says it did not see everything.
+    #[test]
+    fn runtime_members_reports_an_unreadable_subtree_as_incomplete() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = crate::test_support::ScratchDirectory::new().unwrap();
+        let root = scratch.path().join("vivarium");
+        std::fs::create_dir_all(root.join("open").join("default")).unwrap();
+        let sealed = root.join("sealed");
+        std::fs::create_dir_all(sealed.join("default")).unwrap();
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let (members, complete) = runtime_members(&root);
+        // Restore before asserting so a failure does not leave an unremovable tree behind.
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!complete);
+        assert!(members.contains(&("open".to_owned(), "default".to_owned())));
+    }
+
+    /// The fleet term's contract: a measurably empty fleet is a zero, a fleet nobody measures
+    /// is unavailable rather than zero, a partial sum stands as the lower bound it is, and an
+    /// incomplete scan that found nothing claims nothing.
+    #[test]
+    fn fleet_sum_distinguishes_empty_unmeasured_partial_and_incomplete() {
+        assert_eq!(fleet_sum(0, 0, 0, true), Some(0));
+        assert_eq!(fleet_sum(2, 0, 0, true), None);
+        assert_eq!(fleet_sum(2, 2, 512, true), Some(512));
+        assert_eq!(fleet_sum(3, 1, 256, true), Some(256));
+        assert_eq!(fleet_sum(0, 0, 0, false), None);
+        assert_eq!(fleet_sum(2, 2, 512, false), Some(512));
+    }
 
     /// The 90% rule holds at the boundary and never fires on an unknown half.
     #[test]

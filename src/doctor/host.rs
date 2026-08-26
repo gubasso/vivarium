@@ -30,7 +30,10 @@ const STORE_FLOOR_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const STATE_FLOOR_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
 /// The host-memory reserve below which a launch is likely to thrash whatever the manifest asks.
-const MEMORY_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
+///
+/// `pub(crate)` because spec/17 gives `viv start`'s admission gate the same floor this probe
+/// warns about: one figure, so the probe's warning and the gate's refusal cannot disagree.
+pub const MEMORY_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// What a large workspace can pin: one descriptor per referenced inode, per share (ADR-0093).
 const LARGE_WORKSPACE_DESCRIPTORS: u64 = 100_000;

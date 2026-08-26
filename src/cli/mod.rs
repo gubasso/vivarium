@@ -9,6 +9,7 @@
 //! the stream facts all arrive as parameters, so the whole surface is exercisable without a
 //! process — the seam `resolve_xdg_roots` established and every module since has kept.
 
+mod attach;
 mod destroy;
 pub mod doctor;
 mod fleet;
@@ -20,6 +21,8 @@ mod render;
 // The two verbs the process boundary dispatches itself; see the module's own note on why.
 pub mod session;
 mod volume;
+
+pub use attach::start_attached;
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -158,9 +161,20 @@ pub fn run<E: Environment>(
             rebuild,
             no_rebuild,
             generation,
-            attach,
+            attach: false,
             ..
-        } => lifecycle::start(context, *rebuild, *no_rebuild, *generation, *attach),
+        } => lifecycle::start(context, *rebuild, *no_rebuild, *generation),
+        // The attached form is dispatched on `main`'s async arm before this synchronous surface;
+        // reaching it here would silently perform the detached operation under the other flag.
+        Invocation::Start { attach: true, .. } => Err(diagnosed(
+            Namespace::Internal,
+            "misdispatched",
+            "`viv start --attach` reached the synchronous dispatch surface",
+            Locus::Named("command surface"),
+            "the attached form returns when the console stream ends, which only the async \
+            dispatch arm can express",
+            ExitKind::Software,
+        )),
         Invocation::VolumeList { output } => volume::list(context, *output),
         Invocation::VolumePrune {
             dry_run,

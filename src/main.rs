@@ -158,6 +158,13 @@ async fn main() -> ExitCode {
     // async, and they return a code the synchronous surface cannot express — the guest command's
     // own. `cli::run` stays synchronous, and the environment is read at the one boundary that owns
     // reading it, so the passthrough policy below it is a function of its inputs.
+    // The attached start, dispatched here for the same reason the session verbs are: it is
+    // async, and it returns when the console stream ends — a post-condition the synchronous
+    // surface cannot express (spec/10).
+    if let Some(code) = attached_start(&invocation, &context, &ui, &stderr_palette).await {
+        return code;
+    }
+
     if let Invocation::Exec(requested) | Invocation::Shell(requested) = &invocation {
         let mode = if matches!(invocation, Invocation::Shell(_)) {
             SessionMode::Shell
@@ -207,6 +214,38 @@ fn deliver(success: &vivarium::cli::Success, ui: &Ui) {
 /// `status` reads the live session count; `stop` and `destroy` open their ladder with the
 /// shutdown request. All three are async and deliver one `Success` or fail, so they share this
 /// one shape; held out of `main` so that function stays a dispatcher rather than a verb.
+/// Dispatches `start --attach`, and `None` for every other invocation.
+///
+/// Held out of `main` beside the arms below for the same reason they are: the attached form is
+/// async and returns when the console stream ends (spec/10). Its `--json` pairing is refused by
+/// the grammar, so the failure face here is always the human one.
+async fn attached_start(
+    invocation: &Invocation,
+    context: &Context<'_, ProcessEnvironment>,
+    ui: &Ui,
+    stderr_palette: &Palette,
+) -> Option<ExitCode> {
+    let Invocation::Start {
+        rebuild,
+        no_rebuild,
+        generation,
+        attach: true,
+        output,
+    } = invocation
+    else {
+        return None;
+    };
+    Some(
+        match vivarium::cli::start_attached(context, *rebuild, *no_rebuild, *generation).await {
+            Ok(kind) => ExitCode::from(kind),
+            Err(failure) => {
+                ui.cancel();
+                fail(&failure, *output, stderr_palette)
+            }
+        },
+    )
+}
+
 async fn agent_readers(
     invocation: &Invocation,
     context: &Context<'_, ProcessEnvironment>,

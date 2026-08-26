@@ -29,8 +29,10 @@ Chosen option: a per-VM scope for accounting, with no per-VM limits and a launch
 
 ## Status
 
-Accepted
+Implemented
 
 Amends [`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](./ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md) by giving its "cgroup limits" concrete content. Adds N23 to [`../reference/spec/08-invariants-and-guarantees.md`](../reference/spec/08-invariants-and-guarantees.md); the check, thresholds, and reported fields live in [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md).
 
 Amended by [`ADR-0097`](./ADR-0097-the-transient-user-service-owns-the-vm-lifetime.md) — the per-VM resource scope is a manager-owned transient user service rather than a caller-owned `.scope` unit.
+
+Enacted in three parts, each verified in the tree: the per-VM scope and its accounting by slice 002, in the service shape `ADR-0097` records ([`../../src/launch/`](../../src/launch/)); the measurement surface both status faces read by [slice 025](../plan/slices/025-the-fleet-is-visible/README.md) ([`../../src/cli/fleet.rs`](../../src/cli/fleet.rs)); and the admission check — refuse at `69` below the reserve before any build, warn on stderr and proceed when the fleet's measured use plus the reserve exceeds available memory, fall back to host-level readings where the memory controller is not delegated — by [slice 026](../plan/slices/026-a-start-checks-the-room/README.md) (`admission` in [`../../src/cli/lifecycle.rs`](../../src/cli/lifecycle.rs), demonstrated by `workflow_26_admission_refusal`).

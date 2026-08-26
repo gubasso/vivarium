@@ -176,6 +176,7 @@ pub struct RuntimeReadings {
 }
 
 /// Where one target's runtime files live, and the unit that owns them.
+#[derive(Clone)]
 pub(super) struct Runtime {
     pub directory: PathBuf,
     pub unit: String,
@@ -241,6 +242,11 @@ impl Runtime {
 
     fn control_socket(&self) -> PathBuf {
         self.directory.join("control.sock")
+    }
+
+    /// The supervisor-owned console capture `--attach` follows (spec/16 fixes the path).
+    pub(super) fn console_log(&self) -> PathBuf {
+        self.directory.join("console.log")
     }
 
     /// The per-target startup lock (spec/12 step 1).
@@ -658,12 +664,13 @@ pub(super) fn classify(
     }
 }
 
-/// The hard preflight subset spec/10 step 2 requires, cut to what this slice actually needs.
+/// The hard preflight subset spec/10 step 2 requires.
 ///
-/// Deliberately not the whole `viv doctor` catalog: this checks the three things that decide
-/// whether a boot can be attempted at all, and refuses before any build so a host that cannot hold
-/// a VM never pays for one. Admission control — spec/10 step 3, owned by spec/17 and slice 005 —
-/// is not implemented, and the slice `Revisions` records that gap rather than leaving it implied.
+/// Deliberately not the whole `viv doctor` catalog: the hard subset decides whether a boot can be
+/// attempted at all, and refuses before any build so a host that cannot hold a VM never pays for
+/// one. Admission — spec/10 step 3, owned by spec/17 — is [`admission`]'s separate gate, run by
+/// `start` right after this one: preflight asks whether this host can run a VM at all, admission
+/// whether it can run another one right now, and spec/10 keeps the two apart by name.
 fn preflight<E: Environment>(context: &Context<'_, E>) -> Result<PathBuf, Failure> {
     // The hard subset of the shared probe catalog, in catalog order — the same probes, the same
     // messages, the same codes `viv doctor` reports, so the guard and the report cannot drift
@@ -699,36 +706,196 @@ fn preflight<E: Environment>(context: &Context<'_, E>) -> Result<PathBuf, Failur
         .map_err(|error| super::resolution_failure(&error))
 }
 
+/// spec/17's admission table, total over the readings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Admission {
+    /// Available host memory is below the reserve: refuse before any build (N23).
+    Refuse,
+    /// The fleet's measured use plus the reserve exceeds what is available: warn and proceed,
+    /// because the user decides which sandbox matters.
+    Warn,
+    /// Nothing to say.
+    Proceed,
+}
+
+/// The decision itself, as a total function of the two readings [`admission`] gathers.
+///
+/// Separated so every row of spec/17's table is testable without a fleet, a systemd user
+/// manager, or a crafted `/proc/meminfo`. A reading that does not exist decides nothing: an
+/// absent `available` proceeds (the same honest skip the `host-memory-headroom` probe takes),
+/// and an absent fleet term cannot trip the warn tier — host-level readings still reached the
+/// decision, which is spec/17's degraded mode, never a skipped check.
+pub(super) const fn admit(available: Option<u64>, fleet_used: Option<u64>) -> Admission {
+    let Some(available) = available else {
+        return Admission::Proceed;
+    };
+    if available < crate::doctor::MEMORY_RESERVE_BYTES {
+        return Admission::Refuse;
+    }
+    // Spelled as a subtraction so the comparison is exact at every magnitude: `used + reserve`
+    // can overflow where `available - reserve` cannot, because the refuse arm above already
+    // guaranteed `available >= reserve`.
+    match fleet_used {
+        Some(used) if used > available - crate::doctor::MEMORY_RESERVE_BYTES => Admission::Warn,
+        _ => Admission::Proceed,
+    }
+}
+
+/// spec/17's warning, minus the `viv trim` line — the reclaim verb does not exist yet and is
+/// withheld rather than printed dead (slice 028 owns it).
+///
+/// A partial fleet sum is printed as the lower bound it is, and an unknown host total drops its
+/// clause rather than fabricating a figure.
+fn admission_warning(
+    fleet: &super::fleet::FleetUse,
+    total: Option<u64>,
+    sandbox_id: &str,
+) -> String {
+    let used = fleet.measured_bytes.unwrap_or(0);
+    // A partial measurement and an incomplete scan are the same honesty problem: the figure in
+    // hand is a floor, and printing it bare would present it as the fleet.
+    let at_least = if fleet.measured < fleet.running || !fleet.complete {
+        "at least "
+    } else {
+        ""
+    };
+    let total = total.map_or_else(String::new, |total| {
+        format!("{} ", super::render::bytes(total))
+    });
+    let (verb, plural) = if fleet.running == 1 {
+        ("is", "")
+    } else {
+        ("are", "s")
+    };
+    format!(
+        concat!(
+            "warning: {count} project VM{plural} {verb} running and using {at_least}{used} ",
+            "of {total}host memory.\n",
+            "         Starting `{sandbox}` may push the host into swap.\n",
+            "         viv status -g     see what is running\n",
+            "         viv stop          stop a project you are done with"
+        ),
+        count = fleet.running,
+        plural = plural,
+        verb = verb,
+        at_least = at_least,
+        used = super::render::bytes(used),
+        total = total,
+        sandbox = sandbox_id,
+    )
+}
+
+/// spec/10 step 3: the admission gate, between preflight and anything that creates state (N23).
+///
+/// Refusal comes from the host reading alone, before the fleet is even enumerated, so a start
+/// the host cannot serve touches nothing — not the index, not the target lock. The fleet term
+/// then consumes slice 025's readers; an enumeration that fails degrades to an unavailable
+/// fleet term rather than minting a failure mode for a launch whose resolution already read the
+/// same index.
+///
+/// # Errors
+///
+/// Returns [`Failure`] at `69` (`host.memory-reserve`) when available host memory is below the
+/// admission reserve.
+fn admission<E: Environment>(
+    context: &Context<'_, E>,
+    runtime_root: &Path,
+    sandbox_id: &str,
+) -> Result<(), Failure> {
+    let (available, total) = super::fleet::host_memory();
+    if admit(available, None) == Admission::Refuse {
+        // `available` is present by construction: `admit` cannot refuse an absent reading.
+        let available = available.unwrap_or_default();
+        return Err(diagnosed(
+            Namespace::Host,
+            "memory-reserve",
+            format!(
+                "{} of host memory is available, below the {} admission reserve",
+                super::render::bytes(available),
+                super::render::bytes(crate::doctor::MEMORY_RESERVE_BYTES),
+            ),
+            Locus::Named("admission"),
+            "spec/17's admission check refuses before any build or boot, so a host below \
+            its reserve never pays for a VM it cannot serve",
+            ExitKind::Unavailable,
+        )
+        .with_hint(
+            "`viv status -g` shows what is running; `viv stop` a project you are done with",
+        ));
+    }
+    let fleet = super::fleet::measured_use(context, runtime_root).ok();
+    let fleet_used = fleet.as_ref().and_then(|fleet| fleet.measured_bytes);
+    if let (Admission::Warn, Some(fleet)) = (admit(available, fleet_used), fleet) {
+        context
+            .ui
+            .warn(&admission_warning(&fleet, total, sandbox_id));
+    }
+    Ok(())
+}
+
+/// What a completed start pipeline did, so no caller has to parse the notes to find out.
+///
+/// The two faces read it differently: the detached form turns both arms into its `Success`,
+/// while `--attach` streams only after [`StartOutcome::Booted`] — the launch-time stream
+/// attaches to a boot this command performed, never to a VM that was already up (that reach is
+/// the slice's recorded out-of-scope).
+pub(super) enum StartOutcome {
+    /// One of spec/10's short-circuits: nothing was booted, and the note says why.
+    AlreadyRunning {
+        /// The stderr note the detached form delivers verbatim.
+        notes: String,
+    },
+    /// A boot this command performed, concluded by the supervisor's readiness answer. The
+    /// runtime it booted travels through `on_boot`, which fired before the launch.
+    Booted {
+        /// The ceilings the VM was launched with.
+        resources: Resources,
+    },
+}
+
 /// Bring the project's VM up and return once it is running (spec/10).
 ///
 /// # Errors
 ///
-/// Returns [`Failure`] for an unbound project (`78`), an unmet preflight, a content defect in the
-/// merge (`65`), a build that fails, or a launcher that does not come up.
+/// Returns [`Failure`] for an unbound project (`78`), an unmet preflight, a refused admission
+/// (`69`), a content defect in the merge (`65`), a build that fails, or a launcher that does not
+/// come up.
 pub fn start<E: Environment>(
     context: &Context<'_, E>,
     rebuild: bool,
     no_rebuild: bool,
     generation: Option<u64>,
-    attach: bool,
 ) -> Result<Success, Failure> {
-    // Refused by name rather than accepted and dropped. spec/10 makes `--attach` a console-stream
-    // whose post-condition is the opposite of the detached form's — it returns when the stream
-    // ends, not when the guest answers — so a `start --attach` that quietly detached would report
-    // success for something the user did not ask for. Slice 013 owns reaching into a running guest.
-    if attach {
-        return Err(diagnosed(
-            Namespace::Internal,
-            "not-implemented",
-            "`viv start --attach` is not implemented yet",
-            Locus::Named("command surface"),
-            "the detached form is this slice's; the console stream and \
-            its own post-condition are not",
-            ExitKind::Software,
-        )
-        .with_hint("run `viv start` for the detached form"));
+    match perform_start(context, rebuild, no_rebuild, generation, None)? {
+        StartOutcome::AlreadyRunning { notes } => Ok(Success {
+            stdout: String::new(),
+            notes,
+        }),
+        StartOutcome::Booted { resources, .. } => {
+            context.ui.outro(&format!(
+                "running · {} MiB · {} vcpu",
+                resources.mem_mib, resources.vcpu
+            ));
+            Ok(Success::plain(String::new()))
+        }
     }
+}
 
+/// The start pipeline itself, shared by the detached and attached forms (spec/10 steps 1-5).
+///
+/// `on_boot` fires exactly when a boot is certain — after every short-circuit and the
+/// replace-stop, before the launch — with the runtime whose console the attached form follows.
+///
+/// # Errors
+///
+/// The detached form's: [`start`] documents the codes.
+pub(super) fn perform_start<E: Environment>(
+    context: &Context<'_, E>,
+    rebuild: bool,
+    no_rebuild: bool,
+    generation: Option<u64>,
+    on_boot: Option<&dyn Fn(&Runtime)>,
+) -> Result<StartOutcome, Failure> {
     // spec/10 step 1: the bound manifest is resolved before anything else, so an unbound project
     // answers `78` on every host — including one that would fail preflight — and so nothing is
     // written for a project that never reaches step 5.
@@ -753,6 +920,9 @@ pub fn start<E: Environment>(
 
     // Step 2.
     let runtime_root = preflight(context)?;
+    // Step 3: admission, before anything is created — a refusal here leaves nothing behind, not
+    // even the target lock (spec/10, spec/17, N23).
+    admission(context, &runtime_root, &resolved.selected.name)?;
 
     let sandbox_id = resolved.selected.name.clone();
     let runtime = Runtime::locate(&runtime_root, &sandbox_id, DEFAULT_TARGET)?;
@@ -780,8 +950,7 @@ pub fn start<E: Environment>(
         // live VM short-circuits here because there is nothing to compare it against — asking for
         // no evaluation is asking not to learn whether it drifted.
         if running {
-            return Ok(Success {
-                stdout: String::new(),
+            return Ok(StartOutcome::AlreadyRunning {
                 notes: format!("`{sandbox_id}` is already running\n"),
             });
         }
@@ -814,8 +983,7 @@ pub fn start<E: Environment>(
     if running && !rebuild {
         let launched = running_build(&context.roots, &sandbox_id, DEFAULT_TARGET);
         let stale = launched.is_some_and(|launched| launched != store_path);
-        return Ok(Success {
-            stdout: String::new(),
+        return Ok(StartOutcome::AlreadyRunning {
             notes: if stale {
                 format!(
                     "`{sandbox_id}` is running an older build and was left alone\n\
@@ -837,6 +1005,12 @@ pub fn start<E: Environment>(
         stop_unit(&runtime, &sandbox_id, false, None, context.ui)?;
     }
 
+    // The boot is certain from here: the attached form's follower starts on this runtime's
+    // console capture before the launch establishes it, so the stream misses nothing.
+    if let Some(on_boot) = on_boot {
+        on_boot(&runtime);
+    }
+
     // Step 5, ensure running. The selected manifest name keys every artifact below.
     let resources = effective_resources(merged.or(leaf_resources).as_ref());
     launch(
@@ -848,11 +1022,7 @@ pub fn start<E: Environment>(
         &workspace_paths,
     )?;
 
-    context.ui.outro(&format!(
-        "running · {} MiB · {} vcpu",
-        resources.mem_mib, resources.vcpu
-    ));
-    Ok(Success::plain(String::new()))
+    Ok(StartOutcome::Booted { resources })
 }
 
 /// The retained-boot source `--generation <n>` selects (spec/11): no evaluation, one named
@@ -2663,16 +2833,119 @@ pub(super) const fn grace_seconds(force: bool, timeout: Option<i64>) -> Option<u
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
-        BootMetadata, BootRecord, ExitKind, LAUNCH_SCHEMA_VERSION, Locus, Namespace, Output,
-        Runtime, State, StopRung, classify, config, diagnosed, discriminate, effective_resources,
-        grace_seconds, host_mem_mib, host_vcpu, ownership_of, parse_memory_current,
-        parse_pressure_some_avg60, parse_unit_memory_show, read_boot_record, record_failure,
-        recorded_pid_liveness, require_current_contract, vm_is_alive, volume_directory,
+        Admission, BootMetadata, BootRecord, ExitKind, LAUNCH_SCHEMA_VERSION, Locus, Namespace,
+        Output, Runtime, State, StopRung, admission_warning, admit, classify, config, diagnosed,
+        discriminate, effective_resources, grace_seconds, host_mem_mib, host_vcpu, ownership_of,
+        parse_memory_current, parse_pressure_some_avg60, parse_unit_memory_show, read_boot_record,
+        record_failure, recorded_pid_liveness, require_current_contract, vm_is_alive,
+        volume_directory,
     };
     use crate::test_support::ScratchDirectory;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// spec/17's admission table, row by row at its boundaries. The reserve is 1 GiB.
+    #[test]
+    fn admit_walks_the_admission_table() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // Below the reserve refuses; at the reserve does not.
+        assert_eq!(admit(Some(GIB - 1), None), Admission::Refuse);
+        assert_eq!(admit(Some(GIB - 1), Some(0)), Admission::Refuse);
+        assert_eq!(admit(Some(GIB), Some(0)), Admission::Proceed);
+        // Fleet use plus the reserve at available proceeds; one byte past it warns.
+        assert_eq!(admit(Some(3 * GIB), Some(2 * GIB)), Admission::Proceed);
+        assert_eq!(admit(Some(3 * GIB), Some(2 * GIB + 1)), Admission::Warn);
+        // An unavailable fleet term cannot trip the warn tier: the decision is still reached
+        // from the host reading alone (spec/17's degraded mode), never skipped.
+        assert_eq!(admit(Some(GIB), None), Admission::Proceed);
+        // An absent host reading decides nothing, the same honest skip the probe takes.
+        assert_eq!(admit(None, None), Admission::Proceed);
+        assert_eq!(admit(None, Some(u64::MAX)), Admission::Proceed);
+        // The sum saturates rather than wrapping: a fleet near the ceiling still warns.
+        assert_eq!(admit(Some(u64::MAX), Some(u64::MAX)), Admission::Warn);
+    }
+
+    /// spec/17's warning shape, minus the `viv trim` line slice 028 owns.
+    #[test]
+    fn admission_warning_is_the_spec_shape_without_trim() {
+        let fleet = super::super::fleet::FleetUse {
+            running: 4,
+            measured: 4,
+            complete: true,
+            measured_bytes: Some(213 * 1024 * 1024 * 1024 / 10),
+        };
+        let warning = admission_warning(&fleet, Some(312 * 1024 * 1024 * 1024 / 10), "api-gateway");
+        assert_eq!(
+            warning,
+            concat!(
+                "warning: 4 project VMs are running and using 21.3 GiB of 31.2 GiB host memory.\n",
+                "         Starting `api-gateway` may push the host into swap.\n",
+                "         viv status -g     see what is running\n",
+                "         viv stop          stop a project you are done with"
+            )
+        );
+        assert!(!warning.contains("viv trim"));
+    }
+
+    /// A partial fleet sum is a lower bound and says so; a single VM reads singular.
+    #[test]
+    fn admission_warning_marks_a_partial_sum_as_a_lower_bound() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let fleet = super::super::fleet::FleetUse {
+            running: 2,
+            measured: 1,
+            complete: true,
+            measured_bytes: Some(2 * GIB),
+        };
+        let warning = admission_warning(&fleet, Some(8 * GIB), "api-gateway");
+        assert!(warning.starts_with(
+            "warning: 2 project VMs are running and using at least 2 GiB of 8 GiB host memory."
+        ));
+        let one = super::super::fleet::FleetUse {
+            running: 1,
+            measured: 1,
+            complete: true,
+            measured_bytes: Some(GIB),
+        };
+        assert!(
+            admission_warning(&one, Some(8 * GIB), "api-gateway")
+                .starts_with("warning: 1 project VM is running and using 1 GiB of 8 GiB")
+        );
+    }
+
+    /// An incomplete scan turns an apparently exact sum into a stated floor.
+    #[test]
+    fn admission_warning_marks_an_incomplete_scan_as_a_lower_bound() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let fleet = super::super::fleet::FleetUse {
+            running: 2,
+            measured: 2,
+            complete: false,
+            measured_bytes: Some(3 * GIB),
+        };
+        assert!(
+            admission_warning(&fleet, Some(8 * GIB), "api-gateway").starts_with(
+                "warning: 2 project VMs are running and using at least 3 GiB of 8 GiB"
+            )
+        );
+    }
+
+    /// An unknown host total drops its clause rather than fabricating a figure.
+    #[test]
+    fn admission_warning_drops_an_unknown_total() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let fleet = super::super::fleet::FleetUse {
+            running: 3,
+            measured: 3,
+            complete: true,
+            measured_bytes: Some(4 * GIB),
+        };
+        assert!(
+            admission_warning(&fleet, None, "api-gateway")
+                .starts_with("warning: 3 project VMs are running and using 4 GiB of host memory.")
+        );
+    }
 
     static SHORT_RUNTIME_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

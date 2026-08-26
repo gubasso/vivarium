@@ -352,7 +352,8 @@ const CONFIG_USAGE: &str = "viv config [--manifest <name>] [--json]";
 const CONFIG_EVAL_USAGE: &str = "viv config eval [--json]";
 const CONFIG_SOURCES_USAGE: &str = "viv config sources [--json]";
 const MANIFEST_USAGE: &str = "viv manifest <list|show <name>> [--json]";
-const START_USAGE: &str = "viv start [--rebuild|--no-rebuild] [--generation <n>] [--json]";
+const START_USAGE: &str =
+    "viv start [--rebuild|--no-rebuild] [--generation <n>] [--attach] [--json]";
 const STATUS_USAGE: &str = "viv status [--json] [-g|--global]";
 const SHELL_USAGE: &str = "viv shell";
 const EXEC_USAGE: &str =
@@ -559,11 +560,8 @@ fn start(rest: &[OsString]) -> Result<Invocation, UsageError> {
                     )
                 })?);
             }
-            // Parsed, never dropped: spec/10 makes `--attach` a console-streaming form whose
-            // post-condition differs from the detached one, so the verb refuses it by name rather
-            // than performing a different operation under it. The refusal is in `lifecycle::start`
-            // with the other unimplemented forms, because it is a missing capability and not a
-            // malformed invocation.
+            // spec/10's console-streaming form, dispatched on its own async arm because its
+            // post-condition differs from the detached one: it returns when the stream ends.
             Some("--attach") => attach = true,
             Some("--json") => output = Output::Json,
             _ => return Err(unknown(token, START_USAGE)),
@@ -581,6 +579,14 @@ fn start(rest: &[OsString]) -> Result<Invocation, UsageError> {
     if generation.is_some() && (rebuild || no_rebuild) {
         return Err(UsageError::new(
             "`--generation` conflicts with `--rebuild` and `--no-rebuild`",
+            Some(START_USAGE),
+        ));
+    }
+    // The attached form's stdout is the raw console stream, and a raw byte stream has no JSON
+    // face — accepting the pair would promise a record that can never come (spec/01).
+    if attach && output.is_json() {
+        return Err(UsageError::new(
+            "`--attach` streams the console and has no `--json` form",
             Some(START_USAGE),
         ));
     }

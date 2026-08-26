@@ -51,7 +51,7 @@ Where the host delegates nothing, the model degrades rather than fails. Per-VM a
 
 ## Admission control
 
-`viv start` checks host capacity before it builds or boots (N23). It uses measured use of the running fleet, never the sum of declared ceilings:
+`viv start` checks host capacity before it builds or boots (N23). It uses measured use of the running fleet, never the sum of declared ceilings. A refusal reports the diagnostic id `host.memory-reserve` — its own id rather than the soft probe's, because the catalog row stays soft and the gate is not a catalog probe ([`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md)):
 
 | Condition                                                      | Outcome                                                             |
 | -------------------------------------------------------------- | ------------------------------------------------------------------- |

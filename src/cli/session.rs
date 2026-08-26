@@ -282,26 +282,63 @@ fn spawn_resize() -> Option<mpsc::Receiver<TerminalSize>> {
 /// process, and a process killed mid-session never restores the terminal it made raw. The guest end
 /// needs nothing from this — the agent terminates a session whose client disconnects — so the whole
 /// job here is to unwind the host side and report the way a shell reports a signalled child.
-async fn terminating_signal() -> u8 {
-    use tokio::signal::unix::{SignalKind, signal};
-    let (Ok(mut interrupt), Ok(mut quit), Ok(mut terminate), Ok(mut hangup)) = (
-        signal(SignalKind::interrupt()),
-        signal(SignalKind::quit()),
-        signal(SignalKind::terminate()),
-        signal(SignalKind::hangup()),
-    ) else {
-        // A host that will not let these be watched still runs sessions; it only loses the tidy
-        // unwind. Parking here leaves the default disposition in place rather than failing a
-        // command over its own cleanup.
-        return std::future::pending().await;
-    };
-    // `128+S`, the same arithmetic a shell reports a signalled child with, and the same one the
-    // guest agent applies on its side of the wire.
-    tokio::select! {
-        _ = interrupt.recv() => 128 + 2,
-        _ = quit.recv() => 128 + 3,
-        _ = hangup.recv() => 128 + 1,
-        _ = terminate.recv() => 128 + 15,
+pub(super) async fn terminating_signal() -> u8 {
+    TerminatingSignals::install().recv().await
+}
+
+/// The four terminating signals, registered at construction rather than at the first poll.
+///
+/// The attached start needs the split: it installs these before its blocking boot, so a
+/// `Ctrl-C` arriving mid-boot is consumed and honored as a detach when the stream phase opens,
+/// instead of killing the launch it was aimed past (spec/10: detaching never stops the VM).
+pub(super) struct TerminatingSignals {
+    streams: Option<Streams>,
+}
+
+/// The registered streams, one per watched signal.
+struct Streams {
+    interrupt: tokio::signal::unix::Signal,
+    quit: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+    hangup: tokio::signal::unix::Signal,
+}
+
+impl TerminatingSignals {
+    /// Registers the watchers now; the default dispositions are replaced from this call on.
+    pub(super) fn install() -> Self {
+        use tokio::signal::unix::{SignalKind, signal};
+        let streams = match (
+            signal(SignalKind::interrupt()),
+            signal(SignalKind::quit()),
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) {
+            (Ok(interrupt), Ok(quit), Ok(terminate), Ok(hangup)) => Some(Streams {
+                interrupt,
+                quit,
+                terminate,
+                hangup,
+            }),
+            // A host that will not let these be watched still runs; it only loses the tidy
+            // unwind. Keeping the default disposition is better than failing a command over its
+            // own cleanup.
+            _ => None,
+        };
+        Self { streams }
+    }
+
+    /// `128+S` for the next terminating signal, the same arithmetic a shell reports a signalled
+    /// child with; pends forever where nothing could be watched.
+    pub(super) async fn recv(&mut self) -> u8 {
+        let Some(streams) = self.streams.as_mut() else {
+            return std::future::pending().await;
+        };
+        tokio::select! {
+            _ = streams.interrupt.recv() => 128 + 2,
+            _ = streams.quit.recv() => 128 + 3,
+            _ = streams.hangup.recv() => 128 + 1,
+            _ = streams.terminate.recv() => 128 + 15,
+        }
     }
 }
 

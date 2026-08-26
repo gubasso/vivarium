@@ -12,7 +12,7 @@ use support::{
     expect_json_array_nonempty, expect_json_fields_at, expect_json_keys, expect_json_map_entries,
     expect_json_string, expect_no_volume_images, expect_nonzero, expect_stderr_mentions,
     expect_stdout_lacks, expect_stdout_mentions, expect_tree_unchanged, expect_volume_image, gate,
-    json, run_viv, snapshot_tree, volume_image, write_file,
+    json, run_viv, snapshot_tree, viv_environment, volume_image, write_file,
 };
 
 type WorkflowRunner = fn() -> Result<(), Failed>;
@@ -23,7 +23,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 37] = [
+const WORKFLOWS: [WorkflowSpec; 39] = [
     (
         "workflow_01_manifest_workspace_resolution_usage",
         GateLevel::Cli,
@@ -188,6 +188,16 @@ const WORKFLOWS: [WorkflowSpec; 37] = [
         "workflow_25_fleet_two_sandboxes",
         GateLevel::Virtualization,
         workflow_25_fleet_two_sandboxes,
+    ),
+    (
+        "workflow_26_admission_refusal",
+        GateLevel::Virtualization,
+        workflow_26_admission_refusal,
+    ),
+    (
+        "workflow_26_start_attach_stream",
+        GateLevel::Virtualization,
+        workflow_26_attach_stream,
     ),
     (
         "workflow_27_stop_destroy_records",
@@ -3988,6 +3998,291 @@ fn workflow_27_sweep() -> Result<(), Failed> {
         0,
     ))?;
     check(expect_code(&viv_at(&tp, tp.root(), &["stop", "--all"])?, 0))
+}
+
+/// Slice 026's admission refusal (spec/17 row 1, N23): below the reserve, `viv start` exits
+/// `69` under `host.memory-reserve` with nothing built, nothing locked, and no unit — the
+/// absence demonstrated rather than assumed. The low reading is bind-mounted over
+/// `/proc/meminfo` inside a private user+mount namespace, so the product path reads it through
+/// its ordinary reader and no test seam exists. On this host the fleet term is unmeasurable
+/// (`host-cgroup2-delegation` trips), so the same run demonstrates the degraded tier: the
+/// decision was reached from host-level readings, never skipped.
+fn workflow_26_admission_refusal() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("wf26-adm").map_err(io_failed)?;
+    arrange_manifest(&tp, "wf26-adm", "", "")?;
+
+    // 512 MiB available: unambiguously below the 1 GiB reserve, beside a plausible total.
+    let crafted = tp.root().join("meminfo");
+    fs::write(
+        &crafted,
+        "MemTotal:       33554432 kB\nMemFree:          409600 kB\nMemAvailable:     524288 kB\n",
+    )
+    .map_err(io_failed)?;
+
+    // Capability precheck, failing with a named reason rather than skipping silently: on a
+    // kernel that refuses the bind the trial can prove nothing, and a quiet skip would read as
+    // green (the harness-method lesson).
+    let precheck = std::process::Command::new("unshare")
+        .args([
+            "--map-root-user",
+            "--mount",
+            "sh",
+            "-c",
+            "mount --bind \"$WF26_MEMINFO\" /proc/meminfo \
+                && grep -q 'MemAvailable:     524288' /proc/meminfo",
+        ])
+        .env("WF26_MEMINFO", &crafted)
+        .output()
+        .map_err(io_failed)?;
+    if !precheck.status.success() {
+        return fail(format!(
+            "this kernel refused the user-namespace bind over /proc/meminfo, so the refusal \
+            trial cannot arrange a low reading: {}",
+            String::from_utf8_lossy(&precheck.stderr).trim()
+        ));
+    }
+
+    // Prewarm the derived index: the enumeration surface republishes it as recomputable cache,
+    // and a snapshot taken before it exists would blame admission for that write.
+    check(expect_code(&viv(&tp, &["status", "-g"])?, 0))?;
+    let state_before = snapshot_tree(tp.state()).map_err(io_failed)?;
+    let cache_before = snapshot_tree(tp.cache()).map_err(io_failed)?;
+
+    let mut command = std::process::Command::new("unshare");
+    command
+        .args([
+            "--map-root-user",
+            "--mount",
+            "sh",
+            "-c",
+            "mount --bind \"$WF26_MEMINFO\" /proc/meminfo && exec \"$WF26_VIV\" start",
+        ])
+        .current_dir(tp.project())
+        .env_clear();
+    command.envs(viv_environment(&tp));
+    command.env("WF26_MEMINFO", &crafted);
+    command.env("WF26_VIV", gate().viv());
+    let refused = command.output().map_err(io_failed)?;
+
+    if refused.status.code() != Some(EX_UNAVAILABLE) {
+        return fail(format!(
+            "a start below the reserve answered {:?} instead of 69; stderr: {}",
+            refused.status.code(),
+            String::from_utf8_lossy(&refused.stderr).trim()
+        ));
+    }
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    if !stderr.contains("memory-reserve") {
+        return fail(format!(
+            "the refusal did not name `host.memory-reserve`: {stderr}"
+        ));
+    }
+
+    // The absences the acceptance demands, each named: no build output or generation reached
+    // the state root, no cache drift, no runtime target directory, and no unit.
+    check(expect_tree_unchanged(tp.state(), &state_before))?;
+    check(expect_tree_unchanged(tp.cache(), &cache_before))?;
+    let runtime_dir = tp
+        .runtime()
+        .join("vivarium")
+        .join("wf26-adm")
+        .join("default");
+    if runtime_dir.exists() {
+        return fail("a refused start created its runtime target directory");
+    }
+    let unit = std::process::Command::new("systemctl")
+        .args([
+            "--user",
+            "show",
+            "-p",
+            "ActiveState",
+            "--value",
+            "vivarium-wf26-adm-default.service",
+        ])
+        .output()
+        .map_err(io_failed)?;
+    if unit.status.success() && String::from_utf8_lossy(&unit.stdout).trim() == "active" {
+        return fail("a refused start left an active unit behind");
+    }
+    Ok(())
+}
+
+/// Slice 026's attach stream (spec/10, acceptance row 5): `viv start --attach` boots, streams
+/// the guest console to stdout, `SIGINT` detaches at `0`, and a `viv status` taken after the
+/// detach shows the sandbox still running. The silent tier rides along: an ordinary start's
+/// stderr carries no admission warning. Between the legs, an attach against the
+/// already-running sandbox says so in words and streams nothing. The whole leg runs twice,
+/// because one clean run is evidence of possibility rather than reliability.
+fn workflow_26_attach_stream() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("wf26-att").map_err(io_failed)?;
+    arrange_manifest(&tp, "wf26-att", "", "")?;
+
+    for leg in 1..=2_u32 {
+        attach_boot_and_detach(&tp, leg)?;
+
+        if leg == 1 {
+            // The recorded out-of-scope, demonstrated rather than left to reading: attaching to
+            // a VM this command did not boot is answered in words, with nothing streamed.
+            let again = viv(&tp, &["start", "--attach"])?;
+            check(expect_code(&again, 0))?;
+            check(expect_stderr_mentions(
+                &again,
+                "streams only a boot this command performs",
+            ))?;
+            if !again.stdout.is_empty() {
+                return fail("an attach against a running sandbox streamed console bytes");
+            }
+
+            // The non-SIGINT contract at process level: a SIGTERM landing while the attached
+            // start is still in its blocking phase is consumed by the eager watchers and
+            // answered `128+15` on the already-running outcome, never swallowed into a `0`.
+            let mut command = std::process::Command::new(gate().viv());
+            command
+                .args(["start", "--attach"])
+                .current_dir(tp.project())
+                .env_clear()
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            command.envs(viv_environment(&tp));
+            let mut termed = KillOnDrop(command.spawn().map_err(io_failed)?);
+            // Past the watcher installation at entry, still well inside the evaluation the
+            // running sandbox's pipeline performs before its short-circuit.
+            std::thread::sleep(Duration::from_millis(300));
+            let pid = rustix::process::Pid::from_raw(
+                i32::try_from(termed.0.id()).map_err(|error| Failed::from(error.to_string()))?,
+            )
+            .ok_or_else(|| Failed::from("the attach child has no pid"))?;
+            rustix::process::kill_process(pid, rustix::process::Signal::TERM)
+                .map_err(errno_failed)?;
+            let status = termed.0.wait().map_err(io_failed)?;
+            if status.code() != Some(128 + 15) {
+                return fail(format!(
+                    "a SIGTERM during the blocking phase answered {:?} instead of 143",
+                    status.code()
+                ));
+            }
+        }
+
+        check(expect_code(&viv(&tp, &["stop"])?, 0))?;
+    }
+    Ok(())
+}
+
+/// One boot-stream-detach-status leg of the attach trial.
+fn attach_boot_and_detach(tp: &TempProject, leg: u32) -> Result<(), Failed> {
+    use std::io::Read as _;
+
+    let mut command = std::process::Command::new(gate().viv());
+    command
+        .args(["start", "--attach"])
+        .current_dir(tp.project())
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    command.envs(viv_environment(tp));
+    let mut spawned = command.spawn().map_err(io_failed)?;
+    let stdout = spawned
+        .stdout
+        .take()
+        .ok_or_else(|| Failed::from("the attach child has no stdout pipe"))?;
+    let stderr_pipe = spawned
+        .stderr
+        .take()
+        .ok_or_else(|| Failed::from("the attach child has no stderr pipe"))?;
+    let mut child = KillOnDrop(spawned);
+
+    let collected: std::sync::Arc<std::sync::Mutex<Vec<u8>>> = std::sync::Arc::default();
+    let sink = std::sync::Arc::clone(&collected);
+    let stdout_reader = std::thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match stdout.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => {
+                    if let Ok(mut bytes) = sink.lock() {
+                        bytes.extend_from_slice(&buffer[..count]);
+                    }
+                }
+            }
+        }
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut stderr_pipe = stderr_pipe;
+        let mut bytes = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut bytes);
+        bytes
+    });
+
+    // The stream phase begins once the boot concluded, and `status` is its observable. A
+    // SIGINT sent earlier would land on the build, which is the detached form's own Ctrl-C
+    // story rather than a detach.
+    let running_deadline = Instant::now() + Duration::from_mins(15);
+    loop {
+        if Instant::now() > running_deadline {
+            return fail(format!("leg {leg}: the sandbox never reported running"));
+        }
+        let status = viv(tp, &["status", "--json"])?;
+        if expect_json_string(&status, "state", "running").is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+
+    // The distinctive marker: the kernel banner opens every guest console, so its arrival
+    // proves the console reached stdout rather than accepting any bytes at all.
+    let marker_deadline = Instant::now() + Duration::from_mins(1);
+    loop {
+        if collected
+            .lock()
+            .ok()
+            .is_some_and(|bytes| String::from_utf8_lossy(&bytes).contains("Linux version"))
+        {
+            break;
+        }
+        if Instant::now() > marker_deadline {
+            let streamed = collected.lock().map_or(0, |bytes| bytes.len());
+            return fail(format!(
+                "leg {leg}: no kernel banner reached stdout ({streamed} bytes streamed)"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    let pid = rustix::process::Pid::from_raw(
+        i32::try_from(child.0.id()).map_err(|error| Failed::from(error.to_string()))?,
+    )
+    .ok_or_else(|| Failed::from("the attach child has no pid"))?;
+    rustix::process::kill_process(pid, rustix::process::Signal::INT).map_err(errno_failed)?;
+    let status = child.0.wait().map_err(io_failed)?;
+    let _ = stdout_reader.join();
+    let stderr_bytes = stderr_reader.join().unwrap_or_default();
+
+    // SIGINT is the designed detach gesture, and the attached form's success (spec/10).
+    if status.code() != Some(0) {
+        return fail(format!(
+            "leg {leg}: the detach answered {:?}; stderr: {}",
+            status.code(),
+            String::from_utf8_lossy(&stderr_bytes).trim()
+        ));
+    }
+    // The silent tier (spec/17 row 3): nothing beyond what an ordinary start emits reached
+    // stderr — in particular, no admission warning.
+    let stderr_text = String::from_utf8_lossy(&stderr_bytes);
+    if stderr_text.contains("warning:") {
+        return fail(format!(
+            "leg {leg}: an ordinary start warned: {stderr_text}"
+        ));
+    }
+
+    // The acceptance's demanded demonstration: the sandbox survived the detach.
+    check(expect_json_string(
+        &viv(tp, &["status", "--json"])?,
+        "state",
+        "running",
+    ))
 }
 
 /// Slice 027's record surface (`Q-021`'s exit) at the CLI gate: the stop record's shape for
