@@ -240,7 +240,7 @@ impl Runtime {
         self.directory.join("launch.json")
     }
 
-    fn control_socket(&self) -> PathBuf {
+    pub(super) fn control_socket(&self) -> PathBuf {
         self.directory.join("control.sock")
     }
 
@@ -744,8 +744,8 @@ pub(super) const fn admit(available: Option<u64>, fleet_used: Option<u64>) -> Ad
     }
 }
 
-/// spec/17's warning, minus the `viv memory trim` line — the reclaim verb does not exist yet and
-/// is withheld rather than printed dead (slice 028 owns it).
+/// spec/17's warning, whole: the situation and the three ways out, in cost order — the reclaim
+/// line slice 026 withheld landed with slice 028's verb.
 ///
 /// A partial fleet sum is printed as the lower bound it is, and an unknown host total drops its
 /// clause rather than fabricating a figure.
@@ -775,6 +775,7 @@ fn admission_warning(
             "warning: {count} project VM{plural} {verb} running and using {at_least}{used} ",
             "of {total}host memory.\n",
             "         Starting `{sandbox}` may push the host into swap.\n",
+            "         viv memory trim   reclaim cached guest memory in this project\n",
             "         viv status -g     see what is running\n",
             "         viv stop          stop a project you are done with"
         ),
@@ -1554,7 +1555,7 @@ pub(super) fn read_boot_record(runtime: &Runtime) -> BootRecord {
 ///
 /// `78` and not `69`: the channel worked and the record was read — what this binary holds is a
 /// generation it must not act on, which is a configuration fact with a remedy, not an outage.
-fn boot_record_skew(runtime: &Runtime, theirs: u32) -> Failure {
+pub(super) fn boot_record_skew(runtime: &Runtime, theirs: u32) -> Failure {
     diagnosed(
         Namespace::Vm,
         "boot-record-skew",
@@ -1569,23 +1570,14 @@ fn boot_record_skew(runtime: &Runtime, theirs: u32) -> Failure {
     .with_hint("run `viv stop`, then `viv start`, so this version boots and records the VM")
 }
 
-/// Reads out of the launch specification what a session needs and the boot record does not carry.
-fn prepared(
-    runtime: &Runtime,
-    boot: BootMetadata,
-    invoking_cwd: &Path,
-) -> Result<Prepared, Failure> {
+/// The running VM's launch specification, read back with skew split from corruption (spec/14).
+///
+/// The sessions' reader and the reclaim verbs' alike: the record is the one artifact naming the
+/// pinned backend programs, the API socket, and the resources in force, and re-deriving any of
+/// them would guess (ADR-0049).
+pub(super) fn launch_spec_record(runtime: &Runtime) -> Result<LaunchSpec, Failure> {
     let path = runtime.launch_spec();
-    let unreadable = |why: &str| {
-        diagnosed(
-            Namespace::Vm,
-            "launch-record-unreadable",
-            "the running VM's launch specification cannot be read",
-            Locus::File(path.clone()),
-            why,
-            ExitKind::Unavailable,
-        )
-    };
+    let unreadable = |why: &str| launch_record_unreadable(&path, why);
     let bytes = fs::read(&path).map_err(|error| unreadable(&format!("{error}")))?;
     // The envelope before the strict schema (spec/14): a record another version wrote is skew
     // with both numbers named and a remedy, distinct from the corruption `unreadable` reports.
@@ -1608,8 +1600,29 @@ fn prepared(
     }
     // Deserialized rather than validated: `LaunchSpec::from_json` also checks the host facts that
     // were true when the VM was launched, and a session has no business re-litigating them.
-    let spec: LaunchSpec = serde_json::from_slice(&bytes)
-        .map_err(|_| unreadable("it does not match the launch schema this version understands"))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|_| unreadable("it does not match the launch schema this version understands"))
+}
+
+/// The read half of [`launch_spec_record`]'s failure vocabulary, shared with [`prepared`].
+fn launch_record_unreadable(path: &Path, why: &str) -> Failure {
+    diagnosed(
+        Namespace::Vm,
+        "launch-record-unreadable",
+        "the running VM's launch specification cannot be read",
+        Locus::File(path.to_path_buf()),
+        why,
+        ExitKind::Unavailable,
+    )
+}
+
+/// Reads out of the launch specification what a session needs and the boot record does not carry.
+fn prepared(
+    runtime: &Runtime,
+    boot: BootMetadata,
+    invoking_cwd: &Path,
+) -> Result<Prepared, Failure> {
+    let spec = launch_spec_record(runtime)?;
     // ADR-0108 privileges no declaration. Every workspace is mounted at its host path, so the
     // exact invoking cwd is already its guest path after ownership was proved during resolution.
     if !boot
@@ -1617,7 +1630,8 @@ fn prepared(
         .iter()
         .any(|workspace| invoking_cwd.starts_with(workspace))
     {
-        return Err(unreadable(
+        return Err(launch_record_unreadable(
+            &runtime.launch_spec(),
             "the invoking directory is outside the workspace set recorded for this boot",
         ));
     }
@@ -2542,7 +2556,10 @@ fn stop_record(manifest: &str, state: State, rung: Option<StopRung>, output: Out
 }
 
 /// The sweep's failure fold: the first failure is the result, later ones never displace it.
-fn record_failure(first: &mut Option<Failure>, failure: Failure) {
+///
+/// Shared with the `viv trim` fan-out, which inherits this sweep's partial-failure rule whole
+/// (ADR-0113).
+pub(super) fn record_failure(first: &mut Option<Failure>, failure: Failure) {
     first.get_or_insert(failure);
 }
 
@@ -2869,9 +2886,9 @@ mod tests {
         assert_eq!(admit(Some(u64::MAX), Some(u64::MAX)), Admission::Warn);
     }
 
-    /// spec/17's warning shape, minus the `viv memory trim` line slice 028 owns.
+    /// spec/17's warning shape, whole — the cost-ordered remedy list with the reclaim first.
     #[test]
-    fn admission_warning_is_the_spec_shape_without_trim() {
+    fn admission_warning_is_the_spec_shape() {
         let fleet = super::super::fleet::FleetUse {
             running: 4,
             measured: 4,
@@ -2884,11 +2901,12 @@ mod tests {
             concat!(
                 "warning: 4 project VMs are running and using 21.3 GiB of 31.2 GiB host memory.\n",
                 "         Starting `api-gateway` may push the host into swap.\n",
+                "         viv memory trim   reclaim cached guest memory in this project\n",
                 "         viv status -g     see what is running\n",
                 "         viv stop          stop a project you are done with"
             )
         );
-        assert!(!warning.contains("viv memory trim"));
+        assert!(warning.contains("viv memory trim"));
     }
 
     /// A partial fleet sum is a lower bound and says so; a single VM reads singular.

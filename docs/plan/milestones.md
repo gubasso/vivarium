@@ -6,7 +6,6 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 ## later
 
-- 028 memory-comes-back-without-a-stop — later — 4 sessions — needs 025 (the readings its record joins)
 - 024 installing-vivarium-takes-one-command — later — 5 sessions
 - 023 a-declared-port-crosses-inward — later — 3 sessions — deprioritized 2026-08-25 by the owner, whose sandbox use does not involve reaching a service from the host; the slice stays shaped and funded, and `Q-033` stays open until it closes
 - 005 cli-runtime-plumbing — later — 2 sessions
@@ -16,6 +15,8 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 009 automate-backend-advisories — later — 2 sessions
 
 ## closed
+
+- 028 memory-comes-back-without-a-stop — done — 4 sessions — one pass under the appetite, remainder included: both reclaim verbs over two new control-protocol pairs, the guest's root-owned fstrim bridge with the periodic timer the spec already promised, the `--to` floor clamp, the admission warning's withheld line with the `viv status` suggestion, and the `viv trim` fan-out; the item-3 pair-soundness answer, the ADR-0082 scoping, and the host evidence are in the slice `Revisions`
 
 - 018 the-user-owns-the-image — done — 4 sessions — one pass under the appetite, remainder included: the base flake a directory-form image carries with the follows composition, `viv update` whole, the base handoff, and the end-to-end lane; the owner's item-2 reshape, the shaping experiments, the acceptance revision, the `Q-037` raise from item 5's failed premise, and the host evidence are in the slice `Revisions`
 

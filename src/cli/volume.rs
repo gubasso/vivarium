@@ -167,6 +167,125 @@ pub(super) fn prune<E: Environment>(
     record(&candidates, reclaimed)
 }
 
+/// One volume's trim measurement: the before/after pair `viv volume trim` reports (spec/01).
+pub(super) struct TrimRow {
+    pub name: String,
+    pub before: u64,
+    pub after: u64,
+}
+
+/// The whole disk rung, one routine for both of its faces — `viv volume trim` and the `viv trim`
+/// fan-out — so "trimmed" stays one judgement (the rule `stop_one` carries).
+///
+/// The answer order is load-bearing. An unknown name is `78` whatever the state, because the
+/// question is malformed. Volumes that were never materialized are the empty record and exit `0`
+/// before the running check, because a running VM always has materialized images — this is the
+/// only order under which spec/14's `75` row and the empty-list acceptance can both hold. Only
+/// then does a resting VM earn `75`: the trim runs inside the guest, so it needs one.
+pub(super) async fn trim_rows<E: Environment + Sync>(
+    context: &Context<'_, E>,
+    name: Option<&str>,
+) -> Result<Vec<TrimRow>, Failure> {
+    let (rows, sandbox_id) = survey(context)?;
+
+    let selected: Vec<&Row> = match name {
+        Some(name) => {
+            let Some(row) = rows.iter().find(|row| row.name == name) else {
+                return Err(unknown_volume(name));
+            };
+            // An orphan is attached to no guest (spec/06: trim returns space from volumes that
+            // are kept), so naming one is a malformed question with a better verb.
+            if row.is_orphan() {
+                return Err(orphan_volume(name));
+            }
+            vec![row]
+        }
+        None => rows.iter().filter(|row| !row.is_orphan()).collect(),
+    };
+
+    if rows.iter().all(|row| row.image.is_none()) {
+        return Ok(Vec::new());
+    }
+
+    let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
+        .map_err(|error| super::resolution_failure(&error))?;
+    let runtime = lifecycle::Runtime::locate(&runtime_root, &sandbox_id, super::DEFAULT_TARGET)?;
+    // The same one-reclaim-at-a-time rule the memory rung takes: two overlapping trims would
+    // each attribute the other's returned blocks to its own before/after pair.
+    let _lock = lifecycle::TargetLock::acquire(&runtime)?;
+    super::trim::require_running(context, &runtime, &sandbox_id)?;
+    let boot = super::trim::live_boot(&runtime)?;
+
+    // What can actually be asked for: an attached volume with an image on disk. A declared
+    // volume the last start has not materialized contributes a zero row rather than a request,
+    // and reports honestly that nothing was there to trim.
+    // Both readings are taken under the lock, `before` here rather than from the survey's own
+    // stat: a trim that finished between that stat and this lock must not donate its
+    // reclamation to this run's pair. The metric is still the one `volume list` reports —
+    // allocated blocks of the same images — which is what spec/01's joinability requires.
+    let mut measured = Vec::new();
+    for row in &selected {
+        let before = match &row.image {
+            Some(image) => allocated_now(image)?,
+            None => 0,
+        };
+        measured.push(TrimRow {
+            name: row.name.clone(),
+            before,
+            after: 0,
+        });
+    }
+
+    let mountpoints: Vec<String> = selected
+        .iter()
+        .filter(|row| row.image.is_some())
+        .filter_map(|row| row.mount.clone())
+        .collect();
+    if !mountpoints.is_empty() {
+        super::trim::request_guest_trim(&runtime, &boot, mountpoints).await?;
+    }
+
+    // `after` is one more of the same reading, immediately past the agent's completion claim.
+    for (measured_row, row) in measured.iter_mut().zip(&selected) {
+        measured_row.after = match &row.image {
+            Some(image) => allocated_now(image)?,
+            None => 0,
+        };
+    }
+    Ok(measured)
+}
+
+/// One more of the reading the survey took: the image's allocated blocks, POSIX 512-byte units.
+fn allocated_now(image: &Path) -> Result<u64, Failure> {
+    let metadata = std::fs::metadata(image).map_err(|source| stat_failure(image, &source))?;
+    Ok(metadata.blocks() * 512)
+}
+
+fn unknown_volume(name: &str) -> Failure {
+    diagnosed(
+        Namespace::State,
+        "volume-unknown",
+        format!("no volume named `{name}`"),
+        Locus::Named("volume store"),
+        "spec/06 names the volumes a project has: the reserved pair, and what a current layer \
+        declares",
+        ExitKind::Config,
+    )
+    .with_hint("`viv volume list` shows the volumes this project has")
+}
+
+fn orphan_volume(name: &str) -> Failure {
+    diagnosed(
+        Namespace::State,
+        "volume-orphaned",
+        format!("volume `{name}` is an orphan"),
+        Locus::Named("volume store"),
+        "an orphaned image is attached to no guest, so nothing can trim inside it",
+        ExitKind::Config,
+    )
+    .with_hint("`viv volume prune` removes orphaned images")
+}
+
 /// The two disk sums `status` reports: what one sandbox's images occupy, against their apparent
 /// sizes.
 ///
@@ -390,6 +509,33 @@ fn rows_human(rows: &[Row]) -> Vec<Vec<String>> {
                 row.virtual_bytes
                     .map_or_else(|| "-".to_owned(), |bytes| bytes.to_string()),
             ]
+        })
+        .collect()
+}
+
+pub(super) fn trim_rows_json(rows: &[TrimRow]) -> Vec<Value> {
+    rows.iter()
+        .map(|row| {
+            serde_json::json!({
+                "name": row.name,
+                "allocated_before_bytes": row.before,
+                "allocated_after_bytes": row.after,
+                "reclaimed_bytes": row.before.saturating_sub(row.after),
+            })
+        })
+        .collect()
+}
+
+pub(super) fn trim_rows_human(rows: &[TrimRow]) -> Vec<String> {
+    rows.iter()
+        .map(|row| {
+            format!(
+                "{}\t{}\t{}\t{}",
+                row.name,
+                row.before,
+                row.after,
+                row.before.saturating_sub(row.after)
+            )
         })
         .collect()
 }

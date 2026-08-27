@@ -208,12 +208,13 @@ fn deliver(success: &vivarium::cli::Success, ui: &Ui) {
 ///
 /// stderr rather than stdout because stdout carries the result and a failure has none — the rule
 /// that keeps `… --json 2>/dev/null | jq` clean on success and empty on failure.
-/// Dispatches the three verbs that may ask the running guest's agent a question, and `None` for
+/// Dispatches the verbs that may ask the running guest's agent a question, and `None` for
 /// every other invocation.
 ///
 /// `status` reads the live session count; `stop` and `destroy` open their ladder with the
-/// shutdown request. All three are async and deliver one `Success` or fail, so they share this
-/// one shape; held out of `main` so that function stays a dispatcher rather than a verb.
+/// shutdown request; the three reclaim verbs drive the balloon and the guest's fstrim unit
+/// (spec/17). All are async and deliver one `Success` or fail, so they share this one shape;
+/// held out of `main` so that function stays a dispatcher rather than a verb.
 /// Dispatches `start --attach`, and `None` for every other invocation.
 ///
 /// Held out of `main` beside the arms below for the same reason they are: the attached form is
@@ -274,6 +275,15 @@ async fn agent_readers(
             vivarium::cli::destroy(context, *keep_volumes, *yes, *output).await,
             *output,
         ),
+        Invocation::MemoryTrim { to, output } => (
+            vivarium::cli::memory_trim(context, *to, *output).await,
+            *output,
+        ),
+        Invocation::VolumeTrim { name, output } => (
+            vivarium::cli::volume_trim(context, name.as_deref(), *output).await,
+            *output,
+        ),
+        Invocation::Trim { output } => (vivarium::cli::trim(context, *output).await, *output),
         _ => return None,
     };
     Some(match result {
@@ -307,6 +317,9 @@ const fn requested_output(invocation: &Invocation) -> Output {
         | Invocation::Stop { output, .. }
         | Invocation::VolumeList { output }
         | Invocation::VolumePrune { output, .. }
+        | Invocation::VolumeTrim { output, .. }
+        | Invocation::MemoryTrim { output, .. }
+        | Invocation::Trim { output }
         | Invocation::Destroy { output, .. }
         | Invocation::GenerationsList { output }
         | Invocation::GenerationsPrune { output, .. }

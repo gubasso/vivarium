@@ -30,7 +30,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         control_listener,
         boot_identity,
         credentials.iter().copied().collect(),
-        poweroff_trigger(),
+        triggers(),
         cancellation.clone(),
     );
     let relay = credentials::run(credential_listener, credentials, cancellation.clone());
@@ -43,14 +43,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Where a shutdown request lands: the file the guest's root-owned path unit watches.
+/// Where the root-owned units' trigger files land, one directory for all of them.
 ///
 /// The agent's unit declares `RuntimeDirectory=vivarium`, so systemd names the directory in
-/// `RUNTIME_DIRECTORY`; the fallback spells the same path for a hand-run agent.
-fn poweroff_trigger() -> PathBuf {
-    std::env::var_os("RUNTIME_DIRECTORY")
-        .map_or_else(|| PathBuf::from("/run/vivarium"), PathBuf::from)
-        .join("poweroff-requested")
+/// `RUNTIME_DIRECTORY`; the fallback spells the same path for a hand-run agent. The file names
+/// are each half of a contract with `nix/guest.nix`, which points the poweroff and fstrim path
+/// units at the same spellings.
+fn triggers() -> control::Triggers {
+    let directory = std::env::var_os("RUNTIME_DIRECTORY")
+        .map_or_else(|| PathBuf::from("/run/vivarium"), PathBuf::from);
+    control::Triggers {
+        poweroff: directory.join("poweroff-requested"),
+        fstrim_request: directory.join("fstrim-requested"),
+        fstrim_done: directory.join("fstrim-done"),
+        trim_serial: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+    }
 }
 
 fn parse_credentials(

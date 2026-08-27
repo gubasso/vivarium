@@ -23,7 +23,7 @@ type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
 /// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
 /// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
 /// survives the split.
-const WORKFLOWS: [WorkflowSpec; 41] = [
+const WORKFLOWS: [WorkflowSpec; 44] = [
     (
         "workflow_01_manifest_workspace_resolution_usage",
         GateLevel::Cli,
@@ -228,6 +228,21 @@ const WORKFLOWS: [WorkflowSpec; 41] = [
         "workflow_27_stop_all_sweep",
         GateLevel::Virtualization,
         workflow_27_sweep,
+    ),
+    (
+        "workflow_28_trim_usage_surface",
+        GateLevel::Cli,
+        workflow_28_usage,
+    ),
+    (
+        "workflow_28_memory_trim_reclaims",
+        GateLevel::Virtualization,
+        workflow_28_memory_reclaims,
+    ),
+    (
+        "workflow_28_volume_trim_returns_blocks",
+        GateLevel::Virtualization,
+        workflow_28_volume_trim,
     ),
 ];
 
@@ -4199,6 +4214,313 @@ fn workflow_27_sweep() -> Result<(), Failed> {
         0,
     ))?;
     check(expect_code(&viv_at(&tp, tp.root(), &["stop", "--all"])?, 0))
+}
+
+/// Slice 028's reclaim surface without a VM: the grammar (ADR-0113's flag placement), the
+/// resting refusals, the never-materialized empty record, and the fan-out's partial-failure
+/// face — every assertion spec/14's `memory trim`, `volume trim`, and `trim` rows make that
+/// needs no guest.
+fn workflow_28_usage() -> Result<(), Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+
+    // Grammar outranks binding: every malformed spelling is `64` before a manifest matters.
+    check(expect_code(&viv(&tp, &["memory"])?, EX_USAGE))?;
+    check(expect_code(&viv(&tp, &["memory", "grow"])?, EX_USAGE))?;
+    check(expect_code(
+        &viv(&tp, &["memory", "trim", "--to"])?,
+        EX_USAGE,
+    ))?;
+    check(expect_code(
+        &viv(&tp, &["memory", "trim", "--to", "abc"])?,
+        EX_USAGE,
+    ))?;
+    check(expect_code(
+        &viv(&tp, &["memory", "trim", "--to", "0"])?,
+        EX_USAGE,
+    ))?;
+    check(expect_code(
+        &viv(&tp, &["memory", "trim", "extra"])?,
+        EX_USAGE,
+    ))?;
+    // The fan-out carries neither resource command's flags (ADR-0113).
+    check(expect_code(&viv(&tp, &["trim", "--to", "1024"])?, EX_USAGE))?;
+    check(expect_code(&viv(&tp, &["trim", "cache"])?, EX_USAGE))?;
+    check(expect_code(
+        &viv(&tp, &["volume", "trim", "cache", "extra"])?,
+        EX_USAGE,
+    ))?;
+
+    // Well-formed but unbound: `78`, the same refusal every project-local verb answers.
+    check(expect_code(&viv(&tp, &["memory", "trim"])?, EX_CONFIG))?;
+    check(expect_code(&viv(&tp, &["volume", "trim"])?, EX_CONFIG))?;
+
+    arrange_manifest(&tp, "reclaim", "", "")?;
+
+    // Bound but resting: a reclaim asks a running guest, so `75` with the remedy named.
+    let resting = viv(&tp, &["memory", "trim"])?;
+    check(expect_code(&resting, EX_TEMPFAIL))?;
+    check(expect_stderr_mentions(&resting, "viv start"))?;
+
+    // Never-materialized volumes are the empty record and exit `0`, before the running check
+    // (spec/01) — and an unknown name is a malformed question whatever the state.
+    let empty = viv(&tp, &["volume", "trim", "--json"])?;
+    check(expect_code(&empty, 0))?;
+    let record = json_record(&empty)?;
+    if record["volumes"]
+        .as_array()
+        .is_none_or(|rows| !rows.is_empty())
+        || record["reclaimed_bytes"] != 0
+    {
+        return fail(format!("a never-materialized project reported {record}"));
+    }
+    check(expect_code(
+        &viv(&tp, &["volume", "trim", "nosuch"])?,
+        EX_CONFIG,
+    ))?;
+
+    // Materialize what a start would leave behind, so the disk rung reaches the running check.
+    let image = volume_image(&tp, "reclaim", "default");
+    let Some(volume_directory) = image.parent() else {
+        return fail("the volume image path has no parent directory");
+    };
+    fs::create_dir_all(volume_directory).map_err(io_failed)?;
+    fs::write(&image, vec![0u8; 4096]).map_err(io_failed)?;
+    check(expect_code(&viv(&tp, &["volume", "trim"])?, EX_TEMPFAIL))?;
+
+    // The fan-out inherits `viv stop --all`'s partial-failure rule whole (ADR-0113): a failing
+    // rung never skips the other, each is named on stderr, the first failure's category is the
+    // exit, and stdout carries no record.
+    let fanned = viv(&tp, &["trim", "--json"])?;
+    check(expect_code(&fanned, EX_TEMPFAIL))?;
+    if !fanned.stdout.is_empty() {
+        return fail("a failed fan-out emitted a record on stdout");
+    }
+    check(expect_stderr_mentions(&fanned, "could not trim memory"))?;
+    check(expect_stderr_mentions(&fanned, "could not trim volumes"))?;
+    Ok(())
+}
+
+/// Slice 028's memory rung against a live guest (spec/17, ADR-0113): dirtied guest page cache
+/// comes back, the fall shows on the same path `viv status` reads, the workload survives with
+/// its headroom restored, a second trim is a `0` fact, and the fan-out's record nests both
+/// subtrees with no grand total. The cache is dirtied by reading through the guest — a volume
+/// write would fill host page cache and measure the host (the ADR-0082 rabbit hole).
+fn workflow_28_memory_reclaims() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("reclaim-project").map_err(io_failed)?;
+    arrange_manifest(&tp, "reclaim", "", "")?;
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+
+    // A survivor the trim must not disturb, detached from its session so its lifetime is the
+    // guest's rather than the connection's.
+    check(expect_code(
+        &viv(
+            &tp,
+            &[
+                "exec",
+                "--",
+                "sh",
+                "-lc",
+                "setsid sh -c 'sleep 300' < /dev/null > /dev/null 2>&1 \
+                & echo $! > \"$HOME/worker.pid\"",
+            ],
+        )?,
+        0,
+    ))?;
+
+    // Fill guest page cache: read the store through the guest, bounded by file count.
+    check(expect_code(
+        &viv(
+            &tp,
+            &[
+                "exec",
+                "--",
+                "sh",
+                "-lc",
+                "find /nix/store -type f 2>/dev/null | head -n 4000 \
+                | xargs cat > /dev/null 2>&1; true",
+            ],
+        )?,
+        0,
+    ))?;
+
+    let before_status = mem_used_reading(&tp)?;
+
+    let trimmed = viv(&tp, &["memory", "trim", "--json"])?;
+    check(expect_code(&trimmed, 0))?;
+    check(expect_json_keys(
+        &trimmed,
+        &[
+            "manifest",
+            "target_mib",
+            "mem_used_before_bytes",
+            "mem_used_after_bytes",
+            "reclaimed_bytes",
+        ],
+    ))?;
+    let record = json_record(&trimmed)?;
+    if record["target_mib"].as_u64().is_none_or(|mib| mib == 0) {
+        return fail(format!(
+            "a completed run reported no target: {}",
+            record["target_mib"]
+        ));
+    }
+    let reclaimed = record["reclaimed_bytes"].as_u64().unwrap_or(0);
+    if reclaimed == 0 {
+        return fail("a trim over a cache-heavy guest reclaimed nothing");
+    }
+
+    // The fall shows on the same path `status` reads, so the two commands agree (spec/01).
+    let after_status = mem_used_reading(&tp)?;
+    if after_status >= before_status {
+        return fail(format!(
+            "status reported no fall: {before_status} then {after_status}"
+        ));
+    }
+
+    // The workload is still running, and can take memory back: the guest allocates again.
+    check(expect_code(
+        &viv(
+            &tp,
+            &[
+                "exec",
+                "--",
+                "sh",
+                "-lc",
+                "kill -0 \"$(cat \"$HOME/worker.pid\")\"",
+            ],
+        )?,
+        0,
+    ))?;
+
+    // Reclaiming nothing is a fact about the guest, not a failure (spec/01).
+    let again = viv(&tp, &["memory", "trim", "--json"])?;
+    check(expect_code(&again, 0))?;
+
+    // The fan-out in the same boot: one subtree per resource, the sandbox key hoisted, and
+    // deliberately no top-level total (ADR-0113).
+    let fanned = viv(&tp, &["trim", "--json"])?;
+    check(expect_code(&fanned, 0))?;
+    check(expect_json_keys(&fanned, &["manifest", "memory", "disk"]))?;
+    let record = json_record(&fanned)?;
+    if !record["reclaimed_bytes"].is_null() {
+        return fail("the fan-out minted a top-level total");
+    }
+    for (subtree, key) in [("memory", "mem_used_before_bytes"), ("disk", "volumes")] {
+        if record[subtree][key].is_null() {
+            return fail(format!(
+                "the `{subtree}` subtree is not its command's record"
+            ));
+        }
+    }
+
+    check(expect_code(&viv(&tp, &["stop"])?, 0))
+}
+
+/// Slice 028's disk rung against a live guest (spec/17, ADR-0037): freed bytes inside the
+/// default volume return to the sparse host image, measured on the image's own allocated
+/// blocks — never `fstrim`'s report — and joined to what `viv volume list` reads.
+fn workflow_28_volume_trim() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("trim-volume-project").map_err(io_failed)?;
+    arrange_manifest(&tp, "trimvol", "", "")?;
+    check(expect_code(&viv(&tp, &["start"])?, 0))?;
+
+    // Write, delete, and settle half a GiB inside the home volume.
+    check(expect_code(
+        &viv(
+            &tp,
+            &[
+                "exec",
+                "--",
+                "sh",
+                "-lc",
+                "dd if=/dev/zero of=\"$HOME/blob\" bs=1M count=512 conv=fsync status=none \
+                && rm \"$HOME/blob\" && sync",
+            ],
+        )?,
+        0,
+    ))?;
+
+    let listed = viv(&tp, &["volume", "list", "--json"])?;
+    check(expect_code(&listed, 0))?;
+    let before_rows = json_record(&listed)?;
+    let listed_before = volume_row_field(&before_rows, "default", "allocated_bytes")?;
+
+    let trimmed = viv(&tp, &["volume", "trim", "--json"])?;
+    check(expect_code(&trimmed, 0))?;
+    let record = json_record(&trimmed)?;
+    let rows = record["volumes"]
+        .as_array()
+        .cloned()
+        .ok_or_else(|| Failed::from("the trim record published no `volumes` array"))?;
+    let total: u64 = rows
+        .iter()
+        .filter_map(|row| row["reclaimed_bytes"].as_u64())
+        .sum();
+    if record["reclaimed_bytes"].as_u64() != Some(total) {
+        return fail(format!(
+            "the top-level total {} is not the sum of the rows {total}",
+            record["reclaimed_bytes"]
+        ));
+    }
+    let default_row = rows
+        .iter()
+        .find(|row| row["name"] == "default")
+        .ok_or_else(|| Failed::from("the default volume reported no row"))?;
+    let before = default_row["allocated_before_bytes"].as_u64().unwrap_or(0);
+    let after = default_row["allocated_after_bytes"]
+        .as_u64()
+        .unwrap_or(u64::MAX);
+    if after >= before {
+        return fail(format!(
+            "the default volume's image did not shrink: {before} then {after}"
+        ));
+    }
+    // The written 512 MiB came back at least in large part; a token fall would pass a broken
+    // discard chain (the harness-method lesson: measure the outcome, not the motion).
+    if before.saturating_sub(after) < 256 * 1024 * 1024 {
+        return fail(format!(
+            "the trim returned only {} bytes of the 512 MiB written",
+            before.saturating_sub(after)
+        ));
+    }
+    if listed_before != before {
+        return fail(format!(
+            "the trim's `before` ({before}) is not `volume list`'s reading ({listed_before})"
+        ));
+    }
+
+    // Joined after as well: one measurement, two readers (spec/01).
+    let relisted = viv(&tp, &["volume", "list", "--json"])?;
+    check(expect_code(&relisted, 0))?;
+    let after_rows = json_record(&relisted)?;
+    let listed_after = volume_row_field(&after_rows, "default", "allocated_bytes")?;
+    if listed_after > before {
+        return fail(format!(
+            "volume list re-read {listed_after} after a trim that ended at {after}"
+        ));
+    }
+
+    check(expect_code(&viv(&tp, &["stop"])?, 0))
+}
+
+/// One named volume row's field out of a `volume list`/`volume trim` record.
+fn volume_row_field(record: &serde_json::Value, name: &str, field: &str) -> Result<u64, Failed> {
+    record["volumes"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == name))
+        .and_then(|row| row[field].as_u64())
+        .ok_or_else(|| Failed::from(format!("no `{field}` for volume `{name}` in {record}")))
+}
+
+/// Reads `runtime.mem_used_bytes` out of the local report, failing when it is unavailable —
+/// the trials that call this already require the same delegated controller the product does.
+fn mem_used_reading(tp: &TempProject) -> Result<u64, Failed> {
+    let status = viv(tp, &["status", "--json"])?;
+    check(expect_code(&status, 0))?;
+    let record = json_record(&status)?;
+    record["runtime"]["mem_used_bytes"]
+        .as_u64()
+        .ok_or_else(|| Failed::from("status reported no mem_used_bytes on a delegated host"))
 }
 
 /// Slice 026's admission refusal (spec/17 row 1, N23): below the reserve, `viv start` exits

@@ -835,6 +835,93 @@ pub fn stop_all_json(rows: &[Value]) -> String {
     line(&json!({ "projects": rows }))
 }
 
+/// `viv volume trim --json` — the rows under their named key, and the sum beside them.
+///
+/// The top-level `reclaimed_bytes` is the sum of the rows so the common question needs no
+/// client-side arithmetic, and `{"volumes": [], "reclaimed_bytes": 0}` is the record of a
+/// project whose volumes were never materialized (spec/01).
+pub fn volume_trim_json(rows: &[Value]) -> String {
+    line(&volume_trim_record(rows))
+}
+
+/// The object `volume_trim_json` wraps and the `viv trim` fan-out nests verbatim (spec/01).
+pub fn volume_trim_record(rows: &[Value]) -> Value {
+    let reclaimed: u64 = rows
+        .iter()
+        .filter_map(|row| row["reclaimed_bytes"].as_u64())
+        .sum();
+    json!({ "volumes": rows, "reclaimed_bytes": reclaimed })
+}
+
+/// `viv volume trim` — one row per volume, then a line naming what was measured.
+///
+/// The rows carry raw byte counts like `volume list`'s; the summary line spells the figure in
+/// the table units and names the metric, because a reclaimed figure whose metric is unnamed is
+/// exactly what ADR-0082 warns reads as success that did not happen.
+pub fn volume_trim_human(rows: &[String], reclaimed_bytes: u64) -> String {
+    let mut rendered = String::new();
+    for row in rows {
+        rendered.push_str(row);
+        rendered.push('\n');
+    }
+    let _ = writeln!(
+        rendered,
+        "reclaimed {} of image allocation",
+        bytes(reclaimed_bytes)
+    );
+    rendered
+}
+
+/// `viv memory trim --json` — spec/01's record: the sandbox key, then the measured object.
+pub fn memory_trim_json(manifest: &str, reading: &super::trim::MemoryTrimReading) -> String {
+    let mut record = Map::new();
+    record.insert("manifest".to_owned(), Value::String(manifest.to_owned()));
+    if let Value::Object(measured) = memory_trim_record(reading) {
+        record.extend(measured);
+    }
+    line(&Value::Object(record))
+}
+
+/// The measured object alone — what the `viv trim` fan-out nests verbatim under `memory`,
+/// with the sandbox key hoisted (spec/01).
+pub fn memory_trim_record(reading: &super::trim::MemoryTrimReading) -> Value {
+    json!({
+        "target_mib": reading.target_mib,
+        "mem_used_before_bytes": reading.before,
+        "mem_used_after_bytes": reading.after,
+        // Floored at zero: the command's promise is what the host got back, not a signed
+        // account, so a guest that grew during the operation reports nothing (spec/01).
+        "reclaimed_bytes": reading.before.saturating_sub(reading.after),
+    })
+}
+
+/// `viv memory trim` — one line naming what the host got back, and on what instrument.
+pub fn memory_trim_line(reading: &super::trim::MemoryTrimReading) -> String {
+    format!(
+        "reclaimed {} of host memory (sandbox scope charge {} -> {}, target {} MiB)\n",
+        bytes(reading.before.saturating_sub(reading.after)),
+        bytes(reading.before),
+        bytes(reading.after),
+        reading.target_mib
+    )
+}
+
+/// `viv trim --json` — one subtree per resource, each verbatim its own command's record, the
+/// sandbox key hoisted, and deliberately no top-level total: host memory bytes and
+/// image-allocated bytes are different quantities whose sum names nothing a reader could check
+/// (ADR-0113, spec/01).
+pub fn trim_json(
+    manifest: &str,
+    memory: &super::trim::MemoryTrimReading,
+    volume_rows: &[Value],
+) -> String {
+    line(&json!({
+        "manifest": manifest,
+        "memory": memory_trim_record(memory),
+        "disk": volume_trim_record(volume_rows),
+    }))
+}
+
 /// `viv destroy --json` — this run's removal plan as executed, beside what it spared.
 ///
 /// A path the plan names outright stays in `removed` even when already absent (the idempotent

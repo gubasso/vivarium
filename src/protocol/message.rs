@@ -32,6 +32,10 @@ pub const TAG_SESSIONS_QUERY: u8 = 0x0e;
 pub const TAG_SESSION_COUNT: u8 = 0x0f;
 pub const TAG_SHUTDOWN_REQUEST: u8 = 0x10;
 pub const TAG_SHUTDOWN_ACK: u8 = 0x11;
+pub const TAG_MEMORY_QUERY: u8 = 0x12;
+pub const TAG_MEMORY_REPORT: u8 = 0x13;
+pub const TAG_TRIM_REQUEST: u8 = 0x14;
+pub const TAG_TRIM_ACK: u8 = 0x15;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -204,6 +208,27 @@ pub struct SessionCount {
     pub sessions: u64,
 }
 
+/// The guest kernel's own account of its memory, from `/proc/meminfo` (spec/12, spec/17).
+///
+/// `available_bytes` is `MemAvailable` — the kernel's estimate of what can be reclaimed without
+/// swapping — because the trim target derivation needs "enough to drop cache, not enough to
+/// disturb running work", and that is the one figure the kernel itself publishes with exactly
+/// that meaning. The host cannot derive it: the scope charge it reads includes the page cache
+/// the trim exists to drop.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryReport {
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+}
+
+/// The guest mountpoints one trim request covers (spec/12, spec/17).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrimRequest {
+    pub mountpoints: Vec<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientFrame {
     Hello(Hello),
@@ -215,6 +240,8 @@ pub enum ClientFrame {
     Signal(SignalRequest),
     Sessions,
     Shutdown,
+    Memory,
+    Trim(TrimRequest),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -227,6 +254,8 @@ pub enum AgentFrame {
     Error(ProtocolErrorMessage),
     Sessions(SessionCount),
     ShutdownAck,
+    Memory(MemoryReport),
+    TrimAck,
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]

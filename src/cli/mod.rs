@@ -20,6 +20,7 @@ mod prompt;
 mod render;
 // The two verbs the process boundary dispatches itself; see the module's own note on why.
 pub mod session;
+mod trim;
 mod update;
 mod volume;
 
@@ -210,6 +211,9 @@ pub fn run<E: Environment>(
         | Invocation::Status { .. }
         | Invocation::Stop { .. }
         | Invocation::Destroy { .. }
+        | Invocation::MemoryTrim { .. }
+        | Invocation::VolumeTrim { .. }
+        | Invocation::Trim { .. }
         | Invocation::Help { .. }
         | Invocation::Version
         | Invocation::Doctor { .. } => Ok(Success::plain(String::new())),
@@ -234,11 +238,22 @@ pub async fn status<E: Environment + Sync>(
         return fleet::report(context, output).await;
     }
     let report = lifecycle::status(context).await?;
-    Ok(Success::plain(if output.is_json() {
-        render::status_json(&report)
-    } else {
-        render::status_human(&report, context.ui.palette_out())
-    }))
+    // spec/17's suggestion pairing rides the notes channel, not the result: stdout stays clean
+    // for `--json | jq`, `-q` suppresses it, and it is a suggestion, never an action (N23).
+    let notes = fleet::trim_suggestion(
+        context,
+        report.manifest.as_deref().unwrap_or_default(),
+        report.runtime.mem_used_bytes,
+        report.resources.as_ref().map(|resources| resources.mem_mib),
+    );
+    Ok(Success {
+        stdout: if output.is_json() {
+            render::status_json(&report)
+        } else {
+            render::status_human(&report, context.ui.palette_out())
+        },
+        notes,
+    })
 }
 
 /// `viv stop`, both faces: the project-local ladder and the `--all` sweep.
@@ -278,6 +293,51 @@ pub async fn destroy<E: Environment + Sync>(
     output: Output,
 ) -> Result<Success, Failure> {
     destroy::destroy(context, keep_volumes, yes, output).await
+}
+
+/// `viv memory trim` — reclaim guest memory and report what the host got back (spec/17).
+///
+/// Async because it drives the backend and asks the guest agent for the target derivation, so
+/// it is dispatched from `main` beside the other agent talkers (ADR-0113).
+///
+/// # Errors
+///
+/// Returns [`Failure`] for an unbound project (`78`), a VM that is not running (`75`), an
+/// unreachable agent or backend (`69`), or a broken channel or unreadable measurement (`74`).
+pub async fn memory_trim<E: Environment + Sync>(
+    context: &Context<'_, E>,
+    to_mib: Option<u64>,
+    output: Output,
+) -> Result<Success, Failure> {
+    trim::memory(context, to_mib, output).await
+}
+
+/// `viv volume trim` — return space freed inside volumes to the host images (spec/17, ADR-0113).
+/// Async for the reason [`memory_trim`] is: the trim itself runs in the guest.
+///
+/// # Errors
+///
+/// Returns [`Failure`] for an unbound project or unknown name (`78`), a VM that is not running
+/// (`75`), an unreachable agent (`69`), trim or measurement I/O (`74`), or permission (`77`).
+pub async fn volume_trim<E: Environment + Sync>(
+    context: &Context<'_, E>,
+    name: Option<&str>,
+    output: Output,
+) -> Result<Success, Failure> {
+    trim::volume(context, name, output).await
+}
+
+/// `viv trim` — the fan-out over both reclaim rungs, memory first (ADR-0113).
+///
+/// # Errors
+///
+/// Returns [`Failure`] after both rungs ran: the first failing rung's own failure, its category
+/// the exit code, with each failing rung already named on stderr.
+pub async fn trim<E: Environment + Sync>(
+    context: &Context<'_, E>,
+    output: Output,
+) -> Result<Success, Failure> {
+    trim::fan_out(context, output).await
 }
 
 /// The binding record: what is in force, which source said so, and where everything lives.

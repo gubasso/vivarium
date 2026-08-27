@@ -276,8 +276,50 @@ fn rows_human(rows: &[FleetRow]) -> Vec<Vec<String>> {
     table
 }
 
+/// spec/17's suggestion pairing: a sandbox at 90% of its ceiling while host memory is low
+/// earns the `viv memory trim` note — on stderr, as a suggestion, never an action (N23).
+///
+/// "Host memory is also low" is the admission table's own non-proceed condition, computed from
+/// the same readings `start` acts on, so the suggestion and the admission warning can never
+/// disagree about what "low" means. Every reading that cannot be taken silences the note: a
+/// suggestion is the one output with no honest degraded form.
+pub(super) fn trim_suggestion<E: Environment>(
+    context: &Context<'_, E>,
+    manifest: &str,
+    used: Option<u64>,
+    ceiling_mib: Option<u64>,
+) -> String {
+    if !near_ceiling(used, ceiling_mib) {
+        return String::new();
+    }
+    let Ok(runtime_root) =
+        config::resolve_runtime_root(context.environment, config::effective_uid())
+    else {
+        return String::new();
+    };
+    let Ok(fleet) = measured_use(context, &runtime_root) else {
+        return String::new();
+    };
+    let (available, _) = host_memory();
+    if matches!(
+        lifecycle::admit(available, fleet.measured_bytes),
+        lifecycle::Admission::Proceed
+    ) {
+        return String::new();
+    }
+    trim_suggestion_line(manifest)
+}
+
+/// The note's one line, separated so its wording is testable without a host to read.
+pub(super) fn trim_suggestion_line(manifest: &str) -> String {
+    format!(
+        "`{manifest}` is near its memory ceiling while host memory is low; \
+        `viv memory trim` reclaims cached guest memory\n"
+    )
+}
+
 /// spec/17's near-ceiling threshold: measured use at or past 90% of the ceiling in force.
-const fn near_ceiling(used: Option<u64>, ceiling_mib: Option<u64>) -> bool {
+pub(super) const fn near_ceiling(used: Option<u64>, ceiling_mib: Option<u64>) -> bool {
     match (used, ceiling_mib) {
         (Some(used), Some(mib)) => {
             let ceiling = mib.saturating_mul(1024 * 1024);
@@ -532,6 +574,16 @@ mod tests {
     }
 
     /// The 90% rule holds at the boundary and never fires on an unknown half.
+    #[test]
+    fn the_trim_suggestion_names_the_sandbox_the_condition_and_the_verb() {
+        let line = super::trim_suggestion_line("rust-web");
+        assert_eq!(
+            line,
+            "`rust-web` is near its memory ceiling while host memory is low; \
+            `viv memory trim` reclaims cached guest memory\n"
+        );
+    }
+
     #[test]
     fn near_ceiling_is_ninety_percent_of_a_known_pair() {
         let mib = 1024 * 1024_u64;

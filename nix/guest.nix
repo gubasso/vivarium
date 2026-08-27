@@ -469,6 +469,13 @@ in
     # property of the image rather than a line of configuration.
     zramSwap.enable = true;
 
+    # The periodic in-guest trim spec/06, spec/17, and ADR-0037 rest on: freed
+    # extents inside a kept volume go back to the sparse host image on a schedule,
+    # and `viv volume trim` exists for impatience rather than correctness. The
+    # distribution's weekly timer at its own defaults; continuous `discard` stays
+    # off deliberately (ADR-0037: it puts the cost on every delete).
+    services.fstrim.enable = true;
+
     # Both flags, per ADR-0088: the lower store is opened with `read-only=true` in
     # its URI and *that parameter* sits behind the second one, so enabling only
     # `local-overlay-store` fails at daemon start rather than at evaluation.
@@ -560,6 +567,19 @@ in
         description = "Watch for the agent's shutdown request";
         wantedBy = [ "multi-user.target" ];
         pathConfig.PathExists = "/run/vivarium/poweroff-requested";
+      };
+
+      # The disk counterpart of the poweroff pair (spec/12, spec/17): same bridge,
+      # opposite promise. `FITRIM` needs `CAP_SYS_ADMIN`, which the agent's empty
+      # bounding set rules out, so the agent writes the mountpoint list and this
+      # root-owned pair trims and answers with a done marker — completion, not
+      # motion, because the host reads the image's allocation right after the
+      # acknowledgement. The widest thing an agent-writable request admits is
+      # trimming a filesystem the workload could already fill or fsync itself.
+      paths.vivarium-fstrim = {
+        description = "Watch for the agent's volume trim request";
+        wantedBy = [ "multi-user.target" ];
+        pathConfig.PathExists = "/run/vivarium/fstrim-requested";
       };
 
       services = {
@@ -671,6 +691,19 @@ in
             Type = "oneshot";
             ExecStart = "${config.systemd.package}/bin/systemctl poweroff";
           };
+        };
+
+        vivarium-fstrim = {
+          description = "Trim the requested mountpoints on the agent's behalf";
+          path = [
+            pkgs.util-linux
+            pkgs.coreutils
+          ];
+          serviceConfig.Type = "oneshot";
+          # Extracted like `volume-prepare.sh`, and exempt from
+          # `enableStrictShellChecks` for the same shipped-closure reason stated
+          # there; the `shellcheck` pre-commit hook covers the body.
+          script = builtins.readFile ./fstrim-run.sh;
         };
 
         # ADR-0088's fifth prior-art detail: `nix-daemon` is the only process that

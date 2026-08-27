@@ -121,6 +121,20 @@ pub enum Invocation {
         yes: bool,
         output: Output,
     },
+    /// Return space freed inside volumes to the host images (spec/17, ADR-0113).
+    VolumeTrim {
+        /// One volume by name; every volume when absent.
+        name: Option<String>,
+        output: Output,
+    },
+    /// Reclaim guest memory the VM is holding but no longer needs (spec/17, ADR-0113).
+    MemoryTrim {
+        /// The MiB figure the guest is asked to reach; derived from its own report when absent.
+        to: Option<u64>,
+        output: Output,
+    },
+    /// The fan-out over both reclaim rungs, memory first, carrying neither's flags (ADR-0113).
+    Trim { output: Output },
     /// Tear the project down, at the boundary spec/10 fixes (ADR-0043, ADR-0080).
     Destroy {
         /// Spare the volume images; everything else still goes.
@@ -256,6 +270,8 @@ where
         Some("shell") => shell(rest),
         Some("exec") => exec(rest, streams),
         Some("stop") => stop(rest),
+        Some("trim") => trim(rest),
+        Some("memory") => memory(rest),
         Some("volume") => volume(rest, streams),
         Some("generations") => generations(rest),
         Some("destroy") => destroy(rest, streams),
@@ -292,6 +308,7 @@ fn takes_value(verb: Option<&str>, flag: &str) -> bool {
         Some("stop") => matches!(flag, "-t" | "--timeout"),
         // Keyed on the family verb, because the lift never sees the subcommand.
         Some("generations") => matches!(flag, "--keep" | "--older-than"),
+        Some("memory") => flag == "--to",
         _ => false,
     }
 }
@@ -354,8 +371,8 @@ fn lift_globals(argv: impl Iterator<Item = OsString>) -> Globals {
     globals
 }
 
-const TOP_USAGE: &str = "viv <config|manifest|start|status|shell|exec|stop|generations|volume|\
-destroy|gc|update|doctor> [options]";
+const TOP_USAGE: &str = "viv <config|manifest|start|status|shell|exec|stop|trim|generations|\
+memory|volume|destroy|gc|update|doctor> [options]";
 const CONFIG_USAGE: &str = "viv config [--manifest <name>] [--json]";
 const CONFIG_EVAL_USAGE: &str = "viv config eval [--json]";
 const CONFIG_SOURCES_USAGE: &str = "viv config sources [--json]";
@@ -367,8 +384,11 @@ const SHELL_USAGE: &str = "viv shell";
 const EXEC_USAGE: &str =
     "viv exec [-t|--tty] [-T|--no-tty] [--env KEY[=VAL]]... -- <command> [args...]";
 const STOP_USAGE: &str = "viv stop [--all] [--force] [-t|--timeout <secs>] [--json]";
-const VOLUME_USAGE: &str = "viv volume <list|prune> [options]";
+const TRIM_USAGE: &str = "viv trim [--json]";
+const MEMORY_USAGE: &str = "viv memory trim [--to <MiB>] [--json]";
+const VOLUME_USAGE: &str = "viv volume <list|trim|prune> [options]";
 const VOLUME_LIST_USAGE: &str = "viv volume list [--json]";
+const VOLUME_TRIM_USAGE: &str = "viv volume trim [<name>] [--json]";
 const VOLUME_PRUNE_USAGE: &str = "viv volume prune [-n|--dry-run] [-f|--yes] [--json]";
 const DESTROY_USAGE: &str = "viv destroy [-f|--yes] [--keep-volumes] [--json]";
 const GENERATIONS_USAGE: &str = "viv generations <list|activate|rollback|prune> [options]";
@@ -432,14 +452,24 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("exec", EXEC_USAGE, "run one command inside the guest"),
     ("stop", STOP_USAGE, "bring the VM down"),
     (
+        "trim",
+        TRIM_USAGE,
+        "reclaim guest memory and volume space in one invocation",
+    ),
+    (
         "generations",
         GENERATIONS_USAGE,
         "list, switch, and prune retained builds",
     ),
     (
+        "memory",
+        MEMORY_USAGE,
+        "reclaim memory the VM holds but no longer needs",
+    ),
+    (
         "volume",
         VOLUME_USAGE,
-        "list and prune this project's volumes",
+        "list, trim, and prune this project's volumes",
     ),
     ("destroy", DESTROY_USAGE, "remove the VM and its state"),
     ("gc", GC_USAGE, "collect unreferenced build outputs"),
@@ -785,6 +815,63 @@ fn stop(rest: &[OsString]) -> Result<Invocation, UsageError> {
     })
 }
 
+/// `viv trim [--json]` — deliberately flagless beyond `--json`.
+///
+/// ADR-0113: the fan-out carries neither resource command's flags, because a target or a single
+/// volume in mind is a reason to name `viv memory trim` or `viv volume trim` instead. So `--to`
+/// or a positional here is an unknown token at `64`, not a flag to forward.
+fn trim(rest: &[OsString]) -> Result<Invocation, UsageError> {
+    Ok(Invocation::Trim {
+        output: flags_only(rest, TRIM_USAGE)?,
+    })
+}
+
+/// `viv memory <trim>` — the resource namespace ADR-0113 sits the memory reclaim under.
+fn memory(rest: &[OsString]) -> Result<Invocation, UsageError> {
+    let Some(sub) = rest.first() else {
+        return Err(UsageError::new(
+            "`viv memory` needs a subcommand",
+            Some(MEMORY_USAGE),
+        ));
+    };
+    match sub.to_str() {
+        Some("trim") => {
+            let mut to = None;
+            let mut output = Output::Human;
+            let mut tokens = rest[1..].iter();
+            while let Some(token) = tokens.next() {
+                match token.to_str() {
+                    Some("--to") => {
+                        let raw = value(&mut tokens, "--to", MEMORY_USAGE)?;
+                        let parsed: u64 = raw.parse().map_err(|_| {
+                            UsageError::new(
+                                format!("`--to` expects a whole MiB figure, got `{raw}`"),
+                                Some(MEMORY_USAGE),
+                            )
+                        })?;
+                        // Zero is not a target: asking the guest down to nothing is not a trim,
+                        // and the balloon arithmetic would read it as "give back everything".
+                        if parsed == 0 {
+                            return Err(UsageError::new(
+                                "`--to` expects a figure above zero MiB",
+                                Some(MEMORY_USAGE),
+                            ));
+                        }
+                        to = Some(parsed);
+                    }
+                    Some("--json") => output = Output::Json,
+                    _ => return Err(unknown(token, MEMORY_USAGE)),
+                }
+            }
+            Ok(Invocation::MemoryTrim { to, output })
+        }
+        _ => Err(UsageError::new(
+            format!("`viv memory {}` is not a subcommand", sub.to_string_lossy()),
+            Some(MEMORY_USAGE),
+        )),
+    }
+}
+
 fn volume(rest: &[OsString], streams: Streams) -> Result<Invocation, UsageError> {
     let Some(sub) = rest.first() else {
         return Err(UsageError::new(
@@ -796,6 +883,20 @@ fn volume(rest: &[OsString], streams: Streams) -> Result<Invocation, UsageError>
         Some("list") => Ok(Invocation::VolumeList {
             output: flags_only(&rest[1..], VOLUME_LIST_USAGE)?,
         }),
+        Some("trim") => {
+            let mut name = None;
+            let mut output = Output::Human;
+            for token in &rest[1..] {
+                match token.to_str() {
+                    Some("--json") => output = Output::Json,
+                    Some(raw) if name.is_none() && !raw.starts_with('-') => {
+                        name = Some(raw.to_owned());
+                    }
+                    _ => return Err(unknown(token, VOLUME_TRIM_USAGE)),
+                }
+            }
+            Ok(Invocation::VolumeTrim { name, output })
+        }
         Some("prune") => {
             let (mut dry_run, mut yes) = (false, false);
             let mut output = Output::Human;
@@ -1087,6 +1188,9 @@ mod tests {
             | Invocation::Stop { output, .. }
             | Invocation::VolumeList { output }
             | Invocation::VolumePrune { output, .. }
+            | Invocation::VolumeTrim { output, .. }
+            | Invocation::MemoryTrim { output, .. }
+            | Invocation::Trim { output }
             | Invocation::Destroy { output, .. }
             | Invocation::GenerationsList { output }
             | Invocation::GenerationsPrune { output, .. }
@@ -1324,6 +1428,40 @@ mod tests {
             parsed(&["destroy", "--yes"]),
             Ok(Invocation::Destroy { .. })
         ));
+        assert!(matches!(
+            parsed(&["volume", "trim"]),
+            Ok(Invocation::VolumeTrim { name: None, .. })
+        ));
+        assert!(matches!(
+            parsed(&["memory", "trim"]),
+            Ok(Invocation::MemoryTrim { to: None, .. })
+        ));
+        assert!(matches!(parsed(&["trim"]), Ok(Invocation::Trim { .. })));
+    }
+
+    /// Pins the reclaim family's grammar: which flag sits on which command (ADR-0113).
+    #[test]
+    fn the_reclaim_family_parses_and_refuses() {
+        assert!(matches!(
+            parsed(&["memory", "trim", "--to", "3072"]),
+            Ok(Invocation::MemoryTrim { to: Some(3072), .. })
+        ));
+        // `--to` demands a whole positive MiB figure and never guesses one.
+        assert!(parsed(&["memory", "trim", "--to"]).is_err());
+        assert!(parsed(&["memory", "trim", "--to", "abc"]).is_err());
+        assert!(parsed(&["memory", "trim", "--to", "0"]).is_err());
+        assert!(parsed(&["memory", "trim", "extra"]).is_err());
+        assert!(parsed(&["memory"]).is_err());
+        assert!(parsed(&["memory", "grow"]).is_err());
+        assert!(matches!(
+            parsed(&["volume", "trim", "cache"]),
+            Ok(Invocation::VolumeTrim { name: Some(name), .. }) if name == "cache"
+        ));
+        // One positional at most: a second name is not a list, it is a typo.
+        assert!(parsed(&["volume", "trim", "cache", "extra"]).is_err());
+        // The fan-out carries neither resource command's flags (ADR-0113).
+        assert!(parsed(&["trim", "--to", "3072"]).is_err());
+        assert!(parsed(&["trim", "cache"]).is_err());
     }
 
     /// Pins `update`'s grammar: positionals accumulate in order, a repeated name is one
@@ -1486,6 +1624,11 @@ mod tests {
             vec!["stop", "--json"],
             vec!["update", "--json"],
             vec!["update", "nixpkgs", "--json"],
+            vec!["memory", "trim", "--json"],
+            vec!["memory", "trim", "--to", "2048", "--json"],
+            vec!["volume", "trim", "--json"],
+            vec!["volume", "trim", "cache", "--json"],
+            vec!["trim", "--json"],
         ] {
             let invocation = parse(argv(&rest), tty())
                 .map(|parsed| parsed.invocation)

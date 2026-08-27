@@ -29,3 +29,5 @@ The swap-tuning pair is settled by a search that failed. No upstream source stat
 ## Status
 
 Accepted
+
+Operated against by slice [`028-memory-comes-back-without-a-stop`](../plan/slices/028-memory-comes-back-without-a-stop/README.md) — 2026-08-27, `viv memory trim`'s balloon reclaim runs against exactly this posture: the guest drops its own caches under the inflate, zram absorbs what would otherwise thrash, and no posture knob moved to make the trim work.

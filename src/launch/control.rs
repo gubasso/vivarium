@@ -16,8 +16,8 @@
 use crate::launch::{BootMetadata, LaunchError};
 use crate::protocol::hybrid;
 use crate::protocol::{
-    AgentFrame, CONTROL_PORT, ClientFrame, Hello, SCHEMA_VERSION, STREAM_PAYLOAD_MAX, StartRequest,
-    TerminalSize, read_agent_frame, write_client_frame,
+    AgentFrame, CONTROL_PORT, ClientFrame, Hello, MemoryReport, SCHEMA_VERSION, STREAM_PAYLOAD_MAX,
+    StartRequest, TerminalSize, TrimRequest, read_agent_frame, write_client_frame,
 };
 use std::path::Path;
 use std::time::Duration;
@@ -187,6 +187,114 @@ pub async fn request_shutdown(
     matches!(tokio::time::timeout(timeout, ask).await, Ok(Some(())))
 }
 
+/// Why a reclaim call could not be answered, split the way spec/14 splits its codes.
+///
+/// The reclaim verbs are the callers `session_count`'s `Option` collapse cannot serve: they must
+/// tell "the agent cannot be reached" (`69`) from "the channel worked and then broke" (`74`),
+/// because the two name different remedies. `Unreachable` covers no connection, a timeout, an
+/// identity mismatch, and an agent old enough to answer a new tag with its framing error —
+/// spec/12's rule that protocol skew reads as "cannot be reached", never a fault. `Protocol`
+/// covers a failure after a live authorized handshake: transport I/O, or an answer the request
+/// does not admit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlCallError {
+    Unreachable,
+    Protocol,
+}
+
+/// One authorized query or request against the current boot, with the two-way error split.
+///
+/// The shared opening of every reclaim call: connect, `Hello`, verify the agent answers for this
+/// exact boot, send the request, and classify the answer. The deadline covers the whole exchange.
+async fn reclaim_call(
+    control_socket: &Path,
+    metadata: &BootMetadata,
+    timeout: Duration,
+    request: ClientFrame,
+) -> Result<AgentFrame, ControlCallError> {
+    let exchange = async {
+        let mut stream = hybrid::connect(control_socket, CONTROL_PORT, timeout)
+            .await
+            .map_err(|_| ControlCallError::Unreachable)?;
+        write_client_frame(
+            &mut stream,
+            &ClientFrame::Hello(Hello {
+                schema_version: SCHEMA_VERSION,
+                boot_identity: metadata.boot_identity.clone(),
+            }),
+        )
+        .await
+        .map_err(|_| ControlCallError::Unreachable)?;
+        match read_agent_frame(&mut stream)
+            .await
+            .map_err(|_| ControlCallError::Unreachable)?
+        {
+            AgentFrame::Hello(hello)
+                if hello.schema_version == SCHEMA_VERSION
+                    && hello.boot_identity == metadata.boot_identity => {}
+            _ => return Err(ControlCallError::Unreachable),
+        }
+        // Past the authorized handshake the channel is proven, so what breaks now is the
+        // channel or the answer, never reachability — with one carve-out below.
+        write_client_frame(&mut stream, &request)
+            .await
+            .map_err(|_| ControlCallError::Protocol)?;
+        match read_agent_frame(&mut stream)
+            .await
+            .map_err(|_| ControlCallError::Protocol)?
+        {
+            // An agent that predates a request's tag answers it with its framing error;
+            // spec/12 reads protocol skew as "the agent cannot be reached", never a fault.
+            AgentFrame::Error(message) if message.code == "framing" => {
+                Err(ControlCallError::Unreachable)
+            }
+            frame => Ok(frame),
+        }
+    };
+    tokio::time::timeout(timeout, exchange)
+        .await
+        .map_err(|_| ControlCallError::Unreachable)?
+}
+
+/// The guest kernel's own account of its memory, for the trim target derivation (spec/17).
+///
+/// # Errors
+///
+/// Returns [`ControlCallError`] with reachability split from a broken channel; see its own doc.
+pub async fn memory_report(
+    control_socket: &Path,
+    metadata: &BootMetadata,
+    timeout: Duration,
+) -> Result<MemoryReport, ControlCallError> {
+    match reclaim_call(control_socket, metadata, timeout, ClientFrame::Memory).await? {
+        AgentFrame::Memory(report) => Ok(report),
+        _ => Err(ControlCallError::Protocol),
+    }
+}
+
+/// Ask the agent to trim the named guest mountpoints, returning only on its completion claim.
+///
+/// Unlike the shutdown acknowledgement, `TrimAck` promises completion: the agent answers after
+/// the root-owned fstrim unit's done marker, because the caller's next act is reading the host
+/// image's allocation (spec/12). The timeout should therefore be generous — `fstrim` walks every
+/// free extent of each filesystem.
+///
+/// # Errors
+///
+/// Returns [`ControlCallError`] with reachability split from a broken channel; see its own doc.
+pub async fn request_trim(
+    control_socket: &Path,
+    metadata: &BootMetadata,
+    mountpoints: Vec<String>,
+    timeout: Duration,
+) -> Result<(), ControlCallError> {
+    let request = ClientFrame::Trim(TrimRequest { mountpoints });
+    match reclaim_call(control_socket, metadata, timeout, request).await? {
+        AgentFrame::TrimAck => Ok(()),
+        _ => Err(ControlCallError::Protocol),
+    }
+}
+
 /// How one session ended.
 ///
 /// The three are not degrees of the same thing. A status is the guest's own answer and vivarium
@@ -293,14 +401,17 @@ impl<O: AsyncWrite + Unpin, E: AsyncWrite + Unpin> Session<'_, O, E> {
                     Some(AgentFrame::Stderr(bytes)) => write_out(&mut self.stderr, &bytes).await?,
                     Some(AgentFrame::Exit(status)) => break SessionOutcome::Exited(status.status),
                     Some(AgentFrame::Error(error)) => break SessionOutcome::Refused(error.code),
-                    // `Hello`, `Pong`, a session count, and a shutdown acknowledgement belong
-                    // to the opening and to the ping-shaped connections; any of them arriving
-                    // mid-session means the ends disagree about what this connection is.
+                    // `Hello`, `Pong`, a session count, a memory report, and the two
+                    // acknowledgements belong to the opening and to the ping-shaped
+                    // connections; any of them arriving mid-session means the ends disagree
+                    // about what this connection is.
                     Some(
                         AgentFrame::Hello(_)
                         | AgentFrame::Pong
                         | AgentFrame::Sessions(_)
-                        | AgentFrame::ShutdownAck,
+                        | AgentFrame::ShutdownAck
+                        | AgentFrame::Memory(_)
+                        | AgentFrame::TrimAck,
                     ) => {
                         break SessionOutcome::Lost("a session frame");
                     }

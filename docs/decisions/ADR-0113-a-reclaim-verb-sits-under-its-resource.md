@@ -31,7 +31,9 @@ Records written before this one name the verb `viv trim`; their bodies stand.
 
 ## Status
 
-Accepted
+Implemented
+
+Enacted 2026-08-27 by slice [`../plan/slices/028-memory-comes-back-without-a-stop/README.md`](../plan/slices/028-memory-comes-back-without-a-stop/README.md): the three verbs run as recorded — flags on the resource commands, the fan-out taking neither, the nested record with no grand total, and the inherited partial-failure rule — demonstrated by `workflow_28_trim_usage_surface`, `workflow_28_memory_trim_reclaims`, and `workflow_28_volume_trim_returns_blocks`.
 
 Amends [`ADR-0035-elastic-guest-memory-model.md`](./ADR-0035-elastic-guest-memory-model.md) — the bounded, user-invoked inflation that record is built around is spelled `viv memory trim`; the elastic model, the rejected controller, and the zero-size balloon are unchanged.
 
