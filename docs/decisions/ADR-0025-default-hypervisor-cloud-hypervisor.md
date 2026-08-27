@@ -44,3 +44,5 @@ Amended by ADR-0048 — vivarium generates this backend's launch arguments itsel
 Discharges the deferral in ADR-0024. The binaries this default resolves to are named in [`ADR-0049-backend-is-a-closure-member.md`](./ADR-0049-backend-is-a-closure-member.md). The hardened launch profile it names (VMM + virtiofsd confinement) is enacted by [`ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md`](./ADR-0027-vmm-and-virtiofsd-hardening-launch-profile.md).
 
 Amended by [`ADR-0066-share-uid-gid-translation.md`](./ADR-0066-share-uid-gid-translation.md) — the "virtio-fs fidelity for the RW workspace (UID/GID mapping)" consequence this ADR left to implementation is now settled: a fixed guest identity translated per share to the invoking host user, adding a version floor to the closure assertions above.
+
+Amended by [`ADR-0113-a-reclaim-verb-sits-under-its-resource.md`](./ADR-0113-a-reclaim-verb-sits-under-its-resource.md) — 2026-08-27, the reclaim the line above names is spelled `viv memory trim`. The launch-profile requirement is unchanged: a per-VM control socket is what lets that command act on a running VM.

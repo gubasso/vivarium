@@ -744,8 +744,8 @@ pub(super) const fn admit(available: Option<u64>, fleet_used: Option<u64>) -> Ad
     }
 }
 
-/// spec/17's warning, minus the `viv trim` line — the reclaim verb does not exist yet and is
-/// withheld rather than printed dead (slice 028 owns it).
+/// spec/17's warning, minus the `viv memory trim` line — the reclaim verb does not exist yet and
+/// is withheld rather than printed dead (slice 028 owns it).
 ///
 /// A partial fleet sum is printed as the lower bound it is, and an unknown host total drops its
 /// clause rather than fabricating a figure.
@@ -2869,7 +2869,7 @@ mod tests {
         assert_eq!(admit(Some(u64::MAX), Some(u64::MAX)), Admission::Warn);
     }
 
-    /// spec/17's warning shape, minus the `viv trim` line slice 028 owns.
+    /// spec/17's warning shape, minus the `viv memory trim` line slice 028 owns.
     #[test]
     fn admission_warning_is_the_spec_shape_without_trim() {
         let fleet = super::super::fleet::FleetUse {
@@ -2888,7 +2888,7 @@ mod tests {
                 "         viv stop          stop a project you are done with"
             )
         );
-        assert!(!warning.contains("viv trim"));
+        assert!(!warning.contains("viv memory trim"));
     }
 
     /// A partial fleet sum is a lower bound and says so; a single VM reads singular.

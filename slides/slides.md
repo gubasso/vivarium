@@ -1101,7 +1101,7 @@ layout: default
 
 <div class="quiet-item">
   <div class="quiet-head"><carbon-piggy-bank /> Disk is a ceiling, not a cost</div>
-  <div class="quiet-text">Volumes are sparse: a 64 GiB limit occupies what it holds. <code>viv trim</code> hands memory back, <code>viv volume trim</code> disk.</div>
+  <div class="quiet-text">Volumes are sparse: a 64 GiB limit occupies what it holds. <code>viv memory trim</code> hands memory back, <code>viv volume trim</code> disk, <code>viv trim</code> both.</div>
 </div>
 
 <div class="quiet-item">
@@ -1132,11 +1132,11 @@ agents as an intended consumer, so viv is a tool your agent can drive.
 
 Demo honesty, as of this deck's commit: the keys relay, destroy, and the
 JSON and exit-code contract are implemented; generations rollback, doctor,
-trim, and volume trim are specified but not yet built
+memory trim, and volume trim are specified but not yet built
 (implementation-status.md). Present those as the design; demo the others.
 
 Sources: spec/07 and ADR-0071 (the agent channel and its limits), spec/11
-(generations), spec/13 (doctor), spec/17 (trim, ceilings not reservations),
+(generations), spec/13 (doctor), spec/17 (the trim verbs, ceilings not reservations),
 ADR-0015 and ADR-0028 (the output and exit-code contract), spec/02 (XDG
 layout), spec/01 (destroy, and agents as consumers).
 -->
@@ -1333,7 +1333,7 @@ layout: default
 
 <div class="quiet-item">
   <div class="quiet-head"><carbon-document /> Some of it is still design</div>
-  <div class="quiet-text"><code>update</code>, <code>generations</code>, <code>doctor</code>, <code>trim</code>, <code>volume rm</code>, <code>unbind</code> — specified in full, written down, not yet built.</div>
+  <div class="quiet-text"><code>update</code>, <code>generations</code>, <code>doctor</code>, <code>memory trim</code>, <code>volume rm</code>, <code>unbind</code> — specified in full, written down, not yet built.</div>
 </div>
 
 <div class="quiet-item">
@@ -1421,7 +1421,7 @@ The slide makes no claim about what is built, so the honesty is the speaker's to
 carry, and the specifics if asked are: `init`, `start`, `stop`, `destroy`,
 `exec`, `shell`, `status`, the config and manifest readers, volumes, the
 workspace mount, and egress are implemented; `update`, `generations`, `doctor`,
-`trim`, and `volume rm` are specified and not yet built. The living answer is
+`memory trim`, and `volume rm` are specified and not yet built. The living answer is
 docs/reference/implementation-status.md, not this deck.
 -->
 

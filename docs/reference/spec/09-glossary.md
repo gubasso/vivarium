@@ -64,9 +64,9 @@ Defined terms used across the vivarium documentation. Each term is defined once 
 
 - Free page reporting — the guest's cooperative return of memory: the guest tells the host which pages it has finished with, and the host reclaims them, so a sandbox's resident cost tracks its working set instead of climbing to its ceiling. It requires no host action and takes nothing from the guest.
 
-- Balloon — the guest device through which memory can be handed back on demand. vivarium runs it at zero size purely to enable free page reporting; the only time it is inflated is the bounded, user-invoked `viv trim`.
+- Balloon — the guest device through which memory can be handed back on demand. vivarium runs it at zero size purely to enable free page reporting; the only time it is inflated is the bounded, user-invoked `viv memory trim`.
 
-- Trim — reclaiming memory or volume space that a sandbox is holding but no longer needs. Memory is reclaimed only on explicit request (`viv trim`), never automatically (N23); volume space is also reclaimed by a periodic in-guest trim, with `viv volume trim` as the on-demand path. See [`17-resources-and-capacity.md`](./17-resources-and-capacity.md).
+- Trim — reclaiming memory or volume space that a sandbox is holding but no longer needs. Memory is reclaimed only on explicit request (`viv memory trim`), never automatically (N23); volume space is also reclaimed by a periodic in-guest trim, with `viv volume trim` as the on-demand path, and `viv trim` fans out over both. See [`17-resources-and-capacity.md`](./17-resources-and-capacity.md).
 
 - Admission control — the host-capacity check `viv start` runs before building or booting: refuse below a minimum free-memory reserve, warn when the running fleet's measured use makes the new sandbox a risk (N23). See [`17-resources-and-capacity.md`](./17-resources-and-capacity.md).
 

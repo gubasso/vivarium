@@ -29,7 +29,7 @@ Ordered, because a workspace the guest cannot write to makes every persistence q
 - Generations and `viv update`.
 - Secrets and config sharing beyond the credential relay already proved.
 - Extra mounts past the project tree and the home. The manifest may declare them; exercising more than the core needs is remainder.
-- Ordered remainder, cut first when the appetite binds: `viv gc` store sweeping, `viv trim`, and volume format migration.
+- Ordered remainder, cut first when the appetite binds: `viv gc` store sweeping, `viv memory trim`, and volume format migration.
 
 ## Governed by
 

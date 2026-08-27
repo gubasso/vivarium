@@ -19,7 +19,7 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 
 - 018 the-user-owns-the-image — done — 4 sessions — one pass under the appetite, remainder included: the base flake a directory-form image carries with the follows composition, `viv update` whole, the base handoff, and the end-to-end lane; the owner's item-2 reshape, the shaping experiments, the acceptance revision, the `Q-037` raise from item 5's failed premise, and the host evidence are in the slice `Revisions`
 
-- 026 a-start-checks-the-room — done — 3 sessions — one pass under the appetite, remainder included: the admission gate over slice 025's readers with the host-level fallback, the withheld `viv trim` line, and `--attach` streaming the capture with `SIGINT` detach; the seam record, the widened enumeration domain, the eager-signal finding, and the warn-tier evidence decision are in the slice `Revisions`
+- 026 a-start-checks-the-room — done — 3 sessions — one pass under the appetite, remainder included: the admission gate over slice 025's readers with the host-level fallback, the withheld `viv memory trim` line, and `--attach` streaming the capture with `SIGINT` detach; the seam record, the widened enumeration domain, the eager-signal finding, and the warn-tier evidence decision are in the slice `Revisions`
 
 - 027 the-stop-ladder-is-whole — done — 3 sessions — one pass under the appetite, remainder included: the agent rung over a new protocol pair with the guest's root-owned poweroff path unit, `--timeout` bounding the orderly ask, the `--all` sweep, and both `--json` records; the `Q-018` and `Q-021` exits, the owner's bounded-escalation revision, and the host evidence are in the slice `Revisions`
 

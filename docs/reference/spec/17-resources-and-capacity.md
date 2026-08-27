@@ -15,7 +15,7 @@ The consequence users feel: the sum of ceilings across running projects may exce
 
 The limits of the model are stated plainly, because they are where a user can still be surprised:
 
-- Resident size drifts upward over a long session, for two reasons that are not symmetric. The guest's page cache — which a build or a repository-wide search fills — is not free memory at all, so reporting never returns it, and no memory-elasticity mechanism can: only the guest can decide to drop it. Separately, reporting returns free memory only in large contiguous runs, so memory that is genuinely free but fragmented below that unit stays held. The second cause the guest handles itself, by compacting; the first is what `viv trim` answers.
+- Resident size drifts upward over a long session, for two reasons that are not symmetric. The guest's page cache — which a build or a repository-wide search fills — is not free memory at all, so reporting never returns it, and no memory-elasticity mechanism can: only the guest can decide to drop it. Separately, reporting returns free memory only in large contiguous runs, so memory that is genuinely free but fragmented below that unit stays held. The second cause the guest handles itself, by compacting; the first is what `viv memory trim` answers.
 - A ceiling is real. A guest can exhaust its own ceiling while the host has memory free. That is the price of a bounded VM, and it is why the default ceiling is generous.
 
 ## Auto-sizing
@@ -64,16 +64,16 @@ The warning names the situation and the three ways out, in cost order:
 ```text
 warning: 4 project VMs are running and using 21.3 GiB of 31.2 GiB host memory.
          Starting `api-gateway` may push the host into swap.
-         viv trim          reclaim cached guest memory in this project
+         viv memory trim   reclaim cached guest memory in this project
          viv status -g     see what is running
          viv stop          stop a project you are done with
 ```
 
 This is the whole arbitration story. vivarium reports pressure and lets the user act; it never squeezes a running guest to make room for a new one, and it runs no background process to decide. `viv doctor` surfaces the same host readings as ordinary checks ([`13-doctor-and-health-checks.md`](./13-doctor-and-health-checks.md)).
 
-## Reclaiming memory: `viv trim`
+## Reclaiming memory: `viv memory trim`
 
-`viv trim [--to <MiB>]` is the one command that reclaims memory on demand, and it exists because free-page reporting cannot return page cache. It briefly asks the guest to give back memory down to the target, then immediately restores the guest's headroom, and reports what the host got back. It is bounded, synchronous, and never arbitrated by the host: the guest reclaims its own free memory continuously, by reporting and by compacting, and `trim` is the user-invoked escalation on top of that — the part that costs something, so the person who knows decides (N23).
+`viv memory trim [--to <MiB>]` is the one command that reclaims memory on demand, and it exists because free-page reporting cannot return page cache. It briefly asks the guest to give back memory down to the target, then immediately restores the guest's headroom, and reports what the host got back. It is bounded, synchronous, and never arbitrated by the host: the guest reclaims its own free memory continuously, by reporting and by compacting, and the reclaim is the user-invoked escalation on top of that — the part that costs something, so the person who knows decides (N23).
 
 - With no `--to`, the target is the VM's measured working set with headroom — enough to drop cache, not enough to disturb running work.
 - It requires a running VM; on a stopped one it exits `75`, the same "stop first / start first" category `volume rm` uses ([`14-exit-codes.md`](./14-exit-codes.md)).
@@ -81,7 +81,9 @@ This is the whole arbitration story. vivarium reports pressure and lets the user
 
 `viv volume trim [<name>]` is the disk counterpart: it returns space freed inside a volume to the host image. Volumes are also trimmed periodically inside the guest, so this is for impatience, not correctness.
 
-`viv status` suggests `trim` when a VM's measured use approaches its ceiling while host memory is low. It is a suggestion on stderr, never an action.
+`viv trim` runs both rungs in one invocation, memory first, for a user who wants everything back without naming a target or a volume. It carries neither command's flags, and a run that ends in failure reports no record, so the two commands stay the way to get both figures when one rung can fail ([`01-command-surface.md`](./01-command-surface.md), [`../../decisions/ADR-0113-a-reclaim-verb-sits-under-its-resource.md`](../../decisions/ADR-0113-a-reclaim-verb-sits-under-its-resource.md)).
+
+`viv status` suggests the reclaim when a VM's measured use approaches its ceiling while host memory is low. It is a suggestion on stderr, never an action.
 
 ## Reclaiming store space inside the guest
 
@@ -124,7 +126,7 @@ host: 9.6 GiB available of 31.2 GiB - memory pressure (60s): 0.4%
 - used is the scope's current memory charge — the monitor plus every filesystem daemon for that VM — read from the accounting the per-VM scope carries. This is the measurement [`../../decisions/ADR-0082-guest-memory-return-is-measured-on-the-backing-object.md`](../../decisions/ADR-0082-guest-memory-return-is-measured-on-the-backing-object.md) requires rather than the resident-set size it rejects: guest RAM is a shared-memory object, and a shared-memory page stays charged to the scope until the backing object's pages are actually freed, so the charge moves with the hole-punch that returns memory, not with the unmapping that merely hides it. Where the memory controller is not delegated, the figure is reported as unavailable (`null` in JSON, `-` in the table), never as zero.
 - alloc / virtual is the sum over the sandbox's volume images of each sparse image's allocated size against its apparent size — `viv volume list`'s own reading joined, not a second measurement. A sandbox with no images yet reports `0`.
 - sessions is the count of attached `exec`/`shell` sessions ([`12-exec-and-shell.md`](./12-exec-and-shell.md)).
-- near ceiling marks a row whose measured use has reached 90% of its ceiling; `viv status` pairs the same condition with the `viv trim` suggestion above when host memory is also low.
+- near ceiling marks a row whose measured use has reached 90% of its ceiling; `viv status` pairs the same condition with the `viv memory trim` suggestion above when host memory is also low.
 - Stopped projects report no live figures but still report allocated disk, because volumes persist across `stop` (N18).
 
 The `--json` shape adds a `runtime` object beside the existing declared `resources`, so a consumer can tell a declaration from a measurement; the record is fixed in [`01-command-surface.md`](./01-command-surface.md).
@@ -142,6 +144,6 @@ Three further knobs are deliberately not set, and the reasons differ ([`../../de
 
 The design target is a single developer workstation running four or five project VMs at once, each with several attached sessions. At that scale the fixed per-VM overhead — a guest kernel, the monitor process, one filesystem daemon per share — is real but small against the working sets, and elasticity does the rest.
 
-Guest memory is never deduplicated across VMs, and no design choice can change that. Sharing a host directory into the guest requires the guest's memory to be a mapping the host shares with the filesystem daemons, and the host's same-page merging works only on private anonymous memory — so identical pages in two projects' guests are two host pages, permanently. Five near-identical guests each pay for their own copy of what they read. That is precisely why the model is elasticity rather than deduplication: what a VM does not need, it gives back. What several VMs do share is the host page cache behind the read-only store share, which is one more reason that share is the default ([`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)) — though what is shared there is the host's copy, not the guests'. The mechanism that would map a host page cache directly into guest address space is not implemented in the filesystem daemon vivarium ships, so each guest still caches what it reads out of its own ceiling. That second copy is the memory `viv trim` reclaims.
+Guest memory is never deduplicated across VMs, and no design choice can change that. Sharing a host directory into the guest requires the guest's memory to be a mapping the host shares with the filesystem daemons, and the host's same-page merging works only on private anonymous memory — so identical pages in two projects' guests are two host pages, permanently. Five near-identical guests each pay for their own copy of what they read. That is precisely why the model is elasticity rather than deduplication: what a VM does not need, it gives back. What several VMs do share is the host page cache behind the read-only store share, which is one more reason that share is the default ([`06-workspace-and-project-environment.md`](./06-workspace-and-project-environment.md)) — though what is shared there is the host's copy, not the guests'. The mechanism that would map a host page cache directly into guest address space is not implemented in the filesystem daemon vivarium ships, so each guest still caches what it reads out of its own ceiling. That second copy is the memory `viv memory trim` reclaims.
 
 This is deliberately not a fleet scheduler. vivarium is not an orchestrator ([`00-goals-and-non-goals.md`](./00-goals-and-non-goals.md)); at a scale where automatic arbitration between dozens of guests would be required, the honest answer is to stop a project rather than to squeeze one.

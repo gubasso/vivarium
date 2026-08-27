@@ -73,7 +73,7 @@ host: 9.6 GiB available of 31.2 GiB - memory pressure (60s): 0.4%
 
 Read that table once and the resource model explains itself: the ceiling is what a project may use, the used column is what it actually costs. Three projects declaring 8 GiB each are not holding 24 GiB — [the decision making declared resources ceilings rather than reservations](../decisions/ADR-0035-elastic-guest-memory-model.md) is what buys that. You never set those numbers — vivarium derives them from the host — and if you start a fourth project when memory is genuinely tight, `viv start` says so and lets you decide rather than deciding for you, per [the admission-control decision](../decisions/ADR-0036-host-resource-scoping-and-admission-control.md). The full model is in [`../reference/spec/17-resources-and-capacity.md`](../reference/spec/17-resources-and-capacity.md).
 
-If a long-running project has accumulated cached memory you want back, `viv trim` reclaims it on the spot. Nothing reclaims automatically.
+If a long-running project has accumulated cached memory you want back, `viv memory trim` reclaims it on the spot; `viv volume trim` does the same for space freed inside a volume, and `viv trim` runs both. Nothing reclaims automatically.
 
 ## 6. Stop
 

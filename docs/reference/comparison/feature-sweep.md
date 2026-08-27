@@ -78,7 +78,7 @@ Marked `built` where [`implementation-status.md`](../implementation-status.md) s
 - `built` — `viv status -g`, a row per sandbox with a live-session count and the host's reading beside the fleet
 - `built` — `viv stop --all`, and the first rung of `spec/10`'s ladder — the orderly ask `--timeout` bounds
 - `built` — `--json` records for `viv stop` and `viv destroy`
-- `spec` — `viv images list`, `viv update`, `viv trim`
+- `spec` — `viv images list`, `viv update`, `viv memory trim`, `viv trim`
 - `spec` — `viv volume rm`, `viv volume trim`
 - `spec` — `viv start --attach`
 - `spec` — the capacity admission check before launch

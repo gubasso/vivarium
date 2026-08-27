@@ -8,7 +8,7 @@ Record how space is recovered from a sandbox that should keep working.[^read]
 
 ## vivarium
 
-Partial: what accumulates outside the guest is reclaimable today, and what accumulates inside a volume is not yet. `viv volume list` reports each volume's occupancy against its ceiling, `viv volume prune` removes exactly the orphans that list surfaces, and `viv gc` sweeps the store, reclaiming every retained build no generation root pins — all without a teardown. The scenario's own measure is the half that waits: a file deleted inside a volume frees space inside its sparse image and returns none of it to the host until `viv trim`, `viv volume trim`, and `viv volume rm` land — specified, not built, the `*`.
+Partial: what accumulates outside the guest is reclaimable today, and what accumulates inside a volume is not yet. `viv volume list` reports each volume's occupancy against its ceiling, `viv volume prune` removes exactly the orphans that list surfaces, and `viv gc` sweeps the store, reclaiming every retained build no generation root pins — all without a teardown. The scenario's own measure is the half that waits: a file deleted inside a volume frees space inside its sparse image and returns none of it to the host until `viv memory trim`, `viv volume trim`, and `viv volume rm` land — specified, not built, the `*`.
 
 ## flake-pilot
 
