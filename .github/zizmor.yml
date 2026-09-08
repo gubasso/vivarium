@@ -3,3 +3,26 @@ rules:
     config:
       policies:
         "*": ref-pin
+
+  # release-kit owns pr-title.yml and release-plz.yml byte for byte. A comment
+  # placed inside either file is drift that `rk status --check` faults and the
+  # `rk-status-check` hook rejects, so an accepted finding in one of them is
+  # recorded here instead of as an inline `# zizmor: ignore` line.
+  dangerous-triggers:
+    ignore:
+      # pr-title.yml reads the request's title, which the request's own author
+      # can edit, so the check has to run with the base repository's context.
+      # The workflow declares `permissions: {}`, checks out nothing, and runs
+      # none of the request's code; the title and body reach the shell through
+      # the environment, never through template interpolation.
+      - pr-title.yml
+
+  github-app:
+    ignore:
+      # Both halves of release-plz.yml mint an App token without a
+      # `permission-*` input, so the token carries every permission the App's
+      # installation holds. Narrowing it is release-kit's call, not this
+      # project's: the file is rendered from the payload and any edit is drift.
+      # The bound that holds instead is the App's own installation scope, which
+      # `rk setup check` reports and phase C of the migration confirmed by eye.
+      - release-plz.yml

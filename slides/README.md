@@ -31,4 +31,4 @@ Before adding an icon, install the `@iconify-json` set it comes from and name it
 
 ## Deployment
 
-Pushing to `develop` with changes under `slides/` deploys the deck to <https://gubasso.github.io/vivarium/> through [`.github/workflows/pages.yml`](../.github/workflows/pages.yml). [`../docs/guides/author-and-publish-the-deck.md`](../docs/guides/author-and-publish-the-deck.md) is the full runbook, including the one-time repository setting the first deploy needs.
+Pushing to `master` with changes under `slides/` deploys the deck to <https://gubasso.github.io/vivarium/> through [`.github/workflows/pages.yml`](../.github/workflows/pages.yml). [`../docs/guides/author-and-publish-the-deck.md`](../docs/guides/author-and-publish-the-deck.md) is the full runbook, including the one-time repository setting the first deploy needs.

@@ -1,0 +1,67 @@
+# The squash gate. protect-trunk sets squash_merge_commit_title to
+# PR_TITLE and squash_merge_commit_message to PR_BODY, so the request's
+# title becomes the trunk commit's subject and its description the body,
+# and the bot derives the version and the changelog from that message;
+# this check holds the title to a scoped Conventional Commit and the body
+# to the content guards before the merge is offered. The trunk ruleset requires it by the job name pr-title, beside
+# the project's own check.
+#
+# pull_request_target runs the trunk's own copy of this file, so a request
+# cannot edit the check it must pass; nothing here checks out or executes
+# the request's code, and the title reaches the shell through the
+# environment, never through template interpolation.
+
+name: pr-title
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  pr-title:
+    name: pr-title
+    runs-on: ubuntu-latest
+    steps:
+      - name: the title is a scoped Conventional Commit
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        # The second alternative is the bot's own release request, whose
+        # title the release automation authors, not an operator.
+        run: |
+          printf '%s' "$TITLE" | grep -Eq \
+            '^((build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)\(([a-z0-9._/-]+)\)!?: .+|chore(\((release|master|main)\))?: (release|v).+)$' \
+            && exit 0
+          echo "the title '$TITLE' must read type(scope) then a colon and a description, with the scope lowercase letters, digits, and _ . / -"
+          exit 1
+      - name: the body carries no attribution and no internal path
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        # The bot's release request is exempt whole: release-plz authors
+        # its body, generated-with line and bot co-author included, and
+        # the exemption is exactly the title check's bot alternative. No
+        # checkout happens here, so the gate cannot consult check-ignore;
+        # it greps the fixed guard list, duplicated from
+        # blocks/message-guards and held equal by a test in the rk
+        # repository, and the landed rk-message hook stays the stronger,
+        # ignore-aware check.
+        run: |
+          printf '%s' "$TITLE" | grep -Eq \
+            '^chore(\((release|master|main)\))?: (release|v).+$' \
+            && exit 0
+          fail=0
+          while IFS='|' read -r class pattern; do
+            if printf '%s' "$BODY" | grep -Eq "$pattern"; then
+              echo "the body carries a $class finding: a line matches $pattern"
+              fail=1
+            fi
+          done <<'GUARDS'
+          attribution|[Gg]enerated with \[?Claude
+          attribution|🤖 Generated with
+          attribution|[Cc]o-[Aa]uthored-[Bb]y:.*([Cc]laude|[Cc]opilot|Codex|ChatGPT)
+          attribution|noreply@anthropic\.com
+          internal-path|(^|[^A-Za-z0-9])\.draft/
+          GUARDS
+          exit "$fail"

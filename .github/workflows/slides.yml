@@ -6,17 +6,18 @@
 # no longer resolves — and none of that is visible to a linter reading the
 # file as prose.
 #
-# Split out of ci.yml so the two lanes trigger independently: this one runs on
-# `develop` and on pull requests, ci.yml runs on `master`. A change to the
-# presentation tree therefore no longer installs a Rust toolchain to prove
-# nothing, and a change to the crate no longer waits on a deck build.
+# Split out of ci.yml so the deck keeps its own named check. Both lanes now run
+# on `master` and on pull requests, because the trunk's protection requires one
+# gate job and `needs` resolves inside one file. This lane is therefore not in
+# that gate: a red deck build reports and holds no merge. Move the job into
+# ci.yml's `gate` list if the deck should ever block one.
 #
 # Runs through the devShell rather than actions/setup-node, unlike the deploy
 # lane in pages.yml. This is the check lane, so the node that builds the deck
 # here should be the node the repository pins — that is the whole reason every
 # other check job goes through `nix develop`.
 #
-# Overlap worth knowing: a push to `develop` that touches `slides/` also runs
+# Overlap worth knowing: a push to `master` that touches `slides/` also runs
 # pages.yml, whose build job compiles the same deck before deploying it. The
 # duplicate costs about two minutes and buys a named check that fails on the
 # deck rather than on the publish. Drop the `push` trigger here if that stops
@@ -25,7 +26,7 @@ name: slides
 
 on:
   push:
-    branches: [develop]
+    branches: [master]
   pull_request:
   workflow_dispatch:
 

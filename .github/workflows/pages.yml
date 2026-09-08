@@ -1,10 +1,8 @@
 # pages — build the Slidev deck and publish it to GitHub Pages.
 #
-# Branch model: `develop` is the trunk and `master` holds only released commits
-# (promote-to-master.yml fast-forwards it onto each release tag). The deck is
-# documentation of the current shape rather than of the last release, so it
-# deploys from `develop`. Publishing from `master` would leave the site frozen
-# between releases and say nothing about it.
+# Branch model: `master` is the one long-lived branch. The deck documents the
+# current shape rather than the last release, so it deploys from the trunk tip
+# and not from a tag.
 #
 # One-time repository setting: Settings -> Pages -> Build and deployment ->
 # Source must be "GitHub Actions". Nothing here can set it, and the first
@@ -20,7 +18,7 @@ name: pages
 on:
   workflow_dispatch:
   push:
-    branches: [develop]
+    branches: [master]
     paths:
       - 'slides/**'
       - '.github/workflows/pages.yml'
