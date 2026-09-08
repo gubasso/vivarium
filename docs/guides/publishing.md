@@ -1,30 +1,32 @@
 # Publish a vivarium release
 
-Use this guide to publish vivarium to [crates.io](https://crates.io) and attach binary artifacts to the corresponding GitHub release. Start on `develop` with the intended changes merged, required checks green, and no release tag created by hand. Helper scripts live under `scripts/` (`publish-dry`, `publish`, `release`). Their authentication checks confirm only that crates.io credentials are configured; they do not validate a token.
+Use this guide to publish vivarium to [crates.io](https://crates.io) and attach binary artifacts to the corresponding GitHub release. This repository runs the release-kit convention, so the convention owns the procedure and this page owns what is specific to vivarium. Read `rk method operate` for the release itself and `rk guide release` for its commands. Helper scripts live under `scripts/` (`publish-dry`, `publish`, `release`). Their authentication checks confirm only that crates.io credentials are configured; they do not validate a token.
 
-## Choose the release path
+## The branch model
 
-- CI-first, recommended: `release-plz` runs on `develop` (the trunk) and opens a release PR that bumps the version and updates the changelog, `Cargo.toml`, and `Cargo.lock`. Merging that PR publishes the new version automatically and tags it; the tag-triggered `promote-to-master.yml` workflow then fast-forwards `master` onto that tag, so `master` holds only released commits.
-- Local escape hatch: run the helper scripts by hand when CI is unavailable.
+`master` is the one long-lived branch. It is the trunk, the GitHub default branch, and the only branch a release is cut from. It takes no direct push: every change reaches it as a squash-merged pull request from a short-lived branch that lives in its own linked worktree. `rk worktree add <type>/<slug>` creates that worktree, and `rk method worktrees` owns the reasoning.
 
-The branch model: `develop` is the trunk and the GitHub default branch (release-plz bases the release PR on the default branch); `master` is never written by hand — CI fast-forwards it onto each release tag. `master`'s ruleset bypass actor is the GitHub App, and `promote-to-master.yml` pushes `master` under that App token so the push is attributed to the bypass actor and accepted — on a personal account the default `GITHUB_TOKEN` identity (`github-actions[bot]`) cannot be a bypass actor, so a default-token push would be rejected. release-plz itself also runs under that App token so its tag push retriggers the tag-triggered workflows — both `promote-to-master.yml` and the cargo-dist binary builds (see [Binary distribution](#binary-distribution-cargo-dist)).
+The release style is `trunk`, which means continuous release. release-plz keeps one release request open against `master`, and that request is armed from the moment it opens: it merges itself as soon as every required check passes, and the merge publishes. There is no separate human release decision. To hold a release, disarm the request before its last check goes green; a release held too late is withdrawn rather than abandoned.
+
+Because the changelog is built from the squash titles and bodies that land on `master`, the quality of a release note is decided at merge time. The landed `pr-title` check and the `rk-message` hook are what hold that.
+
+release-plz runs under a GitHub App token (secrets `RELEASE_PLZ_APP_ID` and `RELEASE_PLZ_APP_PRIVATE_KEY`), because a tag pushed with the default `GITHUB_TOKEN` starts no further workflow. The App token is what makes the tag push trigger the cargo-dist build in `release.yml`.
 
 First-time crates.io setup — creating a scoped `publish-new` token, `cargo login`, the first manual `cargo publish`, then configuring Trusted Publishing and revoking the token — is a one-time manual requirement, not part of routine maintenance. See the crates.io Trusted Publishing docs: <https://crates.io/docs/trusted-publishing>.
 
 ## SemVer policy
 
-For a library crate, `cargo-semver-checks` gates public-API compatibility and runs natively inside release-plz. Run it locally with `./scripts/release semver-check`. A binary-only crate has no public API to check but still follows semantic versioning for its releases.
+`release-plz.toml` sets `semver_check = false`. vivarium ships two binaries and its lib target exists for this crate's own integration tests, so no external consumer holds the API. Run the check by hand with `./scripts/release semver-check` if that ever changes, and set the key to `true` in the same change. Releases still follow semantic versioning.
 
 ## Routine automated release
 
-You never hand-create the tag; the only manual actions are two merges.
+You never hand-create the tag, and under the `trunk` style you never merge the release request either.
 
-1. Merge feature work (Conventional Commits) to `develop`.
-2. release-plz opens/updates the release PR on `develop` (version bump + changelog).
-3. Review the PR; merge it — the one human release decision.
+1. Land feature work on `master` through a squash-merged pull request, with a scoped Conventional Commit title.
+2. release-plz opens or updates the release request on `master`, bumping the version and the changelog.
+3. Every required check passes, and the request merges itself.
 4. release-plz tags the release (`vX.Y.Z`) and publishes to crates.io over OIDC.
-5. The tag push (made with release-plz's GitHub App token) triggers two tag workflows: `promote-to-
-   master.yml` fast-forwards `master` onto that tag, and the cargo-dist `release.yml` builds and attaches binaries — see [Binary distribution](#binary-distribution-cargo-dist).
+5. The tag push, made with release-plz's GitHub App token, triggers the cargo-dist `release.yml`, which builds the binaries, attests them, and attaches them to the GitHub release — see [Binary distribution](#binary-distribution-cargo-dist).
 
 ## Local operator release
 
@@ -61,11 +63,17 @@ Footgun: with an SPDX `license` expression (e.g. `MIT`), Cargo does not auto-inc
 
 ## Binary distribution (cargo-dist)
 
-vivarium is a CLI, so `dist` (cargo-dist) builds prebuilt binaries and attaches shell/PowerShell/Homebrew-tap installers to each GitHub Release; `cargo-binstall` then works automatically from those releases. It is separate from crates.io publishing and configured in `dist-workspace.toml`. `dist` generates its own workflow at `.github/workflows/release.yml`, distinct from the release-plz workflow (`release-plz.yml`), so the two never collide and the crates.io Trusted Publisher keeps matching the actual release-plz filename. Treat the generated YAML as an artifact: run `dist init` (first time) or `dist generate` after editing `dist-workspace.toml`, never hand-edit it. AUR, OBS/zypper, and Homebrew (beyond the generated tap) are downstream/manual channels that consume the tagged GitHub Release artifacts, not auto-generated pipelines.
+vivarium is a CLI, so `dist` (cargo-dist) builds prebuilt binaries and attaches shell and PowerShell installers to each GitHub Release; `cargo-binstall` then works from those releases with no configuration. It is separate from crates.io publishing and configured in `dist-workspace.toml`. The generated workflow is `.github/workflows/release.yml`, distinct from `release-plz.yml`, and only `release-plz.yml` is registered at crates.io as the trusted publisher. AUR, OBS/zypper, and Homebrew are downstream manual channels that consume the tagged GitHub Release artifacts.
 
-The generated `.github/workflows/release.yml` fires on a pushed version tag (any tag carrying a semver, e.g. the `v0.1.0` tags release-plz creates), builds the configured targets, and attaches the installers to the GitHub Release. After editing `dist-workspace.toml`, regenerate it with `dist generate` and verify it is in sync with `dist generate --check`; never hand-edit the workflow.
+`release.yml` fires on a pushed version tag, builds the configured targets, and attaches the installers to the GitHub Release. `dist-workspace.toml` sets `github-attestations = true` and `github-attestations-phase = "host"`, so every asset that reaches the release page carries a GitHub Artifact Attestation. crates.io stores no provenance of its own, which makes the release artifacts the only verifiable half of a vivarium release. A consumer checks one with:
 
-Automatic trigger: release-plz runs with a GitHub App token (secrets `RELEASE_PLZ_APP_ID` / `RELEASE_PLZ_APP_PRIVATE_KEY`), so the tag it pushes retriggers `release.yml`. A tag pushed with the default `GITHUB_TOKEN` would not retrigger it; that is why the App token is required. Create a GitHub App with `contents` + `pull-requests` write, install it on the repo, and store its App ID and private key as those two secrets.
+```bash
+gh attestation verify <file> --repo gubasso/vivarium
+```
+
+`release.yml` is generated and then hardened by hand, which is the one exception to the convention's rule against editing a generated workflow. `dist-workspace.toml` sets `allow-dirty = ["ci"]` to protect that hardening, and the file itself carries the reason: the generated form interpolates `${{ }}` expressions straight into four `run:` bodies, leaves two paths unquoted, and word-splits a flag, which the project's `zizmor` hook reports as 4 high and 3 medium findings. The cost is that `dist` no longer ports its own upgrades into the file. [`../reference/tracking.yaml`](../reference/tracking.yaml) carries that obligation with a cadence: on every `cargo-dist-version` bump, regenerate in a scratch copy, diff against the committed workflow, and port every change by hand except the hardening.
+
+The `dist-plan` job in [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml) proves that `dist` runs at the configured pin and that the configuration produces a viable release. It votes in the `gate` job, which is the one check the trunk's protection requires.
 
 ## Backend security owner
 
@@ -82,10 +90,12 @@ The reporting route in `SECURITY.md`, the repository's Report a vulnerability fo
 
 ## Manual release if CI is down
 
+`rk method recovery` owns this path and orders its steps. Trusted-publishing enforcement, once enabled at crates.io, rejects a token publish, so turn that switch off first. Then:
+
 1. `./scripts/publish-dry` to validate.
-2. `./scripts/release semver-check` (library crates).
-3. Ensure auth is configured (`cargo login`).
-4. `./scripts/publish`.
+2. Make sure that authentication is configured (`cargo login`).
+3. `./scripts/publish`.
+4. Turn enforcement back on.
 
 ## Stop, yank, and recover
 

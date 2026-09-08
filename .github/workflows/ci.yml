@@ -12,19 +12,20 @@
 # contributor should see. Its `fetch-depth: 0` is load-bearing for gitleaks —
 # a shallow clone would let it pass over history it never fetched.
 #
-# Trigger: `master` only. The deck has its own lane in slides.yml, which runs
-# on `develop` and on pull requests, so a change to the presentation tree no
-# longer drags the Rust toolchain through a two-minute install to prove
-# nothing. What this costs is real and deliberate: nothing between a merge to
-# `develop` and a release tag runs lint, test, build, or hooks, so the first
-# CI a change meets is after promote-to-master.yml has already advanced
-# `master` onto its tag. Restoring pre-merge gating is adding `pull_request:`
-# back below.
+# Trigger: `master` and every pull request. The release convention writes the
+# trunk through squash-merged pull requests alone and arms the release request
+# from the moment it opens, so a merge that nothing gated would ship itself.
+# The pull-request trigger is what makes the `gate` job below reportable, and
+# `gate` is the one check the trunk's protection requires.
+#
+# The deck still has its own lane in slides.yml. A change to the presentation
+# tree runs both lanes on a request; that overlap is the price of one gate.
 name: ci
 
 on:
   push:
     branches: [master]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -120,15 +121,61 @@ jobs:
         # previous tip at all and is skipped the same way. The anchor crosses
         # as an environment variable rather than by interpolation so a ref
         # name is data, not script.
-        #
-        # The pull-request arm this expression used to carry is gone with the
-        # `pull_request` trigger: an unreachable branch that still reads as
-        # coverage is worse than no branch.
         env:
-          RANGE_START: ${{ github.event.before }}
+          RANGE_START: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           if [ -z "$RANGE_START" ] || [ "$RANGE_START" = "0000000000000000000000000000000000000000" ]; then
             echo "no previous tip to anchor a message range; skipping"
             exit 0
           fi
           nix develop --command committed --fixup --wip "${RANGE_START}..HEAD"
+
+  # The artifact workflow's proof. It runs `dist plan` and not `dist generate`:
+  # dist-workspace.toml sets allow-dirty = ["ci"] because release.yml is
+  # generated and then hardened by hand, so a generate-and-diff check would
+  # fail on the hardening itself. The obligation that replaces it — diff the
+  # generated form by hand on every cargo-dist-version bump — lives in
+  # docs/reference/tracking.yaml with its cadence.
+  dist-plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install dist at the configured pin
+        # The pin is read from the file rather than written here, so a
+        # cargo-dist-version bump moves this job with it. An empty read is a
+        # loud failure, not a silently wrong version.
+        run: |
+          set -euo pipefail
+          pin="$(grep -m1 '^cargo-dist-version' dist-workspace.toml | cut -d'"' -f2)"
+          [ -n "$pin" ] || { echo "dist-workspace.toml names no cargo-dist-version"; exit 1; }
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            "https://github.com/axodotdev/cargo-dist/releases/download/v$pin/cargo-dist-installer.sh" | sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "DIST_PIN=$pin" >> "$GITHUB_ENV"
+      - name: dist runs at the configured pin
+        run: dist --version | grep -Fq "$DIST_PIN"
+      - name: The configuration produces a viable release
+        run: dist plan
+
+  # The one check the trunk's protection requires. `needs` resolves inside one
+  # workflow file, so every proof a merge rests on is a job of this file and a
+  # member of this list. A job left out still reports and holds nothing.
+  #
+  # `if: always()` is load-bearing: the forge reports a job skipped by a failed
+  # dependency as success, so a gate that only ran on success would go green on
+  # a red pipeline.
+  gate:
+    if: always()
+    needs: [lint, test, build, hooks, dist-plan]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job succeeded
+        env:
+          RESULTS: ${{ toJson(needs) }}
+        run: |
+          set -eu
+          bad="$(printf '%s' "$RESULTS" |
+            jq -r 'to_entries[] | select(.value.result != "success") | "\(.key) reported \(.value.result)"')"
+          [ -z "$bad" ] || { echo "$bad"; exit 1; }

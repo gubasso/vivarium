@@ -1,36 +1,69 @@
-# cargo-dist / dist configuration. See https://axodotdev.github.io/cargo-dist for
-# all options. Included only when this project ships prebuilt binaries, installers,
-# or GitHub-release artifacts; it is separate from crates.io library publishing.
 [workspace]
 members = ["cargo:."]
 
 # Config for 'dist'
 [dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
 # CI backends to support
 ci = "github"
-# The installers to generate for each app
+# The installers to generate for each app. A homebrew installer would need
+# a tap repository plus a HOMEBREW_TAP_TOKEN secret; shell, powershell, and
+# cargo-binstall cover every platform without that infrastructure.
 installers = ["shell", "powershell"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = [
   "aarch64-apple-darwin",
+  "aarch64-unknown-linux-gnu",
   "x86_64-apple-darwin",
   "x86_64-unknown-linux-gnu",
   "x86_64-pc-windows-msvc",
 ]
-# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.32.0"
+# Which actions to run on pull requests. Skip, because the forge resolves a
+# job's needs inside one workflow file: the trunk protection requires one
+# project-owned check beside the landed pr-title check, so a plan job here
+# reports a status nothing holds and a red one merges anyway. The proofs move
+# into the project's own gated workflow, which the required check needs, and
+# the rust binding carries the job.
+pr-run-mode = "skip"
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
-# `.github/workflows/release.yml` is hand-maintained and dist must not compare
-# against or regenerate it. The generated form leaves `$RUNNER_TEMP/notes.txt`
-# unquoted and word-splits `$PRERELEASE_FLAG`; the committed form quotes the
-# path and expands the flag as an array. Without this key dist's `plan` job
-# fails on every run, and the only other exit is to accept the unquoted form
-# back — which is a shell-injection shape, not a formatting preference.
+# Sign every built artifact with a GitHub Artifact Attestation, so a consumer
+# can check which workflow and commit produced it. crates.io stores no
+# provenance, so the release page is the only place it can live.
+github-attestations = true
+# Attest in the host phase, not the default build phase. The default attests
+# only the per-platform archives; the installers a consumer actually curls are
+# global artifacts built later, and the host phase is the first point where
+# every file that will reach the release page exists in one place.
+github-attestations-phase = "host"
+# The host phase's permissions are job-scoped, so the release must be created
+# in the same phase; cargo-dist's documentation asks for this pairing outright.
+github-release = "host"
+# `.github/workflows/release.yml` is generated from this file and then hardened
+# by hand, so dist must not compare against it or regenerate it. The generated
+# form interpolates `${{ }}` expressions straight into four `run:` bodies,
+# leaves `$RUNNER_TEMP/notes.txt` and `$GITHUB_PATH` unquoted, and word-splits
+# `$PRERELEASE_FLAG`. The project's `zizmor` hook reports 4 high and 3 medium
+# findings on that form, so accepting it back is a shell-injection shape rather
+# than a formatting preference.
 #
 # The cost is that dist no longer ports its own upgrades into that file, so a
 # change to `cargo-dist-version` above means diffing the generated workflow by
 # hand. `docs/reference/tracking.yaml` carries that obligation with a cadence.
 allow-dirty = ["ci"]
+
+# The build that signs is itself pinned by digest: cargo-dist references
+# these actions by movable tag unless told otherwise, and the attest step
+# is among them, so a moved tag could swap the code that mints the
+# signature. The commit is the immutable execution reference; the tag it
+# came from stays readable in the registry, as the discovery ref a
+# freshness check reads. These are dist's own default versions, which are
+# not the tags the hand-written workflows pin.
+[dist.github-action-commits]
+"actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803"          # v6
+"actions/download-artifact" = "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" # v8
+"actions/upload-artifact" = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"   # v7
+"actions/attest" = "1e69f48acb82d1966a394da916b4c1698aa569d6"            # v4

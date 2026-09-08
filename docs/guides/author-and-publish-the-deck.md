@@ -26,17 +26,18 @@ npx serve slides/dist      # preview the built bundle
 
 The base path matters only for the deployed bundle. `just slides-dev` serves from the root and needs no base; `just slides-build` carries `/vivarium/` as a literal, and the workflow derives the same value from the repository name so a rename cannot desynchronise them.
 
-The build is also the deck's only automated gate. Every Markdown hook is excluded from `slides/`, so a `slidev-build` hook runs at the pre-push stage for pushes that touch the directory, and [`../../.github/workflows/slides.yml`](../../.github/workflows/slides.yml) repeats it for every pull request and every push to `develop`. That lane is separate from [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml), which carries lint, test, build, and hooks and triggers on `master`, so a deck change never installs a Rust toolchain to prove nothing.
+The build is also the deck's only automated gate. Every Markdown hook is excluded from `slides/`, so a `slidev-build` hook runs at the pre-push stage for pushes that touch the directory, and [`../../.github/workflows/slides.yml`](../../.github/workflows/slides.yml) repeats it for every pull request and every push to `master`. That lane is separate from [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml), which carries lint, test, build, hooks, and the release gate. The deck lane is not in that gate, so a red deck build reports and holds no merge.
 
 ## Publish
 
-Deployment is a push to `develop` that touches `slides/`. There is no separate release step, and no promotion to `master` — `master` here holds only released commits and would leave the site frozen between releases.
+Deployment is a push to `master` that touches `slides/`. There is no separate release step. `master` is the one long-lived branch and takes no direct push, so the deck reaches it the same way every other change does: a linked worktree, then a squash-merged pull request.
 
 ```bash
-git switch -c slides/<topic> develop
+rk worktree add docs/<topic> --apply
+cd ../vivarium@docs-<topic>
 # edit, commit
-git push -u origin slides/<topic>
-gh pr create --base develop
+git push -u origin docs/<topic>
+gh pr create --base master
 ```
 
 Merging the pull request triggers [`../../.github/workflows/pages.yml`](../../.github/workflows/pages.yml). Watch it under Actions, `pages`; the live URL appears in the deploy job's summary.
@@ -44,7 +45,7 @@ Merging the pull request triggers [`../../.github/workflows/pages.yml`](../../.g
 ## Republish without a change
 
 ```bash
-gh workflow run pages.yml --ref develop
+gh workflow run pages.yml --ref master
 ```
 
 Use this after changing a repository-level Pages setting, when nothing in the tree has moved.
@@ -54,7 +55,7 @@ Use this after changing a repository-level Pages setting, when nothing in the tr
 | Symptom                                                            | Cause                                                                                                                                                                                                 |
 | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Deck builds locally, blank page on Pages with 404s for every asset | The bundle was built without the right base. Reproduce with `just slides-build` and check `slides/dist/index.html` references `/vivarium/assets/...`.                                                 |
-| A change merged to `develop` but nothing deployed                  | The workflow's path filter covers `slides/**` and the workflow file only. Force it with `gh workflow run`.                                                                                            |
+| A change merged to `master` but nothing deployed                   | The workflow's path filter covers `slides/**` and the workflow file only. Force it with `gh workflow run`.                                                                                            |
 | A direct link to a specific slide 404s                             | Slidev's default hash router is what makes deep links work on Pages. GitHub Pages has no single-page-app rewrite, so `routerMode: history` would need a `404.html` fallback the deploy does not ship. |
 | `slidev-build` at push says `slides/node_modules is missing`       | Exactly that. Run `just slides-install`. The hook names it rather than letting npm report a missing script, because the two failures look alike and mean different things.                            |
 | A pull request's `slides` job fails while local builds pass        | The job installs with `npm ci` from `slides/package-lock.json`. A dependency added with `npm install` and not committed reproduces exactly this.                                                      |

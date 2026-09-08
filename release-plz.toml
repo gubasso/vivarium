@@ -1,8 +1,20 @@
-# release-plz configuration. See https://release-plz.dev/docs/config for all options.
-# Conservative defaults; a workspace maintainer can override per package with a
-# [[package]] table (e.g. to opt a member out of publishing).
 [workspace]
 changelog_update = true
+# The bot's own release request has a release-plz-* head branch, which is
+# exactly what the branch heuristic behind this default recognizes: the
+# release half fires only on the push that lands that request's bump, so an
+# ordinary work merge publishes nothing and the release decision stays on the
+# one merge button.
 release_always = false
 publish = true
-semver_check = true
+# cargo-dist owns the GitHub release, because it is the half that has the
+# installers to attach. release-plz creating it first leaves dist's host job
+# failing on "a release with the same tag name already exists" and every
+# release carrying no binaries. The tag stays release-plz's; git_tag_enable is
+# separate and still on.
+git_release_enable = false
+# False, because vivarium ships two binaries — `viv` and `vivarium-supervisor` —
+# and its lib target exists for this crate's own integration tests. No external
+# consumer holds the API, so cargo-semver-checks would gate the bump on a
+# contract nobody depends on. Set true if a consumer ever links the library.
+semver_check = false

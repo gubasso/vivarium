@@ -41,10 +41,10 @@ tracked:
     dependents:
       - docs/plan/slices/007-build-test-lanes/README.md
   - path: .github/workflows/release.yml
-    last_checked: 2026-08-17
+    last_checked: 2026-09-08
     cadence: on cargo-dist-version changes in dist-workspace.toml
     why: dist-workspace.toml sets allow-dirty = ["ci"], so dist neither regenerates this workflow nor reports it as stale, and its own upgrades stop arriving.
-    revalidate: Run dist init in a scratch copy against the new cargo-dist-version, diff the generated release.yml against the committed one, and port every change by hand except the unquoted $RUNNER_TEMP path and the word-split $PRERELEASE_FLAG the hardening deliberately replaced.
+    revalidate: Run dist generate in a scratch copy against the new cargo-dist-version, diff the generated release.yml against the committed one, and port every change by hand except the hardening. The hardening is the env-var indirection replacing five template interpolations in run bodies, the quoted $RUNNER_TEMP/notes.txt and $GITHUB_PATH, the array-expanded $PRERELEASE_FLAG and tag flags, the braced $GITHUB_OUTPUT redirects, and the zizmor ignore comments. Confirm with zizmor --no-progress --offline and actionlint, and with rk status --check for the action pins and the attest step.
     dependents:
       - dist-workspace.toml
       - docs/guides/publishing.md
