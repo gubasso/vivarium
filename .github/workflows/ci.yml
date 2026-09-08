@@ -132,14 +132,21 @@ jobs:
         # previous tip at all and is skipped the same way. The anchor crosses
         # as an environment variable rather than by interpolation so a ref
         # name is data, not script.
+        #
+        # The range needs both ends named on a pull request. A request is
+        # checked out at the merge commit the forge synthesises, whose message
+        # is "Merge <sha> into <sha>" and is nobody's to write, so a range
+        # ending at HEAD fails on a commit the author never authored. The
+        # request's own head is the last commit this gate judges.
         env:
           RANGE_START: ${{ github.event.pull_request.base.sha || github.event.before }}
+          RANGE_END: ${{ github.event.pull_request.head.sha || 'HEAD' }}
         run: |
           if [ -z "$RANGE_START" ] || [ "$RANGE_START" = "0000000000000000000000000000000000000000" ]; then
             echo "no previous tip to anchor a message range; skipping"
             exit 0
           fi
-          nix develop --command committed --fixup --wip "${RANGE_START}..HEAD"
+          nix develop --command committed --fixup --wip "${RANGE_START}..${RANGE_END}"
 
   # The artifact workflow's proof. It runs `dist plan` and not `dist generate`:
   # dist-workspace.toml sets allow-dirty = ["ci"] because release.yml is
