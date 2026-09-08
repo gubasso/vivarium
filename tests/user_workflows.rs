@@ -2591,13 +2591,33 @@ fn workflow_17_worktree() -> Result<(), Failed> {
     let tp = TempProject::with_project_name("wf17-main").map_err(io_failed)?;
     let main_repo = tp.project().to_path_buf();
     let git = |args: &[&str], cwd: &Path| -> Result<(), Failed> {
-        let status = std::process::Command::new("git")
+        let mut command = std::process::Command::new("git");
+        command
             .args(args)
             .current_dir(cwd)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .status()
-            .map_err(io_failed)?;
+            .env("GIT_CONFIG_SYSTEM", "/dev/null");
+        // Git exports its own repository into every hook it runs, so a suite
+        // invoked from the pre-push gate inherits `GIT_DIR` and its siblings.
+        // Without clearing them the fixture's `git` reads this repository
+        // instead of the temporary one, runs this repository's installed
+        // hooks with the fixture as the working directory, and fails on a
+        // `.pre-commit-config.yaml` that is not there. Isolating the config
+        // alone is not enough: the location variables outrank `current_dir`.
+        for name in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_PREFIX",
+            "GIT_NAMESPACE",
+            "GIT_CEILING_DIRECTORIES",
+        ] {
+            command.env_remove(name);
+        }
+        let status = command.status().map_err(io_failed)?;
         if !status.success() {
             return fail(format!("git {args:?} failed in {}", cwd.display()));
         }
