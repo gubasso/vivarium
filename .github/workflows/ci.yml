@@ -48,6 +48,11 @@ permissions:
 # cheaper than choosing which of the two invocations may skip it.
 env:
   VIVARIUM_HEAVY_ON_HOST: '1'
+  # The doctor probe `host.nix-flakes-enabled` reads `nix config show
+  # experimental-features`, and the acceptance lane needs it non-empty. A
+  # runner's nix does not carry the setting into the nested shell the lane
+  # enters, so the premise is stated here rather than assumed of the host.
+  NIX_CONFIG: 'experimental-features = nix-command flakes'
 
 jobs:
   lint:
@@ -108,6 +113,12 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Hooks
+        # A CI sweep commits nothing and checks out no worktree, so the two
+        # hooks that judge where a commit is being made have nothing true to
+        # say here. The release convention names this pair itself, in the
+        # comment at the top of the landed block.
+        env:
+          SKIP: no-commit-to-branch,rk-worktree-location
         run: tests/host/heavy-run --need 12 --label "ci hooks" -- nix develop --command just hooks
       - name: Commit messages
         # The commit-msg stage is the one installed hook type `pre-commit run

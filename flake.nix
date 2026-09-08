@@ -16,6 +16,14 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
+    # The release convention's own tool, pinned at a release tag. `.envrc` runs
+    # `rk devshell sync` on directory entry, at most once a day, which moves
+    # this tag and the lock together and leaves a two-file diff to review. One
+    # project runs one `rk`: this pin, never a host install beside it.
+    release-kit = {
+      url = "github:gubasso/release-kit/v0.3.3";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -26,6 +34,7 @@
       nixpkgs,
       rust-overlay,
       flake-utils,
+      release-kit,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -115,6 +124,10 @@
             # separate install step. The shim, not a built package, so what PATH
             # resolves is the working tree rather than the last evaluation of it.
             devWrapper
+            # `rk`, from the pinned input above. The `rk-status-check` hook runs
+            # it, so CI resolves it here rather than needing a host install on
+            # the runner.
+            release-kit.packages.${system}.default
           ];
           # native deps for -sys crates, uncomment as needed:
           # buildInputs = [ pkgs.openssl ];
