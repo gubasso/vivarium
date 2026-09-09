@@ -44,9 +44,15 @@ env:
   # that appears neither here nor in the `check` matrix below, so a check that
   # quietly stops running in CI cannot exist unremarked.
   #
-  #   test-boot            needs a systemd user manager, which a runner has not
-  #                        been shown to offer; the `boot-experiment` job below
-  #                        is what would change that
+  #   test-boot            needs an unprivileged user namespace per VM, which
+  #   test-net             Ubuntu's AppArmor policy refuses on a runner: measured
+  #                        2026-09-09, `unshare` reports "write failed
+  #                        /proc/self/uid_map: Operation not permitted". The
+  #                        runner's other premises do hold — /dev/kvm at mode
+  #                        0666, and a systemd user manager answering after
+  #                        `loginctl enable-linger` — so this one line is what
+  #                        keeps both lanes off it. The `boot-experiment` job
+  #                        below is what would notice it changing
   #   slidev-build         slides.yml is the deck's own lane and installs the
   #                        deck's dependencies, which this workflow never does
   #   leftovers            reports what a round left on this developer's two
@@ -55,7 +61,7 @@ env:
   #   rk-no-hand-authored-tag  own trunk and tag protection is what says the
   #                        same thing to a runner, and it says it later and
   #                        harder
-  NOT_ON_A_RUNNER: 'test-boot slidev-build leftovers rk-no-push-to-trunk rk-no-hand-authored-tag'
+  NOT_ON_A_RUNNER: 'test-boot test-net slidev-build leftovers rk-no-push-to-trunk rk-no-hand-authored-tag'
 
 jobs:
   # The commit stage over the whole tree, which is what a contributor without
@@ -134,7 +140,6 @@ jobs:
           - test-unit
           - test-local
           - test-eval
-          - test-net
           - test-doc
           - clippy-strict
           - cargo-deny
@@ -166,20 +171,22 @@ jobs:
   # An experiment, and never a gate: `continue-on-error` and absent from `gate`'s
   # `needs`, so a red here holds no merge.
   #
-  # What it is testing is whether a runner can serve the boot lane at all. The
-  # premises are unequal. `/dev/kvm` is present and world read-write on a standard
-  # runner, which was measured here on 2026-09-08 — the Determinate Nix installer
-  # sets `DETERMINATE_NIX_KVM=1` and the device shows `crw-rw-rw- root kvm`. A
-  # systemd user manager is the premise that has never been shown, and ADR-0097
-  # gives a VM's lifetime to a transient user unit, so no amount of KVM substitutes
-  # for it. The step below arranges lingering and reports what it found before
-  # spending a boot on the question.
+  # What it is testing is whether a runner can serve the boot lane at all. Measured
+  # here on 2026-09-08 and 2026-09-09, two of the three premises hold: `/dev/kvm` is
+  # present at mode 0666 (the Determinate installer sets `DETERMINATE_NIX_KVM=1`),
+  # and a systemd user manager answers after the `loginctl enable-linger` the step
+  # below runs. The third does not. Every VM's network lives in its own host-side
+  # user and network namespace pair (spec/05), and Ubuntu\'s AppArmor policy refuses
+  # to create one for an unprivileged user, so the boot lane now refuses at its own
+  # preflight rather than failing twenty-seven times at the launch handoff.
   #
-  # What would promote this job into the gate: the user-manager premise verified
-  # here, and two consecutive green runs. One clean run is evidence of possibility,
-  # not of reliability. Until then `test-boot` stays in HOST_ONLY above, the
-  # developer's own `git push` is where the boot lane gates, and this job's
-  # outcome is recorded in docs/reference/tracking.yaml.
+  # It is kept, failing, because it is the thing that would notice that changing —
+  # a runner image that relaxes the policy, or a `sysctl` a step could set. What
+  # would promote it into the gate: the namespace premise held, and two consecutive
+  # green runs. One clean run is evidence of possibility, not of reliability. Until
+  # then `test-boot` stays in NOT_ON_A_RUNNER above, the developer\'s own `git push`
+  # is where the boot lane gates, and what this job found is recorded in
+  # docs/reference/tracking.yaml.
   boot-experiment:
     continue-on-error: true
     runs-on: ubuntu-latest
@@ -200,6 +207,11 @@ jobs:
           sudo loginctl enable-linger "$USER" || echo "enable-linger refused"
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
           systemctl --user show -p Version --value || echo "no systemd user manager"
+          # The premise that fails today. Reported here so a run that starts
+          # passing is visible without reading the lane's own output.
+          unshare --user --map-root-user --net true \
+            && echo "unprivileged user+net namespaces: available" \
+            || echo "unprivileged user+net namespaces: refused"
       - name: The boot lane
         run: tests/host/heavy-run --need 12 --label "ci test-boot" -- nix develop --command pre-commit run --all-files --hook-stage manual test-boot
 

@@ -18,7 +18,7 @@ use std::path::Path;
 use libtest_mimic::{Arguments, Failed, Trial};
 use support::{
     EX_CONFIG, EX_IOERR, EX_TEMPFAIL, EX_UNAVAILABLE, EX_USAGE, TempProject, VOLUME_TAIL,
-    VivOutput, arrange_manifest, check, expect_code, expect_derived_manifest_visible,
+    VivOutput, arrange_manifest, check, doctor_check, expect_code, expect_derived_manifest_visible,
     expect_json_array_items, expect_json_array_nonempty, expect_json_fields_at, expect_json_keys,
     expect_stderr_mentions, expect_stdout_lacks, expect_stdout_mentions, expect_tree_unchanged,
     fail, io_failed, json, json_record, project_rows, run_viv, snapshot_tree, viv, viv_at,
@@ -556,8 +556,19 @@ fn workflow_16_doctor() -> Result<(), Failed> {
         &["doctor", "--json"],
         &[("VIVARIUM_MANIFEST", "doctor-ownership")],
     )?;
-    if ownership.status.code() == Some(EX_CONFIG) {
-        return fail("doctor refused ADR-0109's ownership finding instead of reporting it");
+    // Read from the finding rather than from the exit code, which is this host's
+    // health and which the header above says this trial never asserts. `viv
+    // doctor` exits `78` on any failing hard probe, so on a machine without
+    // virtualization the old reading failed here and named the ownership finding
+    // for a refusal that had nothing to do with it. What makes the finding a
+    // report rather than a refusal is its own severity: only a hard probe carries
+    // an exit code (spec/13), so a soft one cannot turn this condition into `78`
+    // however the rest of the host reads.
+    let finding = doctor_check(&ownership, "working-directory-declared")?;
+    if finding["severity"] == serde_json::json!("hard") {
+        return fail(
+            "ADR-0109's ownership finding is hard, so doctor refuses instead of reporting",
+        );
     }
     check(expect_stdout_mentions(
         &ownership,
