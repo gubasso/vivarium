@@ -25,4 +25,4 @@ Use [composition and determinism](../reference/spec/04-composition-and-determini
 
 ## Acceptance coverage
 
-Two gated trials in [`user_workflows.rs`](../../tests/user_workflows.rs) cover this: `workflow_04_inspect_before_run_usage` checks the declared view and the invocation surface, and `workflow_04_inspect_before_run` checks the effective and provenance views without creating runtime or volume state.
+Two trials cover this: `workflow_04_inspect_before_run_usage` in [`local_workflows.rs`](../../tests/local_workflows.rs) checks the declared view and the invocation surface, and `workflow_04_inspect_before_run` in [`eval_workflows.rs`](../../tests/eval_workflows.rs) checks the effective and provenance views without creating runtime or volume state.

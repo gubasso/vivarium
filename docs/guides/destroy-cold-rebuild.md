@@ -22,4 +22,4 @@ Use the keep-volumes form when the next VM should reattach persistent data. A la
 
 ## Acceptance coverage
 
-Two gated trials in [`user_workflows.rs`](../../tests/user_workflows.rs) cover this: `workflow_08_destroy_usage_surface` checks the confirmation requirement and manifest-keyed scope, and `workflow_08_destroy_cold_rebuild` checks the cold and warm variants, clean workspace, and surviving derived resolution.
+Two trials cover this: `workflow_08_destroy_usage_surface` in [`local_workflows.rs`](../../tests/local_workflows.rs) checks the confirmation requirement and manifest-keyed scope, and `workflow_08_destroy_cold_rebuild` in [`boot_workflows.rs`](../../tests/boot_workflows.rs) checks the cold and warm variants, clean workspace, and surviving derived resolution.

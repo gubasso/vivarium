@@ -26,3 +26,5 @@ The commit stage owns per-file checks and every autofixer. The push stage owns c
 Implemented
 
 Enacted in `.pre-commit-config.yaml` (`default_stages` and per-hook `stages:`), `justfile` (`hooks`), and `.github/workflows/ci.yml` (`hooks` job, plus a `committed` lane over each event's commit range for the commit-msg stage `pre-commit run --all-files` cannot replay).
+
+Amended by [`./ADR-0114-a-lane-runs-where-a-place-names-it.md`](./ADR-0114-a-lane-runs-where-a-place-names-it.md) — one stage per claim stands, and what changed is how a place names its claims. `just` and CI now invoke hooks by id instead of carrying twin commands, and CI runs the push-stage claims as a matrix of named hooks rather than a second whole-stage sweep.

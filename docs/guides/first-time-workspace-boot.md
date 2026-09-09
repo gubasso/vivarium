@@ -27,4 +27,4 @@ Starting is detached, idempotent, and non-destructive, so a second `viv start` i
 
 ## Acceptance coverage
 
-Two gated trials in [`user_workflows.rs`](../../tests/user_workflows.rs) exercise this sequence: `workflow_01_manifest_workspace_resolution_usage` covers derived resolution and the state boundaries, and `workflow_01_manifest_workspace_resolution_boot` covers the boot itself.
+Two trials exercise this sequence: `workflow_01_manifest_workspace_resolution_usage` in [`local_workflows.rs`](../../tests/local_workflows.rs) covers derived resolution and the state boundaries, and `workflow_01_manifest_workspace_resolution_boot` in [`boot_workflows.rs`](../../tests/boot_workflows.rs) covers the boot itself.

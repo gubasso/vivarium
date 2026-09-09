@@ -27,4 +27,4 @@ Expect the denied fetch to fail quickly with an error rather than hang: [network
 
 ## Acceptance coverage
 
-Two gated trials in [`user_workflows.rs`](../../tests/user_workflows.rs) cover this: `workflow_05_restrict_egress_config_surface` checks the authoring versus evaluated surfaces and provenance without booting anything, and `workflow_05_restrict_egress_allowlist` checks legible enforcement inside a running guest.
+Two trials cover this: `workflow_05_restrict_egress_config_surface` in [`eval_workflows.rs`](../../tests/eval_workflows.rs) checks the authoring versus evaluated surfaces and provenance without booting anything, and `workflow_05_restrict_egress_allowlist` in [`boot_workflows.rs`](../../tests/boot_workflows.rs) checks legible enforcement inside a running guest.
