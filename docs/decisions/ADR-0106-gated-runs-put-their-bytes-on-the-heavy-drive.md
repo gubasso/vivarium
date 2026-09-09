@@ -27,4 +27,4 @@ Moving the store is refused on a measurement, 2026-08-19. A chroot store keeps l
 
 Implemented
 
-Enacted in `tests/host/heavy-run`, `disk-preflight --require-drive`, `.pre-commit-config.yaml`, `justfile`, `flake.nix` and `ci.yml`; asserted by `tests/heavy_gate.rs`.
+Enacted in `tests/host/heavy-run`, `disk-preflight --require-drive`, `.pre-commit-config.yaml`, `justfile`, `flake.nix` and `ci.yml`; asserted by `tests/local_heavy_gate.rs`.

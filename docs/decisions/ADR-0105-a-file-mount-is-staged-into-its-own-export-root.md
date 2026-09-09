@@ -26,4 +26,4 @@ Each rejection was measured on the target host against the pinned `virtiofsd 1.1
 
 ## Status
 
-Implemented — the launch path in [`src/launch/policy.rs`](../../src/launch/policy.rs) and [`src/bin/vivarium-supervisor.rs`](../../src/bin/vivarium-supervisor.rs), demonstrated by `workflow_22_file_mount_serves_only_its_file` in [`tests/user_workflows.rs`](../../tests/user_workflows.rs).
+Implemented — the launch path in [`src/launch/policy.rs`](../../src/launch/policy.rs) and [`src/bin/vivarium-supervisor.rs`](../../src/bin/vivarium-supervisor.rs), demonstrated by `workflow_22_file_mount_serves_only_its_file` in [`tests/boot_workflows.rs`](../../tests/boot_workflows.rs).

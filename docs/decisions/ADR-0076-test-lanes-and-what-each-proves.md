@@ -40,3 +40,5 @@ Every golden file names the spec line it encodes, so accepting a diff is a spec 
 Accepted
 
 Specified in [`../reference/testing-lanes.md`](../reference/testing-lanes.md).
+
+Amended by [`./ADR-0114-a-lane-runs-where-a-place-names-it.md`](./ADR-0114-a-lane-runs-where-a-place-names-it.md) — a runner profile is now one per executable lane, selected by binary name, rather than one per proof lane; the gated acceptance lane gates a capable host rather than being informational; and the ungated-trial-per-lane consequence no longer applies, because nothing skips. The six proof lanes and what each proves stand.

@@ -10,7 +10,7 @@ This is the single status surface. Each line follows `<id> <slug> — <status> �
 - 023 a-declared-port-crosses-inward — later — 3 sessions — deprioritized 2026-08-25 by the owner, whose sandbox use does not involve reaching a service from the host; the slice stays shaped and funded, and `Q-033` stays open until it closes
 - 005 cli-runtime-plumbing — later — 2 sessions
 - 006 generate-config-contract — later — 2 sessions
-- 007 build-test-lanes — later — 4 sessions
+- 007 build-test-lanes — later — 4 sessions — narrowed 2026-09-08 by `ADR-0114`, which enacted the per-lane nextest profiles and removed the runtime gate this slice was shaped around; the three proof lanes without a home of their own are what it still owns, and its `Revisions` carries the reason
 - 008 enforce-implementation-status — later — 2 sessions
 - 009 automate-backend-advisories — later — 2 sessions
 

@@ -56,3 +56,28 @@ tracked:
     dependents:
       - SECURITY.md
       - docs/plan/slices/009-automate-backend-advisories/README.md
+  - path: .github/workflows/ci.yml
+    last_checked: 2026-09-08
+    cadence: 30d and on runner-image or Determinate Nix changes
+    why: >-
+      The register names one premise a runner has not been shown to hold and one
+      reading that has been seen to lie, and both are facts about a machine this
+      repository does not control. Settled 2026-09-08: a standard GitHub runner
+      carries /dev/kvm at mode 0666, with the Determinate installer setting
+      DETERMINATE_NIX_KVM=1, so virtualization is not what keeps the boot lane
+      off a runner. Open: a systemd user manager for the runner user, which
+      ADR-0097 makes a precondition of starting a VM at all. Open: nix config
+      show experimental-features printed an empty line on that runner in every
+      context while both features worked, which is why src/doctor/host.rs reads
+      the structured form first.
+    revalidate: >-
+      Read the boot-experiment job of the most recent CI run - its capability
+      step for the user manager, and the lane's own doctor output for the
+      nix-flakes-enabled line. Two consecutive green runs plus the user-manager
+      premise verified are what promote test-boot out of NOT_ON_A_RUNNER in
+      .github/workflows/ci.yml and into the check matrix. Never infer either
+      premise from an agent environment.
+    dependents:
+      - docs/reference/testing-lanes.md
+      - docs/decisions/ADR-0114-a-lane-runs-where-a-place-names-it.md
+      - src/doctor/host.rs

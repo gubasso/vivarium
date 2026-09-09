@@ -25,4 +25,4 @@ Use the evaluated view for the effective result and the sources view for attribu
 
 ## Acceptance coverage
 
-The gated trial [`workflow_03_team_shared_and_personal_override`](../../tests/user_workflows.rs) checks the real config-root model with one shared piece and two different personal manifests, the portable mount value surviving evaluation unexpanded, the winning layer, the shared piece staying byte-identical throughout, the literal-path rejection, and tie reporting.
+The trial `workflow_03_team_shared_and_personal_override`, in [`eval_workflows.rs`](../../tests/eval_workflows.rs), checks the real config-root model with one shared piece and two different personal manifests, the portable mount value surviving evaluation unexpanded, the winning layer, the shared piece staying byte-identical throughout, the literal-path rejection, and tie reporting.

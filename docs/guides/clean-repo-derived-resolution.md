@@ -24,4 +24,4 @@ The selected manifest's name keys the sandbox. Two disjoint workspace trees decl
 
 ## Acceptance coverage
 
-The gated `workflow_02_derived_workspace_index` trial in [`user_workflows.rs`](../../tests/user_workflows.rs) checks the clean tree, cache rebuild and invalidation, mount exclusion, and two-owner refusal.
+The `workflow_02_derived_workspace_index` trial in [`local_workflows.rs`](../../tests/local_workflows.rs) checks the clean tree, cache rebuild and invalidation, mount exclusion, and two-owner refusal.

@@ -15,7 +15,7 @@ The three promised checks fail on missing trials, false `Implemented` rows, and 
 ## In scope
 
 - Extract the status table and parser command inventory.
-- Resolve test names and classify ignore and runtime gates.
+- Resolve test names across the acceptance binaries and classify ignore markers and lane membership.
 - Provide a deterministic check command, pre-commit and CI wiring, and self-tests.
 
 ## Out of scope
@@ -30,13 +30,14 @@ The three promised checks fail on missing trials, false `Implemented` rows, and 
 - [`../../../explanation/cli-and-diagnostics.md`](../../../explanation/cli-and-diagnostics.md) — owns the current-state boundary.
 - [`../../../decisions/ADR-0012-generate-config-examples-from-types.md`](../../../decisions/ADR-0012-generate-config-examples-from-types.md) — provides the generated-check precedent.
 - [`../../../decisions/ADR-0075-pre-1.0-cli-stability-and-deprecation-policy.md`](../../../decisions/ADR-0075-pre-1.0-cli-stability-and-deprecation-policy.md) — makes status load-bearing.
-- [`../../../../tests/user_workflows.rs`](../../../../tests/user_workflows.rs) — owns acceptance trial declarations.
+- [`../../../../tests/local_workflows.rs`](../../../../tests/local_workflows.rs), [`../../../../tests/eval_workflows.rs`](../../../../tests/eval_workflows.rs), and [`../../../../tests/boot_workflows.rs`](../../../../tests/boot_workflows.rs) — own the acceptance trial declarations.
+- [`../../../reference/testing-lanes.md`](../../../reference/testing-lanes.md) — owns which lane runs a given trial, and where.
 
 ## Acceptance
 
 If a Trial cell names no test, then the status check SHALL fail.
 
-If an `Implemented` row names a skipped or ignored trial, then the status check SHALL fail.
+If an `Implemented` row names an ignored trial, or one in a lane no place runs, then the status check SHALL fail.
 
 If the parser exposes a subcommand with no status row, then the status check SHALL fail.
 
@@ -45,7 +46,7 @@ When the page and the code agree, the status check SHALL exit successfully witho
 ## Rabbit holes
 
 - Textual parsing is too permissive — escape: define a deliberately narrow table and parser schema.
-- Designed trials are treated as proof — escape: inspect runtime gates and ignore markers.
+- Designed trials are treated as proof — escape: inspect ignore markers and the lane register that says where each binary runs.
 
 ## Done when
 
@@ -53,4 +54,4 @@ Every acceptance assertion above holds and is demonstrated by the evidence it na
 
 ## Revisions
 
-None.
+2026-09-08 — `ADR-0114` split the single acceptance binary into lane-named ones and deleted the runtime gate, so the `Governed by` list now names all three and the register that places them, and the checks classify lane membership rather than a gate a trial applied to itself. No change to Goal, Core, Appetite, or Acceptance beyond restating the second assertion in the new vocabulary.

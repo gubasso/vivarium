@@ -154,4 +154,4 @@ Treat it as disclosed and rotate it. Do not reason about who might have read it:
 
 ## Acceptance coverage
 
-None yet. Unlike the other per-task guides, this one pairs with no gated trial in [`user_workflows.rs`](../../tests/user_workflows.rs) — the decidable half of the rule is already covered by `workflow_03_literal_path`, and the undecidable half is a heuristic by design, so there is no assertion that could encode "no secret is present". Stating that is more honest than inventing a trial that would prove less than its name suggests.
+None yet. Unlike the other per-task guides, this one pairs with no acceptance trial of its own — the decidable half of the rule is already covered by `workflow_03_literal_path` in [`eval_workflows.rs`](../../tests/eval_workflows.rs), and the undecidable half is a heuristic by design, so there is no assertion that could encode "no secret is present". Stating that is more honest than inventing a trial that would prove less than its name suggests.

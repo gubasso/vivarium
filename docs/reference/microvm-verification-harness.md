@@ -26,7 +26,9 @@ Each script also accepts `--clean`, which removes that lane's retained images, l
 $ tests/host/base-image-check
 ```
 
-The sibling lanes below are invoked the same way and are listed with what each proves. No arguments. It resolves the flake from its own location, so it works from any working directory. Output is one `[PASS]` / `[FAIL]` / `[SKIP]` / `[RECORD]` line per check plus a verdict, and the whole run is meant to be pasted into a review.
+The sibling lanes below are invoked the same way and are listed with what each proves. No arguments. It resolves the flake from its own location, so it works from any working directory.
+
+Every script here is also registered as a `manual` pre-commit hook named `lane-<name>`, so the same lane is reachable as `just lane base-image` or `pre-commit run --hook-stage manual lane-base-image`. That is the form [`testing-lanes.md`](./testing-lanes.md) registers, and it is what keeps a script from becoming a lane nobody remembers; the direct invocation above stays the shortest way to run one by hand. Output is one `[PASS]` / `[FAIL]` / `[SKIP]` / `[RECORD]` line per check plus a verdict, and the whole run is meant to be pasted into a review.
 
 Artefacts are retained beside the diagnostic volume, under the drive when one is configured and under the state root otherwise: `console.log` (the raw guest console) and `memfd-series.txt` (the memory series described below). They are the reason to run it, so they outlive the run.
 
@@ -62,7 +64,7 @@ The refusal is deterministic because it has to be: pre-commit runs every hook wi
 ```bash
 # run the gated checks on this disk anyway — the capacity check still applies
 VIVARIUM_HEAVY_ON_HOST=1 git push
-VIVARIUM_HEAVY_ON_HOST=1 just test-pre-push
+VIVARIUM_HEAVY_ON_HOST=1 just push-checks
 tests/host/heavy-run --on-host --need 12 --label "a hand run" -- cargo nextest run
 ```
 
@@ -128,7 +130,7 @@ The guest half is the `vivarium-gc-interlock` unit, which is inert in the ordina
 
 ## The sibling script: `tests/host/guest-agent-check`
 
-The control transport and credential relay get their own script for a different reason: its host tier is not a shell probe over a console log but a Rust trial, `tests/guest_agent_host.rs`, which boots a guest and drives real `AF_VSOCK` sessions through it.
+The control transport and credential relay get their own script for a different reason: its host tier is not a shell probe over a console log but a Rust lane, `tests/boot_guest_agent.rs`, which boots a guest and drives real `AF_VSOCK` sessions through it.
 
 ```console
 $ tests/host/guest-agent-check
@@ -137,14 +139,14 @@ $ tests/host/guest-agent-check
 Three properties are worth knowing before reading a result from it.
 
 - It runs the trial twice, in one invocation. The assertions it most cares about — concurrent sessions, pool depletion and refill, the two time bounds — are the kind that pass once and fail on a Tuesday, so one clean run is not the unit of evidence. The trial carries its own twenty-round loops for the same reason; the two runs are the outer guard, not a substitute.
-- The trial gates itself at run time and reports why it skipped, so an incapable host does not panic on a missing variable. `VIVARIUM_TEST_REQUIRE=1` is deliberately not set by this script, which has already proved the gate before running the trial; it is the knob for CI, where a silently disabled lane is the failure mode.
+- Nothing skips. The `boot` lane declares what it needs once, in its binary's `main`, and an unmet need fails every trial in it with the reason (`ADR-0114`), so this script's own host-tier check is what decides whether the lane is worth invoking rather than something the trials repeat. An incapable host reached anyway reports a named missing capability, never a green run over trials that did not happen.
 - The measured figures are `[RECORD]` lines the trial writes to stderr, and nextest replays captured output only for failures. The script therefore passes `--success-output=immediate`. Without it the figures survive exactly the runs that produce untrustworthy numbers and vanish from every green one.
 
 Retained diagnostics live under `${TMPDIR:-/tmp}/vivarium-agent-host-*` and are removed only by `--clean`, because a failure is meant to be readable afterwards. The trial's runtime directory and its sockets are the one part that does not live there: they sit under `${XDG_RUNTIME_DIR}/viv-agent-*`, because a Unix socket path cannot exceed 108 bytes and a drive-backed scratch root is long enough to overrun it — measured at 109 for `workspace.sock`, which fails the boot two seconds in with a message about a child exit rather than about a path. `--clean` removes both names.
 
 ## The sibling script: `tests/host/exec-and-shell-check`
 
-Where `guest-agent-check` proves the guest half of the control plane, this one proves the host half — the two verbs a user actually types. Its host tier is the acceptance harness rather than a shell probe: three trials in `tests/user_workflows.rs` that boot a guest and then run commands in it.
+Where `guest-agent-check` proves the guest half of the control plane, this one proves the host half — the two verbs a user actually types. Its host tier is the acceptance harness rather than a shell probe: three named trials, selected by name across two lane binaries. `workflow_06_exec_usage_surface` from `tests/local_workflows.rs` answers the usage surface before anything boots, and `workflow_06_exec_exit_code_propagation` and `workflow_06_shell_interactive_session` from `tests/boot_workflows.rs` boot a guest and then run commands in it.
 
 ```console
 $ tests/host/exec-and-shell-check
