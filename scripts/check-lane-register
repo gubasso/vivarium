@@ -32,6 +32,8 @@ import re
 import sys
 from pathlib import Path
 
+import tomllib
+
 # The lanes a nextest profile may name. `unit` and `doc` have no binary prefix of
 # their own: `unit` selects by `kind()` and `doc` is `cargo test --doc`, which
 # nextest cannot run at all.
@@ -83,46 +85,32 @@ def hook_entries() -> dict[str, str]:
     return found
 
 
-def profile_filters() -> dict[str, str]:
-    """Each `[profile.<name>]` block's own `default-filter`, if it declares one."""
-    found: dict[str, str] = {}
-    current: str | None = None
-    for line in NEXTEST.read_text().splitlines():
-        header = re.match(r"^\[profile\.(\w+)\]", line)
-        if header:
-            current = header.group(1)
-            continue
-        if line.startswith("["):
-            current = None
-            continue
-        chosen = re.match(r'^default-filter = "(.*)"', line)
-        if chosen and current:
-            found.setdefault(current, chosen.group(1))
-    return found
+def profile_filters() -> dict[str, str | None]:
+    """Each `[profile.<name>]` block's own `default-filter`, or `None` if it has none.
+
+    Parsed with `tomllib` rather than by line, and that is the difference between
+    a guard and a guess: a line reader matching one quoting style passes a filter
+    written in the other, and `default-filter = 'binary(local_*)'` is valid TOML.
+    A profile that declares none is `None` here rather than absent, because
+    nextest inherits `profile.default`'s filter for it, which is a different
+    lane's selection and is exactly the drift this rule exists to catch.
+    """
+    parsed = tomllib.loads(NEXTEST.read_text())
+    return {
+        name: block.get("default-filter")
+        for name, block in parsed.get("profile", {}).items()
+        if isinstance(block, dict)
+    }
 
 
 def cargo_test_targets() -> dict[str, str]:
     """Each `[[test]]` entry's name and the path it names."""
-    found: dict[str, str] = {}
-    name: str | None = None
-    inside = False
-    for line in CARGO.read_text().splitlines():
-        if line.strip() == "[[test]]":
-            inside = True
-            name = None
-            continue
-        if line.startswith("["):
-            inside = False
-            continue
-        if not inside:
-            continue
-        named = re.match(r'^name = "(\S+)"', line)
-        if named:
-            name = named.group(1)
-        path = re.match(r'^path = "(\S+)"', line)
-        if path and name:
-            found[name] = path.group(1)
-    return found
+    parsed = tomllib.loads(CARGO.read_text())
+    return {
+        entry["name"]: entry["path"]
+        for entry in parsed.get("test", [])
+        if "name" in entry and "path" in entry
+    }
 
 
 def hook_stages() -> dict[str, list[str]]:
@@ -237,10 +225,15 @@ def main() -> int:
     # `binary(local_*)` is the same drift seen from the other side.
     filters = profile_filters()
     for lane, expected in sorted(EXPECTED_FILTER.items()):
-        actual = filters.get(lane)
-        if actual is None:
+        if lane not in filters:
             continue
-        if actual != expected:
+        actual = filters[lane]
+        if actual is None:
+            complain(
+                f"`profile.{lane}` declares no `default-filter`, so it inherits "
+                f"`profile.default`'s and runs another lane's tests"
+            )
+        elif actual != expected:
             complain(
                 f"`profile.{lane}` selects `{actual}`, not `{expected}`; "
                 f"a lane that selects another lane's binaries runs the wrong tests"

@@ -7,7 +7,7 @@
 //! check that cannot observe must say so rather than answer.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -248,12 +248,18 @@ fn read_random_token() -> Option<String> {
 
 /// A directory under the temporary root that this process certainly created.
 ///
-/// `create_dir` rather than `create_dir_all`: the whole point is that an existing
-/// path is a refusal rather than something to adopt. The name is drawn from the
-/// system's own randomness, so a watcher cannot predict the next one and win the
-/// race by pre-creating it; a process id can be read from `/proc` and is not
-/// randomness. A handful of attempts covers a collision, which is a birthday
-/// problem over 64 bits and not an attack.
+/// Three properties, and each one closes a different way in. `create_dir` rather
+/// than `create_dir_all`, so an existing path is a refusal rather than something to
+/// adopt. The name is drawn from the system's own randomness, so a watcher cannot
+/// predict the next one and pre-create it; a process id is readable from `/proc`
+/// and is not randomness. And the mode is `0o700` in the creating syscall rather
+/// than set afterwards: a directory created at the default `0o777` and narrowed a
+/// moment later is world-writable for that moment, which under a permissive umask
+/// is long enough for someone watching to drop in a `flake.nix` symlink that the
+/// write below would then follow. Raised in review 2026-09-09, in two rounds.
+///
+/// A handful of attempts covers a name collision, which is a birthday problem over
+/// 64 bits rather than an attack.
 fn create_private_probe_directory() -> Result<PathBuf, String> {
     let root = std::env::temp_dir();
     let mut last = String::from("no attempt was made");
@@ -269,16 +275,8 @@ fn create_private_probe_directory() -> Result<PathBuf, String> {
             format!("{}", std::process::id())
         });
         let candidate = root.join(format!("viv-flake-probe-{token}"));
-        match std::fs::create_dir(&candidate) {
-            Ok(()) => {
-                // Narrow it before the flake goes in, so no other user reads or
-                // replaces what is about to be evaluated.
-                std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o700))
-                    .map_err(|error| {
-                        format!("the flake probe directory could not be made private: {error}")
-                    })?;
-                return Ok(candidate);
-            }
+        match std::fs::DirBuilder::new().mode(0o700).create(&candidate) {
+            Ok(()) => return Ok(candidate),
             Err(error) => last = error.to_string(),
         }
     }
