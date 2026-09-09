@@ -162,19 +162,21 @@ impl TempProject {
             fs::create_dir_all(path)?;
         }
         // The runtime base is the one root with a mode requirement, and it is created
-        // private in the same syscall rather than narrowed afterwards. ADR-0055 makes
-        // the privacy a precondition of launching at all, and
-        // `config::resolve_runtime_root` refuses any base with `mode & 0o077 != 0`, so
-        // a harness that skipped it would fail every launch trial with `77` before the
-        // product path was reached. Setting the mode after creating would satisfy that
-        // and still leave a window: on the `/tmp` fallback above the directory would be
-        // world-writable for the instant between the two calls, which is long enough
-        // for another user to place a file the fixture then treats as its own. Raised
-        // in review 2026-09-09.
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&runtime)?;
+        // private and exclusively. ADR-0055 makes the privacy a precondition of
+        // launching at all, and `config::resolve_runtime_root` refuses any base with
+        // `mode & 0o077 != 0`, so a harness that skipped it would fail every launch
+        // trial with `77` before the product path was reached.
+        //
+        // Both properties are load-bearing and neither is obvious. Setting the mode
+        // after creating leaves the directory at the default mode for the instant
+        // between the two calls, which under a permissive umask is long enough for
+        // another user to write into it. And `recursive(true)` would accept a
+        // directory that already exists, mode and owner untouched, so a name another
+        // user created first would be adopted as this fixture's runtime root and
+        // handed to the product as `XDG_RUNTIME_DIR`. The parent — `/run/user/<uid>`
+        // checked above, or `/tmp` — always exists, so nothing needs creating
+        // recursively. Both raised in review 2026-09-09, in successive rounds.
+        create_private_directory(&runtime)?;
         bridge_user_manager(&runtime)?;
         let project = project.canonicalize()?;
         Ok(Self {
@@ -333,6 +335,15 @@ fn stop_leaked_vms(runtime: &Path) {
                 .output();
         }
     }
+}
+
+/// Create one directory, private from birth, refusing a path that already exists.
+///
+/// `DirBuilder` with an explicit mode rather than `create_dir` plus
+/// `set_permissions`, so no instant passes at the default mode; and without
+/// `recursive`, so an existing path is a refusal rather than something adopted.
+fn create_private_directory(path: &Path) -> io::Result<()> {
+    fs::DirBuilder::new().mode(0o700).create(path)
 }
 
 #[derive(Debug)]
