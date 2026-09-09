@@ -113,7 +113,7 @@
             # `scripts/baseline-pins` reads `nix flake archive --json` with it,
             # and `scripts/install-dev` reaches that script through this shell.
             pkgs.jq
-            # The `tests/net_host` lane runs the four networking seams against
+            # The `tests/net_namespaces` lane runs the four networking seams against
             # the real tools: `unshare`/`nsenter` for the namespace pair, `ip`
             # for the tap, `nft` for the ruleset. Dev-shell copies of what the
             # product pins through nix/flake.lock's backend programs.

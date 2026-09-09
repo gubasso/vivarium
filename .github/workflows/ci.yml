@@ -1,16 +1,9 @@
-# CI workflow — lint, test, build, hooks.
-# Every job reuses the project's Nix devshell (flake.nix) so CI runs the exact
-# toolchain pinned in rust-toolchain.toml, the same one local development uses.
-# Jobs invoke the justfile recipes through the devshell
-# (`nix develop --command just <recipe>`) so CI and local runs share one
-# definition of each task — the recipes themselves already wrap `cargo`.
+# CI workflow — the lanes a runner can serve, plus the gate a merge rests on.
 #
-# The hooks job runs the same pre-commit set the git hooks gate locally, so a
-# contributor without hooks installed cannot pass CI without them. The
-# autofixing hooks are what make it a real gate here: pre-commit fails with
-# "files were modified by this hook", which is exactly the failure such a
-# contributor should see. Its `fetch-depth: 0` is load-bearing for gitleaks —
-# a shallow clone would let it pass over history it never fetched.
+# Every job here invokes a pre-commit hook by id and never repeats its command.
+# `.pre-commit-config.yaml` is where a lane's command is written, so this file,
+# the `just` recipes, and the git hooks cannot drift: they name the same thing.
+# The lane register is docs/reference/testing-lanes.md.
 #
 # Trigger: `master` and every pull request. The release convention writes the
 # trunk through squash-merged pull requests alone and arms the release request
@@ -44,58 +37,33 @@ permissions:
 # store, so a gate placed inside it measures a store the step has already
 # written to, and the refusal above would arrive after the write it exists to
 # prevent. Outside, the step needs only the runner's own `bash` and coreutils.
-# The recipes gate themselves again from within; paying for the check twice is
-# cheaper than choosing which of the two invocations may skip it.
 env:
   VIVARIUM_HEAVY_ON_HOST: '1'
-  # The doctor probe `host.nix-flakes-enabled` reads `nix config show
-  # experimental-features`, and the acceptance lane needs it non-empty. A
-  # runner's nix does not carry the setting into the nested shell the lane
-  # enters, so the premise is stated here rather than assumed of the host.
-  NIX_CONFIG: 'experimental-features = nix-command flakes'
+  # The hooks that gate a push and that no runner runs, each with its reason.
+  # `scripts/check-lane-register` reads this list and fails a push-staged hook
+  # that appears neither here nor in the `check` matrix below, so a check that
+  # quietly stops running in CI cannot exist unremarked.
+  #
+  #   test-boot            needs a systemd user manager, which a runner has not
+  #                        been shown to offer; the `boot-experiment` job below
+  #                        is what would change that
+  #   slidev-build         slides.yml is the deck's own lane and installs the
+  #                        deck's dependencies, which this workflow never does
+  #   leftovers            reports what a round left on this developer's two
+  #                        disks; a runner is discarded after the run
+  #   rk-no-push-to-trunk  judges the push a developer is making; the forge's
+  #   rk-no-hand-authored-tag  own trunk and tag protection is what says the
+  #                        same thing to a runner, and it says it later and
+  #                        harder
+  NOT_ON_A_RUNNER: 'test-boot slidev-build leftovers rk-no-push-to-trunk rk-no-hand-authored-tag'
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
-      - name: Cache Nix store
-        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
-      - name: Format
-        run: tests/host/heavy-run --need 4 --label "ci fmt-check" -- nix develop --command just fmt-check
-      - name: Clippy
-        run: tests/host/heavy-run --need 4 --label "ci lint" -- nix develop --command just lint
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
-      - name: Cache Nix store
-        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
-      - name: Test
-        run: tests/host/heavy-run --need 12 --label "ci test-ci" -- nix develop --command just test-ci
-
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
-      - name: Cache Nix store
-        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
-      - name: Build
-        run: tests/host/heavy-run --need 4 --label "ci build" -- nix develop --command just build
-
+  # The commit stage over the whole tree, which is what a contributor without
+  # hooks installed would otherwise bypass. The autofixing hooks are the real
+  # gate: pre-commit fails with "files were modified by this hook", which is
+  # exactly the failure such a contributor should see. `fetch-depth: 0` is
+  # load-bearing for gitleaks — a shallow clone would let it pass over history
+  # it never fetched.
   hooks:
     runs-on: ubuntu-latest
     steps:
@@ -112,14 +80,14 @@ jobs:
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
-      - name: Hooks
+      - name: Commit-stage hooks
         # A CI sweep commits nothing and checks out no worktree, so the two
         # hooks that judge where a commit is being made have nothing true to
         # say here. The release convention names this pair itself, in the
         # comment at the top of the landed block.
         env:
           SKIP: no-commit-to-branch,rk-worktree-location
-        run: tests/host/heavy-run --need 12 --label "ci hooks" -- nix develop --command just hooks
+        run: tests/host/heavy-run --need 8 --label "ci commit-stage hooks" -- nix develop --command pre-commit run --all-files --hook-stage pre-commit
       - name: Commit messages
         # The commit-msg stage is the one installed hook type `pre-commit run
         # --all-files` cannot replay — it lints a message, not files — so the
@@ -148,10 +116,72 @@ jobs:
           fi
           nix develop --command committed --fixup --wip "${RANGE_START}..${RANGE_END}"
 
-  # Temporary. Reports what a runner actually offers the acceptance harness, so
-  # the test-layer split is designed against an observation rather than a guess.
-  # Delete this job once that split lands.
-  runner-capability:
+  # Every push-stage hook a runner can serve, one job each.
+  #
+  # A matrix rather than one job running the push stage whole, because a matrix
+  # says which lane failed from the job list alone. It also lets the lanes run
+  # beside each other on separate runners, which is the only concurrency a
+  # 4-vCPU runner has to offer a suite whose lanes each want the machine.
+  #
+  # Each entry invokes the hook by id, so the command a runner runs is the
+  # command `git push` runs. The id crosses as an environment variable rather
+  # than by interpolation, so a matrix value is data and not script.
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        hook:
+          - test-unit
+          - test-local
+          - test-eval
+          - test-net
+          - test-doc
+          - clippy-strict
+          - cargo-deny
+          - cargo-machete
+          - gitleaks
+          - product-flake-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # gitleaks reads the whole history and would otherwise pass over what
+          # a shallow clone never fetched.
+          fetch-depth: 0
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Cache Nix store
+        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
+      - name: Cache pre-commit environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: Run the hook
+        env:
+          HOOK: ${{ matrix.hook }}
+        run: tests/host/heavy-run --need 12 --label "ci $HOOK" -- nix develop --command pre-commit run --all-files --hook-stage manual "$HOOK"
+
+  # An experiment, and never a gate: `continue-on-error` and absent from `gate`'s
+  # `needs`, so a red here holds no merge.
+  #
+  # What it is testing is whether a runner can serve the boot lane at all. The
+  # premises are unequal. `/dev/kvm` is present and world read-write on a standard
+  # runner, which was measured here on 2026-09-08 — the Determinate Nix installer
+  # sets `DETERMINATE_NIX_KVM=1` and the device shows `crw-rw-rw- root kvm`. A
+  # systemd user manager is the premise that has never been shown, and ADR-0097
+  # gives a VM's lifetime to a transient user unit, so no amount of KVM substitutes
+  # for it. The step below arranges lingering and reports what it found before
+  # spending a boot on the question.
+  #
+  # What would promote this job into the gate: the user-manager premise verified
+  # here, and two consecutive green runs. One clean run is evidence of possibility,
+  # not of reliability. Until then `test-boot` stays in HOST_ONLY above, the
+  # developer's own `git push` is where the boot lane gates, and this job's
+  # outcome is recorded in docs/reference/tracking.yaml.
+  boot-experiment:
+    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -159,30 +189,19 @@ jobs:
           persist-credentials: false
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
-      - name: What the runner offers
+      - name: Cache Nix store
+        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
+      - name: What this runner offers a booting guest
+        # Reported before the lane runs, so a failure below can be read against
+        # what was actually available rather than against an assumption.
         run: |
-          echo "--- ambient ---"
-          echo "NIX_CONFIG=[${NIX_CONFIG:-unset}]"
-          echo "HOME=[${HOME:-unset}]"
+          set -u
           ls -l /dev/kvm || echo "no /dev/kvm"
-          echo "--- system nix.conf ---"
-          cat /etc/nix/nix.conf || echo "no /etc/nix/nix.conf"
-          echo "--- user nix.conf ---"
-          cat "$HOME/.config/nix/nix.conf" 2>/dev/null || echo "no user nix.conf"
-          echo "--- nix config show, ambient ---"
-          nix config show experimental-features || echo "FAILED exit $?"
-          echo "--- nix config show, controlled env (what the harness builds) ---"
-          env -i PATH="$PATH" TERM=dumb NIX_CONFIG="${NIX_CONFIG:-}" \
-            nix config show experimental-features || echo "FAILED exit $?"
-          echo "--- inside nix develop ---"
-          # Written to a file rather than passed as a quoted argument: the inner
-          # shell is the one that must expand these, and a single-quoted -c
-          # string reads to shellcheck as an expansion that will not happen.
-          cat > "$RUNNER_TEMP/probe.sh" <<'PROBE'
-          echo "NIX_CONFIG=[${NIX_CONFIG:-unset}]"
-          nix config show experimental-features || echo "FAILED"
-          PROBE
-          nix develop --command sh "$RUNNER_TEMP/probe.sh"
+          sudo loginctl enable-linger "$USER" || echo "enable-linger refused"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          systemctl --user show -p Version --value || echo "no systemd user manager"
+      - name: The boot lane
+        run: tests/host/heavy-run --need 12 --label "ci test-boot" -- nix develop --command pre-commit run --all-files --hook-stage manual test-boot
 
   # The artifact workflow's proof. It runs `dist plan` and not `dist generate`:
   # dist-workspace.toml sets allow-dirty = ["ci"] because release.yml is
@@ -215,14 +234,15 @@ jobs:
 
   # The one check the trunk's protection requires. `needs` resolves inside one
   # workflow file, so every proof a merge rests on is a job of this file and a
-  # member of this list. A job left out still reports and holds nothing.
+  # member of this list. A job left out still reports and holds nothing —
+  # `boot-experiment` is left out on purpose, and the comment on it says why.
   #
   # `if: always()` is load-bearing: the forge reports a job skipped by a failed
   # dependency as success, so a gate that only ran on success would go green on
   # a red pipeline.
   gate:
     if: always()
-    needs: [lint, test, build, hooks, dist-plan]
+    needs: [hooks, check, dist-plan]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

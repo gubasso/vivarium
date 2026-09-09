@@ -1100,7 +1100,7 @@ rejoined count is below expected, so bytes are genuinely missing rather than spl
     # repository happens to sit in. So N16's host symmetry, which says a declared tree
     # appears in the guest at its own host path, is a claim only a real manifest can make,
     # and it is `viv start`'s acceptance trials that make it —
-    # `workflow_09_round_trip` in `tests/user_workflows.rs` compares the guest session's
+    # `workflow_09_round_trip` in `tests/boot_workflows.rs` compares the guest session's
     # own `pwd` against the project's host path, which is N16 observed rather than argued. What this boot proves is the half that is
     # in reach and still worth a boot: the bind unit and the kernel agree, and they agree
     # on the target the build published. Stated rather than quietly dropped — the coverage
@@ -1328,7 +1328,7 @@ expected both to name the bind target the build publishes (${declared_target:-un
     # supervisor-owned reader was still attached at VM exit rather than for most of
     # the run. The in-process half — that the reader ends on the supervisor's
     # cancellation and on nothing else — is asserted at the seam in
-    # `tests/launch_supervision.rs`.
+    # `tests/local_launch_supervision.rs`.
     if ((vm_status == 0)); then
       complete_line=$(grep -an VIVARIUM_DIAGNOSTIC_COMPLETE "$console_log" | tail -n1 | cut -d: -f1)
       poweroff_line=$(grep -aEn 'reboot: (Power down|System halted)|System Power Off|Reached target Power-?Off' "$console_log" | tail -n1 | cut -d: -f1)

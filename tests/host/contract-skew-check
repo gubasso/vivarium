@@ -5,7 +5,7 @@
 # before boot with both numbers named — and that `viv start --rebuild` clears it.
 #
 # The lane is a thin driver: the trial itself is `workflow_15_contract_skew_live`
-# in tests/user_workflows.rs (plus its cheap sibling, which needs no build), run
+# in tests/boot_workflows.rs (plus its cheap sibling, which needs no build), run
 # through the same acceptance harness every other host lane uses, so isolation,
 # baseline pinning, and gating have one implementation. What this script adds is
 # the host-lane contract: a disk preflight before anything writes, the tier gate
@@ -111,7 +111,7 @@ else
     lane_log=$(
       cd -- "$REPO_ROOT" \
         && nix develop "$DEV_FLAKE_REF" --command \
-          cargo nextest run --test user_workflows --run-ignored=all \
+          cargo nextest run --workspace --profile boot \
           --success-output=immediate -E "$TRIALS" 2>&1
     )
     lane_status=$?

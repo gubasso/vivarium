@@ -1,11 +1,16 @@
-//! Host proof for the four networking seams against the real tools.
+//! The `net` lane: the four networking seams against the real tools.
 //!
 //! The unit tests pin renderings; these trials put the renderings in front of the
 //! real `unshare`, `nsenter`, `ip`, and `nft` inside an unprivileged namespace pair,
-//! which is what the Q-005 spikes did by hand. The gate is evaluated at run time and
-//! reports why it did not run, because a lane that skips silently reads as a lane
-//! that passed. No trial here boots a guest or writes gigabytes: the pair, the tap,
-//! and the ruleset live in the kernel and vanish with the holder.
+//! which is what the Q-005 spikes did by hand. No trial here boots a guest or writes
+//! gigabytes: the pair, the tap, and the ruleset live in the kernel and vanish with
+//! the holder, which is why this is its own lane rather than part of `boot`.
+//!
+//! The lane declares the four tools and a creatable user+net pair, once, in `main`. A
+//! host that refuses the pair — a container, `kernel.unprivileged_userns_clone=0`, or
+//! Ubuntu's `AppArmor` restriction — fails every trial with that reason rather than
+//! reporting a green run over trials that did not happen. The lane register is
+//! `docs/reference/testing-lanes.md`.
 #![allow(
     clippy::expect_used,
     clippy::panic,
@@ -19,8 +24,8 @@ use std::time::Duration;
 
 use libtest_mimic::{Arguments, Failed, Trial};
 
-#[path = "support/harness.rs"]
-mod harness;
+mod support;
+use support::{harness, preflight};
 use tokio::process::{Child, Command};
 use vivarium::net::allowlist::{AllowEntry, Allowlist};
 use vivarium::net::resolver::{ServeConfig, serve};
@@ -33,24 +38,26 @@ const GATEWAY_CIDR: &str = "10.177.0.1/24";
 
 fn main() -> std::process::ExitCode {
     let args = Arguments::from_args();
-    let decision = gate();
-    let require = harness::gate_required();
-    let ignored = decision.is_err() && !require;
-    if ignored && let Err(reason) = &decision {
-        eprintln!("gated: net_host trials — {reason}");
+    // After argument parsing and never before it: nextest builds its test list by
+    // running this binary with `--list`, and a listing that refuses on an unmet need
+    // would abort the whole run rather than failing this lane's own trials.
+    if !args.list
+        && let Err(reason) = preflight::namespaces()
+    {
+        eprintln!("the net lane needs unprivileged namespaces: {reason}");
+        return std::process::ExitCode::from(69);
     }
     let trials = vec![
-        Trial::test("net_host_self_check", self_check),
-        gated_trial("netns_pair_is_distinct_and_joinable", ignored, |tools| {
+        trial("netns_pair_is_distinct_and_joinable", |tools| {
             Box::pin(pair_is_distinct_and_joinable(tools))
         }),
-        gated_trial("tap_configures_without_carrier", ignored, |tools| {
+        trial("tap_configures_without_carrier", |tools| {
             Box::pin(tap_configures_without_carrier(tools))
         }),
-        gated_trial("ruleset_applies_and_elements_expire", ignored, |tools| {
+        trial("ruleset_applies_and_elements_expire", |tools| {
             Box::pin(ruleset_applies_and_elements_expire(tools))
         }),
-        gated_trial("resolver_installs_through_real_nft", ignored, |tools| {
+        trial("resolver_installs_through_real_nft", |tools| {
             Box::pin(resolver_installs_through_real_nft(tools))
         }),
     ];
@@ -59,15 +66,14 @@ fn main() -> std::process::ExitCode {
 
 type TrialFuture = std::pin::Pin<Box<dyn Future<Output = ()>>>;
 
-fn gated_trial(name: &'static str, ignored: bool, body: fn(Tools) -> TrialFuture) -> Trial {
+fn trial(name: &'static str, body: fn(Tools) -> TrialFuture) -> Trial {
     Trial::test(name, move || {
-        let tools = gate().map_err(Failed::from)?;
+        let tools = tools().map_err(Failed::from)?;
         tokio::runtime::Runtime::new()
             .map_err(|error| Failed::from(error.to_string()))?
             .block_on(body(tools));
         Ok(())
     })
-    .with_ignored_flag(ignored)
 }
 
 /// The pinned tools every trial needs, resolved from `PATH` — the dev shell carries
@@ -81,54 +87,18 @@ struct Tools {
     sleep: PathBuf,
 }
 
-/// Whether this host can run the trials at all: the tools present, and an
-/// unprivileged user+net pair actually creatable — which a container or a
-/// `kernel.unprivileged_userns_clone=0` host refuses.
-fn gate() -> Result<Tools, String> {
-    let tools = Tools {
+/// The pinned tools, resolved from `PATH`.
+///
+/// Whether the pair is creatable at all is `preflight::namespaces`'s question, asked
+/// once in `main`. This resolves the paths the trials spawn.
+fn tools() -> Result<Tools, String> {
+    Ok(Tools {
         unshare: harness::tool_on_path("unshare")?,
         nsenter: harness::tool_on_path("nsenter")?,
         ip: harness::tool_on_path("ip")?,
         nft: harness::tool_on_path("nft")?,
         sleep: harness::tool_on_path("sleep")?,
-    };
-    let probe = std::process::Command::new(&tools.unshare)
-        .args(netns::create_pair_args(&netns::holder_program("true")))
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .output()
-        .map_err(|error| format!("probing `unshare` failed: {error}"))?;
-    if !probe.status.success() {
-        return Err(format!(
-            "unprivileged user+net namespaces are unavailable: {}",
-            String::from_utf8_lossy(&probe.stderr).trim()
-        ));
-    }
-    Ok(tools)
-}
-
-/// Assertions that need no namespaces, so the lane is never entirely ignored.
-///
-/// nextest exits 4 when every trial matching a filter is ignored, and a binary
-/// whose every trial is gated reports a failure that means nothing on an
-/// ordinary developer host.
-fn self_check() -> Result<(), Failed> {
-    // An unmet gate must carry a reason a reader can act on — the difference
-    // between a skip that informs and one that hides.
-    if let Err(reason) = gate()
-        && reason.is_empty()
-    {
-        return Err(Failed::from("the gate gave no reason for not running"));
-    }
-    // The rendering the gated trials feed the real `nft` is constructible from
-    // this vantage too; the exact shape is the unit lane's golden.
-    let rendered = serde_json::to_value(nft::base_ruleset())
-        .map_err(|error| Failed::from(error.to_string()))?;
-    if rendered["nftables"][0]["add"]["table"]["name"] != serde_json::json!("vivarium") {
-        return Err(Failed::from(
-            "base_ruleset does not open the vivarium table",
-        ));
-    }
-    Ok(())
+    })
 }
 
 /// A running holder whose pair the trial works inside; killed on drop.

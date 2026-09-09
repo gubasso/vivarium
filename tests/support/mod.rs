@@ -1,8 +1,20 @@
+//! The fixture and assertion vocabulary every lane binary shares.
+//!
+//! Included per binary as `mod support;`, so each of the seven test binaries
+//! compiles its own copy. No binary uses all of it — `local_workflows` never
+//! touches the egress namespaces and `eval_workflows` never boots — which is why
+//! the crate-level `dead_code` allowance below is here rather than a per-item
+//! `#[allow]` nobody would keep true.
+
+// Included per binary, and no binary uses every helper.
+#![allow(dead_code)]
+
 pub mod egress;
 pub mod harness;
+pub mod preflight;
 
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -26,208 +38,6 @@ pub const EX_TEMPFAIL: i32 = ExitKind::TempFail.code() as i32;
 pub const EX_UNAVAILABLE: i32 = ExitKind::Unavailable.code() as i32;
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
-static GATE: OnceLock<GateDecision> = OnceLock::new();
-
-#[derive(Clone, Copy, Debug)]
-pub enum GateLevel {
-    Cli,
-    ConfigEval,
-    Virtualization,
-}
-
-#[derive(Debug)]
-pub struct GateDecision {
-    viv: PathBuf,
-    cli: Result<(), String>,
-    config_eval: Result<(), String>,
-    virtualization: Result<(), String>,
-}
-
-impl GateDecision {
-    pub fn viv(&self) -> &Path {
-        &self.viv
-    }
-
-    pub const fn result(&self, level: GateLevel) -> &Result<(), String> {
-        match level {
-            GateLevel::Cli => &self.cli,
-            GateLevel::ConfigEval => &self.config_eval,
-            GateLevel::Virtualization => &self.virtualization,
-        }
-    }
-
-    pub fn is_well_formed(&self) -> bool {
-        !self.viv.as_os_str().is_empty()
-            && self
-                .result(GateLevel::Cli)
-                .as_ref()
-                .err()
-                .is_none_or(|reason| !reason.is_empty())
-            && self
-                .result(GateLevel::ConfigEval)
-                .as_ref()
-                .err()
-                .is_none_or(|reason| !reason.is_empty())
-            && self
-                .result(GateLevel::Virtualization)
-                .as_ref()
-                .err()
-                .is_none_or(|reason| !reason.is_empty())
-    }
-}
-
-pub fn gate() -> &'static GateDecision {
-    GATE.get_or_init(probe_gate)
-}
-
-fn probe_gate() -> GateDecision {
-    let viv = resolve_viv();
-    let cli = probe_cli(&viv);
-    let config_eval = cli
-        .as_ref()
-        .map_err(Clone::clone)
-        .and_then(|()| probe_nix())
-        .and_then(|()| probe_config_eval(&viv));
-    let virtualization = config_eval
-        .as_ref()
-        .map_err(Clone::clone)
-        .and_then(|()| probe_kvm());
-
-    GateDecision {
-        viv,
-        cli,
-        config_eval,
-        virtualization,
-    }
-}
-
-fn resolve_viv() -> PathBuf {
-    if let Some(path) = std::env::var_os("VIVARIUM_TEST_VIV") {
-        return PathBuf::from(path);
-    }
-    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_viv") {
-        return PathBuf::from(path);
-    }
-
-    // `CARGO_TARGET_DIR` before the repository-local `target/`, and not the other way around. The
-    // dev shell sets that variable, so a repository-local `target/debug/viv` is a leftover from
-    // before it did — and a gate that probed one of those would describe a binary nobody is
-    // building. Reached only when neither env var above is set, which is how a runner that lists
-    // the trials outside `cargo test` arrives here.
-    let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || Path::new(env!("CARGO_MANIFEST_DIR")).join("target"),
-        PathBuf::from,
-    );
-    let local = target
-        .join("debug")
-        .join(format!("viv{}", std::env::consts::EXE_SUFFIX));
-    if local.is_file() {
-        return local;
-    }
-
-    PathBuf::from(format!("viv{}", std::env::consts::EXE_SUFFIX))
-}
-
-fn probe_cli(viv: &Path) -> Result<(), String> {
-    let tp = TempProject::new().map_err(|error| format!("cannot isolate CLI probe: {error}"))?;
-    let out = run_viv(viv, &tp, tp.project(), &["manifest", "list", "--json"])
-        .map_err(|error| format!("cannot execute {}: {error}", viv.display()))?;
-    if out.status.code() != Some(0) {
-        return Err(format!(
-            "{} manifest probe exited {:?}",
-            viv.display(),
-            out.status.code()
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    if !stdout.contains("\"manifests\"") {
-        return Err(format!(
-            "{} manifest probe did not emit the required manifests key",
-            viv.display()
-        ));
-    }
-    Ok(())
-}
-
-fn probe_nix() -> Result<(), String> {
-    match Command::new("nix").arg("--version").output() {
-        Ok(output) if output.status.success() => Ok(()),
-        Ok(output) => Err(format!("nix --version exited {:?}", output.status.code())),
-        Err(error) => Err(format!("nix --version is unavailable: {error}")),
-    }
-}
-
-/// Whether this binary can evaluate configuration at all, separately from whether nix is installed.
-///
-/// `probe_nix` answers a question about the host. This answers the matching one about the product,
-/// and the level needs both: a host with nix and a `viv` whose `config eval` does not exist yet
-/// would otherwise open a gate named for an ability nothing has. That is the vacuous-check failure
-/// the harness method note warns about — the probe passed, and every trial behind it failed for a
-/// reason the gate was supposed to describe.
-///
-/// Probed from an unbound project, so the two answers separate cleanly: `78` is the fail-closed
-/// path of an implemented verb, and anything else means the verb is not there to fail closed.
-///
-/// That half is necessary and not sufficient. The verb existing says nothing about whether this
-/// host can reach the flake inputs an evaluation resolves, and a gate that opened on the strength
-/// of a `78` would send every trial behind it into a failure the gate was supposed to describe.
-/// So the second half evaluates a real bound manifest end to end. It is the expensive probe on
-/// purpose: nothing cheaper distinguishes "cannot evaluate" from "evaluates wrongly", and those
-/// two must not arrive as the same red.
-fn probe_config_eval(viv: &Path) -> Result<(), String> {
-    let tp =
-        TempProject::new().map_err(|error| format!("cannot isolate config-eval probe: {error}"))?;
-    let out = run_viv(viv, &tp, tp.project(), &["config", "eval", "--json"])
-        .map_err(|error| format!("cannot execute {}: {error}", viv.display()))?;
-    if out.status.code() != Some(EX_CONFIG) {
-        return Err(format!(
-            "{} config eval is not implemented (unbound probe exited {:?}, expected {EX_CONFIG})",
-            viv.display(),
-            out.status.code()
-        ));
-    }
-    probe_evaluation(viv, &tp)
-}
-
-/// Whether this host can actually evaluate a bound manifest.
-fn probe_evaluation(viv: &Path, tp: &TempProject) -> Result<(), String> {
-    let library = tp.config().join("vivarium");
-    write_file(&library.join("images").join("probe.nix"), "{ ... }: { }\n")
-        .and_then(|()| {
-            write_file(
-                &library.join("manifests").join("probe.toml"),
-                &format!(
-                    "image = \"probe\"\n\n[[workspaces]]\nsource = '{}'\n",
-                    tp.project().display()
-                ),
-            )
-        })
-        .map_err(|error| format!("cannot write the evaluation probe fixture: {error}"))?;
-    let evaluated = run_viv(viv, tp, tp.project(), &["config", "eval", "--json"])
-        .map_err(|error| format!("cannot execute {}: {error}", viv.display()))?;
-    if evaluated.status.code() == Some(0) {
-        return Ok(());
-    }
-    Err(format!(
-        "this host cannot evaluate a bound manifest (exited {:?}): {}",
-        evaluated.status.code(),
-        String::from_utf8_lossy(&evaluated.stderr).trim()
-    ))
-}
-
-fn probe_kvm() -> Result<(), String> {
-    let path = Path::new("/dev/kvm");
-    if !path.exists() {
-        return Err("/dev/kvm is absent".to_owned());
-    }
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .map(drop)
-        .map_err(|error| format!("/dev/kvm is not read-write openable: {error}"))
-}
-
 /// Refuses the roots N24 refuses, and their ancestors, matching `reject_session_source` in
 /// `src/launch/spec.rs` rather than guessing at it.
 fn under_temp_root(path: &Path) -> bool {
@@ -993,4 +803,138 @@ pub fn diagnostic(out: &VivOutput, message: &str) -> String {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     )
+}
+
+// --- The shared trial vocabulary -------------------------------------------
+//
+// Everything below was `tests/user_workflows.rs`'s own until that binary was
+// split into the `local`, `eval` and `boot` lanes. What landed here is what two
+// or more of those three still call: a fixture arrangement, a record reader, or
+// one of the three `Failed` adapters. A helper only one lane uses stays in that
+// lane's file, where its reader can see who wants it.
+
+use libtest_mimic::Failed;
+
+pub const VOLUME_TAIL: &str = "\n[[volumes]]\nname = \"cache\"\nmount = \"/var/cache/project\"\n";
+
+pub fn arrange_egress_fixture() -> Result<TempProject, Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+    // The image supplies the shadowed default; only the piece forces the allowlist, so
+    // the precedence under test is genuinely arranged rather than pre-decided by the
+    // manifest. Each layer contributes a distinct host to make concatenation
+    // observable — the manifest the reachable endpoint's name, the piece the name
+    // whose upstream answer is NXDOMAIN.
+    arrange_manifest_with_image(
+        &tp,
+        "restricted",
+        "pieces = [ \"egress-restriction\" ]\n",
+        &format!("\n[egress]\nallow = [ \"{}\" ]\n", egress::ALLOWED_NAME),
+        "{ lib, ... }: { sandbox.egress.mode = lib.mkDefault \"open\"; }\n",
+    )?;
+    write_piece(
+        &tp,
+        "egress-restriction",
+        &format!(
+            "{{ lib, ... }}: {{\n    sandbox.egress.mode = lib.mkForce \"allowlist\";\n    \
+            sandbox.egress.allow = [ \"{}\" ];\n}}\n",
+            egress::GHOST_NAME
+        ),
+    )?;
+    Ok(tp)
+}
+
+/// One `--json` record parsed whole, for the value assertions the key helpers cannot make.
+pub fn json_record(out: &VivOutput) -> Result<serde_json::Value, Failed> {
+    serde_json::from_slice(&out.stdout)
+        .map_err(|error| Failed::from(format!("stdout was not one JSON record: {error}")))
+}
+
+/// The parsed rows under a record's `projects` key, in published order — `status -g` and the
+/// `stop --all` sweep share the wrapper (spec/01).
+pub fn project_rows(out: &VivOutput) -> Result<Vec<serde_json::Value>, Failed> {
+    json_record(out)?["projects"]
+        .as_array()
+        .cloned()
+        .ok_or_else(|| Failed::from("the record published no `projects` array"))
+}
+
+pub fn viv_with_env(
+    tp: &TempProject,
+    args: &[&str],
+    extra: &[(&str, &str)],
+) -> Result<VivOutput, Failed> {
+    run_viv_with_env(preflight::viv(), tp, tp.project(), args, extra).map_err(io_failed)
+}
+
+pub fn arrange_manifest(
+    tp: &TempProject,
+    name: &str,
+    manifest_body: &str,
+    manifest_tail: &str,
+) -> Result<(), Failed> {
+    arrange_manifest_with_image(tp, name, manifest_body, manifest_tail, "{ ... }: { }\n")
+}
+
+pub fn arrange_manifest_with_image(
+    tp: &TempProject,
+    name: &str,
+    manifest_body: &str,
+    manifest_tail: &str,
+    image_body: &str,
+) -> Result<(), Failed> {
+    let workspace =
+        if manifest_body.contains("[[workspaces]]") || manifest_tail.contains("[[workspaces]]") {
+            String::new()
+        } else {
+            format!("\n[[workspaces]]\nsource = '{}'\n", tp.project().display())
+        };
+    write_file(
+        &tp.config()
+            .join("vivarium")
+            .join("images")
+            .join("minimal.nix"),
+        image_body,
+    )
+    .map_err(io_failed)?;
+    write_file(
+        &tp.config()
+            .join("vivarium")
+            .join("manifests")
+            .join(format!("{name}.toml")),
+        &format!("image = \"minimal\"\n{manifest_body}{manifest_tail}{workspace}"),
+    )
+    .map_err(io_failed)
+}
+
+pub fn write_piece(tp: &TempProject, name: &str, contents: &str) -> Result<(), Failed> {
+    write_file(
+        &tp.config()
+            .join("vivarium")
+            .join("pieces")
+            .join(format!("{name}.nix")),
+        contents,
+    )
+    .map_err(io_failed)
+}
+
+pub fn viv(tp: &TempProject, args: &[&str]) -> Result<VivOutput, Failed> {
+    run_viv(preflight::viv(), tp, tp.project(), args).map_err(io_failed)
+}
+
+pub fn viv_at(tp: &TempProject, cwd: &Path, args: &[&str]) -> Result<VivOutput, Failed> {
+    run_viv(preflight::viv(), tp, cwd, args).map_err(io_failed)
+}
+
+pub fn check(result: Result<(), String>) -> Result<(), Failed> {
+    result.map_err(Failed::from)
+}
+
+// Consumes the error rather than stringifying a borrow, which is what keeps
+// `clippy::needless_pass_by_value` satisfied without an explicit `drop`.
+pub fn io_failed(error: std::io::Error) -> Failed {
+    Failed::from(error)
+}
+
+pub fn fail<T>(message: impl Into<String>) -> Result<T, Failed> {
+    Err(Failed::from(message.into()))
 }

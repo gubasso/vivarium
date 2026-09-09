@@ -13,7 +13,7 @@
 # environment, and exec.
 #
 #   tests/host/heavy-run --need 12 --label "cargo nextest (integration)" -- \
-#     cargo nextest run --profile pre-push --all-features
+#     cargo nextest run --workspace --profile boot --all-features
 #
 # The environment it binds, and why each variable is in the list:
 #

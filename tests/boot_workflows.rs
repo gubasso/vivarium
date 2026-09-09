@@ -1,250 +1,137 @@
+//! The `boot` lane: the workflow trials that start a real microVM.
+//!
+//! Every trial here builds a guest closure and boots it behind a hardware
+//! virtualization boundary, then asserts on what the running guest does — a command's
+//! exit code, a mount's contents, an egress denial, a reclaimed page. This is the
+//! authoritative lane and the expensive one: it costs a guest kernel, a VMM, and one
+//! virtiofsd per share before it asserts anything.
+//!
+//! The lane declares `/dev/kvm`, a systemd user manager, `XDG_RUNTIME_DIR` and Nix,
+//! once, in `main`. A host without them fails every trial with that reason. It never
+//! skips: a skipped acceptance trial that reads as a pass is the failure mode the
+//! lane split exists to remove, and `docs/reference/implementation-status.md` already
+//! refuses to count one as evidence.
+//!
+//! `.config/nextest.toml` bounds this binary to one boot at a time. The bound is on
+//! the binary rather than on a list of names, so a trial added here is inside it by
+//! construction.
+//!
+//! Its siblings are `local_workflows` (needs nothing) and `eval_workflows` (needs
+//! Nix). The lane register is `docs/reference/testing-lanes.md`.
+
 mod support;
 
 use std::fs;
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use support::{
-    EX_CONFIG, EX_DATAERR, EX_IOERR, EX_TEMPFAIL, EX_UNAVAILABLE, EX_USAGE, GateLevel, TempProject,
-    VivOutput, expect_code, expect_derived_manifest_visible, expect_json_array_items,
-    expect_json_array_nonempty, expect_json_fields_at, expect_json_keys, expect_json_map_entries,
-    expect_json_string, expect_no_volume_images, expect_nonzero, expect_stderr_mentions,
-    expect_stdout_lacks, expect_stdout_mentions, expect_tree_unchanged, expect_volume_image, gate,
-    json, run_viv, snapshot_tree, viv_environment, volume_image, write_file,
+    EX_CONFIG, EX_DATAERR, EX_IOERR, EX_TEMPFAIL, EX_UNAVAILABLE, TempProject, VOLUME_TAIL,
+    VivOutput, arrange_egress_fixture, arrange_manifest, arrange_manifest_with_image, check,
+    expect_code, expect_derived_manifest_visible, expect_json_array_items, expect_json_keys,
+    expect_json_string, expect_nonzero, expect_stderr_mentions, expect_stdout_lacks,
+    expect_stdout_mentions, expect_tree_unchanged, expect_volume_image, fail, io_failed,
+    json_record, preflight, project_rows, run_viv, snapshot_tree, viv, viv_at, viv_environment,
+    viv_with_env, volume_image, write_file, write_piece,
 };
 
-type WorkflowRunner = fn() -> Result<(), Failed>;
-type WorkflowSpec = (&'static str, GateLevel, WorkflowRunner);
-
-/// One trial per workflow *and gate level*, not per workflow. A trial carries a single
-/// ignore flag, so folding a workflow's CLI-only assertions in with its boot-dependent
-/// ones would hide the cheap half behind `/dev/kvm` — exactly what the three-level gate
-/// exists to avoid. Every trial keeps its `workflow_NN_` prefix so the guide pairing
-/// survives the split.
-const WORKFLOWS: [WorkflowSpec; 44] = [
-    (
-        "workflow_01_manifest_workspace_resolution_usage",
-        GateLevel::Cli,
-        workflow_01_usage,
-    ),
-    (
-        "workflow_01_manifest_workspace_resolution_boot",
-        GateLevel::Virtualization,
-        workflow_01_boot,
-    ),
-    (
-        "workflow_02_derived_workspace_index",
-        GateLevel::Cli,
-        workflow_02_index,
-    ),
-    (
-        "workflow_03_team_shared_and_personal_override",
-        GateLevel::ConfigEval,
-        workflow_03,
-    ),
-    (
-        "workflow_04_inspect_before_run_usage",
-        GateLevel::Cli,
-        workflow_04_usage,
-    ),
-    (
-        "workflow_04_inspect_before_run",
-        GateLevel::ConfigEval,
-        workflow_04_eval,
-    ),
-    (
-        "workflow_05_restrict_egress_config_surface",
-        GateLevel::ConfigEval,
-        workflow_05_config,
-    ),
-    (
-        "workflow_05_restrict_egress_allowlist",
-        GateLevel::Virtualization,
-        workflow_05_enforcement,
-    ),
-    (
-        "workflow_06_exec_usage_surface",
-        GateLevel::Cli,
-        workflow_06_usage,
-    ),
-    (
-        "workflow_06_exec_exit_code_propagation",
-        GateLevel::Virtualization,
-        workflow_06_propagation,
-    ),
-    (
-        "workflow_06_shell_interactive_session",
-        GateLevel::Virtualization,
-        workflow_06_shell,
-    ),
-    (
-        "workflow_07_volume_list_requires_manifest",
-        GateLevel::Cli,
-        workflow_07_usage,
-    ),
-    (
-        "workflow_07_stop_restart_preserving_volumes",
-        GateLevel::Virtualization,
-        workflow_07_warmth,
-    ),
-    (
-        "workflow_07_stop_completes_within_budget",
-        GateLevel::Virtualization,
-        workflow_07_shutdown_bounded,
-    ),
-    (
-        "workflow_08_destroy_usage_surface",
-        GateLevel::Cli,
-        workflow_08_usage,
-    ),
-    (
-        "workflow_08_destroy_cold_rebuild",
-        GateLevel::Virtualization,
-        workflow_08_rebuild,
-    ),
-    (
-        "workflow_09_workspace_round_trip",
-        GateLevel::Virtualization,
-        workflow_09_round_trip,
-    ),
-    (
-        "workflow_16_doctor_report",
-        GateLevel::Cli,
-        workflow_16_doctor,
-    ),
-    (
-        "workflow_17_declared_mounts_eval",
-        GateLevel::ConfigEval,
-        workflow_17_eval,
-    ),
-    (
-        "workflow_17_declared_mounts_refusals",
-        GateLevel::Virtualization,
-        workflow_17_refusals,
-    ),
-    (
-        "workflow_17_declared_mounts_round_trip",
-        GateLevel::Virtualization,
-        workflow_17_round_trip,
-    ),
-    (
-        "workflow_17_linked_worktree_reaches_main",
-        GateLevel::Virtualization,
-        workflow_17_worktree,
-    ),
-    (
-        "workflow_20_many_workspaces_one_sandbox",
-        GateLevel::Virtualization,
-        workflow_20_many_workspaces,
-    ),
-    (
-        "workflow_22_file_mount_serves_only_its_file",
-        GateLevel::Virtualization,
-        workflow_22_file_mount_confinement,
-    ),
-    (
-        "workflow_15_contract_skew_refusal",
-        GateLevel::Virtualization,
-        workflow_15_contract_skew,
-    ),
-    (
-        "workflow_15_contract_skew_live",
-        GateLevel::Virtualization,
-        workflow_15_contract_skew_live,
-    ),
-    (
-        "workflow_23_agent_channel_config_surface",
-        GateLevel::ConfigEval,
-        workflow_23_config,
-    ),
-    (
-        "workflow_23_agent_channel_relay",
-        GateLevel::Virtualization,
-        workflow_23_relay,
-    ),
-    (
-        "workflow_18_update_usage_surface",
-        GateLevel::Cli,
-        workflow_18_update_usage,
-    ),
-    (
-        "workflow_18_update_moves_the_pin",
-        GateLevel::ConfigEval,
-        workflow_18_update_pin,
-    ),
-    (
-        "workflow_24_generations_usage_surface",
-        GateLevel::Cli,
-        workflow_24_usage,
-    ),
-    (
-        "workflow_24_generations_retention",
-        GateLevel::Virtualization,
-        workflow_24_retention,
-    ),
-    (
-        "workflow_25_fleet_usage_surface",
-        GateLevel::Cli,
-        workflow_25_fleet_usage,
-    ),
-    (
-        "workflow_25_sessions_counted",
-        GateLevel::Virtualization,
-        workflow_25_sessions_count,
-    ),
-    (
-        "workflow_25_fleet_two_sandboxes",
-        GateLevel::Virtualization,
-        workflow_25_fleet_two_sandboxes,
-    ),
-    (
-        "workflow_26_admission_refusal",
-        GateLevel::Virtualization,
-        workflow_26_admission_refusal,
-    ),
-    (
-        "workflow_26_start_attach_stream",
-        GateLevel::Virtualization,
-        workflow_26_attach_stream,
-    ),
-    (
-        "workflow_27_stop_destroy_records",
-        GateLevel::Cli,
-        workflow_27_records,
-    ),
-    (
-        "workflow_27_stop_agent_rung_evidence",
-        GateLevel::Virtualization,
-        workflow_27_agent_rung,
-    ),
-    (
-        "workflow_27_stop_slow_guest_grace",
-        GateLevel::Virtualization,
-        workflow_27_slow_guest,
-    ),
-    (
-        "workflow_27_stop_all_sweep",
-        GateLevel::Virtualization,
-        workflow_27_sweep,
-    ),
-    (
-        "workflow_28_trim_usage_surface",
-        GateLevel::Cli,
-        workflow_28_usage,
-    ),
-    (
-        "workflow_28_memory_trim_reclaims",
-        GateLevel::Virtualization,
-        workflow_28_memory_reclaims,
-    ),
-    (
-        "workflow_28_volume_trim_returns_blocks",
-        GateLevel::Virtualization,
-        workflow_28_volume_trim,
-    ),
-];
+fn main() -> std::process::ExitCode {
+    // The egress fixture re-executes this binary inside the VM's namespaces, so a
+    // fixture-mode invocation never reaches the trial harness. First statement of
+    // `main`, before argument parsing, because the mode word is not a filter.
+    if let Some(code) = support::egress::run_mode() {
+        return code;
+    }
+    let args = Arguments::from_args();
+    // After argument parsing and never before it: nextest builds its test list by
+    // running this binary with `--list`, and a listing that refuses on an unmet need
+    // would abort the whole run rather than failing this lane's own trials.
+    if !args.list
+        && let Err(reason) = preflight::boot()
+    {
+        eprintln!("the boot lane needs a virtualization-capable host: {reason}");
+        return std::process::ExitCode::from(69);
+    }
+    let trials = vec![
+        Trial::test(
+            "workflow_01_manifest_workspace_resolution_boot",
+            workflow_01_boot,
+        ),
+        Trial::test(
+            "workflow_05_restrict_egress_allowlist",
+            workflow_05_enforcement,
+        ),
+        Trial::test(
+            "workflow_06_exec_exit_code_propagation",
+            workflow_06_propagation,
+        ),
+        Trial::test("workflow_06_shell_interactive_session", workflow_06_shell),
+        Trial::test(
+            "workflow_07_stop_restart_preserving_volumes",
+            workflow_07_warmth,
+        ),
+        Trial::test(
+            "workflow_07_stop_completes_within_budget",
+            workflow_07_shutdown_bounded,
+        ),
+        Trial::test("workflow_08_destroy_cold_rebuild", workflow_08_rebuild),
+        Trial::test("workflow_09_workspace_round_trip", workflow_09_round_trip),
+        Trial::test(
+            "workflow_15_contract_skew_refusal",
+            workflow_15_contract_skew,
+        ),
+        Trial::test(
+            "workflow_15_contract_skew_live",
+            workflow_15_contract_skew_live,
+        ),
+        Trial::test("workflow_17_declared_mounts_refusals", workflow_17_refusals),
+        Trial::test(
+            "workflow_17_declared_mounts_round_trip",
+            workflow_17_round_trip,
+        ),
+        Trial::test(
+            "workflow_17_linked_worktree_reaches_main",
+            workflow_17_worktree,
+        ),
+        Trial::test(
+            "workflow_20_many_workspaces_one_sandbox",
+            workflow_20_many_workspaces,
+        ),
+        Trial::test(
+            "workflow_22_file_mount_serves_only_its_file",
+            workflow_22_file_mount_confinement,
+        ),
+        Trial::test("workflow_23_agent_channel_relay", workflow_23_relay),
+        Trial::test("workflow_24_generations_retention", workflow_24_retention),
+        Trial::test("workflow_25_sessions_counted", workflow_25_sessions_count),
+        Trial::test(
+            "workflow_25_fleet_two_sandboxes",
+            workflow_25_fleet_two_sandboxes,
+        ),
+        Trial::test(
+            "workflow_26_admission_refusal",
+            workflow_26_admission_refusal,
+        ),
+        Trial::test("workflow_26_start_attach_stream", workflow_26_attach_stream),
+        Trial::test(
+            "workflow_27_stop_agent_rung_evidence",
+            workflow_27_agent_rung,
+        ),
+        Trial::test("workflow_27_stop_slow_guest_grace", workflow_27_slow_guest),
+        Trial::test("workflow_27_stop_all_sweep", workflow_27_sweep),
+        Trial::test(
+            "workflow_28_memory_trim_reclaims",
+            workflow_28_memory_reclaims,
+        ),
+        Trial::test(
+            "workflow_28_volume_trim_returns_blocks",
+            workflow_28_volume_trim,
+        ),
+    ];
+    libtest_mimic::run(&args, trials).exit_code()
+}
 
 /// Resolves a fetch tool inside the guest instead of assuming one. The guest image is
 /// specified as carrying Nix-with-flakes and direnv (spec/06) and nothing else, so a
@@ -262,318 +149,6 @@ const GUEST_FETCH: &str = concat!(
 /// anything in between still separates the two without making the trial flaky on a slow
 /// guest.
 const DENIAL_BUDGET: Duration = Duration::from_secs(20);
-
-fn main() -> std::process::ExitCode {
-    // The egress fixture re-executes this binary inside the VM's namespaces; a
-    // fixture-mode invocation never reaches the trial harness.
-    if let Some(code) = support::egress::run_mode() {
-        return code;
-    }
-    let args = Arguments::from_args();
-    let mut trials = vec![Trial::test("harness_self_check", harness_self_check)];
-    for (name, level, runner) in WORKFLOWS {
-        trials.push(gated_trial(name, level, runner));
-    }
-    libtest_mimic::run(&args, trials).exit_code()
-}
-
-use support::harness::gate_required;
-
-fn gated_trial(name: &'static str, level: GateLevel, runner: fn() -> Result<(), Failed>) -> Trial {
-    let require = gate_required();
-    let decision = gate().result(level);
-    let ignored = decision.is_err() && !require;
-    if ignored && let Err(reason) = decision {
-        eprintln!("gated: {name} — {reason}");
-    }
-    Trial::test(name, move || {
-        require_gate(level)?;
-        runner()
-    })
-    .with_ignored_flag(ignored)
-}
-
-fn harness_self_check() -> Result<(), Failed> {
-    let tp = TempProject::new().map_err(io_failed)?;
-    for path in [
-        tp.project(),
-        tp.home(),
-        tp.config(),
-        tp.state(),
-        tp.data(),
-        tp.cache(),
-        tp.runtime(),
-    ] {
-        if !path.is_dir() {
-            return fail(format!(
-                "isolated directory was not created: {}",
-                path.display()
-            ));
-        }
-    }
-    // Five of the six roots are durable and live inside the temp root; the runtime root is the
-    // exception, and deliberately so. `TempProject` places it under the session's own
-    // `/run/user/<uid>` because a control-socket path assembled beneath `TMPDIR` overruns the
-    // 108-byte Unix-socket limit on a host whose `TMPDIR` is long — the case a disk-heavy lane
-    // creates. So the isolation this asserts is "no durable root escapes the temp root", not "every
-    // variable points inside it".
-    let environment = tp.env();
-    if environment.len() != 6 {
-        return fail("isolated environment does not name all six roots");
-    }
-    for (name, value) in &environment {
-        let inside = Path::new(value).starts_with(tp.root());
-        let is_runtime = name == "XDG_RUNTIME_DIR";
-        if inside == is_runtime {
-            return fail(format!(
-                "isolated root `{}` is in the wrong place: {}",
-                name.to_string_lossy(),
-                Path::new(value).display()
-            ));
-        }
-    }
-    // ADR-0055 makes the runtime base's privacy a precondition of launching at all, so a harness
-    // that left it group- or world-accessible would fail every launch trial before the product
-    // path was reached. Asserted here rather than learned again from a `77`.
-    let mode = fs::metadata(tp.runtime())
-        .map_err(io_failed)?
-        .permissions()
-        .mode();
-    if mode & 0o077 != 0 {
-        return fail(format!(
-            "the isolated runtime root is not private: mode {:o}",
-            mode & 0o777
-        ));
-    }
-
-    let out = run_viv(
-        Path::new("sh"),
-        &tp,
-        tp.project(),
-        &["-c", "printf harness >&2; exit 64"],
-    )
-    .map_err(io_failed)?;
-    check(expect_code(&out, EX_USAGE))?;
-    check(expect_stderr_mentions(&out, "harness"))?;
-    if expect_code(&out, 0).is_ok() {
-        return fail("expect_code accepted a deliberately mismatched status");
-    }
-
-    // The isolation hole that would silently invalidate every fail-closed `78`
-    // assertion: an ambient VIVARIUM_MANIFEST reaching the child. The check is that
-    // every `VIVARIUM_` variable the child sees is one the harness put there on
-    // purpose — a bare prefix scan would have to be relaxed the moment the harness
-    // needed to inject anything, and relaxing it is how the hole reopens.
-    let leak = run_viv(Path::new("sh"), &tp, tp.project(), &["-c", "env"]).map_err(io_failed)?;
-    check(expect_injected_vivarium_variables_only(&leak))?;
-
-    // Fixture paths and tokens remain distinct for callers that create two trees in one trial.
-    let sibling = TempProject::with_project_name("project").map_err(io_failed)?;
-    if tp.project() == sibling.project() || tp.token() == sibling.token() {
-        return fail("two fixtures did not receive distinct paths and tokens");
-    }
-
-    if !gate().is_well_formed() {
-        return fail("gate probe returned a malformed decision");
-    }
-
-    check(boot_group_membership_self_check())?;
-    check(harness_json_self_check())
-}
-
-/// The name of the nextest group that bounds how many trials may boot a guest at once.
-const BOOT_GROUP: &str = "boot";
-
-/// The filterset the boot group must carry, derived from the gate table rather than restated.
-///
-/// Exact names joined by union, because a name pattern fails open: a virtualization trial the
-/// pattern happens not to match runs outside the group, unbounded, and nothing reports it.
-fn expected_boot_filter() -> String {
-    WORKFLOWS
-        .iter()
-        .filter(|(_, level, _)| matches!(level, GateLevel::Virtualization))
-        .map(|(name, _, _)| format!("test(={name})"))
-        .collect::<Vec<_>>()
-        .join(" + ")
-}
-
-/// Assert that `.config/nextest.toml` bounds exactly the trials that boot a guest.
-///
-/// The bound exists because a booting trial costs a guest kernel, a VMM, one virtiofsd per share,
-/// and often a closure realisation, while the product deliberately imposes no fleet count of its
-/// own — above the minimum reserve `viv start` warns and lets the user decide (N23, spec/17), and
-/// an unattended run has no user. That makes the group nextest's only bound, and a stale
-/// membership list would remove it silently, so the list is compared against this harness's own
-/// gate table on every run. Checked here rather than in a boot trial because a wrong membership
-/// list is precisely what a host with `/dev/kvm` would discover the expensive way.
-fn boot_group_membership_self_check() -> Result<(), String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(".config")
-        .join("nextest.toml");
-    let text = fs::read_to_string(&path).map_err(|err| {
-        format!(
-            "nextest configuration is unreadable at {}: {err}",
-            path.display()
-        )
-    })?;
-    let config: toml::Table = toml::from_str(&text)
-        .map_err(|err| format!("nextest configuration does not parse: {err}"))?;
-
-    if config
-        .get("test-groups")
-        .and_then(|groups| groups.get(BOOT_GROUP))
-        .and_then(|group| group.get("max-threads"))
-        .and_then(toml::Value::as_integer)
-        .is_none_or(|max| max < 1)
-    {
-        return Err(format!(
-            "`[test-groups.{BOOT_GROUP}]` does not declare a positive `max-threads`"
-        ));
-    }
-
-    // Every profile that assigns the group is checked, not just the first: an override added to
-    // one profile with a different list would bound that lane differently for no stated reason.
-    let mut assignments = 0usize;
-    let expected = expected_boot_filter();
-    let profiles = config
-        .get("profile")
-        .and_then(toml::Value::as_table)
-        .ok_or_else(|| "nextest configuration declares no profiles".to_owned())?;
-    for (profile, settings) in profiles {
-        let overrides = settings
-            .get("overrides")
-            .and_then(toml::Value::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        for entry in overrides {
-            if entry.get("test-group").and_then(toml::Value::as_str) != Some(BOOT_GROUP) {
-                continue;
-            }
-            assignments += 1;
-            let filter = entry
-                .get("filter")
-                .and_then(toml::Value::as_str)
-                .unwrap_or_default();
-            if filter != expected {
-                return Err(format!(
-                    "profile `{profile}` bounds the wrong trials. \
-                    Expected:\n  {expected}\ngot:\n  {filter}"
-                ));
-            }
-        }
-    }
-    if assignments == 0 {
-        return Err(format!(
-            "no profile assigns the `{BOOT_GROUP}` group, so nothing bounds concurrent boots"
-        ));
-    }
-    Ok(())
-}
-
-/// The JSON assertions are the harness's only *structural* checks, and every trial that
-/// uses them is gated off until a real `viv` exists — so without this they would ship
-/// unexecuted. Each case below is one the substring scan they replaced got wrong.
-fn harness_json_self_check() -> Result<(), String> {
-    let envelope = br#"{"volumes":[{"name":"default","mount":"~"}],"state":"running"}"#;
-
-    if !json::missing_keys(envelope, &["volumes", "state"])?.is_empty() {
-        return Err("missing_keys did not find keys that are present".to_owned());
-    }
-    if json::missing_keys(envelope, &["conflicts"])? != vec!["conflicts".to_owned()] {
-        return Err("missing_keys did not report an absent key".to_owned());
-    }
-    // `name` is nested inside the array, not top-level. The substring scan could not
-    // tell the two apart, so an envelope assertion passed on the wrong shape.
-    if json::missing_keys(envelope, &["name"])?.is_empty() {
-        return Err("missing_keys accepted a nested key as top-level".to_owned());
-    }
-    if !json::array_items_missing(envelope, "volumes", &["name", "mount"])?.is_empty() {
-        return Err("array_items_missing did not find fields that are present".to_owned());
-    }
-    if json::array_items_missing(envelope, "volumes", &["orphan"])?
-        != vec!["volumes[0].orphan".to_owned()]
-    {
-        return Err("array_items_missing did not report an absent field".to_owned());
-    }
-    if json::array_items_missing(envelope, "state", &["name"]).is_ok() {
-        return Err("array_items_missing accepted a non-array under the key".to_owned());
-    }
-
-    harness_nested_json_self_check()
-}
-
-/// The specified envelopes nest — `config eval` puts the merged config under `config`,
-/// `config sources` keys `values` by option path — so the path- and map-aware assertions
-/// need the same self-check as the top-level one. Without them a trial would have to
-/// demand nested field names at the root, which a conforming implementation never emits.
-fn harness_nested_json_self_check() -> Result<(), String> {
-    let nested = br#"{
-        "config": { "sandbox": { "egress": { "mode": "allowlist", "allow": [] } } },
-        "values": {
-            "resources.mem_mib": { "effective": null, "winner": null, "contributors": [] }
-        },
-        "conflicts": [ { "kind": "tie", "key": "resources.mem_mib", "layers": ["a", "b"] } ]
-    }"#;
-
-    if !json::missing_at_path(nested, "config.sandbox.egress", &["mode", "allow"])?.is_empty() {
-        return Err("missing_at_path did not find nested fields that are present".to_owned());
-    }
-    if json::missing_at_path(nested, "config.sandbox.egress", &["proxy"])?
-        != vec!["config.sandbox.egress.proxy".to_owned()]
-    {
-        return Err("missing_at_path did not report an absent nested field".to_owned());
-    }
-    if json::missing_at_path(nested, "config.absent", &["mode"]).is_ok() {
-        return Err("missing_at_path accepted a path that does not exist".to_owned());
-    }
-    // The regression this whole helper exists to prevent: nested names are not root names.
-    if json::missing_keys(nested, &["mode"])?.is_empty() {
-        return Err("missing_keys accepted a deeply nested key as top-level".to_owned());
-    }
-
-    if !json::map_entries_missing(nested, "values", &["effective", "winner", "contributors"])?
-        .is_empty()
-    {
-        return Err("map_entries_missing did not find member fields that are present".to_owned());
-    }
-    if json::map_entries_missing(nested, "values", &["priority"])?
-        != vec!["values[\"resources.mem_mib\"].priority".to_owned()]
-    {
-        return Err("map_entries_missing did not report an absent member field".to_owned());
-    }
-    if json::map_entries_missing(nested, "conflicts", &["kind"]).is_ok() {
-        return Err("map_entries_missing accepted an array under the key".to_owned());
-    }
-
-    if json::array_len(nested, "values").is_ok() {
-        return Err("array_len accepted a non-array under the key".to_owned());
-    }
-    // `"conflicts": []` is the shape a non-conforming defect report would emit, so the
-    // zero case has to be distinguishable from "the key is there".
-    if json::array_len(br#"{"conflicts":[]}"#, "conflicts")? != 0 {
-        return Err("array_len did not report an empty array as empty".to_owned());
-    }
-    Ok(())
-}
-
-// Guide: docs/guides/first-time-workspace-boot.md
-fn workflow_01_usage() -> Result<(), Failed> {
-    let tp = TempProject::new().map_err(io_failed)?;
-    arrange_manifest(&tp, "rust-web", "", "")?;
-    let before = snapshot_tree(tp.project()).map_err(io_failed)?;
-
-    let selection = viv(&tp, &["config", "--json"])?;
-    check(expect_derived_manifest_visible(&selection, "rust-web"))?;
-    check(expect_tree_unchanged(tp.project(), &before))?;
-    check(expect_code(
-        &viv(&tp, &["start", "--rebuild", "--no-rebuild"])?,
-        EX_USAGE,
-    ))?;
-
-    let unbound = TempProject::new().map_err(io_failed)?;
-    check(expect_code(&viv(&unbound, &["shell"])?, EX_CONFIG))?;
-    check(expect_code(&viv(&tp, &["shell", "--unknown"])?, EX_USAGE))
-}
 
 // Guide: docs/guides/first-time-workspace-boot.md
 fn workflow_01_boot() -> Result<(), Failed> {
@@ -604,473 +179,6 @@ fn workflow_01_boot() -> Result<(), Failed> {
     // boot for it elsewhere.
     let vm_pid = support::egress::read_vm_pid(tp.runtime()).map_err(Failed::from)?;
     check(support::egress::expect_open_mode_absence(vm_pid))
-}
-
-// Guide: docs/guides/clean-repo-derived-resolution.md
-fn workflow_02_index() -> Result<(), Failed> {
-    let tp = TempProject::with_project_name("API").map_err(io_failed)?;
-    arrange_manifest(&tp, "clean-registry", "", "")?;
-    let before = snapshot_tree(tp.project()).map_err(io_failed)?;
-
-    // A leftover authored registry is inert: the derived index has a new cache-root name and
-    // neither reads, rewrites, nor deletes the old state-root file.
-    let old_registry = tp.state().join("vivarium").join("registry.toml");
-    write_file(&old_registry, "this is deliberately not registry TOML\n").map_err(io_failed)?;
-    let old_bytes = fs::read(&old_registry).map_err(io_failed)?;
-
-    let first = viv(&tp, &["config", "--json"])?;
-    check(expect_derived_manifest_visible(&first, "clean-registry"))?;
-    check(expect_tree_unchanged(tp.project(), &before))?;
-    if fs::read(&old_registry).map_err(io_failed)? != old_bytes {
-        return fail("the derived resolver touched the leftover authored registry");
-    }
-
-    let index = tp.cache().join("vivarium").join("workspace-index.json");
-    if !index.is_file() {
-        return fail("the first derived resolution did not publish its cache");
-    }
-    fs::remove_file(&index).map_err(io_failed)?;
-    let rebuilt = viv(&tp, &["config", "--json"])?;
-    check(expect_derived_manifest_visible(&rebuilt, "clean-registry"))?;
-    if !index.is_file() || first.stdout != rebuilt.stdout {
-        return fail("deleting the derived index changed the selected sandbox");
-    }
-    let prior_index = fs::read(&index).map_err(io_failed)?;
-    arrange_manifest(
-        &tp,
-        "clean-registry",
-        "\n[env]\nCACHE_GENERATION = \"two\"\n",
-        "",
-    )?;
-    check(expect_derived_manifest_visible(
-        &viv(&tp, &["config", "--json"])?,
-        "clean-registry",
-    ))?;
-    if fs::read(&index).map_err(io_failed)? == prior_index {
-        return fail("changing a manifest did not invalidate the derived index");
-    }
-
-    // A mount is never an ownership candidate.
-    let mounted = tp.root().join("mount-only");
-    let elsewhere = tp.root().join("elsewhere");
-    fs::create_dir_all(&mounted).map_err(io_failed)?;
-    fs::create_dir_all(&elsewhere).map_err(io_failed)?;
-    arrange_manifest(
-        &tp,
-        "mount-only",
-        &format!(
-            "\n[[workspaces]]\nsource = '{}'\n\n[[mounts]]\nsource = '{}'\ntarget = '/mnt/only'\n",
-            elsewhere.display(),
-            mounted.display()
-        ),
-        "",
-    )?;
-    check(expect_code(
-        &viv_at(&tp, &mounted, &["config", "--json"])?,
-        EX_CONFIG,
-    ))?;
-
-    // Two explicit owners fail closed and name both claimants.
-    for name in ["owner-one", "owner-two"] {
-        arrange_manifest(
-            &tp,
-            name,
-            &format!("\n[[workspaces]]\nsource = '{}'\n", mounted.display()),
-            "",
-        )?;
-    }
-    let ambiguous = viv_at(&tp, &mounted, &["config", "--json"])?;
-    check(expect_code(&ambiguous, EX_CONFIG))?;
-    check(expect_stderr_mentions(&ambiguous, "owner-one"))?;
-    check(expect_stderr_mentions(&ambiguous, "owner-two"))
-}
-
-/// Guide: docs/guides/team-shared-personal-overrides.md
-///
-/// The workflow is "a team shares config, each person adjusts it" — so the fixture has
-/// to be **one shared piece and two different personal manifests**. Both manifests name
-/// the same piece and neither edits it, which is the whole point: the manifest is the
-/// personal layer (spec/07, ADR-0040), so a per-user value never touches the shared
-/// artifact. A single manifest listing a "team" and a "personal" piece would verify only
-/// that priority works, not that anything stays shareable.
-fn workflow_03() -> Result<(), Failed> {
-    let tp = TempProject::new().map_err(io_failed)?;
-    // The shared piece proposes with `mkDefault` so each manifest's normal-priority
-    // leaf outranks it — the convention that keeps independently-authored pieces
-    // adoptable together (spec/04).
-    write_piece(
-        &tp,
-        "team",
-        r#"{ lib, ... }: {
-    vivarium.env.WF3_TOOLCHAIN = lib.mkDefault "team-proposed";
-    vivarium.mounts = [
-        {
-            source = "\${HOME}/.config/team";
-            target = "~/.config/team";
-            readonly = true;
-        }
-    ];
-}
-"#,
-    )?;
-    let shared_piece = tp.config().join("vivarium").join("pieces").join("team.nix");
-    let shared_before = fs::read(&shared_piece).map_err(io_failed)?;
-
-    // Two people, same piece, different manifests. Every value appears nowhere else in
-    // the fixture so no assertion can be satisfied by an incidental substring.
-    arrange_manifest(
-        &tp,
-        "ana-api",
-        "pieces = [ \"team\" ]\n\n[env]\nWF3_TOOLCHAIN = \"ana-decides\"\n",
-        "\n[resources]\nmem_mib = 4096\n",
-    )?;
-    arrange_manifest(
-        &tp,
-        "bruno-api",
-        "pieces = [ \"team\" ]\n\n[env]\nWF3_TOOLCHAIN = \"bruno-decides\"\n",
-        "\n[resources]\nmem_mib = 8192\n",
-    )?;
-
-    // Both manifests are defined, and both adopt the identical shared piece.
-    let library = viv(&tp, &["manifest", "list", "--json"])?;
-    check(expect_code(&library, 0))?;
-    check(expect_json_array_items(
-        &library,
-        "manifests",
-        &["name", "path", "image", "pieces"],
-    ))?;
-    check(expect_stdout_mentions(&library, "ana-api"))?;
-    check(expect_stdout_mentions(&library, "bruno-api"))?;
-
-    let ana = viv_with_env(
-        &tp,
-        &["config", "eval", "--json"],
-        &[("VIVARIUM_MANIFEST", "ana-api")],
-    )?;
-    check(expect_code(&ana, 0))?;
-    check(expect_json_keys(
-        &ana,
-        &["manifest", "image", "pieces", "config"],
-    ))?;
-    // The merged view carries this user's decision and neither the piece's proposal
-    // nor the other user's value.
-    check(expect_stdout_mentions(&ana, "ana-decides"))?;
-    check(expect_stdout_lacks(&ana, "team-proposed"))?;
-    check(expect_stdout_lacks(&ana, "bruno-decides"))?;
-    // Host-side variables in the shared piece's mount sources stay unexpanded through
-    // evaluation — which is what keeps that piece portable between the two of them.
-    check(expect_stdout_mentions(&ana, "${HOME}"))?;
-
-    let sources = viv_with_env(
-        &tp,
-        &["config", "sources", "--json"],
-        &[("VIVARIUM_MANIFEST", "ana-api")],
-    )?;
-    check(expect_code(&sources, 0))?;
-    check(expect_json_keys(
-        &sources,
-        &["manifest", "image", "pieces", "values", "conflicts"],
-    ))?;
-    // `effective`, `winner`, and `contributors` belong to each *entry* of `values`, not
-    // to the envelope root (spec/01). Asserting them top-level would fail against a
-    // conforming implementation for the very reason it is conforming.
-    check(expect_json_map_entries(
-        &sources,
-        "values",
-        &["effective", "winner", "contributors"],
-    ))?;
-    // Provenance is the mirror image: it must carry the shadowed contributor that
-    // `config eval` dropped.
-    check(expect_stdout_mentions(&sources, "ana-decides"))?;
-    check(expect_stdout_mentions(&sources, "team-proposed"))?;
-
-    // Selecting the other person's manifest for this invocation changes the result without any
-    // edit to the shared artifact.
-    let bruno = viv_with_env(
-        &tp,
-        &["config", "eval", "--json"],
-        &[("VIVARIUM_MANIFEST", "bruno-api")],
-    )?;
-    check(expect_code(&bruno, 0))?;
-    check(expect_stdout_mentions(&bruno, "bruno-decides"))?;
-    check(expect_stdout_lacks(&bruno, "ana-decides"))?;
-    check(expect_stdout_lacks(&bruno, "team-proposed"))?;
-    if fs::read(&shared_piece).map_err(io_failed)? != shared_before {
-        return fail("the shared piece changed while evaluating personal manifests");
-    }
-
-    workflow_03_literal_path(&tp)?;
-    workflow_03_tie(&tp)
-}
-
-/// A literal personal path in a **shared** layer is an N11 violation. Under ADR-0042 the
-/// two config verbs diverge deliberately, and asserting only the failing half would miss
-/// the point: `config eval` refuses with `65`, while `config sources` — the command a
-/// user reaches for *because* eval refused — still renders the defect and exits `0`.
-fn workflow_03_literal_path(tp: &TempProject) -> Result<(), Failed> {
-    write_piece(
-        tp,
-        "team",
-        r#"{ ... }: {
-    vivarium.mounts = [
-        {
-            source = "/home/ana/.config/team";
-            target = "~/.config/team";
-            readonly = true;
-        }
-    ];
-}
-"#,
-    )?;
-    let invalid = viv_with_env(
-        tp,
-        &["config", "eval", "--json"],
-        &[("VIVARIUM_MANIFEST", "ana-api")],
-    )?;
-    check(expect_code(&invalid, EX_DATAERR))?;
-    check(expect_stderr_mentions(&invalid, "/home/ana"))?;
-
-    let still_readable = viv_with_env(
-        tp,
-        &["config", "sources", "--json"],
-        &[("VIVARIUM_MANIFEST", "ana-api")],
-    )?;
-    check(expect_code(&still_readable, 0))?;
-    // The defect must be *encoded*, not merely alluded to: `conflicts` carries a record
-    // naming the class, the key, and the declaring layers (spec/01). Checking only that
-    // the key exists would be satisfied by `"conflicts": []` — an implementation that
-    // renders the path in prose and reports no machine-readable defect at all.
-    check(expect_json_array_nonempty(
-        &still_readable,
-        "conflicts",
-        &["kind", "key", "layers"],
-    ))?;
-    check(expect_stdout_mentions(&still_readable, "literal-path"))?;
-    check(expect_stdout_mentions(&still_readable, "/home/ana"))?;
-
-    // ADR-0108's ownership half, end to end. What it asserts changed with ADR-0110 and the
-    // change is worth pinning rather than deleting.
-    //
-    // The rule used to be enforced: `vivarium.workspaces` was an option a shared layer could
-    // write, so `src/config/merged.rs` refused one at `65` naming the offending layer. There is
-    // no such option now — a workspace compiles to a `vivarium.mounts` row that `viv` writes from
-    // manifest text — so the guarantee is structural. A piece reaching for the old spelling
-    // contributes nothing, and the provenance view says so by showing the manifest's own trees
-    // and no others.
-    //
-    // It also says so quietly, which is the cost: `nix/vivarium-report.nix` evaluates each layer
-    // with `_module.check = false` so an ordinary NixOS layer is not fatal here, and an undeclared
-    // `vivarium.*` is ignored along with it. Recorded as `Q-034`; this trial pins the behaviour so
-    // the day it gains a diagnostic, this is what moves.
-    write_piece(
-        tp,
-        "team",
-        r#"{ ... }: {
-    vivarium.workspaces = [ { source = "\${HOME}/team-tree"; } ];
-}
-"#,
-    )?;
-    let owned_by_a_piece = viv_with_env(
-        tp,
-        &["config", "eval", "--json"],
-        &[("VIVARIUM_MANIFEST", "ana-api")],
-    )?;
-    check(expect_code(&owned_by_a_piece, 0))?;
-    // The manifest's own tree, and nothing the piece asked for.
-    check(expect_stdout_mentions(
-        &owned_by_a_piece,
-        "\"workspaces\":[{",
-    ))?;
-    check(expect_stdout_lacks(&owned_by_a_piece, "team-tree"))
-}
-
-/// The equal-priority tie. Under ADR-0040's convention a shared piece proposes with
-/// `mkDefault`, so the case that actually collides is **two pieces at normal priority** —
-/// not a piece against the manifest leaf, which the leaf simply wins. Under ADR-0042 the
-/// collision is a content defect: `config eval` returns `65`, and `config sources` reports
-/// it at exit `0` with the `[tie]` marker on stderr.
-fn workflow_03_tie(tp: &TempProject) -> Result<(), Failed> {
-    arrange_manifest(tp, "tie-demo", "pieces = [ \"tie-a\", \"tie-b\" ]\n", "")?;
-    write_piece(
-        tp,
-        "tie-a",
-        "{ ... }: { vivarium.resources.mem_mib = 4096; }\n",
-    )?;
-    write_piece(
-        tp,
-        "tie-b",
-        "{ ... }: { vivarium.resources.mem_mib = 8192; }\n",
-    )?;
-
-    check(expect_code(
-        &viv_with_env(
-            tp,
-            &["config", "eval", "--json"],
-            &[("VIVARIUM_MANIFEST", "tie-demo")],
-        )?,
-        EX_DATAERR,
-    ))?;
-
-    let tie = viv_with_env(
-        tp,
-        &["config", "sources", "--json"],
-        &[("VIVARIUM_MANIFEST", "tie-demo")],
-    )?;
-    check(expect_code(&tie, 0))?;
-    check(expect_json_array_nonempty(
-        &tie,
-        "conflicts",
-        &["kind", "key", "layers"],
-    ))?;
-    check(expect_stdout_mentions(&tie, "\"tie\""))?;
-    check(expect_stderr_mentions(&tie, "[tie]"))?;
-    // The marker is stderr-only so `--json 2>/dev/null | jq` stays clean.
-    check(expect_stdout_lacks(&tie, "[tie]"))
-}
-
-// Guide: docs/guides/inspect-before-run.md
-fn workflow_04_usage() -> Result<(), Failed> {
-    let tp = TempProject::new().map_err(io_failed)?;
-    arrange_manifest(
-        &tp,
-        "inspect-dev",
-        "pieces = [ \"inspect\" ]\n",
-        "\n[resources]\nmem_mib = 2048\nvcpu = 2\n",
-    )?;
-    write_piece(&tp, "inspect", "{ ... }: { }\n")?;
-
-    let show = viv(&tp, &["manifest", "show", "inspect-dev", "--json"])?;
-    check(expect_code(&show, 0))?;
-    check(expect_json_keys(
-        &show,
-        &[
-            "manifest",
-            "path",
-            "image",
-            "pieces",
-            "resources",
-            "egress",
-            "extends",
-        ],
-    ))?;
-    // The knobs are nested under their own objects (spec/01), so they are addressed by
-    // path rather than demanded at the root.
-    check(expect_json_fields_at(
-        &show,
-        "resources",
-        &["mem_mib", "vcpu"],
-    ))?;
-    check(expect_json_fields_at(&show, "egress", &["mode", "allow"]))?;
-    check(expect_code(
-        &viv(&tp, &["manifest", "show", "missing"])?,
-        EX_CONFIG,
-    ))?;
-    check(expect_code(&viv(&tp, &["manifest", "show"])?, EX_USAGE))?;
-    check(expect_code(
-        &viv(&tp, &["manifest", "show", "one", "two"])?,
-        EX_USAGE,
-    ))?;
-
-    let list = viv(&tp, &["manifest", "list", "--json"])?;
-    check(expect_code(&list, 0))?;
-    check(expect_json_keys(&list, &["manifests"]))?;
-    check(expect_json_array_items(
-        &list,
-        "manifests",
-        &["name", "path", "image", "pieces"],
-    ))?;
-    let empty = TempProject::new().map_err(io_failed)?;
-    let empty_list = viv(&empty, &["manifest", "list", "--json"])?;
-    check(expect_code(&empty_list, 0))?;
-    check(expect_json_keys(&empty_list, &["manifests"]))?;
-
-    // Explicit workspace ownership makes the manifest available without another write.
-    check(expect_derived_manifest_visible(
-        &viv(&tp, &["config", "--json"])?,
-        "inspect-dev",
-    ))
-}
-
-// Guide: docs/guides/inspect-before-run.md
-fn workflow_04_eval() -> Result<(), Failed> {
-    let tp = TempProject::new().map_err(io_failed)?;
-    arrange_manifest(
-        &tp,
-        "inspect-dev",
-        "pieces = [ \"inspect\" ]\n",
-        "\n[resources]\nmem_mib = 2048\nvcpu = 2\n",
-    )?;
-    write_piece(&tp, "inspect", "{ ... }: { }\n")?;
-
-    let evaluated = viv(&tp, &["config", "eval", "--json"])?;
-    check(expect_code(&evaluated, 0))?;
-    check(expect_json_keys(
-        &evaluated,
-        &["manifest", "image", "pieces", "config"],
-    ))?;
-    let sources = viv(&tp, &["config", "sources", "--json"])?;
-    check(expect_code(&sources, 0))?;
-    check(expect_json_keys(
-        &sources,
-        &["manifest", "image", "pieces", "values", "conflicts"],
-    ))?;
-    // Read-only diagnostics never mutate project or VM state.
-    check(expect_no_volume_images(&tp))?;
-
-    // One volume name bound to two mountpoints is spec/14's cited instance of an
-    // irreconcilable merge, and the only path to `65`.
-    let conflict_tail = concat!(
-        "\n[[volumes]]\nname = \"cache\"\nmount = \"/one\"\n",
-        "\n[[volumes]]\nname = \"cache\"\nmount = \"/two\"\n"
-    );
-    arrange_manifest(&tp, "conflict", "", conflict_tail)?;
-    check(expect_code(
-        &viv_with_env(
-            &tp,
-            &["config", "eval", "--json"],
-            &[("VIVARIUM_MANIFEST", "conflict")],
-        )?,
-        EX_DATAERR,
-    ))
-}
-
-// Guide: docs/guides/restrict-egress-allowlist.md
-fn workflow_05_config() -> Result<(), Failed> {
-    let tp = arrange_egress_fixture()?;
-
-    let evaluated = viv(&tp, &["config", "eval", "--json"])?;
-    check(expect_code(&evaluated, 0))?;
-    check(expect_json_keys(
-        &evaluated,
-        &["manifest", "image", "pieces", "config"],
-    ))?;
-    // `config eval --json` nests the merged config under `config` (spec/01), so the
-    // egress knobs are reached by path rather than expected at the envelope root.
-    check(expect_json_fields_at(
-        &evaluated,
-        "config.sandbox.egress",
-        &["mode", "allow"],
-    ))?;
-    // The piece's mkForce beats the image's mkDefault, so the merged view carries the
-    // winner and not the shadowed default.
-    check(expect_stdout_mentions(&evaluated, "allowlist"))?;
-    check(expect_stdout_lacks(&evaluated, "\"open\""))?;
-    // Allowlist entries concatenate across layers rather than replacing one another,
-    // so both the manifest's and the piece's host must survive the merge.
-    check(expect_stdout_mentions(
-        &evaluated,
-        support::egress::ALLOWED_NAME,
-    ))?;
-    check(expect_stdout_mentions(
-        &evaluated,
-        support::egress::GHOST_NAME,
-    ))?;
-
-    let sources = viv(&tp, &["config", "sources", "--json"])?;
-    check(expect_code(&sources, 0))?;
-    check(expect_stdout_mentions(&sources, "egress-restriction"))?;
-    // The provenance view must still show the image layer that `config eval` dropped.
-    check(expect_stdout_mentions(&sources, "\"open\""))
 }
 
 // Guide: docs/guides/restrict-egress-allowlist.md
@@ -1182,55 +290,6 @@ fn workflow_05_enforcement() -> Result<(), Failed> {
     }
     drop(fixture);
     Ok(())
-}
-
-fn arrange_egress_fixture() -> Result<TempProject, Failed> {
-    let tp = TempProject::new().map_err(io_failed)?;
-    // The image supplies the shadowed default; only the piece forces the allowlist, so
-    // the precedence under test is genuinely arranged rather than pre-decided by the
-    // manifest. Each layer contributes a distinct host to make concatenation
-    // observable — the manifest the reachable endpoint's name, the piece the name
-    // whose upstream answer is NXDOMAIN.
-    arrange_manifest_with_image(
-        &tp,
-        "restricted",
-        "pieces = [ \"egress-restriction\" ]\n",
-        &format!(
-            "\n[egress]\nallow = [ \"{}\" ]\n",
-            support::egress::ALLOWED_NAME
-        ),
-        "{ lib, ... }: { sandbox.egress.mode = lib.mkDefault \"open\"; }\n",
-    )?;
-    write_piece(
-        &tp,
-        "egress-restriction",
-        &format!(
-            "{{ lib, ... }}: {{\n    sandbox.egress.mode = lib.mkForce \"allowlist\";\n    \
-            sandbox.egress.allow = [ \"{}\" ];\n}}\n",
-            support::egress::GHOST_NAME
-        ),
-    )?;
-    Ok(tp)
-}
-
-// Guide: docs/guides/run-agent-command.md
-fn workflow_06_usage() -> Result<(), Failed> {
-    let unbound = TempProject::new().map_err(io_failed)?;
-    check(expect_code(
-        &viv(&unbound, &["exec", "--", "true"])?,
-        EX_CONFIG,
-    ))?;
-    check(expect_code(&viv(&unbound, &["exec"])?, EX_USAGE))?;
-    check(expect_code(&viv(&unbound, &["exec", "--"])?, EX_USAGE))?;
-    check(expect_code(
-        &viv(&unbound, &["exec", "-t", "--no-tty", "--", "true"])?,
-        EX_USAGE,
-    ))?;
-    // `-t` when host stdin is not a terminal.
-    check(expect_code(
-        &viv(&unbound, &["exec", "-t", "--", "true"])?,
-        EX_USAGE,
-    ))
 }
 
 // Guide: docs/guides/run-agent-command.md
@@ -1361,7 +420,7 @@ fn workflow_06_propagation() -> Result<(), Failed> {
 /// [`run_viv`] runs to completion by construction, which is right for every other trial here and
 /// cannot express "kill the VM while this is talking to it".
 fn spawn_viv(tp: &TempProject, args: &[&str]) -> Result<std::process::Child, Failed> {
-    let mut command = std::process::Command::new(gate().viv());
+    let mut command = std::process::Command::new(preflight::viv());
     command
         .args(args)
         .current_dir(tp.project())
@@ -1406,7 +465,7 @@ fn workflow_06_shell() -> Result<(), Failed> {
     // settings rather than against an assumption about what a terminal looks like.
     let lent = rustix::termios::tcgetattr(&pty).map_err(errno_failed)?;
 
-    let mut child = pty_process::blocking::Command::new(gate().viv())
+    let mut child = pty_process::blocking::Command::new(preflight::viv())
         .arg("shell")
         .current_dir(tp.project())
         .env_clear()
@@ -1580,184 +639,6 @@ const SHELL_BUDGET: Duration = Duration::from_mins(1);
 /// How long the guest shell must stay silent before it counts as ready for input.
 const SHELL_QUIET: Duration = Duration::from_millis(750);
 
-// Spec: docs/reference/spec/13-doctor-and-health-checks.md
-//
-// Gate-safe on purpose: the report's exit code reflects this host's health, which the Cli gate
-// does not constrain, so the trial asserts the published shapes — the enumerated catalog, the
-// envelope, the skip reasons, the stderr note, bracketed word markers — and never the health.
-#[allow(clippy::too_many_lines)]
-fn workflow_16_doctor() -> Result<(), Failed> {
-    let tp = TempProject::with_project_name("doctor-project").map_err(io_failed)?;
-
-    // `--list` probes nothing, so its exit is `0` on any host, and the descriptor fields are the
-    // whole row (spec/13).
-    let list = viv(&tp, &["doctor", "--list", "--json"])?;
-    check(expect_code(&list, 0))?;
-    check(expect_json_array_nonempty(
-        &list,
-        "checks",
-        &["id", "category", "scope", "severity", "title"],
-    ))?;
-    check(expect_stdout_mentions(&list, "kvm-device-present"))?;
-
-    // Unbound: host probes still report, project probes skip with the fixed reason, network
-    // probes skip offline, the one stderr note names the way in — and stdout stays one JSON
-    // object so `--json 2>/dev/null | jq` is clean.
-    let report = viv(&tp, &["doctor", "--json"])?;
-    check(expect_json_keys(
-        &report,
-        &["status", "checks", "summary", "schema_version"],
-    ))?;
-    check(expect_json_fields_at(
-        &report,
-        "summary",
-        &[
-            "total",
-            "passed",
-            "warned",
-            "failed",
-            "skipped",
-            "hard_failures",
-        ],
-    ))?;
-    check(expect_stdout_mentions(&report, "no-manifest-bound"))?;
-    check(expect_stdout_mentions(&report, "offline-mode"))?;
-    check(expect_stderr_mentions(
-        &report,
-        "no manifest declares this workspace",
-    ))?;
-
-    // Retained state whose manifest has gone is surfaced by name and path, never reaped.
-    let orphan_state_key = tp.state().join("vivarium/projects/removed-manifest");
-    let orphan_data_key = tp.data().join("vivarium/projects/removed-manifest");
-    let orphan_state = orphan_state_key.join("default");
-    let orphan_data = orphan_data_key.join("default");
-    fs::create_dir_all(&orphan_state).map_err(io_failed)?;
-    fs::create_dir_all(&orphan_data).map_err(io_failed)?;
-    let orphaned = viv(&tp, &["doctor", "--json"])?;
-    check(expect_stdout_mentions(&orphaned, "state-manifest-orphans"))?;
-    check(expect_stdout_mentions(&orphaned, "removed-manifest"))?;
-    check(expect_stdout_mentions(
-        &orphaned,
-        &orphan_state_key.display().to_string(),
-    ))?;
-    check(expect_stdout_mentions(
-        &orphaned,
-        &orphan_data_key.display().to_string(),
-    ))?;
-    if !orphan_state.is_dir() || !orphan_data.is_dir() {
-        return fail("viv doctor deleted retained state while reporting it");
-    }
-
-    // The human report wears bracketed word markers — never glyphs — and closes with the summary
-    // line naming the exit (spec/13).
-    let human = viv(&tp, &["doctor"])?;
-    check(expect_stdout_mentions(&human, "[skipped]"))?;
-    check(expect_stdout_mentions(&human, "-> exit "))?;
-
-    // ADR-0109's finding is shared with refusing verbs, but doctor remains a report: it names the
-    // selected manifest, cwd, and exact declaration without turning the condition into exit 78.
-    let elsewhere = tp.root().join("declared-elsewhere");
-    fs::create_dir_all(&elsewhere).map_err(io_failed)?;
-    arrange_manifest(
-        &tp,
-        "doctor-ownership",
-        &format!("\n[[workspaces]]\nsource = '{}'\n", elsewhere.display()),
-        "",
-    )?;
-    let manifest_path = tp
-        .config()
-        .join("vivarium")
-        .join("manifests")
-        .join("doctor-ownership.toml");
-    let before = fs::read(&manifest_path).map_err(io_failed)?;
-    let refused = viv(&tp, &["config", "--manifest", "doctor-ownership", "--json"])?;
-    check(expect_code(&refused, EX_CONFIG))?;
-    check(expect_stderr_mentions(
-        &refused,
-        "manifest.workspace-undeclared-directory",
-    ))?;
-    check(expect_stderr_mentions(
-        &refused,
-        manifest_path.to_str().unwrap_or(""),
-    ))?;
-    check(expect_stderr_mentions(
-        &refused,
-        tp.project().to_str().unwrap_or(""),
-    ))?;
-    check(expect_stderr_mentions(&refused, "[[workspaces]]"))?;
-    if fs::read(&manifest_path).map_err(io_failed)? != before {
-        return fail("the undeclared-workspace refusal modified the selected manifest");
-    }
-    let ownership = viv_with_env(
-        &tp,
-        &["doctor", "--json"],
-        &[("VIVARIUM_MANIFEST", "doctor-ownership")],
-    )?;
-    if ownership.status.code() == Some(EX_CONFIG) {
-        return fail("doctor refused ADR-0109's ownership finding instead of reporting it");
-    }
-    check(expect_stdout_mentions(
-        &ownership,
-        "working-directory-declared",
-    ))?;
-    check(expect_stdout_mentions(&ownership, "doctor-ownership.toml"))?;
-    check(expect_stdout_mentions(
-        &ownership,
-        tp.project().to_str().unwrap_or(""),
-    ))?;
-    check(expect_stdout_mentions(&ownership, "[[workspaces]]"))?;
-
-    arrange_manifest(
-        &tp,
-        "doctor-second-owner",
-        &format!("\n[[workspaces]]\nsource = '{}'\n", elsewhere.display()),
-        "",
-    )?;
-    let ambiguous = viv_at(&tp, &elsewhere, &["config", "--json"])?;
-    check(expect_code(&ambiguous, EX_CONFIG))?;
-    check(expect_stderr_mentions(
-        &ambiguous,
-        "state.workspace-owner-ambiguous",
-    ))?;
-    check(expect_stderr_mentions(&ambiguous, "doctor-ownership"))?;
-    check(expect_stderr_mentions(&ambiguous, "doctor-second-owner"))?;
-
-    // ADR-0109's second consumer, on the same condition. `config` refused above; `doctor` must
-    // report the identical finding and NOT refuse, because a doctor that exited `78` on the
-    // condition it exists to explain would be self-defeating. Asserted here rather than trusted:
-    // the finding reaches doctor through a path where an ordinary `.ok()` would erase it, and an
-    // erased finding renders as `no-manifest-bound`, which says the opposite of what happened.
-    let diagnosed = viv_at(&tp, &elsewhere, &["doctor"])?;
-    check(expect_code(&diagnosed, 0))?;
-    for named in ["doctor-ownership", "doctor-second-owner"] {
-        check(expect_stdout_mentions(&diagnosed, named))?;
-    }
-    check(expect_stdout_mentions(
-        &diagnosed,
-        "working-directory-declared",
-    ))?;
-    check(expect_stdout_mentions(&diagnosed, "manifest-resolves"))?;
-    // The stderr note too, and not as an afterthought: it is the one line that can contradict
-    // everything above it. `project` is `None` here for the opposite of the usual reason — two
-    // manifests declare this directory, not none — and a note saying none would tell the user
-    // the reverse of what the findings just said.
-    check(expect_stderr_mentions(&diagnosed, "more than one manifest"))?;
-    Ok(())
-}
-
-// Guide: docs/guides/stop-restart-preserving-volumes.md
-fn workflow_07_usage() -> Result<(), Failed> {
-    let tp = TempProject::with_project_name("volume-project").map_err(io_failed)?;
-    arrange_manifest(&tp, "volumes", "", VOLUME_TAIL)?;
-    check(expect_code(&viv(&tp, &["volume", "list", "--json"])?, 0))?;
-    // `--force` conflicts with a nonzero `--timeout`; `--force --timeout 0` is fine.
-    check(expect_code(
-        &viv(&tp, &["stop", "--force", "--timeout", "5"])?,
-        EX_USAGE,
-    ))
-}
-
 // Guide: docs/guides/stop-restart-preserving-volumes.md
 fn workflow_07_warmth() -> Result<(), Failed> {
     let tp = TempProject::with_project_name("volume-project").map_err(io_failed)?;
@@ -1839,37 +720,6 @@ fn workflow_07_shutdown_bounded() -> Result<(), Failed> {
     let status = viv(&tp, &["status", "--json"])?;
     check(expect_code(&status, 0))?;
     check(expect_json_string(&status, "state", "built"))
-}
-
-const VOLUME_TAIL: &str = "\n[[volumes]]\nname = \"cache\"\nmount = \"/var/cache/project\"\n";
-
-// Guide: docs/guides/destroy-cold-rebuild.md
-fn workflow_08_usage() -> Result<(), Failed> {
-    // The manifest name is deliberately unlike the project name so the state key is observable.
-    let tp = TempProject::with_project_name("destroy-project").map_err(io_failed)?;
-    arrange_manifest(&tp, "teardown-demo", "", "")?;
-    check(expect_derived_manifest_visible(
-        &viv(&tp, &["config", "--json"])?,
-        "teardown-demo",
-    ))?;
-    check(expect_code(&viv(&tp, &["destroy"])?, EX_USAGE))?;
-
-    // `gc` is a global whole-store sweep: it never requires a selected manifest, so it cannot
-    // answer `78` even from an undeclared directory. The sweep itself must not run here — this
-    // suite runs from the hooks, and a real collection takes the store's GC lock under every
-    // concurrently building trial — so the collector is made unreachable instead: with an empty
-    // `PATH` the verb gets exactly as far as spawning `nix-store` and answers `69`, which proves
-    // no manifest gate stood before it. The real sweep is `tests/host/generations-check`'s.
-    let global = TempProject::new().map_err(io_failed)?;
-    let no_tools = global.root().join("no-tools");
-    fs::create_dir_all(&no_tools).map_err(io_failed)?;
-    let gc = viv_with_env(
-        &global,
-        &["gc"],
-        &[("PATH", no_tools.to_str().unwrap_or_default())],
-    )?;
-    check(expect_code(&gc, EX_UNAVAILABLE))?;
-    check(expect_stderr_mentions(&gc, "gc-unavailable"))
 }
 
 // Guide: docs/guides/destroy-cold-rebuild.md
@@ -2198,94 +1048,6 @@ fn workflow_09_round_trip() -> Result<(), Failed> {
     check(expect_stdout_mentions(&overwritten, "host overwrote this"))
 }
 
-/// Slice 019's evaluation tier: the declared-mount defects the merged view can decide refuse
-/// `config eval` with `65` and render through `config sources` at `0` (ADR-0042), each named by
-/// its `conflicts` kind (spec/01).
-fn workflow_17_eval() -> Result<(), Failed> {
-    let tp = TempProject::new().map_err(io_failed)?;
-
-    // N24's decidable half: a literal session-directory source, refused in the PERSONAL layer —
-    // which is what separates it from N11, where a literal path in one's own manifest is
-    // ordinary authorship.
-    arrange_manifest(
-        &tp,
-        "mounts-eval",
-        "\n[[mounts]]\nsource = \"/tmp/wf17-shared-tools\"\ntarget = \"/workspaces/tools\"\n",
-        "",
-    )?;
-    let session = viv(&tp, &["config", "eval", "--json"])?;
-    check(expect_code(&session, EX_DATAERR))?;
-    check(expect_stderr_mentions(&session, "session-path"))?;
-    check(expect_stderr_mentions(&session, "/tmp/wf17-shared-tools"))?;
-    let sources = viv(&tp, &["config", "sources", "--json"])?;
-    check(expect_code(&sources, 0))?;
-    check(expect_json_array_nonempty(
-        &sources,
-        "conflicts",
-        &["kind", "key", "layers"],
-    ))?;
-    check(expect_stdout_mentions(&sources, "session-path"))?;
-
-    // spec/07's sharing rule: a shared piece may reference the host only through the portable
-    // set, and the same private variable in the personal manifest is legal.
-    write_piece(
-        &tp,
-        "wf17tool",
-        r#"{ ... }: {
-    vivarium.mounts = [
-        {
-            source = "\${WF17_PRIVATE_DIR}/tool";
-            target = "/workspaces/tool";
-            readonly = false;
-        }
-    ];
-}
-"#,
-    )?;
-    arrange_manifest(&tp, "mounts-eval", "pieces = [ \"wf17tool\" ]\n", "")?;
-    let nonportable = viv(&tp, &["config", "eval", "--json"])?;
-    check(expect_code(&nonportable, EX_DATAERR))?;
-    check(expect_stderr_mentions(
-        &nonportable,
-        "non-portable-variable",
-    ))?;
-    arrange_manifest(
-        &tp,
-        "mounts-eval",
-        "\n[[mounts]]\nsource = \"${WF17_PRIVATE_DIR}/tool\"\ntarget = \"/workspaces/tool\"\n",
-        "",
-    )?;
-    check(expect_code(&viv(&tp, &["config", "eval", "--json"])?, 0))?;
-
-    // ADR-0020: declarations concatenate across layers, and duplicate targets fail evaluation.
-    write_piece(
-        &tp,
-        "wf17dup",
-        r#"{ ... }: {
-    vivarium.mounts = [
-        {
-            source = "\${HOME}/.config/wf17";
-            target = "~/.config/wf17";
-            readonly = false;
-        }
-    ];
-}
-"#,
-    )?;
-    arrange_manifest(
-        &tp,
-        "mounts-eval",
-        concat!(
-            "pieces = [ \"wf17dup\" ]\n\n[[mounts]]\n",
-            "source = \"${HOME}/wf17-other\"\ntarget = \"~/.config/wf17\"\n"
-        ),
-        "",
-    )?;
-    let duplicate = viv(&tp, &["config", "eval", "--json"])?;
-    check(expect_code(&duplicate, EX_DATAERR))?;
-    check(expect_stderr_mentions(&duplicate, "~/.config/wf17"))
-}
-
 /// Slice 019's launch tier: a declared source that is unset, missing, not a regular file or
 /// directory, or a session directory only expansion reveals refuses `viv start` with `78`
 /// before any boot, each under its own diagnostic id, and leaves no VM behind.
@@ -2421,7 +1183,7 @@ fn workflow_17_refusals() -> Result<(), Failed> {
     let parent_value = parent.to_string_lossy().into_owned();
     let child_value = child.to_string_lossy().into_owned();
     let overlap = support::run_viv_with_env(
-        gate().viv(),
+        preflight::viv(),
         &tp,
         &child,
         &["start"],
@@ -2436,7 +1198,7 @@ fn workflow_17_refusals() -> Result<(), Failed> {
     check(expect_stderr_mentions(&overlap, &parent_value))?;
     check(expect_stderr_mentions(&overlap, &child_value))?;
     let resting = support::run_viv_with_env(
-        gate().viv(),
+        preflight::viv(),
         &tp,
         &child,
         &["status", "--json"],
@@ -2831,7 +1593,7 @@ fn shell_pwd_at(tp: &TempProject, cwd: &Path, expected: &Path) -> Result<(), Fai
     rustix::io::ioctl_fionbio(&pty, true).map_err(errno_failed)?;
     pty.resize(pty_process::Size::new(40, 120))
         .map_err(|error| pty_failed(&error))?;
-    let mut child = pty_process::blocking::Command::new(gate().viv())
+    let mut child = pty_process::blocking::Command::new(preflight::viv())
         .arg("shell")
         .current_dir(cwd)
         .env_clear()
@@ -3013,92 +1775,6 @@ fn workflow_22_file_mount_confinement() -> Result<(), Failed> {
     )?))?;
     check(expect_tree_unchanged(&secrets, &before))?;
     check(expect_code(&viv(&tp, &["stop"])?, 0))
-}
-
-/// The declared channel is visible on both config surfaces: `config eval` renders the effective
-/// list and `config sources` names the layer that opted the user in — which is what makes a
-/// piece-declared channel legible rather than a surprise (spec/07, slice 031).
-fn workflow_23_config() -> Result<(), Failed> {
-    let tp = TempProject::with_project_name("agent-channel-config").map_err(io_failed)?;
-    write_piece(
-        &tp,
-        "credentials-ssh",
-        "{ ... }: { vivarium.credentials.agents = [ \"ssh\" ]; }\n",
-    )?;
-    arrange_manifest(
-        &tp,
-        "agent-channel-config",
-        "pieces = [ \"credentials-ssh\" ]\n",
-        "",
-    )?;
-
-    let eval = viv(&tp, &["config", "eval", "--json"])?;
-    check(expect_code(&eval, 0))?;
-    check(expect_json_fields_at(
-        &eval,
-        "config.credentials",
-        &["agents"],
-    ))?;
-    check(expect_stdout_mentions(&eval, "\"ssh\""))?;
-
-    let human = viv(&tp, &["config", "eval"])?;
-    check(expect_code(&human, 0))?;
-    check(expect_stdout_mentions(&human, "[credentials]"))?;
-    check(expect_stdout_mentions(&human, "agents"))?;
-
-    let sources = viv(&tp, &["config", "sources", "--json"])?;
-    check(expect_code(&sources, 0))?;
-    check(expect_json_map_entries(
-        &sources,
-        "values",
-        &["effective", "winner", "contributors"],
-    ))?;
-    check(expect_stdout_mentions(&sources, "credentials.agents"))?;
-    check(expect_stdout_mentions(&sources, "credentials-ssh"))?;
-
-    // The acceptance's doctor clause: with a channel declared and the harness environment
-    // holding no agent, `agent-source-usable` is a real finding naming the fault — never the
-    // `not-applicable` skip — and a soft warn still exits `0`.
-    let doctor = viv(&tp, &["doctor", "--json"])?;
-    check(expect_code(&doctor, 0))?;
-    check(expect_stdout_mentions(&doctor, "agent-source-usable"))?;
-    check(expect_stdout_mentions(&doctor, "$SSH_AUTH_SOCK"))?;
-    check(expect_stdout_lacks(
-        &doctor,
-        "no composed layer declares an agent channel",
-    ))?;
-
-    // The same clause through the manifest's own bounded module: the declaration moves into a
-    // directory-form manifest's `extends` and the piece adoption is dropped, so only the extends
-    // text can put the channel in view. Extends is a composed layer evaluation honors, and a
-    // probe reading pieces alone would answer `not-applicable` here.
-    let manifests = tp.config().join("vivarium").join("manifests");
-    fs::remove_file(manifests.join("agent-channel-config.toml")).map_err(io_failed)?;
-    let directory = manifests.join("agent-channel-config");
-    write_file(
-        &directory.join("default.toml"),
-        &format!(
-            "image = \"minimal\"\nextends = \"agents.nix\"\n\n[[workspaces]]\nsource = '{}'\n",
-            tp.project().display()
-        ),
-    )
-    .map_err(io_failed)?;
-    write_file(
-        &directory.join("agents.nix"),
-        "{ ... }: { vivarium.credentials.agents = [ \"ssh\" ]; }\n",
-    )
-    .map_err(io_failed)?;
-    let extends_doctor = viv(&tp, &["doctor", "--json"])?;
-    check(expect_code(&extends_doctor, 0))?;
-    check(expect_stdout_mentions(
-        &extends_doctor,
-        "agent-source-usable",
-    ))?;
-    check(expect_stdout_mentions(&extends_doctor, "$SSH_AUTH_SOCK"))?;
-    check(expect_stdout_lacks(
-        &extends_doctor,
-        "no composed layer declares an agent channel",
-    ))
 }
 
 /// Kills the wrapped child on drop, so a failing leg cannot leak a host agent process.
@@ -3327,242 +2003,10 @@ fn bind_after_arrange(tp: &TempProject, mounts: &str) -> Result<(), Failed> {
 
 /// The resting assertion every refusal leg shares: the refusal left a build and no VM.
 fn expect_resting(tp: &TempProject) -> Result<(), String> {
-    let status = run_viv(gate().viv(), tp, tp.project(), &["status", "--json"])
+    let status = run_viv(preflight::viv(), tp, tp.project(), &["status", "--json"])
         .map_err(|error| error.to_string())?;
     expect_code(&status, 0)?;
     expect_json_string(&status, "state", "built")
-}
-/// Slice 018, the update surface that needs no Nix: an unbound project refuses at `78`; an
-/// unknown flag and an unknown input name are `64`, the name decided by vivarium because Nix
-/// answers it with a warning and a successful no-op; a team override lock refuses at `78`
-/// naming both files, emits no JSON, and writes nothing; and the verb is published.
-fn workflow_18_update_usage() -> Result<(), Failed> {
-    let unbound = TempProject::new().map_err(io_failed)?;
-    check(expect_code(&viv(&unbound, &["update"])?, EX_CONFIG))?;
-
-    let tp = TempProject::with_project_name("update-usage").map_err(io_failed)?;
-    arrange_manifest(&tp, "update-usage", "", "")?;
-    check(expect_code(&viv(&tp, &["update", "--bogus"])?, EX_USAGE))?;
-    let unknown = viv(&tp, &["update", "no-such-input"])?;
-    check(expect_code(&unknown, EX_USAGE))?;
-    check(expect_stderr_mentions(&unknown, "no-such-input"))?;
-
-    // The override refusal: a read-only team pin beside a directory-form manifest wins, and
-    // the update refuses whole — both files named, no JSON, and the shadowed per-target
-    // lock not written (ADR-0062, spec/02).
-    let ov = TempProject::with_project_name("update-override").map_err(io_failed)?;
-    let manifest_dir = ov
-        .config()
-        .join("vivarium")
-        .join("manifests")
-        .join("update-override");
-    write_file(
-        &manifest_dir.join("default.toml"),
-        &format!(
-            "image = \"minimal\"\n\n[[workspaces]]\nsource = '{}'\n",
-            ov.project().display()
-        ),
-    )
-    .map_err(io_failed)?;
-    write_file(
-        &ov.config()
-            .join("vivarium")
-            .join("images")
-            .join("minimal.nix"),
-        "{ ... }: { }\n",
-    )
-    .map_err(io_failed)?;
-    write_file(
-        &manifest_dir.join("flake.lock"),
-        "{\"nodes\":{\"root\":{}},\"root\":\"root\",\"version\":7}\n",
-    )
-    .map_err(io_failed)?;
-    let refused = viv(&ov, &["update", "--json"])?;
-    check(expect_code(&refused, EX_CONFIG))?;
-    check(expect_stderr_mentions(&refused, "override-in-force"))?;
-    check(expect_stderr_mentions(&refused, "flake.lock"))?;
-    check(expect_stderr_mentions(&refused, "projects"))?;
-    if !refused.stdout.is_empty() {
-        return Err(Failed::from(
-            "a refused update must emit no JSON at all (spec/01)",
-        ));
-    }
-    let owned = ov
-        .data()
-        .join("vivarium")
-        .join("projects")
-        .join("update-override")
-        .join("default")
-        .join("flake.lock");
-    if owned.exists() {
-        return Err(Failed::from(
-            "a refused update wrote the shadowed per-target lock",
-        ));
-    }
-
-    // The pre-lock precedence, through the command boundary: with the per-target lock held
-    // by another process, an unknown name still answers `64` — the usage refusal precedes
-    // the lock and every write — while a well-formed invocation meets the contention at
-    // `75`. The lock file is the same flock `TargetLock` takes.
-    let lock_dir = tp
-        .runtime()
-        .join("vivarium")
-        .join("update-usage")
-        .join("default");
-    std::fs::create_dir_all(&lock_dir).map_err(io_failed)?;
-    std::fs::set_permissions(&lock_dir, std::fs::Permissions::from_mode(0o700))
-        .map_err(io_failed)?;
-    let holder = std::fs::File::options()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(lock_dir.join("lock"))
-        .map_err(io_failed)?;
-    holder.lock().map_err(io_failed)?;
-    let contended_typo = viv(&tp, &["update", "no-such-input"])?;
-    check(expect_code(&contended_typo, EX_USAGE))?;
-    let contended_valid = viv(&tp, &["update"])?;
-    check(expect_code(&contended_valid, EX_TEMPFAIL))?;
-    drop(holder);
-    let owned = tp
-        .data()
-        .join("vivarium")
-        .join("projects")
-        .join("update-usage")
-        .join("default")
-        .join("flake.lock");
-    if owned.exists() {
-        return Err(Failed::from(
-            "a refused or contended update wrote the owned lock",
-        ));
-    }
-
-    let help = viv(&tp, &["--help"])?;
-    check(expect_code(&help, 0))?;
-    check(expect_stdout_mentions(&help, "update"))
-}
-
-/// Slice 018, the pin-moving core under the `ConfigEval` gate: a first `viv update` creates
-/// the lock and reports `before: null`; the base input renders and its hashless row reports
-/// no pin; a repeat run moves nothing and still reports the requested row; rows never carry
-/// a `changed: true` the fixtures did not arrange; and no staged residue survives beside the
-/// owned lock.
-fn workflow_18_update_pin() -> Result<(), Failed> {
-    let tp = TempProject::with_project_name("update-pin").map_err(io_failed)?;
-    let images = tp.config().join("vivarium").join("images").join("my-base");
-    write_file(&images.join("default.nix"), "{ ... }: { }\n").map_err(io_failed)?;
-    // The base declares `nixpkgs` unconditionally, pointing at a local leaf flake, so the
-    // second update below always exercises the follows translation: `viv update nixpkgs`
-    // is run against the base that owns the node, and the reported row must still carry
-    // the name the user passed (spec/01). A leaf suffices — `viv update` locks references
-    // and never evaluates their outputs — and a local `path:` needs no network.
-    let leaf = tp.root().join("fake-nixpkgs");
-    write_file(&leaf.join("flake.nix"), "{ outputs = { self }: { }; }\n").map_err(io_failed)?;
-    write_file(
-        &images.join("flake.nix"),
-        &format!(
-            "{{ inputs.nixpkgs.url = \"path:{}\";\n  \
-            outputs = {{ self, nixpkgs }}: {{ }}; }}\n",
-            leaf.display()
-        ),
-    )
-    .map_err(io_failed)?;
-    write_file(
-        &tp.config()
-            .join("vivarium")
-            .join("manifests")
-            .join("update-pin.toml"),
-        &format!(
-            "image = \"my-base\"\n\n[[workspaces]]\nsource = '{}'\n",
-            tp.project().display()
-        ),
-    )
-    .map_err(io_failed)?;
-
-    let first = viv(&tp, &["update", "--json"])?;
-    check(expect_code(&first, 0))?;
-    check(expect_json_keys(&first, &["manifest", "lock", "inputs"]))?;
-    check(expect_stdout_mentions(&first, "my-base"))?;
-    check(expect_stdout_mentions(&first, "nixpkgs"))?;
-    check(expect_stdout_mentions(&first, "\"before\":null"))?;
-    check(expect_stderr_mentions(&first, "created the pin"))?;
-    let owned = tp
-        .data()
-        .join("vivarium")
-        .join("projects")
-        .join("update-pin")
-        .join("default")
-        .join("flake.lock");
-    if !owned.is_file() {
-        return Err(Failed::from(
-            "the first update did not create the owned lock",
-        ));
-    }
-
-    // The repeat: nothing upstream moved — the baselines are pinned `path:` references —
-    // so every row is `changed: false`, the requested row included, and the run is `0`.
-    let second = viv(&tp, &["update", "nixpkgs", "--json"])?;
-    check(expect_code(&second, 0))?;
-    check(expect_stdout_mentions(&second, "\"changed\":false"))?;
-    check(expect_stdout_lacks(&second, "\"changed\":true"))?;
-    // The requested row carries the user's own string, translation or not (spec/01).
-    check(expect_stdout_mentions(&second, "\"name\":\"nixpkgs\""))?;
-
-    // No staged residue beside the owned lock: the update's temp file is consumed by the
-    // rename or removed on failure, never left for the next reader to misread.
-    let residue: Vec<_> = std::fs::read_dir(owned.parent().ok_or("owned lock parent")?)
-        .map_err(io_failed)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name != "flake.lock")
-        .collect();
-    if !residue.is_empty() {
-        return Err(Failed::from(format!(
-            "staged residue beside the owned lock: {residue:?}"
-        )));
-    }
-    Ok(())
-}
-
-/// Slice 032, the grammar surface: malformed retention arguments answer `64`, an unbound
-/// project `78`, and a never-built project lists the empty envelope at `0` (spec/01, spec/14).
-fn workflow_24_usage() -> Result<(), Failed> {
-    let unbound = TempProject::new().map_err(io_failed)?;
-    check(expect_code(
-        &viv(&unbound, &["generations", "list"])?,
-        EX_CONFIG,
-    ))?;
-
-    let tp = TempProject::with_project_name("generations-usage").map_err(io_failed)?;
-    arrange_manifest(&tp, "generations-usage", "", "")?;
-    for rejected in [
-        vec!["generations"],
-        vec!["generations", "prune"],
-        vec!["generations", "prune", "--keep", "1", "--older-than", "1d"],
-        vec!["generations", "prune", "--older-than", "7"],
-        vec!["generations", "activate"],
-        vec!["start", "--generation", "2", "--rebuild"],
-        vec!["start", "--generation", "2", "--no-rebuild"],
-    ] {
-        check(expect_code(&viv(&tp, &rejected)?, EX_USAGE))?;
-    }
-    // Never built: the empty envelope at `0`, never an error (spec/01).
-    let list = viv(&tp, &["generations", "list", "--json"])?;
-    check(expect_code(&list, 0))?;
-    check(expect_json_keys(&list, &["generations"]))?;
-    // With nothing retained, a switch names nothing and is a malformed request (spec/14).
-    check(expect_code(
-        &viv(&tp, &["generations", "activate", "7"])?,
-        EX_USAGE,
-    ))?;
-    check(expect_code(
-        &viv(&tp, &["generations", "rollback"])?,
-        EX_USAGE,
-    ))?;
-    // The family is published: help names it.
-    let help = viv(&tp, &["--help"])?;
-    check(expect_code(&help, 0))?;
-    check(expect_stdout_mentions(&help, "generations"))
 }
 
 /// Slice 032, the retention core: a build appends a rooted generation, an unchanged build
@@ -3730,232 +2174,6 @@ fn workflow_24_retention() -> Result<(), Failed> {
         .collect();
     if numbers != vec![number_2, number_2 + 1] {
         return fail(format!("numbering reused or skipped wrongly: {numbers:?}"));
-    }
-    Ok(())
-}
-
-/// Slice 025, the enumeration surface without a VM: an empty fleet is `{"projects":[],"host":…}`
-/// at `0`, a never-started manifest is configuration rather than a row, fabricated retained
-/// state makes a manifest a row exactly once with its declared ceiling and honest nulls, a
-/// vanished workspace directory is named and never removed, and the local report's `runtime`
-/// object holds shape on a project that has never built (spec/01, spec/17).
-#[allow(clippy::too_many_lines)] // One enumeration story: the legs share fixtures and ordering.
-fn workflow_25_fleet_usage() -> Result<(), Failed> {
-    let tp = TempProject::with_project_name("wf25-anchor").map_err(io_failed)?;
-
-    // An empty library enumerates an empty fleet beside a populated host object.
-    let empty = viv(&tp, &["status", "-g", "--json"])?;
-    check(expect_code(&empty, 0))?;
-    check(expect_json_keys(&empty, &["projects", "host"]))?;
-    check(expect_json_fields_at(
-        &empty,
-        "host",
-        &[
-            "mem_available_bytes",
-            "mem_total_bytes",
-            "pressure_some_avg60",
-        ],
-    ))?;
-    if json::array_len(&empty.stdout, "projects").map_err(Failed::from)? != 0 {
-        return fail("an empty library enumerated a sandbox");
-    }
-    let host: serde_json::Value = serde_json::from_slice(&empty.stdout)
-        .map_err(|error| Failed::from(format!("status -g --json was not JSON: {error}")))?;
-    if host["host"]["mem_available_bytes"].as_u64().is_none()
-        || host["host"]["mem_total_bytes"].as_u64().is_none()
-    {
-        return fail("the host object reported no memory readings on a Linux host");
-    }
-
-    // Two manifests, each owning its own tree.
-    let first = tp.root().join("fleet-first");
-    let second = tp.root().join("fleet-second");
-    fs::create_dir_all(&first).map_err(io_failed)?;
-    fs::create_dir_all(&second).map_err(io_failed)?;
-    arrange_manifest(
-        &tp,
-        "fleet-a",
-        "\n[resources]\nmem_mib = 2048\nvcpu = 2\n",
-        &format!("\n[[workspaces]]\nsource = '{}'\n", first.display()),
-    )?;
-    arrange_manifest(
-        &tp,
-        "fleet-b",
-        "",
-        &format!("\n[[workspaces]]\nsource = '{}'\n", second.display()),
-    )?;
-
-    // A manifest never started is configuration, not a row (spec/01's enumeration domain).
-    let configured = viv(&tp, &["status", "-g", "--json"])?;
-    check(expect_code(&configured, 0))?;
-    if json::array_len(&configured.stdout, "projects").map_err(Failed::from)? != 0 {
-        return fail("a never-started manifest was enumerated as a sandbox");
-    }
-
-    // Retained state is what makes a sandbox: fabricate what a start would leave behind.
-    for name in ["fleet-a", "fleet-b"] {
-        fs::create_dir_all(
-            tp.state()
-                .join("vivarium")
-                .join("projects")
-                .join(name)
-                .join("default"),
-        )
-        .map_err(io_failed)?;
-    }
-    let config_before = snapshot_tree(tp.config()).map_err(io_failed)?;
-    let state_before = snapshot_tree(tp.state()).map_err(io_failed)?;
-
-    let fleet = viv(&tp, &["status", "-g", "--json"])?;
-    check(expect_code(&fleet, 0))?;
-    check(expect_json_array_items(
-        &fleet,
-        "projects",
-        &[
-            "manifest",
-            "workspaces",
-            "path_missing",
-            "state",
-            "stale",
-            "generation",
-            "uptime_seconds",
-            "resources",
-            "runtime",
-        ],
-    ))?;
-    let projects = project_rows(&fleet)?;
-    let mut names: Vec<&str> = projects
-        .iter()
-        .filter_map(|row| row["manifest"].as_str())
-        .collect();
-    names.sort_unstable();
-    if names != ["fleet-a", "fleet-b"] {
-        return fail(format!("the fleet enumerated {names:?}"));
-    }
-    let row_a = projects
-        .iter()
-        .find(|row| row["manifest"] == "fleet-a")
-        .ok_or("fleet-a lost its row")?;
-    if row_a["state"] != "absent" {
-        return fail(format!("a never-built sandbox reported {}", row_a["state"]));
-    }
-    // The resting ceiling is the declaration in force at the next launch; the undeclared
-    // sibling resolves from the host, so only the declared one is pinned here.
-    if row_a["resources"]["mem_mib"].as_u64() != Some(2048)
-        || row_a["resources"]["vcpu"].as_u64() != Some(2)
-    {
-        return fail(format!(
-            "the declared ceiling did not survive to the row: {}",
-            row_a["resources"]
-        ));
-    }
-    if !row_a["runtime"]["mem_used_bytes"].is_null() || !row_a["runtime"]["sessions"].is_null() {
-        return fail("a resting row fabricated a liveness reading");
-    }
-    if row_a["runtime"]["disk_allocated_bytes"].as_u64() != Some(0) {
-        return fail("a sandbox with no images reported occupied disk");
-    }
-    let owned = first.canonicalize().map_err(io_failed)?;
-    let workspaces_a: Vec<&str> = row_a["workspaces"]
-        .as_array()
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .collect()
-        })
-        .unwrap_or_default();
-    if workspaces_a != [owned.to_string_lossy().as_ref()] {
-        return fail(format!("fleet-a's workspace set was {workspaces_a:?}"));
-    }
-    check(expect_tree_unchanged(tp.config(), &config_before))?;
-    check(expect_tree_unchanged(tp.state(), &state_before))?;
-
-    // An unreadable derived index answers `74` (spec/14's `status -g` row); a malformed one is a
-    // cache miss that rebuilds and is exercised by `workflow_02_derived_workspace_index`.
-    let index = tp.cache().join("vivarium").join("workspace-index.json");
-    let readable = fs::metadata(&index).map_err(io_failed)?.permissions();
-    fs::set_permissions(&index, fs::Permissions::from_mode(0o000)).map_err(io_failed)?;
-    let unreadable = viv(&tp, &["status", "-g", "--json"])?;
-    fs::set_permissions(&index, readable).map_err(io_failed)?;
-    check(expect_code(&unreadable, EX_IOERR))?;
-    check(expect_stderr_mentions(&unreadable, "index"))?;
-
-    // A vanished declared directory: the row survives, names the path, and nothing is removed.
-    fs::remove_dir_all(&second).map_err(io_failed)?;
-    let missing = viv(&tp, &["status", "-g", "--json"])?;
-    check(expect_code(&missing, 0))?;
-    let projects = project_rows(&missing)?;
-    let row_b = projects
-        .iter()
-        .find(|row| row["manifest"] == "fleet-b")
-        .ok_or("a sandbox with a missing workspace was dropped from the enumeration")?;
-    let absent: Vec<&str> = row_b["path_missing"]
-        .as_array()
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .collect()
-        })
-        .unwrap_or_default();
-    if absent != [second.to_string_lossy().as_ref()] {
-        return fail(format!("path_missing named {absent:?}"));
-    }
-    check(expect_stderr_mentions(&missing, "fleet-b"))?;
-    check(expect_stderr_mentions(&missing, "unmounted filesystem"))?;
-    check(expect_stdout_lacks(&missing, "warning"))?;
-
-    // The local report holds the same runtime shape on a project that has never built.
-    let local = viv_at(&tp, &first, &["status", "--json"])?;
-    check(expect_code(&local, 0))?;
-    check(expect_json_fields_at(
-        &local,
-        "runtime",
-        &[
-            "mem_used_bytes",
-            "disk_allocated_bytes",
-            "disk_virtual_bytes",
-            "sessions",
-            "pressure_some_avg60",
-        ],
-    ))?;
-    let record: serde_json::Value = serde_json::from_slice(&local.stdout)
-        .map_err(|error| Failed::from(format!("status --json was not JSON: {error}")))?;
-    if !record["runtime"]["mem_used_bytes"].is_null()
-        || record["runtime"]["disk_allocated_bytes"].as_u64() != Some(0)
-        || !record["resources"].is_null()
-    {
-        return fail(format!(
-            "a never-built local report fabricated a reading: {}",
-            record["runtime"]
-        ));
-    }
-
-    // Volume state that cannot be read degrades to `null` disk fields rather than an exit:
-    // spec/14's status rows admit no code for a failed reading, and `status` keeps answering.
-    let volumes = tp
-        .state()
-        .join("vivarium")
-        .join("projects")
-        .join("fleet-a")
-        .join("default")
-        .join("volumes");
-    fs::create_dir_all(&volumes).map_err(io_failed)?;
-    fs::set_permissions(&volumes, fs::Permissions::from_mode(0o000)).map_err(io_failed)?;
-    let degraded = viv_at(&tp, &first, &["status", "--json"]);
-    fs::set_permissions(&volumes, fs::Permissions::from_mode(0o755)).map_err(io_failed)?;
-    let degraded = degraded?;
-    check(expect_code(&degraded, 0))?;
-    let degraded: serde_json::Value = serde_json::from_slice(&degraded.stdout)
-        .map_err(|error| Failed::from(format!("status --json was not JSON: {error}")))?;
-    if !degraded["runtime"]["disk_allocated_bytes"].is_null()
-        || !degraded["runtime"]["disk_virtual_bytes"].is_null()
-    {
-        return fail(format!(
-            "unreadable volume state did not degrade to null: {}",
-            degraded["runtime"]
-        ));
     }
     Ok(())
 }
@@ -4234,90 +2452,6 @@ fn workflow_27_sweep() -> Result<(), Failed> {
         0,
     ))?;
     check(expect_code(&viv_at(&tp, tp.root(), &["stop", "--all"])?, 0))
-}
-
-/// Slice 028's reclaim surface without a VM: the grammar (ADR-0113's flag placement), the
-/// resting refusals, the never-materialized empty record, and the fan-out's partial-failure
-/// face — every assertion spec/14's `memory trim`, `volume trim`, and `trim` rows make that
-/// needs no guest.
-fn workflow_28_usage() -> Result<(), Failed> {
-    let tp = TempProject::new().map_err(io_failed)?;
-
-    // Grammar outranks binding: every malformed spelling is `64` before a manifest matters.
-    check(expect_code(&viv(&tp, &["memory"])?, EX_USAGE))?;
-    check(expect_code(&viv(&tp, &["memory", "grow"])?, EX_USAGE))?;
-    check(expect_code(
-        &viv(&tp, &["memory", "trim", "--to"])?,
-        EX_USAGE,
-    ))?;
-    check(expect_code(
-        &viv(&tp, &["memory", "trim", "--to", "abc"])?,
-        EX_USAGE,
-    ))?;
-    check(expect_code(
-        &viv(&tp, &["memory", "trim", "--to", "0"])?,
-        EX_USAGE,
-    ))?;
-    check(expect_code(
-        &viv(&tp, &["memory", "trim", "extra"])?,
-        EX_USAGE,
-    ))?;
-    // The fan-out carries neither resource command's flags (ADR-0113).
-    check(expect_code(&viv(&tp, &["trim", "--to", "1024"])?, EX_USAGE))?;
-    check(expect_code(&viv(&tp, &["trim", "cache"])?, EX_USAGE))?;
-    check(expect_code(
-        &viv(&tp, &["volume", "trim", "cache", "extra"])?,
-        EX_USAGE,
-    ))?;
-
-    // Well-formed but unbound: `78`, the same refusal every project-local verb answers.
-    check(expect_code(&viv(&tp, &["memory", "trim"])?, EX_CONFIG))?;
-    check(expect_code(&viv(&tp, &["volume", "trim"])?, EX_CONFIG))?;
-
-    arrange_manifest(&tp, "reclaim", "", "")?;
-
-    // Bound but resting: a reclaim asks a running guest, so `75` with the remedy named.
-    let resting = viv(&tp, &["memory", "trim"])?;
-    check(expect_code(&resting, EX_TEMPFAIL))?;
-    check(expect_stderr_mentions(&resting, "viv start"))?;
-
-    // Never-materialized volumes are the empty record and exit `0`, before the running check
-    // (spec/01) — and an unknown name is a malformed question whatever the state.
-    let empty = viv(&tp, &["volume", "trim", "--json"])?;
-    check(expect_code(&empty, 0))?;
-    let record = json_record(&empty)?;
-    if record["volumes"]
-        .as_array()
-        .is_none_or(|rows| !rows.is_empty())
-        || record["reclaimed_bytes"] != 0
-    {
-        return fail(format!("a never-materialized project reported {record}"));
-    }
-    check(expect_code(
-        &viv(&tp, &["volume", "trim", "nosuch"])?,
-        EX_CONFIG,
-    ))?;
-
-    // Materialize what a start would leave behind, so the disk rung reaches the running check.
-    let image = volume_image(&tp, "reclaim", "default");
-    let Some(volume_directory) = image.parent() else {
-        return fail("the volume image path has no parent directory");
-    };
-    fs::create_dir_all(volume_directory).map_err(io_failed)?;
-    fs::write(&image, vec![0u8; 4096]).map_err(io_failed)?;
-    check(expect_code(&viv(&tp, &["volume", "trim"])?, EX_TEMPFAIL))?;
-
-    // The fan-out inherits `viv stop --all`'s partial-failure rule whole (ADR-0113): a failing
-    // rung never skips the other, each is named on stderr, the first failure's category is the
-    // exit, and stdout carries no record.
-    let fanned = viv(&tp, &["trim", "--json"])?;
-    check(expect_code(&fanned, EX_TEMPFAIL))?;
-    if !fanned.stdout.is_empty() {
-        return fail("a failed fan-out emitted a record on stdout");
-    }
-    check(expect_stderr_mentions(&fanned, "could not trim memory"))?;
-    check(expect_stderr_mentions(&fanned, "could not trim volumes"))?;
-    Ok(())
 }
 
 /// Slice 028's memory rung against a live guest (spec/17, ADR-0113): dirtied guest page cache
@@ -4604,7 +2738,7 @@ fn workflow_26_admission_refusal() -> Result<(), Failed> {
         .env_clear();
     command.envs(viv_environment(&tp));
     command.env("WF26_MEMINFO", &crafted);
-    command.env("WF26_VIV", gate().viv());
+    command.env("WF26_VIV", preflight::viv());
     let refused = command.output().map_err(io_failed)?;
 
     if refused.status.code() != Some(EX_UNAVAILABLE) {
@@ -4679,7 +2813,7 @@ fn workflow_26_attach_stream() -> Result<(), Failed> {
             // The non-SIGINT contract at process level: a SIGTERM landing while the attached
             // start is still in its blocking phase is consumed by the eager watchers and
             // answered `128+15` on the already-running outcome, never swallowed into a `0`.
-            let mut command = std::process::Command::new(gate().viv());
+            let mut command = std::process::Command::new(preflight::viv());
             command
                 .args(["start", "--attach"])
                 .current_dir(tp.project())
@@ -4716,7 +2850,7 @@ fn workflow_26_attach_stream() -> Result<(), Failed> {
 fn attach_boot_and_detach(tp: &TempProject, leg: u32) -> Result<(), Failed> {
     use std::io::Read as _;
 
-    let mut command = std::process::Command::new(gate().viv());
+    let mut command = std::process::Command::new(preflight::viv());
     command
         .args(["start", "--attach"])
         .current_dir(tp.project())
@@ -4828,68 +2962,6 @@ fn attach_boot_and_detach(tp: &TempProject, leg: u32) -> Result<(), Failed> {
     ))
 }
 
-/// Slice 027's record surface (`Q-021`'s exit) at the CLI gate: the stop record's shape for
-/// the idempotent no-op, the destroy record's four keys, and the sweep's empty record from a
-/// directory no manifest declares — none of which needs a VM.
-fn workflow_27_records() -> Result<(), Failed> {
-    let tp = TempProject::new().map_err(io_failed)?;
-    arrange_manifest(&tp, "records", "", "")?;
-
-    let stopped = viv(&tp, &["stop", "--json"])?;
-    check(expect_code(&stopped, 0))?;
-    check(expect_json_keys(&stopped, &["manifest", "state", "rung"]))?;
-    let record = json_record(&stopped)?;
-    if record["state"] != "absent" || !record["rung"].is_null() {
-        return fail(format!("the no-op stop reported {record}"));
-    }
-
-    // The human face of a side-effect verb says nothing on stdout (spec/01).
-    let human = viv(&tp, &["stop"])?;
-    check(expect_code(&human, 0))?;
-    if !human.stdout.is_empty() {
-        return fail("a human stop printed to stdout");
-    }
-
-    let destroyed = viv(&tp, &["destroy", "--yes", "--json"])?;
-    check(expect_code(&destroyed, 0))?;
-    check(expect_json_keys(
-        &destroyed,
-        &["manifest", "removed", "spared", "volumes_kept"],
-    ))?;
-    let record = json_record(&destroyed)?;
-    if record["volumes_kept"] != false {
-        return fail(format!(
-            "a plain destroy reported {}",
-            record["volumes_kept"]
-        ));
-    }
-    if record["spared"].as_array().is_none_or(Vec::is_empty) {
-        return fail("the destroy record spared nothing");
-    }
-
-    let swept = viv_at(&tp, tp.root(), &["stop", "--all", "--json"])?;
-    check(expect_code(&swept, 0))?;
-    if !project_rows(&swept)?.is_empty() {
-        return fail("a sweep over nothing running reported rows");
-    }
-    Ok(())
-}
-
-/// One `--json` record parsed whole, for the value assertions the key helpers cannot make.
-fn json_record(out: &VivOutput) -> Result<serde_json::Value, Failed> {
-    serde_json::from_slice(&out.stdout)
-        .map_err(|error| Failed::from(format!("stdout was not one JSON record: {error}")))
-}
-
-/// The parsed rows under a record's `projects` key, in published order — `status -g` and the
-/// `stop --all` sweep share the wrapper (spec/01).
-fn project_rows(out: &VivOutput) -> Result<Vec<serde_json::Value>, Failed> {
-    json_record(out)?["projects"]
-        .as_array()
-        .cloned()
-        .ok_or_else(|| Failed::from("the record published no `projects` array"))
-}
-
 /// Reads `runtime.sessions` out of the local report, `None` when the agent could not answer.
 fn session_reading(tp: &TempProject) -> Result<Option<u64>, Failed> {
     let status = viv(tp, &["status", "--json"])?;
@@ -4919,7 +2991,7 @@ fn poll_sessions(tp: &TempProject, expected: u64) -> Result<(), Failed> {
 /// A concurrently held `viv exec` session: spawned, not awaited, so the trial can observe the
 /// count while the session lives.
 fn spawn_viv_session(tp: &TempProject) -> Result<std::process::Child, Failed> {
-    let mut command = std::process::Command::new(gate().viv());
+    let mut command = std::process::Command::new(preflight::viv());
     command
         .args(["exec", "--", "sleep", "600"])
         .current_dir(tp.project())
@@ -5016,14 +3088,6 @@ fn fabricate_generation(
     Ok(())
 }
 
-fn viv_with_env(
-    tp: &TempProject,
-    args: &[&str],
-    extra: &[(&str, &str)],
-) -> Result<VivOutput, Failed> {
-    support::run_viv_with_env(gate().viv(), tp, tp.project(), args, extra).map_err(io_failed)
-}
-
 /// Whether a file with this exact name exists anywhere under `root`.
 fn path_named_exists(root: &Path, name: &str) -> bool {
     path_named(root, name).is_some()
@@ -5048,122 +3112,4 @@ fn path_named(root: &Path, name: &str) -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn arrange_manifest(
-    tp: &TempProject,
-    name: &str,
-    manifest_body: &str,
-    manifest_tail: &str,
-) -> Result<(), Failed> {
-    arrange_manifest_with_image(tp, name, manifest_body, manifest_tail, "{ ... }: { }\n")
-}
-
-fn arrange_manifest_with_image(
-    tp: &TempProject,
-    name: &str,
-    manifest_body: &str,
-    manifest_tail: &str,
-    image_body: &str,
-) -> Result<(), Failed> {
-    let workspace =
-        if manifest_body.contains("[[workspaces]]") || manifest_tail.contains("[[workspaces]]") {
-            String::new()
-        } else {
-            format!("\n[[workspaces]]\nsource = '{}'\n", tp.project().display())
-        };
-    write_file(
-        &tp.config()
-            .join("vivarium")
-            .join("images")
-            .join("minimal.nix"),
-        image_body,
-    )
-    .map_err(io_failed)?;
-    write_file(
-        &tp.config()
-            .join("vivarium")
-            .join("manifests")
-            .join(format!("{name}.toml")),
-        &format!("image = \"minimal\"\n{manifest_body}{manifest_tail}{workspace}"),
-    )
-    .map_err(io_failed)
-}
-
-fn write_piece(tp: &TempProject, name: &str, contents: &str) -> Result<(), Failed> {
-    write_file(
-        &tp.config()
-            .join("vivarium")
-            .join("pieces")
-            .join(format!("{name}.nix")),
-        contents,
-    )
-    .map_err(io_failed)
-}
-
-fn viv(tp: &TempProject, args: &[&str]) -> Result<VivOutput, Failed> {
-    run_viv(gate().viv(), tp, tp.project(), args).map_err(io_failed)
-}
-
-fn viv_at(tp: &TempProject, cwd: &Path, args: &[&str]) -> Result<VivOutput, Failed> {
-    run_viv(gate().viv(), tp, cwd, args).map_err(io_failed)
-}
-
-/// The `VIVARIUM_` variables a child is allowed to see, and why each one is there.
-///
-/// `VIVARIUM_BASELINE_*` pin the generated flake's two baseline inputs — `nixpkgs` and `microvm`
-/// — to local store paths, which is what keeps this suite off the GitHub API. Neither
-/// participates in manifest resolution, so neither can turn an expected `78` into a success.
-const INJECTED_VARIABLES: [&str; 2] = ["VIVARIUM_BASELINE_NIXPKGS", "VIVARIUM_BASELINE_MICROVM"];
-
-fn expect_injected_vivarium_variables_only(out: &VivOutput) -> Result<(), String> {
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let leaked: Vec<&str> = stdout
-        .lines()
-        .filter(|line| line.starts_with("VIVARIUM_"))
-        .filter(|line| {
-            !INJECTED_VARIABLES
-                .iter()
-                .any(|name| line.starts_with(&format!("{name}=")))
-        })
-        .collect();
-    if leaked.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "the child saw vivarium variables the harness did not inject: {}",
-        leaked.join(", ")
-    ))
-}
-
-fn require_gate(level: GateLevel) -> Result<(), Failed> {
-    gate()
-        .result(level)
-        .as_ref()
-        .map_err(|reason| {
-            // Reached either because the operator set VIVARIUM_TEST_REQUIRE=1, or because
-            // the trial was run despite its ignored flag (`--run-ignored`). Naming the
-            // wrong one sends the reader looking for a variable they never set.
-            let cause = if gate_required() {
-                "gate unmet but VIVARIUM_TEST_REQUIRE=1"
-            } else {
-                "gate unmet and the ignored flag was overridden"
-            };
-            Failed::from(format!("{cause}: {reason}"))
-        })
-        .copied()
-}
-
-fn check(result: Result<(), String>) -> Result<(), Failed> {
-    result.map_err(Failed::from)
-}
-
-// Consumes the error rather than stringifying a borrow, which is what keeps
-// `clippy::needless_pass_by_value` satisfied without an explicit `drop`.
-fn io_failed(error: std::io::Error) -> Failed {
-    Failed::from(error)
-}
-
-fn fail<T>(message: impl Into<String>) -> Result<T, Failed> {
-    Err(Failed::from(message.into()))
 }

@@ -1,10 +1,18 @@
-//! Target-host proof for the real guest `AF_VSOCK` and credential relay.
+//! The `boot` lane's guest control plane: the real `AF_VSOCK` transport and the
+//! credential relay, driven against a booted guest.
 //!
-//! Everything here needs a booted guest, so the lane carries one gated trial rather than
-//! many: a trial per assertion would spend a boot per assertion. The gate is evaluated at
-//! run time and reports why it did not run, because a lane that skips silently reads as a
-//! lane that passed. `tests/host/guest-agent-check` is what builds the runner, exports
-//! `VIVARIUM_AGENT_RUNNER`, and runs this twice.
+//! Everything here needs that guest, so the lane carries one trial rather than many: a
+//! trial per assertion would spend a boot per assertion, and the assertions that matter
+//! most — concurrent sessions, pool depletion and refill, the two time bounds — are the
+//! kind that pass once and fail on a Tuesday. The trial carries its own twenty-round
+//! loops for that reason, and `tests/host/guest-agent-check` runs the lane twice as the
+//! outer guard.
+//!
+//! The lane declares a virtualization-capable host and its Nix-built runner, once, in
+//! `main`. `VIVARIUM_AGENT_RUNNER` still names an already-built runner when the script
+//! has one; with nothing named, `support::preflight::agent_runner` builds it, so this is
+//! a lane a person can run rather than one that needs a wrapper to arrange its inputs.
+//! The lane register is `docs/reference/testing-lanes.md`.
 #![allow(
     clippy::expect_used,
     clippy::panic,
@@ -13,7 +21,6 @@
 )]
 
 use libtest_mimic::{Arguments, Failed, Trial};
-use std::fs::OpenOptions;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -43,135 +50,37 @@ const LOOPBACK_PROBE_PORT: u32 = 59_000;
 /// forwards the caller's; without it a session reaches shell builtins and nothing else.
 const GUEST_PATH: &[u8] = b"/run/current-system/sw/bin";
 
-#[path = "support/harness.rs"]
-mod harness;
+mod support;
 
-use harness::{base64, gate_required};
+use support::harness::base64;
+use support::preflight;
 
 fn main() -> std::process::ExitCode {
     let args = Arguments::from_args();
-    let decision = gate();
-    let require = gate_required();
-    let ignored = decision.is_err() && !require;
-    if ignored && let Err(reason) = &decision {
-        eprintln!("gated: guest_agent_and_credential_relay_on_capable_host — {reason}");
-    }
-    let trials = vec![
-        Trial::test("agent_host_self_check", self_check),
-        Trial::test(
-            "guest_agent_and_credential_relay_on_capable_host",
-            move || {
-                let runner = gate().map_err(|reason| {
-                    // Reached either because the operator set VIVARIUM_TEST_REQUIRE=1, or
-                    // because the trial ran despite its ignored flag (`--run-ignored`).
-                    let cause = if gate_required() {
-                        "gate unmet but VIVARIUM_TEST_REQUIRE=1"
-                    } else {
-                        "gate unmet and the ignored flag was overridden"
-                    };
-                    Failed::from(format!("{cause}: {reason}"))
-                })?;
-                tokio::runtime::Runtime::new()
-                    .map_err(|error| Failed::from(error.to_string()))?
-                    .block_on(guest_agent_and_credential_relay(&runner));
-                Ok(())
-            },
-        )
-        .with_ignored_flag(ignored),
-    ];
-    libtest_mimic::run(&args, trials).exit_code()
-}
-
-/// Resolve the guest runner, or the first reason this host cannot run the lane.
-///
-/// The premises are the lane's own, not the CLI harness's: this trial never invokes `viv`
-/// directly, it invokes the Nix runner, which carries its own. Chaining onto the CLI probe
-/// would make the lane skip for a reason that is not among its prerequisites.
-fn gate() -> Result<PathBuf, String> {
-    let Some(runner) = std::env::var_os("VIVARIUM_AGENT_RUNNER") else {
-        return Err(
-            "VIVARIUM_AGENT_RUNNER is unset; run tests/host/guest-agent-check, which builds \
-            the runner and sets it"
-                .to_owned(),
-        );
-    };
-    let runner = PathBuf::from(runner);
-    if !runner.is_file() {
-        return Err(format!(
-            "VIVARIUM_AGENT_RUNNER is not a file: {}",
-            runner.display()
-        ));
-    }
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/kvm")
-        .map(drop)
-        .map_err(|error| format!("/dev/kvm is not read-write openable: {error}"))?;
-    match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(value) if Path::new(&value).is_dir() => {}
-        Some(value) => {
-            return Err(format!(
-                "XDG_RUNTIME_DIR is not a directory: {}",
-                Path::new(&value).display()
-            ));
+    // After argument parsing and never before it: nextest builds its test list by
+    // running this binary with `--list`, and a listing that refuses on an unmet need
+    // would abort the whole run rather than failing this lane's own trials.
+    let runner = if args.list {
+        PathBuf::new()
+    } else {
+        match preflight::boot().and_then(|()| preflight::agent_runner()) {
+            Ok(runner) => runner,
+            Err(reason) => {
+                eprintln!("the boot lane needs a virtualization-capable host: {reason}");
+                return std::process::ExitCode::from(69);
+            }
         }
-        None => return Err("XDG_RUNTIME_DIR is unset".to_owned()),
-    }
-    match std::process::Command::new("systemctl")
-        .args(["--user", "show", "--property=Version"])
-        .output()
-    {
-        Ok(output) if output.status.success() => Ok(runner),
-        Ok(output) => Err(format!(
-            "systemctl --user exited {:?}; no systemd user manager",
-            output.status.code()
-        )),
-        Err(error) => Err(format!("systemctl is unavailable: {error}")),
-    }
-}
-
-/// Assertions that need no guest, so the lane is never entirely ignored.
-///
-/// nextest exits 4 when every trial matching a filter is ignored, and a lane that cannot
-/// report anything on an ordinary developer host is a lane nobody notices has rotted.
-fn self_check() -> Result<(), Failed> {
-    // An unmet gate must carry a reason a reader can act on, which is the difference
-    // between a skip that informs and one that hides.
-    if let Err(reason) = gate()
-        && reason.is_empty()
-    {
-        return Err(Failed::from("the gate refused without giving a reason"));
-    }
-
-    let runtime =
-        tokio::runtime::Runtime::new().map_err(|error| Failed::from(error.to_string()))?;
-    runtime.block_on(async {
-        // The frame helpers this lane drives the guest with, over an in-memory pair.
-        let (mut client, mut server) = tokio::io::duplex(4096);
-        let hello = Hello {
-            schema_version: SCHEMA_VERSION,
-            boot_identity: "01234567-89ab-cdef-0123-456789abcdef".to_owned(),
-        };
-        write_client_frame(&mut client, &ClientFrame::Hello(hello.clone()))
-            .await
-            .unwrap();
-        assert_eq!(
-            vivarium::protocol::read_client_frame(&mut server)
-                .await
-                .unwrap(),
-            ClientFrame::Hello(hello)
-        );
-        vivarium::protocol::write_agent_frame(&mut server, &AgentFrame::Pong)
-            .await
-            .unwrap();
-        assert_eq!(
-            read_agent_frame(&mut client).await.unwrap(),
-            AgentFrame::Pong
-        );
-    });
-
-    Ok(())
+    };
+    let trials = vec![Trial::test(
+        "guest_agent_and_credential_relay_on_capable_host",
+        move || {
+            tokio::runtime::Runtime::new()
+                .map_err(|error| Failed::from(error.to_string()))?
+                .block_on(guest_agent_and_credential_relay(&runner));
+            Ok(())
+        },
+    )];
+    libtest_mimic::run(&args, trials).exit_code()
 }
 
 fn bytes(value: &[u8]) -> UnixBytes {
