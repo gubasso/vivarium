@@ -148,6 +148,42 @@ jobs:
           fi
           nix develop --command committed --fixup --wip "${RANGE_START}..${RANGE_END}"
 
+  # Temporary. Reports what a runner actually offers the acceptance harness, so
+  # the test-layer split is designed against an observation rather than a guess.
+  # Delete this job once that split lands.
+  runner-capability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: What the runner offers
+        run: |
+          echo "--- ambient ---"
+          echo "NIX_CONFIG=[${NIX_CONFIG:-unset}]"
+          echo "HOME=[${HOME:-unset}]"
+          ls -l /dev/kvm || echo "no /dev/kvm"
+          echo "--- system nix.conf ---"
+          cat /etc/nix/nix.conf || echo "no /etc/nix/nix.conf"
+          echo "--- user nix.conf ---"
+          cat "$HOME/.config/nix/nix.conf" 2>/dev/null || echo "no user nix.conf"
+          echo "--- nix config show, ambient ---"
+          nix config show experimental-features || echo "FAILED exit $?"
+          echo "--- nix config show, controlled env (what the harness builds) ---"
+          env -i PATH="$PATH" TERM=dumb NIX_CONFIG="${NIX_CONFIG:-}" \
+            nix config show experimental-features || echo "FAILED exit $?"
+          echo "--- inside nix develop ---"
+          # Written to a file rather than passed as a quoted argument: the inner
+          # shell is the one that must expand these, and a single-quoted -c
+          # string reads to shellcheck as an expansion that will not happen.
+          cat > "$RUNNER_TEMP/probe.sh" <<'PROBE'
+          echo "NIX_CONFIG=[${NIX_CONFIG:-unset}]"
+          nix config show experimental-features || echo "FAILED"
+          PROBE
+          nix develop --command sh "$RUNNER_TEMP/probe.sh"
+
   # The artifact workflow's proof. It runs `dist plan` and not `dist generate`:
   # dist-workspace.toml sets allow-dirty = ["ci"] because release.yml is
   # generated and then hardened by hand, so a generate-and-diff check would
