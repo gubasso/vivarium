@@ -105,27 +105,126 @@ fn nix_version(probe: &'static Probe) -> Finding {
     }
 }
 
+/// Whether this host's `nix` offers the two features vivarium is built on.
+///
+/// Read from `nix config show --json`, which reports the setting's resolved value
+/// as an array, and falling back to the plain form only when the structured one
+/// cannot be had.
+///
+/// The order is that way round because the plain form has been seen to lie.
+/// Measured 2026-09-08 on a GitHub runner carrying Determinate Nix: `nix config
+/// show experimental-features` printed an empty line in every context — ambient,
+/// under a cleared environment, inside `nix develop`, and with `NIX_CONFIG`
+/// itself naming both features — while `/etc/nix/nix.conf` carried
+/// `extra-experimental-features = nix-command flakes` and both features worked.
+/// This probe reported that as the host's defect, and it is a hard probe that
+/// `viv start` runs before any side effect (spec/10), so the false negative
+/// refused a host that could have run.
+///
+/// The structured form carries what the plain one flattens. Measured the same
+/// day on the development host, `nix config show --json` reports
+/// `"experimental-features": {"value": ["flakes", "fetch-tree", "nix-command"]}`,
+/// and a value assembled from `extra-experimental-features` is a value like any
+/// other. Whether Determinate's structured form agrees is the open question
+/// `docs/reference/tracking.yaml` records, and the CI boot experiment is what
+/// answers it.
 fn nix_flakes_enabled(probe: &'static Probe) -> Finding {
-    let output = Command::new("nix")
-        .args(["config", "show", "experimental-features"])
-        .output();
-    let Ok(output) = output else {
+    // Both readings need `nix-command` themselves, so a failure to read is a
+    // finding rather than an absence: it is what a host with the feature off
+    // looks like. `nix` being unrunnable at all is a different answer, and
+    // `nix-present` is the probe that owns it, so it is separated here by asking
+    // whether the binary spawned rather than by what it said.
+    let mut spawned = false;
+    let mut features: Option<Vec<String>> = None;
+    for read in [
+        nix_experimental_features_json,
+        nix_experimental_features_plain,
+    ] {
+        match read() {
+            Reading::NotSpawned => {}
+            Reading::Refused => spawned = true,
+            Reading::Features(value) => {
+                spawned = true;
+                features = Some(value);
+                break;
+            }
+        }
+    }
+    if !spawned {
         return Finding::skipped(probe, "not-applicable", "`nix` could not be run");
+    }
+    let Some(features) = features else {
+        return Finding::tripped(
+            probe,
+            "`nix config show` refused, which needs `nix-command` itself",
+            "add `experimental-features = nix-command flakes` to nix.conf",
+        );
     };
-    let features = String::from_utf8_lossy(&output.stdout);
-    let enabled = |name: &str| features.split_whitespace().any(|feature| feature == name);
-    if output.status.success() && enabled("nix-command") && enabled("flakes") {
+    let enabled = |name: &str| features.iter().any(|feature| feature == name);
+    if enabled("nix-command") && enabled("flakes") {
         Finding::pass(probe, "nix-command flakes")
     } else {
         Finding::tripped(
             probe,
-            format!(
-                "`experimental-features` is `{}`",
-                features.trim().replace('\n', " ")
-            ),
+            format!("`experimental-features` is `{}`", features.join(" ")),
             "add `experimental-features = nix-command flakes` to nix.conf",
         )
     }
+}
+
+/// What one reading of `experimental-features` came back with.
+enum Reading {
+    /// `nix` did not run at all; `nix-present` is the probe that owns this.
+    NotSpawned,
+    /// `nix` ran and refused, which is itself evidence about the features.
+    Refused,
+    Features(Vec<String>),
+}
+
+/// The resolved `experimental-features` value, read from the structured report.
+fn nix_experimental_features_json() -> Reading {
+    let Ok(output) = Command::new("nix")
+        .args(["config", "show", "--json"])
+        .output()
+    else {
+        return Reading::NotSpawned;
+    };
+    if !output.status.success() {
+        return Reading::Refused;
+    }
+    let read = || -> Option<Vec<String>> {
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        let value = report
+            .get("experimental-features")?
+            .get("value")?
+            .as_array()?;
+        Some(
+            value
+                .iter()
+                .filter_map(|feature| feature.as_str().map(str::to_owned))
+                .collect(),
+        )
+    };
+    read().map_or(Reading::Refused, Reading::Features)
+}
+
+/// The same value from the plain form, for a `nix` whose structured form differs.
+fn nix_experimental_features_plain() -> Reading {
+    let Ok(output) = Command::new("nix")
+        .args(["config", "show", "experimental-features"])
+        .output()
+    else {
+        return Reading::NotSpawned;
+    };
+    if !output.status.success() {
+        return Reading::Refused;
+    }
+    Reading::Features(
+        String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 fn kvm_device_present(probe: &'static Probe) -> Finding {
