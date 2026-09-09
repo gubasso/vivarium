@@ -8,86 +8,56 @@ default:
 
 # --- Build & test ---------------------------------------------------------
 #
-# The recipes that compile or test go through `tests/host/heavy-run`, the same
-# gate their hook twins use (ADR-0106): it resolves `VIVARIUM_HEAVY_DRIVE` and
-# binds the compile cache, scratch, and vivarium's own roots onto it before the
-# command starts. Leaving a recipe unwrapped while its hook is wrapped is
-# exactly the drift the "keep them byte-identical" notes below exist to prevent
-# — and it would fill a second compile cache on the boot disk. Without a usable
-# drive these refuse; `VIVARIUM_HEAVY_ON_HOST=1 just <recipe>` runs here anyway,
-# which is what CI sets.
+# The test recipes take a lane name and run that lane's pre-commit hook. Neither
+# the command nor its flags appear here: `.pre-commit-config.yaml` is the one
+# place a lane's command is written, and `just`, `git`, and CI all reach it by
+# hook id. The predecessor of this block copied each hook's command as a "twin"
+# with a comment asking a reader to keep the two byte-identical, which is a
+# boundary held by prose — the kind this repository has watched get crossed.
 #
-# The gate is outside `nix develop` rather than inside it, which is the order
-# that makes the capacity check mean something: `nix develop` realises the
-# development environment into the store, and a check that runs after that has
-# already let the write it was meant to gate happen. Outside, it needs only the
-# host's own `bash`, `df` and coreutils, which is what every hand-run lane
-# already assumes when it calls `disk-preflight` before entering a shell.
+# The recipes that compile go through `tests/host/heavy-run` (ADR-0106): it
+# resolves `VIVARIUM_HEAVY_DRIVE` and binds the compile cache, scratch, and
+# vivarium's own roots onto it before the command starts. Without a usable drive
+# they refuse; `VIVARIUM_HEAVY_ON_HOST=1 just <recipe>` runs here anyway, which
+# is what CI sets. The gate is outside `nix develop` rather than inside it,
+# because `nix develop` realises the development environment into the store and
+# a check that runs after that has already let the write it was meant to gate
+# happen. The lane hooks gate themselves again from within; paying twice is
+# cheaper than choosing which invocation may skip it.
 
 # Build the workspace.
 build:
-    tests/host/heavy-run --need 4 --label "just build" -- nix develop --command cargo build
+    tests/host/heavy-run --need 4 --label "just build" -- nix develop --command cargo build --workspace
 
-# Run the test suite.
-test:
-    tests/host/heavy-run --need 12 --label "just test" -- nix develop --command cargo nextest run
+# Run one test lane: unit, local, eval, net, boot, or doc.
+# `docs/reference/testing-lanes.md` says what each one needs and proves.
+test LANE="local":
+    tests/host/heavy-run --need 2 --label "just test {{LANE}}" -- nix develop --command pre-commit run --all-files --hook-stage manual test-{{LANE}}
 
-# Run the pre-commit unit-test profile (twin of hook cargo-nextest-unit).
-test-pre-commit:
-    tests/host/heavy-run --need 4 --label "just test-pre-commit" -- nix develop --command cargo nextest run --profile pre-commit --all-features
+# Run one host lane by name, e.g. `just lane base-image`.
+# These boot real guests and several take tens of minutes; each gates its own disk.
+lane NAME:
+    nix develop --command pre-commit run --hook-stage manual lane-{{NAME}}
 
-# Run the pre-push integration-test profile (twin of hook
-# cargo-nextest-integration).
-test-pre-push:
-    tests/host/heavy-run --need 12 --label "just test-pre-push" -- nix develop --command cargo nextest run --profile pre-push --all-features
-
-# Run the complete CI profile.
-# Twin of the cargo-nextest hooks in .pre-commit-config.yaml: keep the
-# feature flags byte-identical so the two cannot drift.
-test-ci:
-    tests/host/heavy-run --need 12 --label "just test-ci" -- nix develop --command cargo nextest run --profile ci --all-features
+# Exactly what `git push` runs. Not a copy of it: the same stage, the same hooks.
+push-checks:
+    nix develop --command pre-commit run --all-files --hook-stage pre-push
 
 # Type-check without producing binaries.
 typecheck:
-    tests/host/heavy-run --need 4 --label "just typecheck" -- nix develop --command cargo check
+    tests/host/heavy-run --need 4 --label "just typecheck" -- nix develop --command cargo check --workspace
 
 # --- Lint & format --------------------------------------------------------
 
-# Run clippy with warnings denied.
-# Twin of the clippy-strict hook in .pre-commit-config.yaml: keep the
-# command byte-identical so the two cannot drift when a feature lands.
-lint:
-    tests/host/heavy-run --need 4 --label "just lint" -- nix develop --command cargo clippy --all-targets --all-features -- -D warnings
-
 # Format the source tree.
 fmt:
-    nix develop --command cargo fmt
+    nix develop --command cargo fmt --all
 
-# Check formatting without rewriting files.
-fmt-check:
-    nix develop --command cargo fmt --check
-
-# Format, lint, then test.
-check: fmt lint test
-
-# Run the whole hook set over the tree, at both gating stages — what CI's
-# `hooks` job executes, so a contributor without hooks installed cannot pass
-# CI without them. Skips at the push stage: the nextest hooks because
-# `just test-ci` already runs profile `ci`, a superset of `pre-push`, and
-# clippy-strict because `just lint` is its byte-identical twin in CI's lint
-# job. `slidev-build` joins them for the same reason: the slides.yml lane runs
-# `just slides-install` then `just slides-build`, and this recipe's job never
-# installs slides/node_modules, so the hook would fail here on a missing
-# dependency tree rather than on a broken deck. `cargo-doc-tests` is NOT
-# skipped — nextest cannot run doctests, so this is CI's only doctest
-# coverage.
-#
-# Skipping it here does not weaken the local gate: `git push` runs the
-# pre-push stage without this SKIP list, so a developer still cannot push a
-# deck that fails to build.
+# Run the commit-stage hook set over the tree — what CI's `hooks` job executes,
+# so a contributor without hooks installed cannot pass CI without them. The push
+# stage is `just push-checks`, and each lane is `just test <lane>`.
 hooks:
     nix develop --command pre-commit run --all-files --hook-stage pre-commit
-    SKIP=cargo-nextest-unit,cargo-nextest-integration,clippy-strict,slidev-build nix develop --command pre-commit run --all-files --hook-stage pre-push
 
 # --- Slides ---------------------------------------------------------------
 # The Slidev deck under slides/. Nix supplies node through the devShell; npm

@@ -56,24 +56,40 @@ name = "vivarium-supervisor"
 path = "src/bin/vivarium-supervisor.rs"
 required-features = ["host"]
 
+# Every integration binary's name begins with the lane it belongs to, because the lane
+# name is what a place selects on: `.config/nextest.toml` filters `binary(local_*)` and
+# its siblings, and nextest offers no other way to tag a test. The register is
+# `docs/reference/testing-lanes.md`, and `scripts/check-lane-register` fails a file here
+# whose name carries no lane.
+#
+# These five declare `harness = false` because each one owns its `main`: the trial list
+# is built at run time, and the lane's preflight runs there — after argument parsing, so
+# a `--list` invocation still lists on a host that cannot run the lane. The two
+# default-harness files, `tests/local_launch_supervision.rs` and
+# `tests/local_heavy_gate.rs`, need no entry and are auto-discovered.
 [[test]]
-name = "user_workflows"
-path = "tests/user_workflows.rs"
+name = "local_workflows"
+path = "tests/local_workflows.rs"
 harness = false
 
-# The guest-agent lane decides at run time whether this host can boot a guest, which the
-# built-in harness's static `#[ignore]` cannot express: it has to report why it skipped.
 [[test]]
-name = "guest_agent_host"
-path = "tests/guest_agent_host.rs"
+name = "eval_workflows"
+path = "tests/eval_workflows.rs"
 harness = false
 
-# The networking-seams lane gates the same way: on the pinned tools being present and
-# unprivileged user+net namespaces being creatable, decided at run time with the reason
-# reported.
 [[test]]
-name = "net_host"
-path = "tests/net_host.rs"
+name = "boot_workflows"
+path = "tests/boot_workflows.rs"
+harness = false
+
+[[test]]
+name = "boot_guest_agent"
+path = "tests/boot_guest_agent.rs"
+harness = false
+
+[[test]]
+name = "net_namespaces"
+path = "tests/net_namespaces.rs"
 harness = false
 
 [dependencies]

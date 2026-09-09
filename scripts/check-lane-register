@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""The four files that describe the test lanes must agree.
+
+A lane is a claim spread across four places, and prose alone is enforced by
+whoever remembers it. `.pre-commit-config.yaml` writes each lane's command,
+`.config/nextest.toml` writes the filter that selects it, `Cargo.toml` names the
+binary that carries it, and `.github/workflows/ci.yml` names the lanes a runner
+runs. A change to one and not the others leaves a lane that is declared and never
+executed, which reads from the outside exactly like a lane that passes.
+
+This is the same guard `scripts/check-flake-boundary` is: it exists because a
+boundary held by prose was crossed twice, both times by one line that read as
+reasonable on its own.
+
+Six rules:
+
+1. Every `tests/*.rs` file's name begins with a lane prefix.
+2. Every nextest lane profile has a `test-<lane>` hook, and the reverse.
+3. Every `tests/host/*-check` script has a `lane-<name>` manual hook, and the
+   reverse.
+4. Every hook staged at `pre-push` is either in `ci.yml`'s matrix or named in its
+   `NOT_ON_A_RUNNER` declaration, so a check that gates a push and silently never runs
+   on a runner cannot exist unremarked.
+5. Nothing in `NOT_ON_A_RUNNER` is also in the matrix.
+6. Every lane hook carries the `manual` stage, so one invocation form reaches
+   every lane.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+# The lanes a nextest profile may name. `unit` and `doc` have no binary prefix of
+# their own: `unit` selects by `kind()` and `doc` is `cargo test --doc`, which
+# nextest cannot run at all.
+NEXTEST_LANES = {"unit", "local", "eval", "net", "boot"}
+BINARY_LANES = {"local", "eval", "net", "boot"}
+HOOK_LANES = NEXTEST_LANES | {"doc"}
+
+ROOT = Path(__file__).resolve().parent.parent
+HOOKS = ROOT / ".pre-commit-config.yaml"
+NEXTEST = ROOT / ".config/nextest.toml"
+WORKFLOW = ROOT / ".github/workflows/ci.yml"
+TESTS = ROOT / "tests"
+
+problems: list[str] = []
+
+
+def complain(message: str) -> None:
+    problems.append(message)
+
+
+def hook_stages() -> dict[str, list[str]]:
+    """Every hook id in the pre-commit file, with the stages it declares.
+
+    Parsed by line rather than with a YAML reader: this script runs as a
+    `language: system` hook off the dev shell's `python3`, which carries no
+    third-party modules, and the shape it reads is two keys at a fixed
+    indentation rather than the whole document.
+    """
+    found: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in HOOKS.read_text().splitlines():
+        identifier = re.match(r"\s*- id: (\S+)", line)
+        if identifier:
+            current = identifier.group(1)
+            # Absent `stages:` means the file's `default_stages`.
+            found[current] = ["pre-commit"]
+            continue
+        stages = re.match(r"\s*stages: \[([^\]]*)\]", line)
+        if stages and current:
+            found[current] = [name.strip() for name in stages.group(1).split(",")]
+    return found
+
+
+def nextest_profiles() -> set[str]:
+    return set(re.findall(r"^\[profile\.(\w+)\]", NEXTEST.read_text(), re.M))
+
+
+def workflow_lists() -> tuple[set[str], set[str]]:
+    """The hook ids `ci.yml` runs, and the ones it declares a runner cannot."""
+    text = WORKFLOW.read_text()
+    matrix: set[str] = set()
+    block = re.search(r"hook:\s*\n((?:\s*- \S+\n)+)", text)
+    if block:
+        matrix = set(re.findall(r"- (\S+)", block.group(1)))
+    not_on_a_runner: set[str] = set()
+    declared = re.search(r"^\s*NOT_ON_A_RUNNER: ['\"]?([^'\"\n]+)", text, re.M)
+    if declared:
+        not_on_a_runner = set(declared.group(1).split())
+    return matrix, not_on_a_runner
+
+
+def main() -> int:
+    hooks = hook_stages()
+
+    # 1 — every integration binary carries its lane in its name.
+    for path in sorted(TESTS.glob("*.rs")):
+        if not any(path.name.startswith(f"{lane}_") for lane in BINARY_LANES):
+            complain(
+                f"tests/{path.name} carries no lane prefix; "
+                f"name it <lane>_… for one of {sorted(BINARY_LANES)}"
+            )
+
+    # 2 — a lane profile and its hook exist together or not at all.
+    profiles = nextest_profiles() & NEXTEST_LANES
+    for lane in sorted(NEXTEST_LANES):
+        has_profile = lane in profiles
+        has_hook = f"test-{lane}" in hooks
+        if has_profile and not has_hook:
+            complain(
+                f".config/nextest.toml declares `profile.{lane}` and no hook runs it; "
+                f"a profile nothing passes `--profile` to is dead configuration"
+            )
+        if has_hook and not has_profile:
+            complain(
+                f"the `test-{lane}` hook names a nextest profile that does not exist"
+            )
+    for lane in sorted(HOOK_LANES):
+        if f"test-{lane}" not in hooks:
+            complain(f"no `test-{lane}` hook; the lane register names it")
+
+    # 3 — a host lane script and its manual hook exist together or not at all.
+    scripts = {path.name.removesuffix("-check") for path in TESTS.glob("host/*-check")}
+    declared = {
+        name.removeprefix("lane-") for name in hooks if name.startswith("lane-")
+    }
+    for name in sorted(scripts - declared):
+        complain(
+            f"tests/host/{name}-check has no `lane-{name}` hook; "
+            f"a lane nobody declared is a lane nobody remembers"
+        )
+    for name in sorted(declared - scripts):
+        complain(f"the `lane-{name}` hook names a script that is not in tests/host/")
+
+    # 4 and 5 — what gates a push is either run by a runner or declared this
+    # host's alone, and never both.
+    matrix, not_on_a_runner = workflow_lists()
+    for name, stages in sorted(hooks.items()):
+        if "pre-push" not in stages:
+            continue
+        if name not in matrix and name not in not_on_a_runner:
+            complain(
+                f"the `{name}` hook gates a push and .github/workflows/ci.yml neither "
+                f"runs it nor names it in NOT_ON_A_RUNNER; say which"
+            )
+    for name in sorted(matrix & not_on_a_runner):
+        complain(f"`{name}` is in both the ci.yml matrix and its NOT_ON_A_RUNNER list")
+    for name in sorted(matrix - set(hooks)):
+        complain(f"the ci.yml matrix names `{name}`, which is not a hook in this file")
+    for name in sorted(not_on_a_runner - set(hooks)):
+        complain(
+            f"ci.yml's NOT_ON_A_RUNNER names `{name}`, which is not a hook in this file"
+        )
+
+    # 6 — every lane is reachable by one invocation form.
+    for name, stages in sorted(hooks.items()):
+        is_lane = name.startswith("test-") or name.startswith("lane-")
+        if is_lane and "manual" not in stages:
+            complain(
+                f"the `{name}` hook carries no `manual` stage; "
+                f"`pre-commit run --hook-stage manual {name}` is how every lane is reached"
+            )
+
+    if problems:
+        print("the lane register disagrees with itself:", file=sys.stderr)
+        for problem in problems:
+            print(f"  {problem}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

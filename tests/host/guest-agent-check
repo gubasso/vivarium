@@ -9,7 +9,7 @@
 #   behaviour.
 #
 #   Host tier — gated on /dev/kvm, a systemd user manager and $XDG_RUNTIME_DIR.
-#   Exports VIVARIUM_AGENT_RUNNER and runs tests/guest_agent_host.rs, which boots
+#   Exports VIVARIUM_AGENT_RUNNER and runs tests/boot_guest_agent.rs, which boots
 #   the guest and drives real AF_VSOCK sessions through it.
 #
 # Output is one `[PASS]`/`[FAIL]`/`[SKIP]`/`[RECORD]` line per check plus a
@@ -22,10 +22,9 @@
 # once and then fail on a Tuesday. The trial carries its own 20-round loops for
 # the same reason; the two runs are the outer guard, not a substitute.
 #
-# VIVARIUM_TEST_REQUIRE=1 is deliberately NOT set here: this script has already
-# proved the gate before it runs the trial, so setting it could only convert a
-# genuine environment change into a confusing failure. It is the knob for CI,
-# where the gate must not be allowed to silently disable the lane.
+# `VIVARIUM_AGENT_RUNNER` is exported because this script has already built the
+# runner and there is no sense paying for it twice. The lane builds its own when
+# nothing names one, so it runs without this script (ADR-0114).
 #
 # See docs/reference/microvm-verification-harness.md for what each check proves
 # and for the findings register, and docs/reference/testing-lanes.md for the
@@ -172,8 +171,8 @@ else
     lane_log=$(
       cd -- "$REPO_ROOT" \
         && nix develop "$DEV_FLAKE_REF" --command \
-          cargo nextest run --test guest_agent_host --run-ignored=all \
-          --success-output=immediate 2>&1
+          cargo nextest run --workspace --profile boot \
+          -E 'binary(boot_guest_agent)' --success-output=immediate 2>&1
     )
     lane_status=$?
     if ((lane_status == 0)); then

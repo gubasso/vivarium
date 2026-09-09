@@ -1,18 +1,16 @@
-# cargo-nextest configuration: profiles for layered testing.
+# cargo-nextest configuration: one profile per lane.
 #
-# Place this file at `.config/nextest.toml` in the repo root.
 # Reference: https://nexte.st/docs/configuration/reference/
 #
-# Output settings are tuned for token-efficient runs (AI coding agents,
-# CI logs): passing tests do not dump stdout/stderr; only failures and
-# the final summary appear. The relevant knobs are `status-level`,
-# `final-status-level`, `success-output`, and `failure-output`; see the
-# config reference above for valid values and trade-offs.
+# A profile is dead config unless something passes `--profile <name>`, and the
+# only thing that does is `.pre-commit-config.yaml`, which is where a lane's
+# command is written. `just` and CI invoke hooks by id rather than repeating a
+# command, so the three cannot drift. The register is
+# `docs/reference/testing-lanes.md`.
 #
-# IMPORTANT: every non-default profile is dead config unless the
-# invoking command passes `--profile <name>`. Wire pre-commit hooks
-# with `--profile pre-commit`, pre-push with `--profile pre-push`,
-# and CI with `--profile ci`.
+# Output is tuned for runs a person or an agent reads afterwards: a passing test
+# dumps nothing, and only failures and the final roll-up appear. The knobs are
+# `status-level`, `final-status-level`, `success-output`, and `failure-output`.
 
 # A booting trial costs a guest kernel, a VMM, one virtiofsd per share, and
 # often a guest-closure realisation before any of that. The product lets a
@@ -79,10 +77,28 @@
 [test-groups]
 boot = { max-threads = 1 }
 
+# --- The lanes ------------------------------------------------------------
+#
+# One profile per lane, and each one selects by binary name because that is the
+# only tag nextest offers: there is no test attribute to filter on, so the lane a
+# test belongs to is spelled in the file name that compiles it. `Cargo.toml` owns
+# the naming rule and `scripts/check-lane-register` enforces it.
+#
+# What a lane needs of its host is the binary's own preflight
+# (`tests/support/preflight.rs`), asked once in `main`. Nothing here decides
+# whether a test may run — a profile decides only which tests are selected, and
+# an unmet need is a red with a reason rather than a silent skip.
+#
+# No profile carries `retries`. A retry turns an intermittent failure into a
+# green run, which is the opposite of what this repository's own rule asks for:
+# one clean run is evidence of possibility, not of reliability. The place that
+# wants a repeated observation runs the lane twice and says so.
+
+# The ad hoc `cargo nextest run` with no profile: everything that needs nothing.
+# A contributor who types the bare command gets a real answer rather than a wall
+# of failures from lanes their laptop was never going to serve.
 [profile.default]
-# Sane defaults for ad-hoc `cargo nextest run`.
-# `success-output = "never"` is the nextest default but is set explicitly
-# here as a guard against future upstream changes.
+default-filter = "kind(lib) + kind(bin) + binary(local_*)"
 status-level = "pass"
 final-status-level = "fail"
 success-output = "never"
@@ -90,45 +106,34 @@ failure-output = "immediate-final"
 fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 2 }
 
-# The membership list is exact names, not a name pattern, because a pattern
-# fails open: a trial the pattern misses does not error, it just runs outside
-# the group. `harness_self_check` regenerates this string from the harness's
-# own gate table and fails when the two disagree, so adding, renaming, or
-# regrading a trial cannot silently widen the bound. That check needs no
-# `/dev/kvm`, which is the vantage point where such a mistake would otherwise
-# go unseen.
+# The boot bound, applied to the binary rather than to a list of names.
+#
+# Its predecessor listed all twenty-six trials exactly, and a self-check in the
+# harness regenerated that list so the two could not drift. The binary name does
+# the same job by construction: a trial added to `boot_workflows.rs` is inside
+# the bound the moment it compiles, and one that belongs here but was written
+# into another lane fails on a host without `/dev/kvm` rather than running
+# unbounded. `boot_guest_agent` joins the group, which it always should have.
 #
 # Declared on `default` alone: nextest falls back to `profile.default`'s
-# overrides for a setting the active profile's own overrides do not
-# configure, so `pre-push` and `ci` inherit this. Verified with
-# `cargo nextest show-config test-groups --profile <name>` rather than
-# assumed.
+# overrides for a setting the active profile's own overrides do not configure,
+# so every profile below inherits this. Verified with
+# `cargo nextest show-config test-groups --profile <name>` rather than assumed.
 [[profile.default.overrides]]
-filter = 'test(=workflow_01_manifest_workspace_resolution_boot) + test(=workflow_05_restrict_egress_allowlist) + test(=workflow_06_exec_exit_code_propagation) + test(=workflow_06_shell_interactive_session) + test(=workflow_07_stop_restart_preserving_volumes) + test(=workflow_07_stop_completes_within_budget) + test(=workflow_08_destroy_cold_rebuild) + test(=workflow_09_workspace_round_trip) + test(=workflow_17_declared_mounts_refusals) + test(=workflow_17_declared_mounts_round_trip) + test(=workflow_17_linked_worktree_reaches_main) + test(=workflow_20_many_workspaces_one_sandbox) + test(=workflow_22_file_mount_serves_only_its_file) + test(=workflow_15_contract_skew_refusal) + test(=workflow_15_contract_skew_live) + test(=workflow_23_agent_channel_relay) + test(=workflow_24_generations_retention) + test(=workflow_25_sessions_counted) + test(=workflow_25_fleet_two_sandboxes) + test(=workflow_26_admission_refusal) + test(=workflow_26_start_attach_stream) + test(=workflow_27_stop_agent_rung_evidence) + test(=workflow_27_stop_slow_guest_grace) + test(=workflow_27_stop_all_sweep) + test(=workflow_28_memory_trim_reclaims) + test(=workflow_28_volume_trim_returns_blocks)'
+filter = 'binary(boot_*)'
 test-group = "boot"
-
-# The acceptance binary's own clock. Its trials evaluate a manifest through Nix, build a guest
-# closure, and boot a microVM before they assert anything, and the profile-wide 120s ceiling was
-# sized for trials that do none of that. Two failures measured it: a booting trial killed with
-# `(test timed out)` and no account of where it got to — which reads as a hang in the product and
-# was a boot that had not finished — and an evaluating trial that passes in 40s alone and exceeded
-# 120s while two guests were booting beside it.
-#
-# The group above bounds how many trials may boot at once; it cannot bound what an evaluating trial
-# competes with, because the scarce resource is the host's CPU and store rather than the guest
-# count. So the clock is widened for the binary rather than the width narrowed further, which would
-# discard the concurrency the group deliberately keeps.
-[[profile.default.overrides]]
-filter = 'binary(user_workflows)'
 slow-timeout = { period = "120s", terminate-after = 3 }
 
-# Unit-test lane. Unit tests run at BOTH `pre-commit` (gate every commit)
-# and `pre-push` (gate every push — guards against rebases/amends bypassing
-# pre-commit).
-#
-# `kind(lib)` matches unit tests in library crates; `kind(bin)` matches
-# unit tests inside `[[bin]]` targets (binary-only crates with no [lib]).
-[profile.pre-commit]
+# The evaluating lane's own clock. Its trials evaluate a manifest through Nix and
+# realise a guest closure before they assert anything, and the profile-wide 60s
+# ceiling was sized for trials that do none of that. Measured: a trial that
+# passes in 40s alone exceeded 120s beside two booting guests.
+[[profile.default.overrides]]
+filter = 'binary(eval_*)'
+slow-timeout = { period = "120s", terminate-after = 3 }
+
+# Needs nothing. Runs at every place, including the commit stage.
+[profile.unit]
 default-filter = "kind(lib) + kind(bin)"
 fail-fast = true
 slow-timeout = { period = "30s", terminate-after = 2 }
@@ -137,55 +142,37 @@ final-status-level = "fail"
 success-output = "never"
 failure-output = "immediate-final"
 
-# Integration-test lane: tests/*.rs (kind=test). Wired to the `pre-push`
-# stage. These test the seams between components — argv contracts, config
-# layering, error surfacing — typically with the boundary stubbed or
-# faked. `kind(test)` matches every separate test binary Cargo compiles
-# from tests/*.rs.
-#
-# Plain `kind(test)`, with history worth keeping: this began as
-# `- binary(user_workflows)` while the acceptance harness held trials against
-# unimplemented verbs, was narrowed to named subtractions by slices 013 and
-# 014 as their verbs landed, and slice 004 deleted the last clause
-# (`workflow_05_restrict_egress_allowlist`) when the egress allowlist became
-# enforceable — the step `docs/plan/sequencing.md` requires of every slice
-# that greens a trial. The stage is a real gate again; any future subtraction
-# should carry the same obligation to name the slice that removes it.
-#
-# `profile.ci` deliberately does not inherit this: CI runs everything.
-#
-# Ignored trials are hidden by `cargo nextest list`; pass
-# `--run-ignored=all` to see them. If all matching trials are ignored,
-# nextest exits 4, so `harness_self_check` must remain ungated. At nextest
-# 0.9.138, `no-tests` is not a profile key; only `--no-tests=pass` is valid.
-#
-# `fail-fast` is off so a single failure does not hide other regressions.
-[profile.pre-push]
-default-filter = "kind(test)"
+# Needs the built `viv` and a filesystem.
+[profile.local]
+default-filter = "binary(local_*)"
 fail-fast = false
-slow-timeout = { period = "120s", terminate-after = 2 }
 status-level = "fail"
 final-status-level = "fail"
 success-output = "never"
 failure-output = "immediate-final"
 
-# CI lane: everything, with retry tolerance for known-flaky network tests.
-#
-# `status-level = "fail"` (not "pass"): in CI logs, per-test pass lines
-# are noise — they multiply output tokens without adding signal for
-# humans triaging a failure or for AI agents parsing the run. The final
-# roll-up still surfaces failures via `final-status-level = "fail"`.
-# Ref: https://nexte.st/docs/configuration/reference/ (status-level)
-#
-# Progress bars auto-disable on non-TTY runners (e.g. GitHub Actions).
-# If a runner emulates a TTY, set `NEXTEST_HIDE_PROGRESS_BAR=1` in the
-# workflow env — progress redraws bloat captured logs that agents later
-# read.
-# Ref: https://nexte.st/docs/running/
-[profile.ci]
+# Needs `nix` on PATH.
+[profile.eval]
+default-filter = "binary(eval_*)"
 fail-fast = false
-slow-timeout = { period = "180s", terminate-after = 2 }
-retries = { backoff = "exponential", count = 2, delay = "1s", max-delay = "10s", jitter = true }
+status-level = "fail"
+final-status-level = "fail"
+success-output = "never"
+failure-output = "immediate-final"
+
+# Needs the namespace tools and a creatable unprivileged user+net pair.
+[profile.net]
+default-filter = "binary(net_*)"
+fail-fast = false
+status-level = "fail"
+final-status-level = "fail"
+success-output = "never"
+failure-output = "immediate-final"
+
+# Needs `/dev/kvm`, a systemd user manager, `XDG_RUNTIME_DIR`, and Nix.
+[profile.boot]
+default-filter = "binary(boot_*)"
+fail-fast = false
 status-level = "fail"
 final-status-level = "fail"
 success-output = "never"

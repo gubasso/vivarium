@@ -1,22 +1,12 @@
-//! Cross-binary harness primitives: the gate switch, `PATH` resolution, the
-//! deadline poll, and shell-safe byte transport.
+//! Cross-binary primitives: `PATH` resolution, the deadline poll, and shell-safe
+//! byte transport.
 //!
-//! Each integration binary includes this file directly
-//! (`#[path = "support/harness.rs"] mod harness;`) rather than through
-//! `mod support`, so a binary that needs three helpers does not compile the
-//! whole 1000-line fixture tree. `user_workflows` reaches it as
-//! `support::harness` through `support/mod.rs`.
-
-// Included per binary, and no binary uses every helper.
-#![allow(dead_code)]
+//! Reached as `support::harness` from every lane binary. What a lane needs of its
+//! host is `support::preflight`'s, not this module's: nothing here decides whether
+//! anything runs.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-
-/// Whether the operator demanded that an unmet gate fail rather than skip.
-pub fn gate_required() -> bool {
-    std::env::var_os("VIVARIUM_TEST_REQUIRE").is_some_and(|value| value == "1")
-}
 
 /// Resolve a pinned tool from `PATH` — the dev shell carries the tools the
 /// product pins — or say which one is missing.

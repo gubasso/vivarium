@@ -6,7 +6,7 @@
 # not reliability — a prune makes exactly the unlinked path reclaimable, and a
 # destroy leaves nothing of the project for a collection to spare.
 #
-# Why this is a separate script, and not more trials in `user_workflows.rs`:
+# Why this is a separate script, and not more trials in `boot_workflows.rs`:
 #
 #   - It COLLECTS THE HOST STORE. `viv gc` is a whole-store sweep: it reclaims
 #     every dead path on this machine, not just this lane's, which costs later

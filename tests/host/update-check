@@ -4,7 +4,7 @@
 # the moved component — with no vivarium release in the path and no unnamed public
 # pin moved (ADR-0112, spec/01).
 #
-# A separate script rather than more `user_workflows.rs` trials because the claim
+# A separate script rather than more `boot_workflows.rs` trials because the claim
 # is a booted guest's contents across a pin move, which needs `/dev/kvm`, a
 # systemd user manager, and two real builds — the same reasons `generations-check`
 # is a script.
