@@ -7,6 +7,7 @@
 //! check that cannot observe must say so rather than answer.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -190,10 +191,17 @@ enum Reading {
 /// The flake is written here rather than pointed at one on disk, because this probe
 /// runs wherever `viv doctor` does and a caller's directory is nobody's contract. It
 /// declares no inputs, so nothing is fetched and nothing is locked.
+///
+/// The directory is created exclusively, and that is a requirement rather than a
+/// nicety. `std::env::temp_dir()` is world-writable and shared on an ordinary Linux
+/// host, so a predictable name there is a name another user can occupy first: a
+/// directory already holding `flake.nix` as a symlink would have this function
+/// truncate whatever that link named, with the invoking user's own rights. So the
+/// name carries randomness that is not a process id, `create_dir` refuses an
+/// existing path rather than adopting it, and the mode is `0o700` before anything
+/// is written into it. Raised in review 2026-09-09.
 fn nix_reads_a_flake() -> Result<(), String> {
-    let directory = std::env::temp_dir().join(format!("viv-flake-probe-{}", std::process::id()));
-    std::fs::create_dir_all(&directory)
-        .map_err(|error| format!("the flake probe could not be written: {error}"))?;
+    let directory = create_private_probe_directory()?;
     let written = std::fs::write(directory.join("flake.nix"), "{ outputs = _: { }; }\n")
         .map_err(|error| format!("the flake probe could not be written: {error}"));
     let read = written.and_then(|()| {
@@ -222,6 +230,62 @@ fn nix_reads_a_flake() -> Result<(), String> {
     };
     let _ = std::fs::remove_dir_all(&directory);
     outcome
+}
+
+/// Eight bytes of the system's own randomness, hex-encoded, or nothing.
+fn read_random_token() -> Option<String> {
+    use std::fmt::Write as _;
+    use std::io::Read as _;
+    let mut bytes = [0_u8; 8];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut bytes))
+        .ok()?;
+    Some(bytes.iter().fold(String::new(), |mut token, byte| {
+        let _ = write!(token, "{byte:02x}");
+        token
+    }))
+}
+
+/// A directory under the temporary root that this process certainly created.
+///
+/// `create_dir` rather than `create_dir_all`: the whole point is that an existing
+/// path is a refusal rather than something to adopt. The name is drawn from the
+/// system's own randomness, so a watcher cannot predict the next one and win the
+/// race by pre-creating it; a process id can be read from `/proc` and is not
+/// randomness. A handful of attempts covers a collision, which is a birthday
+/// problem over 64 bits and not an attack.
+fn create_private_probe_directory() -> Result<PathBuf, String> {
+    let root = std::env::temp_dir();
+    let mut last = String::from("no attempt was made");
+    for _ in 0..8 {
+        // Eight bytes, read exactly. `fs::read` would be the obvious spelling and
+        // is a trap here: `/dev/urandom` never reaches end of file, so reading the
+        // whole of it allocates until the process is killed. Caught in this
+        // function's own verification, 2026-09-09, as an `exit=137`.
+        let token = read_random_token().unwrap_or_else(|| {
+            // Reached only where `/dev/urandom` cannot be read at all, which is a
+            // host this probe has larger problems on. The exclusive create below is
+            // what still refuses an occupied name.
+            format!("{}", std::process::id())
+        });
+        let candidate = root.join(format!("viv-flake-probe-{token}"));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => {
+                // Narrow it before the flake goes in, so no other user reads or
+                // replaces what is about to be evaluated.
+                std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o700))
+                    .map_err(|error| {
+                        format!("the flake probe directory could not be made private: {error}")
+                    })?;
+                return Ok(candidate);
+            }
+            Err(error) => last = error.to_string(),
+        }
+    }
+    Err(format!(
+        "the flake probe directory could not be created under {}: {last}",
+        root.display()
+    ))
 }
 
 /// The resolved `experimental-features` value, read from the structured report.

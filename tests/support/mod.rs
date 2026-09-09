@@ -133,8 +133,31 @@ impl TempProject {
         //
         // `/run/user/<uid>` is short, is a per-user tmpfs, and is where runtime files genuinely
         // belong, so this is the layout being honest rather than a workaround.
-        let runtime = PathBuf::from(format!("/run/user/{}", vivarium::config::effective_uid()))
-            .join(format!("viv-t{}-{sequence}", std::process::id()));
+        //
+        // It falls back, and the fallback is what keeps the `local` lane's declared
+        // need true. That lane says it needs the built `viv` and a filesystem, and a
+        // login session's runtime directory is neither, so a developer whose
+        // `/run/user/<uid>` does not exist would have had every `local` fixture fail
+        // before its first assertion. Raised in review 2026-09-09.
+        //
+        // The fallback is `/tmp` rather than the fixture root, and that is the whole
+        // point rather than convenience. What the roots above need from this path is
+        // that it be short: measured 2026-09-09 by forcing this branch, a fixture
+        // root on an external drive renders `control.sock` at 136 bytes and `viv
+        // stop` refuses at `78` under `host.runtime-socket-path-too-long`, which is
+        // the product reporting a fixture defect exactly as it should. `/tmp` is
+        // twenty-odd bytes and is a tmpfs where runtime files belong.
+        //
+        // `/tmp` is refused elsewhere in this file and the two are not in tension.
+        // N24 refuses it as a workspace source, because a share source there is a
+        // user's tree on a filesystem that does not survive a reboot. A control
+        // socket is the opposite kind of thing: it is meant not to survive one.
+        let session = PathBuf::from(format!("/run/user/{}", vivarium::config::effective_uid()));
+        let runtime = if session.is_dir() {
+            session.join(format!("viv-t{}-{sequence}", std::process::id()))
+        } else {
+            PathBuf::from("/tmp").join(format!("viv-t{}-{sequence}", std::process::id()))
+        };
         for path in [&project, &home, &config, &state, &data, &cache, &runtime] {
             fs::create_dir_all(path)?;
         }
@@ -937,6 +960,25 @@ pub fn io_failed(error: std::io::Error) -> Failed {
 
 pub fn fail<T>(message: impl Into<String>) -> Result<T, Failed> {
     Err(Failed::from(message.into()))
+}
+
+/// That a named check is present and soft, so it can never make doctor refuse.
+///
+/// Severity is the mechanism, not a detail: only a hard probe carries an exit
+/// code (spec/13), so a soft finding cannot turn a condition into `78` however
+/// the rest of the host reads. A trial asserting that doctor reports rather than
+/// refuses is asserting this, and asserting it here rather than through the
+/// process exit code is what keeps the claim about the finding instead of about
+/// the machine.
+pub fn expect_soft_check(out: &VivOutput, id: &str) -> Result<(), String> {
+    let check = doctor_check(out, id).map_err(|error| format!("{error:?}"))?;
+    let severity = check["severity"].as_str().unwrap_or("absent");
+    if severity == "soft" {
+        return Ok(());
+    }
+    Err(format!(
+        "the `{id}` check is `{severity}`, so doctor can refuse on it"
+    ))
 }
 
 /// One named check out of a `viv doctor --json` report.

@@ -18,8 +18,8 @@ use std::fs;
 use libtest_mimic::{Arguments, Failed, Trial};
 use support::{
     EX_CONFIG, EX_DATAERR, TempProject, arrange_egress_fixture, arrange_manifest, check,
-    doctor_check, expect_code, expect_json_array_items, expect_json_array_nonempty,
-    expect_json_fields_at, expect_json_keys, expect_json_map_entries, expect_no_volume_images,
+    expect_code, expect_json_array_items, expect_json_array_nonempty, expect_json_fields_at,
+    expect_json_keys, expect_json_map_entries, expect_no_volume_images, expect_soft_check,
     expect_stderr_mentions, expect_stdout_lacks, expect_stdout_mentions, fail, io_failed,
     preflight, viv, viv_with_env, write_file, write_piece,
 };
@@ -642,7 +642,13 @@ fn workflow_23_config() -> Result<(), Failed> {
     // on the host's virtualization support to assert what a channel declaration
     // puts in a report. Measured 2026-09-09 on a GitHub runner, where
     // `host-userns-available` trips and this failed naming neither.
-    doctor_check(&doctor, "agent-source-usable")?;
+    //
+    // The severity is asserted rather than implied. The old exit-code reading
+    // caught a probe turned hard, because a hard failure is what makes doctor
+    // exit `78`, and spec/13 fixes this one as soft with its reasoning: a user
+    // who starts a VM to run tests needing no key has legitimately waived it.
+    // Finding the row by id alone would let that contract move unnoticed.
+    check(expect_soft_check(&doctor, "agent-source-usable"))?;
     check(expect_stdout_mentions(&doctor, "$SSH_AUTH_SOCK"))?;
     check(expect_stdout_lacks(
         &doctor,
@@ -670,7 +676,7 @@ fn workflow_23_config() -> Result<(), Failed> {
     )
     .map_err(io_failed)?;
     let extends_doctor = viv(&tp, &["doctor", "--json"])?;
-    doctor_check(&extends_doctor, "agent-source-usable")?;
+    check(expect_soft_check(&extends_doctor, "agent-source-usable"))?;
     check(expect_stdout_mentions(
         &extends_doctor,
         "agent-source-usable",

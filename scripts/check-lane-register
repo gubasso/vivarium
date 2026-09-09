@@ -39,9 +39,24 @@ NEXTEST_LANES = {"unit", "local", "eval", "net", "boot"}
 BINARY_LANES = {"local", "eval", "net", "boot"}
 HOOK_LANES = NEXTEST_LANES | {"doc"}
 
+# The two integration binaries that deliberately use the built-in harness, so they
+# carry no `[[test]]` entry and are auto-discovered.
+DEFAULT_HARNESS = {"local_launch_supervision.rs", "local_heavy_gate.rs"}
+
+# What each lane's nextest profile must select. `unit` selects by kind across the
+# workspace because its tests live inside crates rather than in `tests/`.
+EXPECTED_FILTER = {
+    "unit": "kind(lib) + kind(bin)",
+    "local": "binary(local_*)",
+    "eval": "binary(eval_*)",
+    "net": "binary(net_*)",
+    "boot": "binary(boot_*)",
+}
+
 ROOT = Path(__file__).resolve().parent.parent
 HOOKS = ROOT / ".pre-commit-config.yaml"
 NEXTEST = ROOT / ".config/nextest.toml"
+CARGO = ROOT / "Cargo.toml"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 TESTS = ROOT / "tests"
 
@@ -50,6 +65,64 @@ problems: list[str] = []
 
 def complain(message: str) -> None:
     problems.append(message)
+
+
+def hook_entries() -> dict[str, str]:
+    """Every hook id in the pre-commit file, with the `entry:` line it runs."""
+    found: dict[str, str] = {}
+    current: str | None = None
+    for line in HOOKS.read_text().splitlines():
+        identifier = re.match(r"\s*- id: (\S+)", line)
+        if identifier:
+            current = identifier.group(1)
+            found[current] = ""
+            continue
+        entry = re.match(r"\s*entry: (.+)", line)
+        if entry and current and not found[current]:
+            found[current] = entry.group(1).strip()
+    return found
+
+
+def profile_filters() -> dict[str, str]:
+    """Each `[profile.<name>]` block's own `default-filter`, if it declares one."""
+    found: dict[str, str] = {}
+    current: str | None = None
+    for line in NEXTEST.read_text().splitlines():
+        header = re.match(r"^\[profile\.(\w+)\]", line)
+        if header:
+            current = header.group(1)
+            continue
+        if line.startswith("["):
+            current = None
+            continue
+        chosen = re.match(r'^default-filter = "(.*)"', line)
+        if chosen and current:
+            found.setdefault(current, chosen.group(1))
+    return found
+
+
+def cargo_test_targets() -> dict[str, str]:
+    """Each `[[test]]` entry's name and the path it names."""
+    found: dict[str, str] = {}
+    name: str | None = None
+    inside = False
+    for line in CARGO.read_text().splitlines():
+        if line.strip() == "[[test]]":
+            inside = True
+            name = None
+            continue
+        if line.startswith("["):
+            inside = False
+            continue
+        if not inside:
+            continue
+        named = re.match(r'^name = "(\S+)"', line)
+        if named:
+            name = named.group(1)
+        path = re.match(r'^path = "(\S+)"', line)
+        if path and name:
+            found[name] = path.group(1)
+    return found
 
 
 def hook_stages() -> dict[str, list[str]]:
@@ -135,7 +208,75 @@ def main() -> int:
     for name in sorted(declared - scripts):
         complain(f"the `lane-{name}` hook names a script that is not in tests/host/")
 
-    # 4 and 5 — what gates a push is either run by a runner or declared this
+    # 4 — a lane hook runs its own lane. A `test-boot` hook passing
+    # `--profile local` leaves every name-matching rule above green while the
+    # boot lane stops running anything.
+    entries = hook_entries()
+    for lane in sorted(NEXTEST_LANES):
+        entry = entries.get(f"test-{lane}")
+        if entry is None:
+            continue
+        if f"--profile {lane}" not in entry:
+            complain(
+                f"the `test-{lane}` hook does not pass `--profile {lane}`; "
+                f"it runs: {entry}"
+            )
+        if "--workspace" not in entry:
+            complain(
+                f"the `test-{lane}` hook does not pass `--workspace`, so it tests "
+                f"the root package alone and every workspace member goes unrun"
+            )
+    doc = entries.get("test-doc")
+    if doc is not None and "cargo test --workspace --doc" not in doc:
+        complain(
+            f"the `test-doc` hook does not run `cargo test --workspace --doc`; "
+            f"nextest cannot run doctests, so no profile covers them. It runs: {doc}"
+        )
+
+    # 5 — a lane profile selects its own lane. A `profile.boot` selecting
+    # `binary(local_*)` is the same drift seen from the other side.
+    filters = profile_filters()
+    for lane, expected in sorted(EXPECTED_FILTER.items()):
+        actual = filters.get(lane)
+        if actual is None:
+            continue
+        if actual != expected:
+            complain(
+                f"`profile.{lane}` selects `{actual}`, not `{expected}`; "
+                f"a lane that selects another lane's binaries runs the wrong tests"
+            )
+
+    # 6 — every test file is a declared target under its own name, or one of the
+    # two that deliberately take the built-in harness. A `[[test]]` renamed out of
+    # its lane prefix is invisible to every `binary()` filter above while the file
+    # itself still passes rule 1.
+    targets = cargo_test_targets()
+    for path in sorted(TESTS.glob("*.rs")):
+        if path.name in DEFAULT_HARNESS:
+            if path.stem in targets:
+                complain(
+                    f"tests/{path.name} takes the built-in harness and needs no "
+                    f"`[[test]]` entry, but Cargo.toml declares one"
+                )
+            continue
+        declared = targets.get(path.stem)
+        if declared is None:
+            complain(
+                f"tests/{path.name} has no `[[test]]` entry named `{path.stem}`; "
+                f"a target named anything else is invisible to `binary({path.stem})`"
+            )
+        elif declared != f"tests/{path.name}":
+            complain(
+                f"the `{path.stem}` target names `{declared}`, not `tests/{path.name}`"
+            )
+    for name, declared in sorted(targets.items()):
+        if not (TESTS / f"{name}.rs").is_file():
+            complain(
+                f"Cargo.toml declares a `{name}` target at `{declared}`, and "
+                f"tests/{name}.rs does not exist"
+            )
+
+    # 7 and 8 — what gates a push is either run by a runner or declared this
     # host's alone, and never both.
     matrix, not_on_a_runner = workflow_lists()
     for name, stages in sorted(hooks.items()):
@@ -155,7 +296,7 @@ def main() -> int:
             f"ci.yml's NOT_ON_A_RUNNER names `{name}`, which is not a hook in this file"
         )
 
-    # 6 — every lane is reachable by one invocation form.
+    # 9 — every lane is reachable by one invocation form.
     for name, stages in sorted(hooks.items()):
         is_lane = name.startswith("test-") or name.startswith("lane-")
         if is_lane and "manual" not in stages:
