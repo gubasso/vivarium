@@ -16,7 +16,7 @@ pub mod preflight;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::OnceLock;
@@ -158,15 +158,23 @@ impl TempProject {
         } else {
             PathBuf::from("/tmp").join(format!("viv-t{}-{sequence}", std::process::id()))
         };
-        for path in [&project, &home, &config, &state, &data, &cache, &runtime] {
+        for path in [&project, &home, &config, &state, &data, &cache] {
             fs::create_dir_all(path)?;
         }
-        // The runtime base is the one root with a mode requirement. ADR-0055 makes it a
-        // precondition of launching at all, and `config::resolve_runtime_root` refuses any base
-        // with `mode & 0o077 != 0`. `create_dir_all` yields `0755` under the usual umask, so a
-        // harness that skipped this would fail every launch trial with `77` before the product
-        // path was reached — a precondition the product has always had, learned here.
-        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
+        // The runtime base is the one root with a mode requirement, and it is created
+        // private in the same syscall rather than narrowed afterwards. ADR-0055 makes
+        // the privacy a precondition of launching at all, and
+        // `config::resolve_runtime_root` refuses any base with `mode & 0o077 != 0`, so
+        // a harness that skipped it would fail every launch trial with `77` before the
+        // product path was reached. Setting the mode after creating would satisfy that
+        // and still leave a window: on the `/tmp` fallback above the directory would be
+        // world-writable for the instant between the two calls, which is long enough
+        // for another user to place a file the fixture then treats as its own. Raised
+        // in review 2026-09-09.
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&runtime)?;
         bridge_user_manager(&runtime)?;
         let project = project.canonicalize()?;
         Ok(Self {
