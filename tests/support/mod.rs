@@ -938,3 +938,22 @@ pub fn io_failed(error: std::io::Error) -> Failed {
 pub fn fail<T>(message: impl Into<String>) -> Result<T, Failed> {
     Err(Failed::from(message.into()))
 }
+
+/// One named check out of a `viv doctor --json` report.
+///
+/// Reaching for a check by id is what lets a trial assert on the report without
+/// asserting on the host. `viv doctor` exits `78` when any hard probe fails, and
+/// a probe about this machine's virtualization support has nothing to do with a
+/// trial about how an ownership finding is worded. Measured 2026-09-09 on a
+/// GitHub runner, where `host-userns-available` trips and took two trials with
+/// it, each failing for a reason it was not testing.
+pub fn doctor_check(out: &VivOutput, id: &str) -> Result<serde_json::Value, Failed> {
+    let record = json_record(out)?;
+    record["checks"]
+        .as_array()
+        .ok_or_else(|| Failed::from("the doctor report published no `checks` array"))?
+        .iter()
+        .find(|check| check["id"] == serde_json::json!(id))
+        .cloned()
+        .ok_or_else(|| Failed::from(format!("the doctor report carries no `{id}` check")))
+}

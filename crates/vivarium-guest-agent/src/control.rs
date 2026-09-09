@@ -724,6 +724,16 @@ mod tests {
             .is_some_and(|state| state != "Z")
     }
 
+    /// Whether a process has reached the program it was forked to run.
+    ///
+    /// `comm` is the executable's basename after `execve`, so this separates the `sleep` the
+    /// script asked for from the shell's own fork of itself, which carries the same pid and
+    /// the same parenthesised name as its parent until the exec lands.
+    fn is_program(pid: &str, program: &str) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .is_ok_and(|comm| comm.trim_end() == program)
+    }
+
     /// A signal frame reaches the session's whole process group, not just its leader.
     ///
     /// The children are observed in the host's own process table rather than asked to
@@ -771,10 +781,37 @@ mod tests {
             assert_eq!(children.len(), 2);
             // Without this the two checks below would pass on children that were never
             // there: an assertion that a process is gone is vacuous until it was present.
+            // Present is not enough, though, and the pid alone cannot tell the difference.
+            // A shell announces a background job's pid the moment `fork` returns, so at that
+            // point the child may still be the shell's own copy of itself, carrying the
+            // leader's inherited `TERM` handler; the group signal is delivered to it, its
+            // handler records a pending trap, and the `execve` that follows discards that
+            // trap along with the rest of the shell's state. The signal reaches the whole
+            // group either way -- `process::signal_group` is one `kill(-pgid)` -- and what
+            // the member does with it in its own fork-to-exec window is the workload's
+            // semantics, not the agent's. Waiting for `comm` to become `sleep` is what makes
+            // "was there" mean the process this test intends to signal.
+            //
+            // Measured 2026-09-09 on this repository's development host (openSUSE, 20 cores,
+            // `/bin/sh` -> bash) by dumping each child's `/proc/<pid>/{comm,stat}` at the
+            // instant of the signal. With dash bind-mounted over `/bin/sh`, as on an Ubuntu
+            // runner, this test failed 5 of 10 nextest runs, and every survivor read
+            // `comm=sh`, state `R`, `pgrp` equal to the leader -- in the group, signalled,
+            // and not yet `sleep`. With bash it passed 20 of 20, because bash restores a
+            // trapped signal to its default disposition in the forked child and so has no
+            // observable window. Under this wait, dash passed 20 of 20.
             for pid in &children {
+                let mut arrived = false;
+                for _ in 0..100 {
+                    if is_program(pid, "sleep") {
+                        arrived = true;
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
                 assert!(
-                    is_running(pid),
-                    "child {pid} was not running before the signal"
+                    arrived,
+                    "child {pid} never reached `sleep`, so the signal below would prove nothing"
                 );
             }
 

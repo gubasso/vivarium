@@ -60,23 +60,26 @@ tracked:
     last_checked: 2026-09-08
     cadence: 30d and on runner-image or Determinate Nix changes
     why: >-
-      The register names one premise a runner has not been shown to hold and one
-      reading that has been seen to lie, and both are facts about a machine this
-      repository does not control. Settled 2026-09-08: a standard GitHub runner
-      carries /dev/kvm at mode 0666, with the Determinate installer setting
-      DETERMINATE_NIX_KVM=1, so virtualization is not what keeps the boot lane
-      off a runner. Open: a systemd user manager for the runner user, which
-      ADR-0097 makes a precondition of starting a VM at all. Open: nix config
-      show experimental-features printed an empty line on that runner in every
-      context while both features worked, which is why src/doctor/host.rs reads
-      the structured form first.
+      Two lanes are kept off a runner by a fact about a machine this repository
+      does not control, and one probe reads a value that machine reports oddly.
+      Measured 2026-09-09 on a standard runner: /dev/kvm present at mode 0666
+      with the Determinate installer setting DETERMINATE_NIX_KVM=1, and a systemd
+      user manager answering 255.4 after loginctl enable-linger, so neither
+      virtualization nor ADR-0097's transient unit is the obstacle. The obstacle
+      is the unprivileged user namespace every VM's network needs (spec/05):
+      unshare reports "write failed /proc/self/uid_map: Operation not permitted",
+      which is Ubuntu's AppArmor policy, and it keeps both test-boot and test-net
+      in NOT_ON_A_RUNNER. Separately, nix config show experimental-features
+      printed an empty line on that runner in every context while both features
+      worked, which is why src/doctor/host.rs reads the structured form first.
     revalidate: >-
-      Read the boot-experiment job of the most recent CI run - its capability
-      step for the user manager, and the lane's own doctor output for the
-      nix-flakes-enabled line. Two consecutive green runs plus the user-manager
-      premise verified are what promote test-boot out of NOT_ON_A_RUNNER in
-      .github/workflows/ci.yml and into the check matrix. Never infer either
-      premise from an agent environment.
+      Read the boot-experiment job of the most recent CI run. Its capability step
+      names each premise, including the namespace probe. Two consecutive green
+      runs plus the namespace premise held are what promote test-boot and
+      test-net out of NOT_ON_A_RUNNER in .github/workflows/ci.yml and into the
+      check matrix. A runner image that relaxes the AppArmor policy, or a sysctl
+      a step could set, is what would move it. Never infer either premise from an
+      agent environment.
     dependents:
       - docs/reference/testing-lanes.md
       - docs/decisions/ADR-0114-a-lane-runs-where-a-place-names-it.md

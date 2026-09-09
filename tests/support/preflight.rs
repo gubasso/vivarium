@@ -42,15 +42,25 @@ pub fn nix() -> Result<(), String> {
     }
 }
 
-/// That this host can boot a guest: the KVM device, a systemd user manager, a runtime
-/// directory, and Nix to build the guest with.
+/// That this host can boot a guest: the KVM device, a runtime directory, a systemd
+/// user manager, unprivileged namespaces, and Nix to build the guest with.
 ///
 /// Ordered cheapest first, so the earliest failure is the most actionable — the same
 /// ordering rule `spec/10-vm-lifecycle.md` fixes for the product's own hard preflight.
+///
+/// The namespace requirement is the one a reader would not predict, and it is why the
+/// list is not just "KVM plus systemd". Every VM's network lives in its own host-side
+/// user and network namespace pair (spec/05), so a host that refuses to create one
+/// cannot start a guest whatever else it offers. Measured 2026-09-09 on a GitHub
+/// runner: `/dev/kvm` present at mode 0666, a systemd user manager answering after
+/// `loginctl enable-linger`, and every boot trial failing at the launch handoff because
+/// Ubuntu's `AppArmor` policy refuses an unprivileged user namespace. Without this line
+/// the lane fails twenty-seven times with a supervisor diagnostic and names nothing.
 pub fn boot() -> Result<(), String> {
     kvm()?;
     runtime_dir()?;
     user_manager()?;
+    namespaces()?;
     nix()
 }
 

@@ -18,10 +18,10 @@ use std::fs;
 use libtest_mimic::{Arguments, Failed, Trial};
 use support::{
     EX_CONFIG, EX_DATAERR, TempProject, arrange_egress_fixture, arrange_manifest, check,
-    expect_code, expect_json_array_items, expect_json_array_nonempty, expect_json_fields_at,
-    expect_json_keys, expect_json_map_entries, expect_no_volume_images, expect_stderr_mentions,
-    expect_stdout_lacks, expect_stdout_mentions, fail, io_failed, preflight, viv, viv_with_env,
-    write_file, write_piece,
+    doctor_check, expect_code, expect_json_array_items, expect_json_array_nonempty,
+    expect_json_fields_at, expect_json_keys, expect_json_map_entries, expect_no_volume_images,
+    expect_stderr_mentions, expect_stdout_lacks, expect_stdout_mentions, fail, io_failed,
+    preflight, viv, viv_with_env, write_file, write_piece,
 };
 
 fn main() -> std::process::ExitCode {
@@ -637,8 +637,12 @@ fn workflow_23_config() -> Result<(), Failed> {
     // holding no agent, `agent-source-usable` is a real finding naming the fault — never the
     // `not-applicable` skip — and a soft warn still exits `0`.
     let doctor = viv(&tp, &["doctor", "--json"])?;
-    check(expect_code(&doctor, 0))?;
-    check(expect_stdout_mentions(&doctor, "agent-source-usable"))?;
+    // The report's own entry, not the process exit code. `viv doctor` exits `78`
+    // on any failing hard probe, so reading the code here made this trial depend
+    // on the host's virtualization support to assert what a channel declaration
+    // puts in a report. Measured 2026-09-09 on a GitHub runner, where
+    // `host-userns-available` trips and this failed naming neither.
+    doctor_check(&doctor, "agent-source-usable")?;
     check(expect_stdout_mentions(&doctor, "$SSH_AUTH_SOCK"))?;
     check(expect_stdout_lacks(
         &doctor,
@@ -666,7 +670,7 @@ fn workflow_23_config() -> Result<(), Failed> {
     )
     .map_err(io_failed)?;
     let extends_doctor = viv(&tp, &["doctor", "--json"])?;
-    check(expect_code(&extends_doctor, 0))?;
+    doctor_check(&extends_doctor, "agent-source-usable")?;
     check(expect_stdout_mentions(
         &extends_doctor,
         "agent-source-usable",
