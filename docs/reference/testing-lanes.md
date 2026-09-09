@@ -58,6 +58,8 @@ The measurement and acceptance scripts under [`../../tests/host/`](../../tests/h
 
 They are declared as hooks rather than left as bare scripts for two reasons. They appear in one register beside every other lane, and the register check holds the list against the filesystem, so a script added without a hook is a failure rather than a lane nobody remembers.
 
+A script that selects trials by name passes `--ignore-default-filter`, and that flag is load-bearing. A command-line `-E` is applied within the active profile's `default-filter` rather than instead of it, and `profile.default` selects `kind(lib) + kind(bin) + binary(local_*)`, so without the override a filterset naming trials in two lanes silently selects only the `local` one. Measured 2026-09-09 on `tests/host/exec-and-shell-check`, which listed one trial of its three and would have reported a pass having booted nothing.
+
 ## The proof lanes, and where each one runs
 
 ADR-0076's six lanes are claims. This is where each one is proved today.

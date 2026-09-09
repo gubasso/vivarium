@@ -69,22 +69,25 @@ fn harness_self_check() -> Result<(), Failed> {
             ));
         }
     }
-    // Five of the six roots are durable and live inside the temp root; the runtime root is the
-    // exception, and deliberately so. `TempProject` places it under the session's own
+    // Five of the six roots are durable and must live inside the temp root. The runtime root is
+    // the exception, and deliberately so. `TempProject` prefers the session's own
     // `/run/user/<uid>` because a control-socket path assembled beneath `TMPDIR` overruns the
     // 108-byte Unix-socket limit on a host whose `TMPDIR` is long — the case a disk-heavy lane
-    // creates. So the isolation this asserts is "no durable root escapes the temp root", not "every
-    // variable points inside it".
+    // creates — and falls back inside the temp root on a host with no session runtime directory,
+    // which a fixture that never binds a socket is correct under. So what this asserts is the
+    // rule: no durable root escapes the temp root, and the runtime root is wherever the fixture
+    // put it.
     let environment = tp.env();
     if environment.len() != 6 {
         return fail("isolated environment does not name all six roots");
     }
     for (name, value) in &environment {
-        let inside = Path::new(value).starts_with(tp.root());
-        let is_runtime = name == "XDG_RUNTIME_DIR";
-        if inside == is_runtime {
+        if name == "XDG_RUNTIME_DIR" {
+            continue;
+        }
+        if !Path::new(value).starts_with(tp.root()) {
             return fail(format!(
-                "isolated root `{}` is in the wrong place: {}",
+                "durable root `{}` escaped the temp root: {}",
                 name.to_string_lossy(),
                 Path::new(value).display()
             ));

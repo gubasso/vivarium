@@ -35,13 +35,19 @@ test LANE="local":
     tests/host/heavy-run --need 2 --label "just test {{LANE}}" -- nix develop --command pre-commit run --all-files --hook-stage manual test-{{LANE}}
 
 # Run one host lane by name, e.g. `just lane base-image`.
-# These boot real guests and several take tens of minutes; each gates its own disk.
+# These boot real guests and several take tens of minutes. Each script gates its
+# own disk before it writes, and the wrapper here is for the step before that:
+# `nix develop` realises the development environment into the store, so a recipe
+# that entered the shell first would have written gigabytes before the script got
+# to ask.
 lane NAME:
-    nix develop --command pre-commit run --hook-stage manual lane-{{NAME}}
+    tests/host/heavy-run --need 2 --label "just lane {{NAME}}" -- nix develop --command pre-commit run --hook-stage manual lane-{{NAME}}
 
 # Exactly what `git push` runs. Not a copy of it: the same stage, the same hooks.
+# Gated for the same reason as the recipes above: the hooks gate themselves, and
+# `nix develop` runs before any of them.
 push-checks:
-    nix develop --command pre-commit run --all-files --hook-stage pre-push
+    tests/host/heavy-run --need 2 --label "just push-checks" -- nix develop --command pre-commit run --all-files --hook-stage pre-push
 
 # Type-check without producing binaries.
 typecheck:
@@ -51,13 +57,13 @@ typecheck:
 
 # Format the source tree.
 fmt:
-    nix develop --command cargo fmt --all
+    tests/host/heavy-run --need 2 --label "just fmt" -- nix develop --command cargo fmt --all
 
 # Run the commit-stage hook set over the tree — what CI's `hooks` job executes,
 # so a contributor without hooks installed cannot pass CI without them. The push
 # stage is `just push-checks`, and each lane is `just test <lane>`.
 hooks:
-    nix develop --command pre-commit run --all-files --hook-stage pre-commit
+    tests/host/heavy-run --need 2 --label "just hooks" -- nix develop --command pre-commit run --all-files --hook-stage pre-commit
 
 # --- Slides ---------------------------------------------------------------
 # The Slidev deck under slides/. Nix supplies node through the devShell; npm

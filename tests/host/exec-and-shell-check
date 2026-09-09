@@ -36,11 +36,19 @@
 # drive-backed control socket path overruns the 108-byte limit and fails as an
 # unexplained child exit.
 #
-# No `--test` below, and no `--profile`. The three trials this lane drives now
-# sit in two binaries — the usage surface is `local_workflows`, the two session
-# trials are `boot_workflows` — so the filterset alone selects them, and naming
-# one binary would silently drop the other two. Nothing skips itself any more, so
-# there is nothing left to override either (ADR-0114).
+# No `--test` below, and no `--profile`, but `--ignore-default-filter` is
+# load-bearing. The three trials this lane drives now sit in two binaries — the
+# usage surface is `local_workflows`, the two session trials are `boot_workflows`
+# — so the filterset alone selects them, and naming one binary would silently
+# drop the other two.
+#
+# A command-line `-E` is applied within the active profile's `default-filter`
+# rather than instead of it, and `profile.default` now selects
+# `kind(lib) + kind(bin) + binary(local_*)`. Without the override this lane
+# listed exactly one trial of its three — the usage surface — and would have
+# reported PASS twice having booted nothing. Measured 2026-09-09 on this host,
+# by listing the same filterset with and without it. Nothing skips itself any
+# more, so there is nothing left to override besides that (ADR-0114).
 #
 # See docs/reference/microvm-verification-harness.md for what each check proves
 # and for the findings register, and docs/reference/testing-lanes.md for the
@@ -261,7 +269,7 @@ else
     lane_log=$(
       cd -- "$REPO_ROOT" \
         && nix develop "$DEV_FLAKE_REF" --command \
-          cargo nextest run --workspace \
+          cargo nextest run --workspace --ignore-default-filter \
           --success-output=immediate -E "$TRIALS" 2>&1
     )
     lane_status=$?
