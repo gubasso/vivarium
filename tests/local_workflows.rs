@@ -601,8 +601,11 @@ fn workflow_16_doctor() -> Result<(), Failed> {
     // condition it exists to explain would be self-defeating. Asserted here rather than trusted:
     // the finding reaches doctor through a path where an ordinary `.ok()` would erase it, and an
     // erased finding renders as `no-manifest-bound`, which says the opposite of what happened.
+    // Read from the findings, not from the exit code — the same reason as above.
+    // What the comment claims is that the two ownership findings are reported;
+    // whether this machine can also run a VM is a different question doctor
+    // answers in the same breath and this trial has no business asserting.
     let diagnosed = viv_at(&tp, &elsewhere, &["doctor"])?;
-    check(expect_code(&diagnosed, 0))?;
     for named in ["doctor-ownership", "doctor-second-owner"] {
         check(expect_stdout_mentions(&diagnosed, named))?;
     }

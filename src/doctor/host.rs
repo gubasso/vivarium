@@ -107,27 +107,31 @@ fn nix_version(probe: &'static Probe) -> Finding {
 
 /// Whether this host's `nix` offers the two features vivarium is built on.
 ///
-/// Read from `nix config show --json`, which reports the setting's resolved value
-/// as an array, and falling back to the plain form only when the structured one
-/// cannot be had.
+/// Asked as a capability rather than as a setting, because the setting has been
+/// seen to say nothing on a host where both features work.
 ///
-/// The order is that way round because the plain form has been seen to lie.
-/// Measured 2026-09-08 on a GitHub runner carrying Determinate Nix: `nix config
-/// show experimental-features` printed an empty line in every context — ambient,
-/// under a cleared environment, inside `nix develop`, and with `NIX_CONFIG`
-/// itself naming both features — while `/etc/nix/nix.conf` carried
-/// `extra-experimental-features = nix-command flakes` and both features worked.
-/// This probe reported that as the host's defect, and it is a hard probe that
-/// `viv start` runs before any side effect (spec/10), so the false negative
-/// refused a host that could have run.
+/// Measured 2026-09-08 and again 2026-09-09 on a GitHub runner carrying
+/// Determinate Nix: `nix config show experimental-features` printed an empty line
+/// in every context — ambient, under a cleared environment, inside `nix develop`,
+/// and with `NIX_CONFIG` itself naming both features — while `/etc/nix/nix.conf`
+/// carried `extra-experimental-features = nix-command flakes`, `nix develop`
+/// worked, and the evaluation lane resolved flakes all run. The structured
+/// `nix config show --json` form was tried on 2026-09-09 and reported the same
+/// nothing. This is a hard probe that `viv start` runs before any side effect
+/// (spec/10), so the false negative refused a host that could have run.
 ///
-/// The structured form carries what the plain one flattens. Measured the same
-/// day on the development host, `nix config show --json` reports
-/// `"experimental-features": {"value": ["flakes", "fetch-tree", "nix-command"]}`,
-/// and a value assembled from `extra-experimental-features` is a value like any
-/// other. Whether Determinate's structured form agrees is the open question
-/// `docs/reference/tracking.yaml` records, and the CI boot experiment is what
-/// answers it.
+/// So the setting is read first, because it is cheap and it is the common case,
+/// and a host whose setting names both features needs nothing spawned. Where it
+/// does not, the capability itself is exercised: a two-line flake written to a
+/// temporary directory and read with `nix flake metadata`. Reaching `nix` at all
+/// needs `nix-command` and reading a flake needs `flakes`, so one invocation
+/// answers for both, and it answers with an exit code rather than with an error
+/// string this probe would have to match. It touches no network — the flake
+/// declares no inputs — and realises nothing.
+///
+/// Measured on the development host, all three arms: with both features the
+/// probe exits `0`; with `nix-command` alone it exits `1` naming `flakes`; with
+/// neither it exits `1` naming `nix-command`.
 fn nix_flakes_enabled(probe: &'static Probe) -> Finding {
     // Both readings need `nix-command` themselves, so a failure to read is a
     // finding rather than an absence: it is what a host with the feature off
@@ -153,22 +157,22 @@ fn nix_flakes_enabled(probe: &'static Probe) -> Finding {
     if !spawned {
         return Finding::skipped(probe, "not-applicable", "`nix` could not be run");
     }
-    let Some(features) = features else {
-        return Finding::tripped(
+    if let Some(features) = &features {
+        let enabled = |name: &str| features.iter().any(|feature| feature == name);
+        if enabled("nix-command") && enabled("flakes") {
+            return Finding::pass(probe, "nix-command flakes");
+        }
+    }
+    match nix_reads_a_flake() {
+        Ok(()) => Finding::pass(probe, "nix-command flakes, from reading one"),
+        Err(why) => Finding::tripped(
             probe,
-            "`nix config show` refused, which needs `nix-command` itself",
+            format!(
+                "`experimental-features` is `{}` and {why}",
+                features.unwrap_or_default().join(" ")
+            ),
             "add `experimental-features = nix-command flakes` to nix.conf",
-        );
-    };
-    let enabled = |name: &str| features.iter().any(|feature| feature == name);
-    if enabled("nix-command") && enabled("flakes") {
-        Finding::pass(probe, "nix-command flakes")
-    } else {
-        Finding::tripped(
-            probe,
-            format!("`experimental-features` is `{}`", features.join(" ")),
-            "add `experimental-features = nix-command flakes` to nix.conf",
-        )
+        ),
     }
 }
 
@@ -179,6 +183,45 @@ enum Reading {
     /// `nix` ran and refused, which is itself evidence about the features.
     Refused,
     Features(Vec<String>),
+}
+
+/// Whether this `nix` can read a flake, which needs both features however they arrived.
+///
+/// The flake is written here rather than pointed at one on disk, because this probe
+/// runs wherever `viv doctor` does and a caller's directory is nobody's contract. It
+/// declares no inputs, so nothing is fetched and nothing is locked.
+fn nix_reads_a_flake() -> Result<(), String> {
+    let directory = std::env::temp_dir().join(format!("viv-flake-probe-{}", std::process::id()));
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("the flake probe could not be written: {error}"))?;
+    let written = std::fs::write(directory.join("flake.nix"), "{ outputs = _: { }; }\n")
+        .map_err(|error| format!("the flake probe could not be written: {error}"));
+    let read = written.and_then(|()| {
+        Command::new("nix")
+            .args([
+                "flake",
+                "metadata",
+                "--json",
+                "--no-write-lock-file",
+                &format!("path:{}", directory.display()),
+            ])
+            .output()
+            .map_err(|error| format!("`nix flake metadata` is unavailable: {error}"))
+    });
+    let outcome = match read {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(format!(
+            "`nix flake metadata` refused: {}",
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .next()
+                .unwrap_or("no diagnostic")
+                .trim()
+        )),
+        Err(why) => Err(why),
+    };
+    let _ = std::fs::remove_dir_all(&directory);
+    outcome
 }
 
 /// The resolved `experimental-features` value, read from the structured report.

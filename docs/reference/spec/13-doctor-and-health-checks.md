@@ -22,7 +22,7 @@ Stable kebab-case ids; catalog order is cheapest-and-most-fundamental first, so 
 | ------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------ |
 | `nix-present`             | tooling        | `nix` is on `$PATH`                                                                                                                 | `69`         |
 | `nix-version`             | tooling        | Nix meets the minimum version — the latest stable release at decision time (2.34); the implementation pins the exact floor          | `69`         |
-| `nix-flakes-enabled`      | tooling        | `experimental-features` includes `nix-command flakes`                                                                               | `78`         |
+| `nix-flakes-enabled`      | tooling        | `nix` can read a flake: `experimental-features` names both, or a two-line probe flake is read                                       | `78`         |
 | `kvm-device-present`      | virtualization | `/dev/kvm` exists                                                                                                                   | `69`         |
 | `kvm-device-accessible`   | permissions    | the user can read and write `/dev/kvm`                                                                                              | `77`         |
 | `hardware-virt-available` | virtualization | CPU virtualization extensions are present and enabled                                                                               | `69`         |

@@ -71,15 +71,19 @@ tracked:
       which is Ubuntu's AppArmor policy, and it keeps both test-boot and test-net
       in NOT_ON_A_RUNNER. Separately, nix config show experimental-features
       printed an empty line on that runner in every context while both features
-      worked, which is why src/doctor/host.rs reads the structured form first.
+      worked, and nix config show --json reported the same nothing when that was
+      tried on 2026-09-09, so src/doctor/host.rs exercises the capability with a
+      two-line temporary flake instead of reading the setting alone.
     revalidate: >-
       Read the boot-experiment job of the most recent CI run. Its capability step
       names each premise, including the namespace probe. Two consecutive green
       runs plus the namespace premise held are what promote test-boot and
       test-net out of NOT_ON_A_RUNNER in .github/workflows/ci.yml and into the
       check matrix. A runner image that relaxes the AppArmor policy, or a sysctl
-      a step could set, is what would move it. Never infer either premise from an
-      agent environment.
+      a step could set, is what would move it. For the doctor probe, read the
+      nix-flakes-enabled line of any CI lane that runs viv doctor: it should read
+      pass, and "from reading one" is what says the capability arm answered.
+      Never infer either premise from an agent environment.
     dependents:
       - docs/reference/testing-lanes.md
       - docs/decisions/ADR-0114-a-lane-runs-where-a-place-names-it.md
