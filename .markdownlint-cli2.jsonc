@@ -96,6 +96,11 @@
     // .pre-commit-config.yaml excludes `^slides/` as well; this entry is what
     // makes a direct `markdownlint-cli2` invocation agree with the hook.
     // ADR-0104 owns the reasoning.
-    "slides/"
+    "slides/",
+    // release-plz writes the changelog, and its native form keeps the
+    // generator's own conventions (see the note above `repos:` in
+    // .pre-commit-config.yaml). With `fix: true` this tool rewrites, so the
+    // file is ignored here rather than judged.
+    "CHANGELOG.md"
   ]
 }

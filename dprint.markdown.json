@@ -9,7 +9,10 @@
   ],
   "excludes": [
     ".git",
-    "node_modules"
+    "node_modules",
+    // release-plz writes the changelog; a generated file keeps its
+    // generator's form (see the note above `repos:` in .pre-commit-config.yaml).
+    "CHANGELOG.md"
   ],
   "plugins": [
     "https://plugins.dprint.dev/markdown-0.22.0.wasm"

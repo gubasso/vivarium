@@ -33,3 +33,18 @@ passt = "passt"
 # podman rows. `passt` above does not cover it: typos scopes an identifier
 # exception to the whole token, and this one is `use_passt`.
 use_passt = "use_passt"
+
+# A generated file keeps its generator's form (see the note above `repos:` in
+# .pre-commit-config.yaml), so typos neither judges nor rewrites one. The hook's
+# --force-exclude applies this list to the paths pre-commit passes.
+[files]
+extend-exclude = [
+  "CHANGELOG.md",
+  "Cargo.lock",
+  "flake.lock",
+  "nix/flake.lock",
+  "slides/package-lock.json",
+  ".release-kit/manifest.json",
+  ".github/workflows/pr-title.yml",
+  ".github/workflows/release-plz.yml",
+]
