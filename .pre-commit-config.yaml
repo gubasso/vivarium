@@ -26,6 +26,24 @@ default_stages: [pre-commit]
 # The hooks that are NOT wrapped are the formatters, the markdown gates, the
 # secret scans, `taplo`, `machete` and `deny`. They write kilobytes, and a
 # whitespace commit should not need an external drive plugged in.
+
+# A generated file follows its generator. The files a tool writes keep that
+# tool's own form: release-plz's `CHANGELOG.md`, the lock files of cargo, nix
+# and npm, release-kit's `.release-kit/manifest.json`, and the two workflows
+# release-kit renders, `pr-title.yml` and `release-plz.yml`, and cargo-dist's
+# `release.yml`. No hook below
+# rewrites one of them or judges its prose, and no generator is configured to
+# please a hook, so a generator upgrade brings its new output with nothing here
+# to patch. A hook that only reads such a file keeps it: the syntax parsers,
+# the secret scans, actionlint (an accepted finding goes in
+# `.github/actionlint.yaml`, never in the file), `rk-status-check`, and the
+# lanes.
+# Each exclusion sits in the tool's own configuration where the tool has one,
+# so a direct run agrees with the hook: `dprint.json`, `dprint.markdown.json`,
+# `.markdownlint-cli2.jsonc`, `_typos.toml`, `.editorconfig-checker.json`. A
+# hook with no configuration of its own carries it in its `exclude:`. Never in
+# the top-level `exclude:`, which would also hide the file from the secret,
+# large-file and merge-conflict reads.
 repos:
 # BEGIN release-kit
 # The release convention's hooks. Install every stage they run at:
@@ -95,8 +113,12 @@ repos:
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
         stages: [pre-commit]
+        # The generated files (see the note above `repos:`). The two fixers
+        # have no configuration of their own, so the list is written here once.
+        exclude: &generated '^(CHANGELOG\.md|Cargo\.lock|flake\.lock|nix/flake\.lock|slides/package-lock\.json|\.release-kit/manifest\.json|\.github/workflows/(pr-title|release-plz|release)\.yml)$'
       - id: end-of-file-fixer
         stages: [pre-commit]
+        exclude: *generated
       - id: check-added-large-files
         args: ['--maxkb=16384']
       - id: check-case-conflict
@@ -159,6 +181,8 @@ repos:
         # continuations CommonMark/dprint use (e.g. `1. ` -> 3 spaces), and
         # defaults to indent_size=4 even when unset. Markdown formatting is
         # owned by dprint + markdownlint-cli2 when those hooks are layered in.
+        # The generated files (see the note above `repos:`) are excluded in
+        # `.editorconfig-checker.json`, which a direct run reads too.
         exclude: '\.md$'
 
   # --- Rust: format & lint (auto-fix) ---
@@ -195,16 +219,9 @@ repos:
     hooks:
       - id: actionlint-system
 
-  - repo: local
-    hooks:
-      # Offline mode keeps this deterministic when no GitHub token is present;
-      # repository policy still accepts immutable release/tag references.
-      - id: zizmor
-        name: zizmor (GitHub Actions security)
-        entry: zizmor --no-progress --offline
-        language: system
-        types: [yaml]
-        files: ^\.github/workflows/
+  # zizmor is out while cargo-dist's generated `release.yml` fails it, and
+  # comes back when the template is fixed: KI-0003 in
+  # docs/reference/known-issues/ owns the case.
 
   - repo: local
     hooks:
@@ -457,6 +474,8 @@ repos:
         types: [text]
         # No pre-push: --write-changes makes this an autofixer, and a hook
         # that rewrites files never runs at push (see default_stages above).
+        # --force-exclude makes `_typos.toml`'s exclusion of the generated
+        # files hold for the paths pre-commit passes, too.
         stages: [pre-commit, pre-merge-commit, manual]
 
       - id: committed
@@ -642,8 +661,10 @@ repos:
         # checker rejects file-level scope by design and demands the comment
         # immediately precede each violating line. So the exemption is
         # directory-scoped and named in ADR-0104 rather than smeared across a
-        # deck as hundreds of individually-justified escapes.
-        exclude: ^slides/
+        # deck as hundreds of individually-justified escapes. `CHANGELOG.md`
+        # is release-plz's, and its native form sets each commit scope in
+        # italics and each breaking change in bold.
+        exclude: ^(slides/|CHANGELOG\.md$)
         stages: [pre-commit]
 
   # --- Table pipe integrity (MUST run before dprint) ---
@@ -672,15 +693,19 @@ repos:
         # column count and discards the overflow. dprint does not run on
         # `slides/` (see the dprint-markdown hook below), so there is nothing
         # here for the guard to protect against, and leaving it on would make
-        # the deck answer for a formatter it never meets.
-        exclude: ^slides/
+        # the deck answer for a formatter it never meets. The same holds for
+        # release-plz's `CHANGELOG.md`, which `dprint.markdown.json` excludes.
+        exclude: ^(slides/|CHANGELOG\.md$)
         stages: [pre-commit]
 
   - repo: local
     hooks:
       - id: dprint-markdown
         name: dprint fmt (markdown)
-        entry: dprint fmt --config dprint.markdown.json
+        # --allow-no-files for the reason the json hook above gives:
+        # `dprint.markdown.json` excludes release-plz's `CHANGELOG.md`, and a
+        # batch that holds only that file must not fail with exit 14.
+        entry: dprint fmt --allow-no-files --config dprint.markdown.json
         language: system
         files: '\.(md|markdown)$'
         # The one exclusion in this file that is load-bearing rather than
@@ -703,17 +728,22 @@ repos:
   # explicit prefix: ./name, ../dir/name, or a multi-segment path dir/name.
   # Fragment-only (#...), root-absolute (/...), and URL links pass. pygrep is
   # built into pre-commit — no external dependency, no companion file.
+  #
+  # Both skip release-plz's `CHANGELOG.md`: a pygrep hook has no configuration
+  # of its own, and the changelog's links are the generator's.
   - repo: local
     hooks:
       - id: no-bare-relative-links
         name: inline markdown links must be explicit (./, ../, or a path)
         language: pygrep
         types: [markdown]
+        exclude: ^CHANGELOG\.md$
         entry: '\]\((?!https?://|ftp://|mailto:|tel:|/|#|\.\.?/)[^)/\s:]+\.[A-Za-z0-9]+(?:#[^)]*)?\)'
       - id: no-bare-relative-link-defs
         name: markdown link definitions must be explicit (./, ../, or a path)
         language: pygrep
         types: [markdown]
+        exclude: ^CHANGELOG\.md$
         entry: '^\s*\[[^\]]+\]:\s+(?!https?://|ftp://|mailto:|tel:|/|#|\.\.?/|<)[^\s/:#]+\.[A-Za-z0-9]+'
 
   # --- Markdown lint (style gate + ordered-list renumber autofix) ---

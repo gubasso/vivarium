@@ -8,7 +8,10 @@
     "node_modules",
     "**/*-lock.json",
     "**/package-lock.json",
-    "**/*.jsonl"
+    "**/*.jsonl",
+    // release-kit writes its manifest; a generated file keeps its generator's
+    // form (see the note above `repos:` in .pre-commit-config.yaml).
+    ".release-kit/manifest.json"
   ],
   "plugins": ["https://plugins.dprint.dev/json-0.23.0.wasm"]
 }

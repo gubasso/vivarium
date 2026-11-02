@@ -1,0 +1,12 @@
+# Accepted findings on generated workflows. A generated file is never edited,
+# so an accepted finding lives here, scoped to one file and one rule.
+paths:
+  # cargo-dist's `dist generate` writes release.yml. Its template leaves
+  # `$GITHUB_PATH`, `$RUNNER_TEMP/notes.txt`, and `$PRERELEASE_FLAG` unquoted
+  # (SC2086) and appends to `$GITHUB_OUTPUT` line by line (SC2129). KI-0003 in
+  # docs/reference/known-issues/ owns the case: when a cargo-dist release fixes
+  # the template, this entry goes.
+  .github/workflows/release.yml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC2086:.+'
+      - 'shellcheck reported issue in this script: SC2129:.+'

@@ -215,12 +215,9 @@ jobs:
       - name: The boot lane
         run: tests/host/heavy-run --need 12 --label "ci test-boot" -- nix develop --command pre-commit run --all-files --hook-stage manual test-boot
 
-  # The artifact workflow's proof. It runs `dist plan` and not `dist generate`:
-  # dist-workspace.toml sets allow-dirty = ["ci"] because release.yml is
-  # generated and then hardened by hand, so a generate-and-diff check would
-  # fail on the hardening itself. The obligation that replaces it — diff the
-  # generated form by hand on every cargo-dist-version bump — lives in
-  # docs/reference/tracking.yaml with its cadence.
+  # The artifact workflow's proof. release.yml is the unmodified output of
+  # `dist generate`, and `dist plan` fails when the committed file drifts from
+  # that output, so this job is also the drift check of the generated file.
   dist-plan:
     runs-on: ubuntu-latest
     steps:

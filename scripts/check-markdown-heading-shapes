@@ -13,6 +13,10 @@ from typing import Any
 
 SHAPE_GLOB = "*.markdownlint-cli2.jsonc"
 SKIP_PARTS = {".draft", ".git", "node_modules"}
+# release-plz writes the root changelog, and a generated file keeps its
+# generator's form (see the note above `repos:` in .pre-commit-config.yaml).
+# markdownlint-cli2 ignores it, so a comment in it switches no shape off.
+GENERATED_MARKDOWN = {"CHANGELOG.md"}
 INLINE_CONFIG_RE = re.compile(
     r"<!--(?:(?!-->).)*markdownlint-configure-file(?:(?!-->).)*-->",
     re.DOTALL,
@@ -120,6 +124,7 @@ def markdown_files(root: Path) -> list[Path]:
         if path.is_file()
         and path.suffix.lower() in {".md", ".markdown"}
         and not SKIP_PARTS.intersection(path.relative_to(root).parts)
+        and relative(path, root) not in GENERATED_MARKDOWN
     )
 
 
@@ -308,6 +313,23 @@ def self_test() -> None:
         "inline configuration",
         lambda root: (root / "docs" / "page.md").write_text(
             '<!-- markdownlint-configure-file {"MD043": false} -->\n# Page\n',
+            encoding="utf-8",
+        ),
+        "document-local markdownlint-configure-file comment is forbidden",
+    )
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        write_fixture(root)
+        (root / "CHANGELOG.md").write_text(
+            '<!-- markdownlint-configure-file {"MD043": false} -->\n# Changelog\n',
+            encoding="utf-8",
+        )
+        assert validate(root) == [], "the generated root changelog is judged"
+    expect_case(
+        "inline configuration in a nested changelog",
+        lambda root: (root / "docs" / "CHANGELOG.md").write_text(
+            '<!-- markdownlint-configure-file {"MD043": false} -->\n# Changelog\n',
             encoding="utf-8",
         ),
         "document-local markdownlint-configure-file comment is forbidden",
