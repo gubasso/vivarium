@@ -98,7 +98,6 @@
             pkgs.shfmt
             pkgs.ruff
             pkgs.actionlint
-            pkgs.zizmor
             # typos + committed also run as language:system off PATH. The
             # crate-ci pre-commit hooks are `language: python` and their wheels
             # ship prebuilt, dynamically-linked binaries, which cannot exec in a

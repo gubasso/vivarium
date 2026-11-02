@@ -19,9 +19,10 @@ Expand the dossier while the issue is hot. When resolved, collapse it into one s
 
 ## Active
 
-| id                             | status | severity | affected tests                                                        | external system | upstream reference                                     | mask |
-| ------------------------------ | ------ | -------- | --------------------------------------------------------------------- | --------------- | ------------------------------------------------------ | ---- |
-| [KI-0001](./KI-0001/README.md) | open   | high     | `store-pressure-collector-freed`, `store-pressure-collector-per-path` | Nix 2.34.8      | [nix#16269](https://github.com/NixOS/nix/issues/16269) | none |
+| id                             | status | severity | affected tests                                                        | external system   | upstream reference                                                     | mask                                                        |
+| ------------------------------ | ------ | -------- | --------------------------------------------------------------------- | ----------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------- |
+| [KI-0001](./KI-0001/README.md) | open   | high     | `store-pressure-collector-freed`, `store-pressure-collector-per-path` | Nix 2.34.8        | [nix#16269](https://github.com/NixOS/nix/issues/16269)                 | none                                                        |
+| [KI-0003](./KI-0003/README.md) | masked | medium   | `zizmor`, `actionlint-system`                                         | cargo-dist 0.32.0 | [cargo-dist#2320](https://github.com/axodotdev/cargo-dist/issues/2320) | zizmor out, two actionlint rules accepted for `release.yml` |
 
 ## Resolved
 

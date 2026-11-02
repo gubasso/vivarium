@@ -42,18 +42,11 @@ github-attestations-phase = "host"
 # The host phase's permissions are job-scoped, so the release must be created
 # in the same phase; cargo-dist's documentation asks for this pairing outright.
 github-release = "host"
-# `.github/workflows/release.yml` is generated from this file and then hardened
-# by hand, so dist must not compare against it or regenerate it. The generated
-# form interpolates `${{ }}` expressions straight into four `run:` bodies,
-# leaves `$RUNNER_TEMP/notes.txt` and `$GITHUB_PATH` unquoted, and word-splits
-# `$PRERELEASE_FLAG`. The project's `zizmor` hook reports 4 high and 3 medium
-# findings on that form, so accepting it back is a shell-injection shape rather
-# than a formatting preference.
-#
-# The cost is that dist no longer ports its own upgrades into that file, so a
-# change to `cargo-dist-version` above means diffing the generated workflow by
-# hand. `docs/reference/tracking.yaml` carries that obligation with a cadence.
-allow-dirty = ["ci"]
+# `.github/workflows/release.yml` is generated from this file and committed
+# exactly as `dist generate` writes it, so `dist plan` in CI fails when the two
+# drift. The generated form fails zizmor, which therefore stays out of this
+# project's checks until cargo-dist fixes its template: KI-0003 in
+# docs/reference/known-issues/ owns the case and the return trigger.
 
 # The build that signs is itself pinned by digest: cargo-dist references
 # these actions by movable tag unless told otherwise, and the attest step

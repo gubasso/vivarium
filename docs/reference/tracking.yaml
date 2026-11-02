@@ -41,13 +41,17 @@ tracked:
     dependents:
       - docs/plan/slices/007-build-test-lanes/README.md
   - path: .github/workflows/release.yml
-    last_checked: 2026-09-08
-    cadence: on cargo-dist-version changes in dist-workspace.toml
-    why: dist-workspace.toml sets allow-dirty = ["ci"], so dist neither regenerates this workflow nor reports it as stale, and its own upgrades stop arriving.
-    revalidate: Run dist generate in a scratch copy against the new cargo-dist-version, diff the generated release.yml against the committed one, and port every change by hand except the hardening. The hardening is the env-var indirection replacing five template interpolations in run bodies, the quoted $RUNNER_TEMP/notes.txt and $GITHUB_PATH, the array-expanded $PRERELEASE_FLAG and tag flags, the braced $GITHUB_OUTPUT redirects, and the zizmor ignore comments. Confirm with zizmor --no-progress --offline and actionlint, and with rk status --check for the action pins and the attest step.
+    last_checked: 2026-11-02
+    cadence: 30d and on each cargo-dist release
+    why: The generated workflow fails zizmor, so zizmor is out of this project's checks and actionlint accepts SC2086 and SC2129 for this file, until cargo-dist fixes its template (KI-0003, axodotdev/cargo-dist#2320).
+    revalidate: Read axodotdev/cargo-dist#2320 and the newest cargo-dist release notes. In a scratch copy, set cargo-dist-version to the newest release, run dist generate --mode ci, and run zizmor --no-progress --offline and actionlint on the generated release.yml. When both pass with no acceptance, bump cargo-dist-version, commit the generated release.yml, bring the zizmor hook and the devshell's zizmor back, delete the release.yml entry of .github/actionlint.yaml, and resolve KI-0003. Otherwise advance last_checked.
     dependents:
       - dist-workspace.toml
+      - .github/actionlint.yaml
+      - .pre-commit-config.yaml
+      - flake.nix
       - docs/guides/publishing.md
+      - docs/reference/known-issues/KI-0003/README.md
   - path: docs/guides/publishing.md
     last_checked: 2026-07-31
     cadence: 90d

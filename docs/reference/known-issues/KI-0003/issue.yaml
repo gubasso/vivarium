@@ -1,0 +1,22 @@
+schema: vivarium-known-issue
+version: 1
+id: KI-0003
+slug: cargo-dist-release-workflow-fails-zizmor
+status: masked
+severity: medium
+external_system:
+  name: cargo-dist
+  pinned_version: 0.32.0
+affected_checks:
+  - zizmor
+  - actionlint-system
+upstream_issue: https://github.com/axodotdev/cargo-dist/issues/2320
+mask:
+  state: active
+  what:
+    - the zizmor hook and the devshell's zizmor are removed
+    - .github/actionlint.yaml accepts SC2086 and SC2129 for .github/workflows/release.yml
+  revert_when: A cargo-dist release generates a release.yml that passes zizmor --no-progress --offline and actionlint with no acceptance.
+recheck:
+  command: dist generate --mode ci, then zizmor --no-progress --offline .github/workflows/release.yml and actionlint
+  condition: Both pass on the generated workflow of the newest cargo-dist release, with no acceptance in .github/actionlint.yaml.

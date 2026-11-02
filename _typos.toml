@@ -47,4 +47,5 @@ extend-exclude = [
   ".release-kit/manifest.json",
   ".github/workflows/pr-title.yml",
   ".github/workflows/release-plz.yml",
+  ".github/workflows/release.yml",
 ]

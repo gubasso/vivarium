@@ -6,6 +6,6 @@
     "^nix/flake\\.lock$",
     "^slides/package-lock\\.json$",
     "^\\.release-kit/manifest\\.json$",
-    "^\\.github/workflows/(pr-title|release-plz)\\.yml$"
+    "^\\.github/workflows/(pr-title|release-plz|release)\\.yml$"
   ]
 }
