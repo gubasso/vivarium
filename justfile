@@ -25,9 +25,9 @@ default:
 # happen. The lane hooks gate themselves again from within; paying twice is
 # cheaper than choosing which invocation may skip it.
 
-# Build the workspace.
+# Build every binary, the guest agent included.
 build:
-    tests/host/heavy-run --need 4 --label "just build" -- nix develop --command cargo build --workspace
+    tests/host/heavy-run --need 4 --label "just build" -- nix develop --command cargo build --all-features
 
 # Run one test lane: unit, local, eval, net, boot, or doc.
 # `docs/reference/testing-lanes.md` says what each one needs and proves.
@@ -51,7 +51,7 @@ push-checks:
 
 # Type-check without producing binaries.
 typecheck:
-    tests/host/heavy-run --need 4 --label "just typecheck" -- nix develop --command cargo check --workspace
+    tests/host/heavy-run --need 4 --label "just typecheck" -- nix develop --command cargo check --all-features
 
 # --- Lint & format --------------------------------------------------------
 

@@ -24,9 +24,9 @@ The register of what vivarium's suite is divided into, what each division needs,
 
 The need names the binary because nextest offers no other tag. Its filter language selects on package, kind, binary name, and test name, and there is no test attribute to filter on, so the lane a test belongs to is spelled in the file name that compiles it. [`../../Cargo.toml`](../../Cargo.toml) requires the prefix, [`../../.config/nextest.toml`](../../.config/nextest.toml) carries one profile per lane, [`../../tests/support/preflight.rs`](../../tests/support/preflight.rs) is where a binary asks its host for what it declared, and [`../../scripts/check-lane-register`](../../scripts/check-lane-register) fails a change that moves one of those four and not the others.
 
-`unit` and `doc` carry no binary prefix. `unit` selects by kind across every crate in the workspace, and `doc` is `cargo test --doc`, which nextest cannot run at all.
+`unit` and `doc` carry no binary prefix. `unit` selects the library and binary targets by kind, and `doc` is `cargo test --doc`, which nextest cannot run at all.
 
-Every lane hook passes `--workspace`. Without it cargo tests the root package alone, and `crates/vivarium-guest-agent`'s 37 unit tests never ran: not at the commit stage, not at push, and not in CI. Found on 2026-09-08 by counting what the two spellings select, 300 against 337.
+Every lane hook passes `--all-features`. The guest agent is the `vivarium-guest-agent` binary of this package, behind the `guest` feature, so without the flag its 37 unit tests never compile and the lane passes with them unrun. The host and guest features compile together, which is why one flag covers both.
 
 ## Running one
 

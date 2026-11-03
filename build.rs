@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "Cargo.lock".to_owned(),
         "build.rs".to_owned(),
     ];
-    for directory in ["nix", "src", "crates/vivarium-guest-agent"] {
+    for directory in ["nix", "src"] {
         collect(&root, Path::new(directory), &mut relative_paths)?;
     }
     relative_paths.sort();

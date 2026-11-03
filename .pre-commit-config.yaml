@@ -287,15 +287,14 @@ repos:
   # manual <id> --all-files` the one way to run any lane anywhere — the form
   # `just test <lane>` wraps and the form CI's matrix calls.
   #
-  # `--workspace` on every one of them. Without it cargo tests the root package
-  # alone, and `crates/vivarium-guest-agent`'s 37 unit tests never ran: not at the
-  # commit stage, not at push, and not in CI. Found on 2026-09-08 by counting what
-  # the two spellings select (300 against 337).
+  # `--all-features` on every one of them. The guest agent is a binary of this
+  # package behind the `guest` feature, so without it the agent's unit tests
+  # never compile, and the lane passes with them unrun.
   - repo: local
     hooks:
       - id: test-unit
         name: test unit (needs nothing)
-        entry: tests/host/heavy-run --need 4 --label "the unit lane" -- cargo nextest run --workspace --profile unit --all-features
+        entry: tests/host/heavy-run --need 4 --label "the unit lane" -- cargo nextest run --profile unit --all-features
         language: system
         types: [rust]
         pass_filenames: false
@@ -306,7 +305,7 @@ repos:
 
       - id: test-local
         name: test local (needs the built viv)
-        entry: tests/host/heavy-run --need 6 --label "the local lane" -- cargo nextest run --workspace --profile local --all-features
+        entry: tests/host/heavy-run --need 6 --label "the local lane" -- cargo nextest run --profile local --all-features
         language: system
         types_or: [rust, toml]
         pass_filenames: false
@@ -314,7 +313,7 @@ repos:
 
       - id: test-eval
         name: test eval (needs nix)
-        entry: tests/host/heavy-run --need 8 --label "the eval lane" -- cargo nextest run --workspace --profile eval --all-features
+        entry: tests/host/heavy-run --need 8 --label "the eval lane" -- cargo nextest run --profile eval --all-features
         language: system
         types_or: [rust, toml, nix]
         pass_filenames: false
@@ -322,7 +321,7 @@ repos:
 
       - id: test-net
         name: test net (needs unprivileged namespaces)
-        entry: tests/host/heavy-run --need 4 --label "the net lane" -- cargo nextest run --workspace --profile net --all-features
+        entry: tests/host/heavy-run --need 4 --label "the net lane" -- cargo nextest run --profile net --all-features
         language: system
         types_or: [rust, toml]
         pass_filenames: false
@@ -330,7 +329,7 @@ repos:
 
       - id: test-boot
         name: test boot (needs a virtualization-capable host)
-        entry: tests/host/heavy-run --need 12 --label "the boot lane" -- cargo nextest run --workspace --profile boot --all-features
+        entry: tests/host/heavy-run --need 12 --label "the boot lane" -- cargo nextest run --profile boot --all-features
         language: system
         pass_filenames: false
         # Scoped by path rather than by file type, and this is the one `files:`
@@ -338,14 +337,14 @@ repos:
         # minutes, which is a fair price for a change to the product and no price
         # a documentation push should pay. At the push stage pre-commit matches
         # this against the pushed range; under `--all-files` it always runs.
-        files: '^(src/|crates/|nix/|tests/(boot_|support/)|Cargo\.(toml|lock)$|rust-toolchain\.toml$)'
+        files: '^(src/|nix/|tests/(boot_|support/)|Cargo\.(toml|lock)$|rust-toolchain\.toml$)'
         stages: [pre-push, manual]
 
       - id: test-doc
         name: test doc (doctests)
         # nextest cannot run doctests, so this is `cargo test --doc` and stays
         # outside the profile scheme. https://nexte.st/docs/running/
-        entry: tests/host/heavy-run --need 4 --label "the doc lane" -- cargo test --workspace --doc --all-features
+        entry: tests/host/heavy-run --need 4 --label "the doc lane" -- cargo test --doc --all-features
         language: system
         types_or: [rust, toml]
         pass_filenames: false
