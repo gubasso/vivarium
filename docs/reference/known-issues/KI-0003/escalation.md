@@ -4,4 +4,4 @@
 
 ## Upstream state
 
-On 2026-11-02 the issue is open, and the comment is its first. cargo-dist 0.34.0, released 2026-11-01, does not change the reported lines.
+On 2026-11-02 the issue is open, and the comment is its first. cargo-dist 0.34.0, released 2026-11-01 and pinned here since 2026-11-02, does not change the reported lines: its generated `release.yml` differs from the 0.32.0 one only in the installer URL.

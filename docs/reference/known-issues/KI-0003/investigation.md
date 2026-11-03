@@ -2,7 +2,7 @@
 
 ## Symptom
 
-`dist generate --mode ci` at cargo-dist 0.32.0 writes a `release.yml` that `dist plan` accepts and that both workflow linters reject. Measured 2026-11-02 on the unmodified output, with zizmor 1.25.2 and actionlint 1.7.12:
+`dist generate --mode ci` at cargo-dist 0.32.0, and again at 0.34.0, writes a `release.yml` that `dist plan` accepts and that both workflow linters reject. Measured 2026-11-02 on the unmodified output, with zizmor 1.25.2 and actionlint 1.7.12:
 
 - `zizmor --no-progress --offline`: 18 findings, 7 suppressed, 4 informational, 0 low, 3 medium, 4 high.
 - `actionlint`: SC2086 at lines 124 and 283 (twice), and SC2129 at lines 152 and 196.
