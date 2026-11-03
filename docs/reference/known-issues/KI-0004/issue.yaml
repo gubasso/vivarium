@@ -1,0 +1,21 @@
+schema: vivarium-known-issue
+version: 1
+id: KI-0004
+slug: the-crate-does-not-package
+status: masked
+severity: medium
+external_system:
+  name: Cargo
+  pinned_version: the toolchain in rust-toolchain.toml
+affected_checks:
+  - cargo package
+  - rk setup check package-check
+upstream_issue: null
+mask:
+  state: active
+  what:
+    - release-plz.toml sets publish = false
+  revert_when: cargo package verifies, because the guest-agent source reaches the packaged tree.
+recheck:
+  command: cargo package --locked
+  condition: The verification step builds, and build.rs finds crates/vivarium-guest-agent in the packaged tree.
