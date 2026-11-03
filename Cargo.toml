@@ -24,6 +24,8 @@ exclude = [
   "/rust-toolchain.toml",
   "/.pre-commit-config.yaml",
   "/justfile",
+  "/.release-kit",
+  "/GLOSSARY.md",
 ]
 keywords = ["nix", "microvm", "isolation", "sandbox", "devenv"]
 categories = ["command-line-utilities", "virtualization", "development-tools"]
