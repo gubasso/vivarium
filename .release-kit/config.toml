@@ -1,0 +1,74 @@
+# The committed answers this project gives release-kit: the target configuration, typed by domain.
+# Landing verbs record resolved parameters in .release-kit/manifest.json.
+# P: landing parameter. N: free name. F: invariant floor.
+# A value below a floor refuses by name; read `rk method invariants`.
+
+schema_version = 2
+
+[project]
+repo = "gubasso/vivarium" # P: project path on the forge, nested groups included; absent where the project has no forge
+
+[profile]
+technologies = ["rust"] # P: every technology present, zero or many; an omitted key detects from the version files
+forge = "github" # P: github or gitlab; empty means the project has no forge, and an omitted key detects from the remote
+
+[profile.release]
+mode = "automatic" # P: automatic, external, or none
+driver = "rust" # P: the technology that states the version and takes the bot; automatic alone
+style = "trunk" # P: trunk or lines; automatic alone
+line_prefix = "release/" # P: release-line branch prefix, rendered into the release triggers; automatic alone
+
+[git]
+trunk = "master" # P: the one permanent branch, rendered into every artifact naming it
+checkout_mode = "linked-worktree" # P: linked-worktree or main-worktree, where a topic branch opens
+integration = "forge" # P: local or forge, which authority moves an implementation onto the trunk
+merge_form = "squash" # P: squash or rebase, how the commits of a branch reach the trunk
+
+[capabilities]
+nix_packaging = false # P: opt-in Nix capability
+reporting_policy = false # P: the landed vulnerability reporting policy
+scorecard = false # P: opt-in OpenSSF Scorecard workflow, github only
+code_scanning = "off" # P: opt-in code scanning provider: codeql, semgrep, or off
+workflow_guards = true # P: opt-in workflow guards: the agent and commit policy lines, the glossary, the workflow hooks, merge-cleanup, and branch-reminder
+
+[security]
+advisories = "" # N: project receiving vulnerability reports
+contact = "" # P: one line naming who receives a report when the forge channel is unavailable; empty keeps the forge's own wording
+response = "best-effort" # P: the acknowledgment window the policy promises: best-effort, 1 day, <n> days, 1 business day, or <n> business days
+
+[setup]
+required_check = "" # P: the check the release gate believes, and the check the trunk ruleset requires under forge integration
+required_workflow = "" # P: the workflow name whose completion wakes the release gate under local integration; GitHub only
+retired_branches = ["main", "develop"] # N: long-lived branches retired by the trunk
+release_lines = false # N: true runs protect-release-lines in a full apply
+excluded_steps = {} # N: step = why this target does not run it; `rk setup check` reports it and does not judge it
+
+[setup.bot]
+app_id = "" # N: public App identifier; private credentials stay outside this file
+
+[protection]
+trunk_ruleset = "master-protection" # N: trunk ruleset name
+safety_ruleset = "master-safety" # N: safety ruleset name, bypassed by nobody
+tag_ruleset = "release-tags" # N: tag ruleset name
+lines_ruleset = "release-lines" # N: release-line ruleset name
+title_check = "pr-title" # N: title job context
+tag_pattern = "refs/tags/v*" # F: invariant, covers every published version
+bypass_actors = [] # F: invariant, the actors git.integration names
+allowed_merge_methods = ["squash"] # F: invariant, exactly the method git.merge_form names: squash or rebase
+strict_required_status_checks = true # F: invariant, true
+owned_trunk_rules = ["deletion", "non_fast_forward", "pull_request", "required_status_checks"] # F: invariant, the rules git.integration names
+required_approving_review_count = 0 # F: floor zero; higher is stricter
+dismiss_stale_reviews_on_push = false # F: floor false; true is stricter
+require_code_owner_review = false # F: floor false; true is stricter
+require_last_push_approval = false # F: floor false; true is stricter
+
+[protection.github]
+squash_title_source = "PR_TITLE" # F: invariant under the squash merge form, PR_TITLE
+squash_body_source = "PR_BODY" # F: invariant under the squash merge form, PR_BODY
+
+[protection.gitlab]
+merge_method = "ff" # F: invariant, linear history
+squash_option = "always" # F: invariant, the squash git.merge_form names: always under squash, never under rebase
+squash_commit_template = "%{title}" # F: invariant, references title and description
+push_access_level = 0 # F: invariant, the level git.integration names
+merge_access_level = 40 # F: floor thirty

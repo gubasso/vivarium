@@ -45,6 +45,7 @@ extend-exclude = [
   "nix/flake.lock",
   "slides/package-lock.json",
   ".release-kit/manifest.json",
+  ".release-kit/config.toml",
   ".github/workflows/pr-title.yml",
   ".github/workflows/release-plz.yml",
   ".github/workflows/release.yml",
