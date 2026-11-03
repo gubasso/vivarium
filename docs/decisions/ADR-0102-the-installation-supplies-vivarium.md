@@ -31,4 +31,6 @@ The effective lock pins upstream and artifact-declared inputs, never vivarium. S
 
 Implemented
 
+Amended by [`ADR-0115`](./ADR-0115-the-guest-agent-is-a-binary-of-the-crate.md) — the embedded tree carries the guest agent as a binary of the crate rather than as a nested package. The embedding stands.
+
 Enacted by [slice 015](../plan/slices/015-the-binary-supplies-itself/README.md). Amends the determinism guarantee in [`../reference/spec/04-composition-and-determinism.md`](../reference/spec/04-composition-and-determinism.md), which named the manifest closure and the lockfile alone. Rides the regeneration seam [`ADR-0058-generated-flake-is-a-materialized-cache-artifact.md`](./ADR-0058-generated-flake-is-a-materialized-cache-artifact.md) fixes, and leaves [`ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](./ADR-0059-lockfile-is-tool-owned-in-the-data-root.md) untouched for the inputs that remain.

@@ -302,7 +302,7 @@ Figures across the two runs:
 | Exit drain, worst of 20           | 5.513 ms                        | 4.447 ms |
 | Disconnect to guest process death | 2.062 s                         | 2.061 s  |
 
-Two of those settle constants in `crates/vivarium-guest-agent/src/session.rs`, each by a rule fixed before the run. `EXIT_DRAIN_LIMIT` stays 250 ms: the worst case is about 2% of it, far under the 40% that would have forced a raise, and the measurement brackets the drain from above because it times the whole session. `DISCONNECT_GRACE` stays 2 s on narrower evidence, and the difference matters — the probe uses `trap '' TERM`, so the grace always elapses in full and the figure is the bound firing plus the probing session's own boot. It says escalation reaches a real guest process table and stays bounded; it is not a distribution of ordinary drains, because nothing here measures one.
+Two of those settle constants in `src/bin/vivarium-guest-agent/session.rs`, each by a rule fixed before the run. `EXIT_DRAIN_LIMIT` stays 250 ms: the worst case is about 2% of it, far under the 40% that would have forced a raise, and the measurement brackets the drain from above because it times the whole session. `DISCONNECT_GRACE` stays 2 s on narrower evidence, and the difference matters — the probe uses `trap '' TERM`, so the grace always elapses in full and the figure is the bound firing plus the probing session's own boot. It says escalation reaches a real guest process table and stays bounded; it is not a distribution of ordinary drains, because nothing here measures one.
 
 ### A shipped example manifest builds to a guest system, and pinning the baseline took the lanes off the GitHub API
 

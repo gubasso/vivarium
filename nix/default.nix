@@ -26,10 +26,11 @@ let
       # embedded subtree, so a blanket `type == "directory"` would descend into
       # `docs/` and a Cargo build directory; every admitted path is named instead.
       # `tests/` is deliberately not admitted, so verification cannot affect the
-      # product derivation. The agent depends on the `vivarium` library for its
-      # protocol types, and that library's `build.rs` embeds `nix/` and the crate
-      # source, so everything `build.rs` walks is admitted here — the same set the
-      # binary embeds, which is what keeps the two trees one tree.
+      # product derivation. The agent is a binary of the `vivarium` package and
+      # uses its library for the protocol types, and that library's `build.rs`
+      # embeds `nix/` and the crate source, so everything `build.rs` walks is
+      # admitted here — the same set the binary embeds, which is what keeps the
+      # two trees one tree.
       filter =
         path: _type:
         let
@@ -40,15 +41,17 @@ let
         || rel == "build.rs"
         || rel == "src"
         || lib.hasPrefix "src/" rel
-        || rel == "crates"
-        || lib.hasPrefix "crates/vivarium-guest-agent" rel
         || rel == "nix"
         || (lib.hasPrefix "nix/" rel && rel != "nix/flake.nix" && rel != "nix/flake.lock");
     };
     cargoLock.lockFile = crateRoot + "/Cargo.lock";
+    # The agent alone, without the host feature's dependencies.
     cargoBuildFlags = [
-      "--package"
+      "--bin"
       "vivarium-guest-agent"
+      "--no-default-features"
+      "--features"
+      "guest"
     ];
     doCheck = false;
   };

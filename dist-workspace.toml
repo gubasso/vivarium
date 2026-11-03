@@ -48,6 +48,17 @@ github-release = "host"
 # project's checks until cargo-dist fixes its template: KI-0003 in
 # docs/reference/known-issues/ owns the case and the return trigger.
 
+# The host binaries alone, on every target. The guest agent is a binary of the
+# same package behind its `guest` feature, and the build runs the default
+# features, so cargo never builds it here. dist still lists every binary target
+# the package declares, so the list is named per target.
+[dist.binaries]
+aarch64-apple-darwin = ["viv", "vivarium-supervisor"]
+aarch64-unknown-linux-gnu = ["viv", "vivarium-supervisor"]
+x86_64-apple-darwin = ["viv", "vivarium-supervisor"]
+x86_64-unknown-linux-gnu = ["viv", "vivarium-supervisor"]
+x86_64-pc-windows-msvc = ["viv", "vivarium-supervisor"]
+
 # The build that signs is itself pinned by digest: cargo-dist references
 # these actions by movable tag unless told otherwise, and the attest step
 # is among them, so a moved tag could swap the code that mints the

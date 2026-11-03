@@ -1454,7 +1454,7 @@ mod tests {
             "vivarium/Cargo.lock",
             "vivarium/build.rs",
             "vivarium/src/main.rs",
-            "vivarium/crates/vivarium-guest-agent/Cargo.toml",
+            "vivarium/src/bin/vivarium-guest-agent/main.rs",
         ] {
             assert!(
                 rendered.contains(&Path::new(expected)),
@@ -1469,6 +1469,13 @@ mod tests {
                 "excluded entry {excluded} was embedded"
             );
         }
+        // One package: cargo never packages a nested one, so the agent is a binary of the crate.
+        assert!(
+            !rendered
+                .iter()
+                .any(|path| path.starts_with("vivarium/crates")),
+            "a nested package was embedded"
+        );
         Ok(())
     }
 

@@ -1342,20 +1342,8 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
- "toml",
-]
-
-[[package]]
-name = "vivarium-guest-agent"
-version = "0.1.0"
-dependencies = [
- "pty-process",
- "rustix",
- "thiserror",
- "tokio",
- "tokio-util",
  "tokio-vsock",
- "vivarium",
+ "toml",
 ]
 
 [[package]]

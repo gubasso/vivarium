@@ -45,8 +45,8 @@ HOOK_LANES = NEXTEST_LANES | {"doc"}
 # carry no `[[test]]` entry and are auto-discovered.
 DEFAULT_HARNESS = {"local_launch_supervision.rs", "local_heavy_gate.rs"}
 
-# What each lane's nextest profile must select. `unit` selects by kind across the
-# workspace because its tests live inside crates rather than in `tests/`.
+# What each lane's nextest profile must select. `unit` selects by kind because its
+# tests live inside the library and the binaries rather than in `tests/`.
 EXPECTED_FILTER = {
     "unit": "kind(lib) + kind(bin)",
     "local": "binary(local_*)",
@@ -209,15 +209,15 @@ def main() -> int:
                 f"the `test-{lane}` hook does not pass `--profile {lane}`; "
                 f"it runs: {entry}"
             )
-        if "--workspace" not in entry:
+        if "--all-features" not in entry:
             complain(
-                f"the `test-{lane}` hook does not pass `--workspace`, so it tests "
-                f"the root package alone and every workspace member goes unrun"
+                f"the `test-{lane}` hook does not pass `--all-features`, so the "
+                f"guest agent's tests, which compile under the `guest` feature, go unrun"
             )
     doc = entries.get("test-doc")
-    if doc is not None and "cargo test --workspace --doc" not in doc:
+    if doc is not None and "cargo test --doc" not in doc:
         complain(
-            f"the `test-doc` hook does not run `cargo test --workspace --doc`; "
+            f"the `test-doc` hook does not run `cargo test --doc`; "
             f"nextest cannot run doctests, so no profile covers them. It runs: {doc}"
         )
 
