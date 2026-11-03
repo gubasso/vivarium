@@ -5,7 +5,7 @@
     "^flake\\.lock$",
     "^nix/flake\\.lock$",
     "^slides/package-lock\\.json$",
-    "^\\.release-kit/manifest\\.json$",
+    "^\\.release-kit/(manifest\\.json|config\\.toml)$",
     "^\\.github/workflows/(pr-title|release-plz|release)\\.yml$"
   ]
 }

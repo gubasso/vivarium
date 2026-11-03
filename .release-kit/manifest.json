@@ -1,53 +1,77 @@
 {
-  "schema_version": 5,
-  "rk_version": "0.3.0",
-  "payload_sha256": "81f8be31403e156c3ff98be377a35c03e9344fe4230dd344569def9739f5d676",
+  "schema_version": 12,
+  "rk_version": "0.9.1",
   "origin": "init",
-  "tech": "rust",
-  "forge": "github",
   "landed_at": "2026-09-08T16:59:21Z",
+  "profile": {
+    "technologies": [
+      "rust"
+    ],
+    "forge": "github",
+    "release": {
+      "mode": "automatic",
+      "driver": "rust",
+      "style": "trunk",
+      "line_prefix": "release/"
+    }
+  },
+  "git": {
+    "trunk": "master",
+    "checkout_mode": "linked-worktree",
+    "integration": "forge",
+    "merge_form": "squash"
+  },
+  "capabilities": {
+    "nix_packaging": false,
+    "reporting_policy": false,
+    "scorecard": false,
+    "workflow_guards": true
+  },
   "parameters": {
     "repo": "gubasso/vivarium",
-    "workflow": "worktree",
-    "style": "trunk",
-    "nix": false
+    "security_contact": "",
+    "security_response": "best-effort",
+    "required_check": "",
+    "required_workflow": ""
   },
   "files": [
     {
       "destination": ".github/workflows/pr-title.yml",
       "kind": "rendered",
-      "sha256": "9a10a4d7f9ada97c0e7b871a9d7c351574ff3cb13081504cd7f453cf7a012ee4",
-      "baseline_sha256": "95565551a263edecb52c98cf91f40e0f6c9412560243481f816ba525049854c1"
+      "sha256": "972336ac17d76fa11d785a8dfb381b3bdc7dc8af318ae9225a4855c08bc1b13c"
     },
     {
       "destination": ".github/workflows/release-plz.yml",
       "kind": "rendered",
-      "sha256": "c6caff0323bb4489ea637178c99ac836c3c55c40ac4b4437e1345da12be272b7",
-      "baseline_sha256": "f67151adc5f1c8a215e2320edef81151435c71a837e175e7f4aeed5cf8d77ff1"
+      "sha256": "dae0bfc1282b30535df0a13562b0b3ea5b4ff59af63009301f5ee86a9406c968"
     },
     {
       "destination": ".pre-commit-config.yaml",
       "kind": "rendered",
-      "sha256": "78149baea10341037a25dd728b31ae014c9d391a1c75375076d494663783e6f1",
-      "baseline_sha256": "78149baea10341037a25dd728b31ae014c9d391a1c75375076d494663783e6f1"
+      "sha256": "bb8a4fa843c4d18413eb0d2052cc3ba70eb1a1b4c5ce99347cb82aec3ae5d000",
+      "placement": "region"
     },
     {
       "destination": "AGENTS.md",
       "kind": "rendered",
-      "sha256": "06981a4a2f55f76f32dfb6d59e2643ed65bb01df173452ef8c00d4f0811ce91c",
-      "baseline_sha256": "06981a4a2f55f76f32dfb6d59e2643ed65bb01df173452ef8c00d4f0811ce91c"
+      "sha256": "68aff6f88f758755ce2d066d6bcbdba5562589bdc7945db4e6e8cab3ef1ae5c3",
+      "placement": "region"
+    },
+    {
+      "destination": "GLOSSARY.md",
+      "kind": "rendered",
+      "sha256": "ad1166cb6d5c1c94619501b7c561e57e4956e78c997c5e0b79c8689bef59e285",
+      "placement": "region"
     },
     {
       "destination": "dist-workspace.toml",
       "kind": "seeded",
-      "sha256": "028b96d7732600d9862f46a61675f7a17495ba03cdb863ae4e68bb35a762778b",
-      "baseline_sha256": "028b96d7732600d9862f46a61675f7a17495ba03cdb863ae4e68bb35a762778b"
+      "sha256": "de60448337b2c1224135f989fb9532e9a13fba9e73a051f69b3faf09578398f9"
     },
     {
       "destination": "release-plz.toml",
       "kind": "seeded",
-      "sha256": "0983ed155c83959d08f4446b91fb9dfcfebc80284babe49969bed4eaa0e55f1d",
-      "baseline_sha256": "0983ed155c83959d08f4446b91fb9dfcfebc80284babe49969bed4eaa0e55f1d"
+      "sha256": "797a67290d666861204e974fab756da670d46c1e89200bd0d1df9efb089175fa"
     }
   ],
   "pins": {
@@ -59,9 +83,6 @@
     "dist-checkout": "6",
     "dist-download-artifact": "8",
     "dist-upload-artifact": "7",
-    "magic-nix-cache-action": "13",
-    "nix-image": "2.35.2",
-    "nix-installer-action": "19",
     "pre-commit-hooks": "6.0.0",
     "release-plz": "0.3.160",
     "rust-toolchain": "stable"

@@ -1,0 +1,4 @@
+# release-kit writes .release-kit/config.toml whole, in its own layout, and a
+# generated file keeps its generator's form (see the note above `repos:` in
+# .pre-commit-config.yaml), so taplo formats every other TOML file and not it.
+exclude = [".release-kit/config.toml"]

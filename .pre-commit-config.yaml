@@ -29,7 +29,8 @@ default_stages: [pre-commit]
 
 # A generated file follows its generator. The files a tool writes keep that
 # tool's own form: release-plz's `CHANGELOG.md`, the lock files of cargo, nix
-# and npm, release-kit's `.release-kit/manifest.json`, and the two workflows
+# and npm, release-kit's `.release-kit/manifest.json` and
+# `.release-kit/config.toml`, and the two workflows
 # release-kit renders, `pr-title.yml` and `release-plz.yml`, and cargo-dist's
 # `release.yml`. No hook below
 # rewrites one of them or judges its prose, and no generator is configured to
@@ -40,7 +41,8 @@ default_stages: [pre-commit]
 # lanes.
 # Each exclusion sits in the tool's own configuration where the tool has one,
 # so a direct run agrees with the hook: `dprint.json`, `dprint.markdown.json`,
-# `.markdownlint-cli2.jsonc`, `_typos.toml`, `.editorconfig-checker.json`. A
+# `.markdownlint-cli2.jsonc`, `_typos.toml`, `.editorconfig-checker.json`,
+# `.taplo.toml`. A
 # hook with no configuration of its own carries it in its `exclude:`. Never in
 # the top-level `exclude:`, which would also hide the file from the secret,
 # large-file and merge-conflict reads.
@@ -49,7 +51,9 @@ repos:
 # The release convention's hooks. Install every stage they run at:
 # pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
 # A CI sweep commits nothing, so a job running pre-commit against a trunk
-# checkout sets SKIP=no-commit-to-branch,rk-worktree-location in its environment.
+# checkout sets SKIP=no-commit-to-branch,rk-worktree-location in its environment. Append the id of
+# every check this project classifies local-only: the value is a list the
+# project owns the tail of.
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v4.4.0
     hooks:
@@ -81,14 +85,14 @@ repos:
         language: system
         always_run: true
         pass_filenames: false
-        entry: sh -c '[ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] || exit 0; branch=$(git symbolic-ref --quiet --short HEAD) || { echo "this project works in worktrees — the main checkout takes no commit, detached included; rk worktree add <branch> seats work in its own worktree" >&2; exit 1; }; [ "$branch" = master ] && exit 0; echo "this project works in worktrees — the main checkout takes no branch commit, as the forge trunk takes no direct push; rk worktree add $branch gives this branch its own worktree" >&2; exit 1'
+        entry: sh -c '[ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] || exit 0; branch=$(git symbolic-ref --quiet --short HEAD) || { echo "this project works in worktrees — the main checkout takes no commit, detached included; rk worktree add <branch> seats work in its own worktree" >&2; exit 1; }; [ "$branch" = master ] && exit 0; echo "this project works in worktrees — the main checkout holds the trunk and takes no branch commit; rk worktree add $branch gives this branch its own worktree" >&2; exit 1'
       - id: rk-no-push-to-trunk
         name: rk no push to trunk
         stages: [pre-push]
         language: system
         always_run: true
         pass_filenames: false
-        entry: sh -c '[ "$PRE_COMMIT_REMOTE_BRANCH" != refs/heads/master ] || { echo "the trunk takes no direct push; it is written through squash-merged pull requests alone" >&2; exit 1; }'
+        entry: sh -c '[ "$PRE_COMMIT_REMOTE_BRANCH" != refs/heads/master ] || { echo "the trunk takes no direct push; it is written through merged requests alone" >&2; exit 1; }'
       - id: rk-no-hand-authored-tag
         name: rk no hand-authored tag
         stages: [pre-push]
@@ -115,7 +119,7 @@ repos:
         stages: [pre-commit]
         # The generated files (see the note above `repos:`). The two fixers
         # have no configuration of their own, so the list is written here once.
-        exclude: &generated '^(CHANGELOG\.md|Cargo\.lock|flake\.lock|nix/flake\.lock|slides/package-lock\.json|\.release-kit/manifest\.json|\.github/workflows/(pr-title|release-plz|release)\.yml)$'
+        exclude: &generated '^(CHANGELOG\.md|Cargo\.lock|flake\.lock|nix/flake\.lock|slides/package-lock\.json|\.release-kit/(manifest\.json|config\.toml)|\.github/workflows/(pr-title|release-plz|release)\.yml)$'
       - id: end-of-file-fixer
         stages: [pre-commit]
         exclude: *generated

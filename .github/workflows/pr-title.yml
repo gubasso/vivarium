@@ -14,6 +14,8 @@
 name: pr-title
 
 on:
+  # zizmor: ignore[dangerous-triggers] the trigger is what makes this gate
+  # unforgeable, and the header above states why it is safe here.
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
 
