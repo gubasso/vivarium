@@ -6,7 +6,7 @@ status: masked
 severity: medium
 external_system:
   name: cargo-dist
-  pinned_version: 0.32.0
+  pinned_version: 0.34.0
 affected_checks:
   - zizmor
   - actionlint-system
