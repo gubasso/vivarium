@@ -17,11 +17,11 @@
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
     # The release convention's own tool, pinned at a release tag. `.envrc` runs
-    # `rk devshell sync` on directory entry, at most once a day, which moves
+    # `rk self-depend sync` on directory entry, at most once a day, which moves
     # this tag and the lock together and leaves a two-file diff to review. One
     # project runs one `rk`: this pin, never a host install beside it.
     release-kit = {
-      url = "github:gubasso/release-kit/v0.9.1";
+      url = "github:gubasso/release-kit/v0.9.2";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
