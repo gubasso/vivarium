@@ -813,7 +813,7 @@ repos:
   # Uses the node variant.
   # nodeenv cannot provision a usable Node here, so language_version: system
   # selects the flake's nodejs runtime — the same Nix-owns-the-runtime pattern
-  # used by the typos/committed/dprint system hooks above.
+  # used by the dprint system hooks above.
   - repo: local
     hooks:
       # owner: devshell (no-hook-language) a script of this repository, run by the devShell python3.

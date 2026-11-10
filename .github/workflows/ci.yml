@@ -98,7 +98,9 @@ jobs:
         # The commit-msg stage is the one installed hook type `pre-commit run
         # --all-files` cannot replay — it lints a message, not files — so the
         # `committed` gate gets its own lane over the commits each event
-        # proposes, with the same leniency flags the local hook carries. A
+        # proposes. pre-commit owns committed, so the lane hands each message
+        # to the same hook, with the leniency flags it carries. A merge commit
+        # carries a message the forge writes, so the lane skips it. A
         # pull request anchors at its base branch; a push anchors at the
         # ref's previous tip (`github.event.before`), which is all zeros only
         # while the ref is being created — that one push has no anchor and is
@@ -120,7 +122,12 @@ jobs:
             echo "no previous tip to anchor a message range; skipping"
             exit 0
           fi
-          nix develop --command committed --fixup --wip "${RANGE_START}..${RANGE_END}"
+          msg="$RUNNER_TEMP/commit-msg"
+          for sha in $(git rev-list --no-merges --reverse "${RANGE_START}..${RANGE_END}"); do
+            echo "commit message of $sha"
+            git log -1 --format=%B "$sha" > "$msg"
+            nix develop --command pre-commit run committed --hook-stage commit-msg --commit-msg-filename "$msg"
+          done
 
   # Every push-stage hook a runner can serve, one job each.
   #
