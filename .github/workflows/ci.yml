@@ -123,7 +123,8 @@ jobs:
             exit 0
           fi
           msg="$RUNNER_TEMP/commit-msg"
-          for sha in $(git rev-list --no-merges --reverse "${RANGE_START}..${RANGE_END}"); do
+          commits=$(git rev-list --no-merges --reverse "${RANGE_START}..${RANGE_END}") || exit "$?"
+          for sha in $commits; do
             echo "commit message of $sha"
             git log -1 --format=%B "$sha" > "$msg"
             nix develop --command pre-commit run committed --hook-stage commit-msg --commit-msg-filename "$msg"
