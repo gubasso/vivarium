@@ -9,7 +9,7 @@ external_system:
   pinned_version: 0.34.0
 affected_checks:
   - zizmor
-  - actionlint-system
+  - actionlint
 upstream_issue: https://github.com/axodotdev/cargo-dist/issues/2320
 mask:
   state: active

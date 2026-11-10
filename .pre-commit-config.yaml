@@ -198,16 +198,21 @@ repos:
 
   # --- Shell and Python: lint + format ---
   #
-  # The upstream hooks, which pre-commit builds: shellcheck-py and
-  # scop/pre-commit-shfmt ship static binaries in their wheels, and
-  # ruff-pre-commit ships ruff. The host supplies the standard ELF loader for
-  # any dynamically linked wheel (nix-ld on a NixOS host). Each keeps the
-  # selectors and the arguments the local hooks had; the shfmt and ruff
-  # manifests name more stages than the commit stage, so `stages:` is explicit.
-  - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.11.0.1
+  # shellcheck stays a devShell tool, because actionlint, a managed hook, runs
+  # the shellcheck on PATH over the `run:` scripts of the workflows. shfmt and
+  # ruff take their upstream hooks, which pre-commit builds: scop/pre-commit-shfmt
+  # ships a static binary, and ruff-pre-commit ships ruff. The host supplies the
+  # standard ELF loader for any dynamically linked wheel (nix-ld on a NixOS
+  # host). Each keeps the selectors and the arguments the local hooks had; the
+  # shfmt and ruff manifests name more stages than the commit stage, so
+  # `stages:` is explicit.
+  - repo: local
     hooks:
+      # owner: devshell (outside-caller) actionlint runs the shellcheck on PATH, so the hook runs the same one.
       - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: system
         types: [shell]
         require_serial: true
   - repo: https://github.com/scop/pre-commit-shfmt
@@ -660,7 +665,7 @@ repos:
   # the subject is the repository's shape, not the file it was reached through.
   - repo: local
     hooks:
-      # owner: devshell (no-hook-language) a script of this repository.
+      # owner: host (no-hook-language) a script of this repository that calls bash and nix.
       - id: flake-boundary
         name: root flake is the dev environment only
         entry: scripts/check-flake-boundary
@@ -682,7 +687,7 @@ repos:
         files: ^(\.pre-commit-config\.yaml|\.config/nextest\.toml|Cargo\.toml|\.github/workflows/ci\.yml|scripts/check-lane-register|tests/(host/[^/]+|[^/]+\.rs))$
         stages: [pre-commit]
 
-      # owner: devshell (no-hook-language) a script of this repository.
+      # owner: host (no-hook-language) a script of this repository that calls bash and grep.
       - id: verification-boundary
         name: product imports verification only through its publication surface
         entry: scripts/check-verification-boundary
