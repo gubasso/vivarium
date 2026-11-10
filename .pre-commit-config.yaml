@@ -1,5 +1,11 @@
 # Nix owns runtimes; pre-commit owns hooks.
 default_install_hook_types: [pre-commit, commit-msg, pre-push]
+# The node hook runs on the devShell nodejs. Without this line an empty
+# pre-commit cache can pick `default`, and nodeenv then fails on a prerelease
+# entry of the node index: "invalid literal for int() with base 10: '0-alpha'"
+# (2026-11-10).
+default_language_version:
+  node: system
 
 # One stage per claim (ADR-0101). Without this line an unstaged hook runs at
 # every installed stage, so the whole commit-stage set silently re-ran on
@@ -159,6 +165,7 @@ repos:
   # may strip PATH, and formatting is already applied by commit time.
   - repo: local
     hooks:
+      # owner: devshell (no-hook-language) upstream dprint publishes no pre-commit hook.
       - id: dprint
         name: dprint fmt (json/jsonc)
         # --allow-no-files because pre-commit splits the matched paths into
@@ -189,39 +196,47 @@ repos:
         # `.editorconfig-checker.json`, which a direct run reads too.
         exclude: '\.md$'
 
-  # --- Rust: format & lint (auto-fix) ---
+  # --- Shell and Python: lint + format ---
+  #
+  # shellcheck stays a devShell tool, because actionlint, a managed hook, runs
+  # the shellcheck on PATH over the `run:` scripts of the workflows. shfmt and
+  # ruff take their upstream hooks, which pre-commit builds: scop/pre-commit-shfmt
+  # ships a static binary, and ruff-pre-commit ships ruff. The host supplies the
+  # standard ELF loader for any dynamically linked wheel (nix-ld on a NixOS
+  # host). Each keeps the selectors and the arguments the local hooks had; the
+  # shfmt and ruff manifests name more stages than the commit stage, so
+  # `stages:` is explicit.
   - repo: local
     hooks:
-      # Nix supplies these binaries because managed hooks that ship prebuilt
-      # ELF wheels cannot execute in the repository's non-FHS environments.
-      # Type selectors cover both executable extensionless programs and the
-      # co-located `.sh` sources Nix loads.
+      # owner: devshell (outside-caller) actionlint runs the shellcheck on PATH, so the hook runs the same one.
       - id: shellcheck
         name: shellcheck
         entry: shellcheck
         language: system
         types: [shell]
         require_serial: true
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.13.1-1
+    hooks:
       - id: shfmt
-        name: shfmt
-        entry: shfmt --write -i 2 -ci -bn
-        language: system
+        args: [--write, -i, '2', -ci, -bn]
         types: [shell]
+        stages: [pre-commit]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
       - id: ruff-check
-        name: ruff check
-        entry: ruff check --fix
-        language: system
+        args: [--fix]
         types_or: [python, pyi]
+        stages: [pre-commit]
       - id: ruff-format
-        name: ruff format
-        entry: ruff format
-        language: system
         types_or: [python, pyi]
+        stages: [pre-commit]
 
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.12
     hooks:
-      - id: actionlint-system
+      - id: actionlint
 
   # zizmor is out while cargo-dist's generated `release.yml` fails it, and
   # comes back when the template is fixed: KI-0003 in
@@ -229,6 +244,7 @@ repos:
 
   - repo: local
     hooks:
+      # owner: devshell (project-environment) cargo fmt is part of the Rust toolchain that the devShell pins.
       - id: cargo-fmt
         name: cargo fmt
         entry: cargo fmt --all
@@ -238,6 +254,7 @@ repos:
 
       # --all-targets so test-target lints get an autofix offered here at
       # the commit stage rather than first appearing at the push-only gate.
+      # owner: devshell (project-environment) cargo clippy is part of the Rust toolchain and builds the crate.
       - id: clippy-fix
         name: clippy auto-fix
         entry: tests/host/heavy-run --need 4 --label "clippy auto-fix" -- cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features -- -W clippy::all
@@ -248,6 +265,7 @@ repos:
       # Push-only: the commit stage already pays clippy-fix's compile, and
       # cargo-nextest-unit compiles the crate there, so what escapes to push
       # is lint-level findings only, never a compile error.
+      # owner: devshell (project-environment) cargo clippy is part of the Rust toolchain and builds the crate.
       - id: clippy-strict
         name: clippy gate
         entry: tests/host/heavy-run --need 4 --label "the clippy gate" -- cargo clippy --all-targets --all-features -- -D warnings
@@ -256,6 +274,7 @@ repos:
         pass_filenames: false
         stages: [pre-push, manual]
 
+      # owner: devshell (no-hook-language) upstream taplo publishes no pre-commit hook.
       - id: taplo-format
         name: taplo format
         entry: taplo format
@@ -292,6 +311,7 @@ repos:
   # never compile, and the lane passes with them unrun.
   - repo: local
     hooks:
+      # owner: devshell (project-environment) cargo nextest runs a test lane of the crate.
       - id: test-unit
         name: test unit (needs nothing)
         entry: tests/host/heavy-run --need 4 --label "the unit lane" -- cargo nextest run --profile unit --all-features
@@ -303,6 +323,7 @@ repos:
         # commit stage at all.
         stages: [pre-commit, pre-push, manual]
 
+      # owner: devshell (project-environment) cargo nextest runs a test lane of the crate.
       - id: test-local
         name: test local (needs the built viv)
         entry: tests/host/heavy-run --need 6 --label "the local lane" -- cargo nextest run --profile local --all-features
@@ -311,6 +332,7 @@ repos:
         pass_filenames: false
         stages: [pre-push, manual]
 
+      # owner: devshell (project-environment) cargo nextest runs a test lane of the crate.
       - id: test-eval
         name: test eval (needs nix)
         entry: tests/host/heavy-run --need 8 --label "the eval lane" -- cargo nextest run --profile eval --all-features
@@ -319,6 +341,7 @@ repos:
         pass_filenames: false
         stages: [pre-push, manual]
 
+      # owner: devshell (project-environment) cargo nextest runs a test lane of the crate.
       - id: test-net
         name: test net (needs unprivileged namespaces)
         entry: tests/host/heavy-run --need 4 --label "the net lane" -- cargo nextest run --profile net --all-features
@@ -327,6 +350,7 @@ repos:
         pass_filenames: false
         stages: [pre-push, manual]
 
+      # owner: devshell (project-environment) cargo nextest runs a test lane of the crate.
       - id: test-boot
         name: test boot (needs a virtualization-capable host)
         entry: tests/host/heavy-run --need 12 --label "the boot lane" -- cargo nextest run --profile boot --all-features
@@ -340,6 +364,7 @@ repos:
         files: '^(src/|nix/|tests/(boot_|support/)|Cargo\.(toml|lock)$|rust-toolchain\.toml$)'
         stages: [pre-push, manual]
 
+      # owner: devshell (project-environment) cargo test --doc runs the doctests of the crate.
       - id: test-doc
         name: test doc (doctests)
         # nextest cannot run doctests, so this is `cargo test --doc` and stays
@@ -370,6 +395,7 @@ repos:
   # `docs/reference/microvm-verification-harness.md` says what each one proves.
   - repo: local
     hooks:
+      # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: lane-base-image
         name: lane base-image (builds and boots the base image)
         entry: tests/host/base-image-check
@@ -378,6 +404,7 @@ repos:
         pass_filenames: false
         verbose: true
         stages: [manual]
+      # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: lane-contract-skew
         name: lane contract-skew (the pre-boot refusal, twice)
         entry: tests/host/contract-skew-check
@@ -386,6 +413,7 @@ repos:
         pass_filenames: false
         verbose: true
         stages: [manual]
+      # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: lane-exec-and-shell
         name: lane exec-and-shell (the two session verbs, twice)
         entry: tests/host/exec-and-shell-check
@@ -394,6 +422,7 @@ repos:
         pass_filenames: false
         verbose: true
         stages: [manual]
+      # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: lane-generations
         name: lane generations (runs the whole-store viv gc)
         entry: tests/host/generations-check
@@ -402,6 +431,7 @@ repos:
         pass_filenames: false
         verbose: true
         stages: [manual]
+      # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: lane-guest-agent
         name: lane guest-agent (the control plane, twice)
         entry: tests/host/guest-agent-check
@@ -410,6 +440,7 @@ repos:
         pass_filenames: false
         verbose: true
         stages: [manual]
+      # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: lane-guest-system
         name: lane guest-system (an example manifest reaches a derivation)
         entry: tests/host/guest-system-check
@@ -418,6 +449,7 @@ repos:
         pass_filenames: false
         verbose: true
         stages: [manual]
+      # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: lane-share-benchmark
         name: lane share-benchmark (the virtiofsd pool sweep)
         entry: tests/host/share-benchmark-check
@@ -426,6 +458,7 @@ repos:
         pass_filenames: false
         verbose: true
         stages: [manual]
+      # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: lane-store-density
         name: lane store-density (bytes per inode; boots nothing)
         entry: tests/host/store-density-check
@@ -434,6 +467,7 @@ repos:
         pass_filenames: false
         verbose: true
         stages: [manual]
+      # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: lane-store-gc-interlock
         name: lane store-gc-interlock (deletes from the host store)
         entry: tests/host/store-gc-interlock-check
@@ -442,6 +476,7 @@ repos:
         pass_filenames: false
         verbose: true
         stages: [manual]
+      # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: lane-store-pressure
         name: lane store-pressure (a real space crossing; the longest lane)
         entry: tests/host/store-pressure-check
@@ -450,6 +485,7 @@ repos:
         pass_filenames: false
         verbose: true
         stages: [manual]
+      # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: lane-update
         name: lane update (the user moves a pin and reads the guest)
         entry: tests/host/update-check
@@ -459,33 +495,43 @@ repos:
         verbose: true
         stages: [manual]
 
-  # --- Spell check + commit-message linting (both from the devShell) ---
-  # Both use `language: system` off the flake devShell, NOT the crate-ci repo
-  # hooks. Those are `language: python` and their wheels ship PREBUILT,
-  # dynamically-linked binaries whose interpreter is /lib64/ld-linux-x86-64.so.2.
-  # A dctl agents container has no FHS, so exec'ing one fails with
-  # `[Errno 2] No such file or directory` naming the binary that plainly exists.
-  # A Nix build of the same tool actually runs. Same pattern as
-  # nixfmt/statix/deadnix below; version parity is flake.nix's job, not a `rev:`.
+  # deadnix publishes a rust hook, which pre-commit builds; its manifest
+  # carries --fail and the nix file type.
+  - repo: https://github.com/astro/deadnix
+    rev: v1.3.2
+    hooks:
+      - id: deadnix
+        stages: [pre-commit]
   - repo: local
     hooks:
+      # A flake holds no language library: a package belongs to the manifest
+      # of its stack, and the devShell keeps the toolchain.
+      - id: no-language-library-in-flake
+        name: a flake holds no language library
+        language: pygrep
+        entry: '^(?!\s*#).*(withPackages|python3[0-9]*Packages\.|pythonPackages\.|nodePackages\.|perlPackages\.)'
+        files: '(^|/)flake\.nix$|(^|/)nix/.*\.nix$'
+
+  # --- Spell check + commit-message linting ---
+  # The crate-ci `language: python` hooks, pinned at the versions the devShell
+  # carried. Their wheels hold prebuilt binaries that link the standard ELF
+  # loader, which every host now supplies (nix-ld on a NixOS host).
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.47.2
+    hooks:
       - id: typos
-        name: typos
-        entry: typos
         args: [--write-changes, --force-exclude]
-        language: system
         types: [text]
         # No pre-push: --write-changes makes this an autofixer, and a hook
         # that rewrites files never runs at push (see default_stages above).
         # --force-exclude makes `_typos.toml`'s exclusion of the generated
         # files hold for the paths pre-commit passes, too.
         stages: [pre-commit, pre-merge-commit, manual]
-
+  - repo: https://github.com/crate-ci/committed
+    rev: v1.1.11
+    hooks:
       - id: committed
-        name: committed
-        entry: committed
         args: [--fixup, --wip, --commit-file]
-        language: system
         stages: [commit-msg]
 
   # --- Secret scanning (pre-commit, fast) ---
@@ -516,6 +562,7 @@ repos:
       # reads the same RustSec database and adds yanked-crate coverage, so
       # one policy file (deny.toml) owns advisory, ban, source-registry,
       # and license posture, and one command reports all four.
+      # owner: devshell (project-environment) cargo deny is a cargo subcommand that reads the lock file of the crate.
       - id: cargo-deny
         name: cargo deny
         entry: cargo deny check advisories bans sources licenses
@@ -526,32 +573,30 @@ repos:
   # --- Nix: format (auto-fix) + lint (gate) ---
   #
   # Every project carries a per-project flake devShell, so these run against its
-  # Nix sources. Tools come from that devShell (nix develop / direnv) and run as
-  # system hooks off PATH, like dprint/cargo-fmt. nixfmt (RFC 166, the
-  # nixpkgs-standard formatter) rewrites in place; statix and deadnix are
+  # Nix sources. nixfmt and statix come from that devShell (nix develop /
+  # direnv) and run as system hooks off PATH, like dprint/cargo-fmt; nixfmt is
+  # also the flake's formatter for `nix fmt`. deadnix runs as its upstream rust
+  # hook below. nixfmt (RFC 166, the nixpkgs-standard formatter) rewrites in
+  # place; statix and deadnix are
   # report-only gates — fix by hand or allowlist. statix walks the tree itself,
   # so its scope/ignore lives in the sibling `./statix.toml`. `nix flake check`
   # evaluates the flake and is scoped to Nix changes, at the pre-push stage.
   - repo: local
     hooks:
+      # owner: devshell (outside-caller) nix fmt and the base-image lane run the flake's pkgs.nixfmt, so the hook runs the same one.
       - id: nixfmt
         name: nixfmt (format)
         entry: nixfmt
         language: system
         types: [nix]
         stages: [pre-commit]
+      # owner: devshell (no-hook-language) statix has no hook in a language that pre-commit builds.
       - id: statix
         name: statix (nix anti-patterns)
         entry: statix check
         language: system
         types: [nix]
         pass_filenames: false
-        stages: [pre-commit]
-      - id: deadnix
-        name: deadnix (dead code)
-        entry: deadnix --fail
-        language: system
-        types: [nix]
         stages: [pre-commit]
       # Two flake-evaluation hooks, each triggered by exactly the files its
       # flake contains — a predecessor fired on every `.nix` file while
@@ -562,6 +607,7 @@ repos:
       # and that lane is tests/host/base-image-check behind
       # disk-preflight — a separation the disk-preflight rule requires,
       # not an omission.
+      # owner: host (no-hook-language) nix comes from the host; tests/host/heavy-run is a script of this repository.
       - id: dev-flake-check
         name: root dev flake evaluates (devShells + formatter only)
         entry: tests/host/heavy-run --need 2 --label "the root dev flake check" -- nix flake check
@@ -572,6 +618,7 @@ repos:
       # ~14s warm (measured 2026-08-14): instantiates the three product
       # checks without realising them, proving the product flake evaluates
       # and its checks are constructible.
+      # owner: host (no-hook-language) nix comes from the host; tests/host/heavy-run is a script of this repository.
       - id: product-flake-check
         name: product flake evaluates (checks instantiate, no build)
         entry: tests/host/heavy-run --need 4 --label "the product flake check" -- nix flake check --no-build path:.?dir=nix
@@ -618,6 +665,7 @@ repos:
   # the subject is the repository's shape, not the file it was reached through.
   - repo: local
     hooks:
+      # owner: host (no-hook-language) a script of this repository that calls bash and nix.
       - id: flake-boundary
         name: root flake is the dev environment only
         entry: scripts/check-flake-boundary
@@ -630,6 +678,7 @@ repos:
       # from the outside exactly like a lane that passes. Same guard as the two
       # above, applied to the test register rather than to the flakes. The
       # script's docstring carries the six rules.
+      # owner: devshell (no-hook-language) a script of this repository, run by the devShell python3.
       - id: check-lane-register
         name: the lane register agrees with itself
         entry: scripts/check-lane-register
@@ -638,6 +687,7 @@ repos:
         files: ^(\.pre-commit-config\.yaml|\.config/nextest\.toml|Cargo\.toml|\.github/workflows/ci\.yml|scripts/check-lane-register|tests/(host/[^/]+|[^/]+\.rs))$
         stages: [pre-commit]
 
+      # owner: host (no-hook-language) a script of this repository that calls bash and grep.
       - id: verification-boundary
         name: product imports verification only through its publication surface
         entry: scripts/check-verification-boundary
@@ -653,6 +703,7 @@ repos:
   # syntax it inspects.
   - repo: local
     hooks:
+      # owner: devshell (no-hook-language) a script of this repository, run by the devShell python3.
       - id: markdown-no-emphasis
         name: markdown contains no bold or italics
         entry: scripts/check-markdown-emphasis
@@ -687,6 +738,7 @@ repos:
   # thing. Fix a violation by escaping the pipe as `\|`, never by reflowing.
   - repo: local
     hooks:
+      # owner: devshell (no-hook-language) a script of this repository, run by the devShell python3.
       - id: markdown-table-pipes
         name: table-row code spans must escape `|` as `\|`
         entry: scripts/check-table-pipes
@@ -703,6 +755,7 @@ repos:
 
   - repo: local
     hooks:
+      # owner: devshell (no-hook-language) upstream dprint publishes no pre-commit hook.
       - id: dprint-markdown
         name: dprint fmt (markdown)
         # --allow-no-files for the reason the json hook above gives:
@@ -760,9 +813,10 @@ repos:
   # Uses the node variant.
   # nodeenv cannot provision a usable Node here, so language_version: system
   # selects the flake's nodejs runtime — the same Nix-owns-the-runtime pattern
-  # used by the typos/committed/dprint system hooks above.
+  # used by the dprint system hooks above.
   - repo: local
     hooks:
+      # owner: devshell (no-hook-language) a script of this repository, run by the devShell python3.
       - id: markdown-heading-shapes
         name: markdown heading shapes are owned and wired one-to-one
         entry: scripts/check-markdown-heading-shapes
@@ -821,6 +875,7 @@ repos:
   # than letting npm report it as a missing script.
   - repo: local
     hooks:
+      # owner: slides/package.json (project-environment) npm builds the deck from its own lock file.
       - id: slidev-build
         name: slidev build (deck still compiles)
         # Gated like its neighbours at this stage, and the honest note is that
@@ -854,6 +909,7 @@ repos:
   # — and this one always passes. A push is never blocked by what is on a disk.
   - repo: local
     hooks:
+      # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: leftovers
         name: leftover sweep (report only)
         entry: tests/host/leftovers

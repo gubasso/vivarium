@@ -53,7 +53,7 @@ tracked:
     last_checked: 2026-11-02
     cadence: 30d and on each cargo-dist release
     why: The generated workflow fails zizmor, so zizmor is out of this project's checks and actionlint accepts SC2086 and SC2129 for this file, until cargo-dist fixes its template (KI-0003, axodotdev/cargo-dist#2320).
-    revalidate: Read axodotdev/cargo-dist#2320 and the newest cargo-dist release notes. In a scratch copy, set cargo-dist-version to the newest release, run dist generate --mode ci, and run zizmor --no-progress --offline and actionlint on the generated release.yml. When both pass with no acceptance, bump cargo-dist-version, commit the generated release.yml, bring the zizmor hook and the devshell's zizmor back, delete the release.yml entry of .github/actionlint.yaml, and resolve KI-0003. Otherwise advance last_checked.
+    revalidate: Read axodotdev/cargo-dist#2320 and the newest cargo-dist release notes. In a scratch copy, set cargo-dist-version to the newest release, run dist generate --mode ci, and run zizmor through pre-commit try-repo https://github.com/zizmorcore/zizmor-pre-commit zizmor --files .github/workflows/release.yml and actionlint through pre-commit run actionlint --files .github/workflows/release.yml, with the release.yml entry of .github/actionlint.yaml removed. When both pass with no acceptance, bump cargo-dist-version, commit the generated release.yml, bring zizmor back as the upstream zizmorcore/zizmor-pre-commit hook, delete the release.yml entry of .github/actionlint.yaml, and resolve KI-0003. Otherwise advance last_checked.
     dependents:
       - dist-workspace.toml
       - .github/actionlint.yaml

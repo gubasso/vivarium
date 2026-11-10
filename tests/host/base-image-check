@@ -447,7 +447,12 @@ else
   # shellcheck disable=SC2329
   statix_check() { (cd "$REPO_ROOT" && nix develop "$DEV_FLAKE_REF" --command statix check); }
   run_check "statix" statix_check
-  run_check "deadnix" nix develop "$DEV_FLAKE_REF" --command deadnix --fail "${nix_files[@]}"
+  # pre-commit owns deadnix: the upstream hook carries --fail and runs the
+  # same version as a commit. It takes paths relative to the repository root.
+  # Invoked indirectly by `run_check` through its command argument vector.
+  # shellcheck disable=SC2329
+  deadnix_check() { (cd "$REPO_ROOT" && nix develop "$DEV_FLAKE_REF" --command pre-commit run deadnix --files "${all_nix_files[@]}"); }
+  run_check "deadnix" deadnix_check
 
   # The HOST tier boots, and every host-tier check here — console fidelity, free
   # page reporting, the store spike, the persistence pair, delete-duplicate,

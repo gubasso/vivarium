@@ -31,6 +31,6 @@ vivarium follows cargo-dist natively: the generated file is never edited, and no
 
 ## Recheck condition
 
-Recheck on each cargo-dist release, as [`../../tracking.yaml`](../../tracking.yaml) schedules. In a scratch copy, set `cargo-dist-version` to the newest release, run `dist generate --mode ci`, then run `zizmor --no-progress --offline .github/workflows/release.yml` and `actionlint` without the `release.yml` entry of `.github/actionlint.yaml`.
+Recheck on each cargo-dist release, as [`../../tracking.yaml`](../../tracking.yaml) schedules. In a scratch copy, set `cargo-dist-version` to the newest release, run `dist generate --mode ci`, then run zizmor with `pre-commit try-repo https://github.com/zizmorcore/zizmor-pre-commit zizmor --files .github/workflows/release.yml`, and remove the `release.yml` entry of `.github/actionlint.yaml` and run `pre-commit run actionlint --files .github/workflows/release.yml`.
 
-The case resolves when both pass. Then bump `cargo-dist-version`, commit the generated `release.yml`, restore the zizmor hook and the devshell's zizmor, delete the `release.yml` entry of `.github/actionlint.yaml`, and collapse this dossier under `resolved/`.
+The case resolves when both pass. Then bump `cargo-dist-version`, commit the generated `release.yml`, restore zizmor as the upstream `zizmorcore/zizmor-pre-commit` hook, delete the `release.yml` entry of `.github/actionlint.yaml`, and collapse this dossier under `resolved/`.
