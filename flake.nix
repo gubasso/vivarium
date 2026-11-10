@@ -87,27 +87,22 @@
             pkgs.python3
             # Binary for the language:system taplo-format hook.
             pkgs.taplo
-            # Nix quality tools for the pre-commit `_nix` overlay hooks
-            # (nixfmt/statix/deadnix run as language:system off PATH).
+            # Nix tools of the system hooks: nixfmt, which `nix fmt` and the
+            # base-image lane run too (the formatter above), and statix, which
+            # has no upstream hook. deadnix, typos, committed, shfmt, ruff, and
+            # actionlint run as upstream hooks that pre-commit builds, so they
+            # have no package here, and a language library never enters this
+            # shell.
             pkgs.nixfmt
             pkgs.statix
-            pkgs.deadnix
-            # Shell, Python, and Actions linting use the same Nix-owned runtime
-            # model as the existing local hooks below.
+            # actionlint, a hook that pre-commit builds, runs shellcheck from
+            # PATH on the `run:` scripts of the workflows it reads.
             pkgs.shellcheck
-            pkgs.shfmt
-            pkgs.ruff
-            pkgs.actionlint
-            # typos + committed also run as language:system off PATH. The
-            # crate-ci pre-commit hooks are `language: python` and their wheels
-            # ship prebuilt, dynamically-linked binaries, which cannot exec in a
-            # dctl agents container (no FHS: no /lib64/ld-linux-x86-64.so.2).
-            # A Nix build runs. See the hook comments in .pre-commit-config.yaml.
-            pkgs.typos
-            pkgs.committed
-            # dprint (the `dprint`/`dprint-markdown` hooks) is the same story:
-            # `language: system`, resolved off PATH, and a cargo-installed
-            # dprint is a prebuilt glibc ELF that cannot exec without FHS.
+            # rustup-init, which pre-commit runs to build the rust hooks
+            # (ripsecrets, deadnix), downloads with curl.
+            pkgs.curl
+            # dprint (the `dprint`/`dprint-markdown` hooks): upstream publishes
+            # no pre-commit hook, so the hooks run it off PATH from here.
             pkgs.dprint
             # `scripts/baseline-pins` reads `nix flake archive --json` with it,
             # and `scripts/install-dev` reaches that script through this shell.
