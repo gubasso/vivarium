@@ -16,6 +16,10 @@ The command-line tool resolves the manifest, builds the VM with Nix, mounts the 
 - Disposable: project work remains in the user's version-controlled host directory, so rebuilding is the recovery path.
 - User-based: state lives under standard per-user XDG directories.
 
+## Supported hosts
+
+vivarium runs only on Linux, on `x86_64` and `aarch64`, and it needs KVM. Each GitHub release carries binaries and a shell installer for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. No macOS or Windows build exists.
+
 ## Never put a secret in the store
 
 A secret must never enter a Nix build. The store is world-readable by construction, and every guest reads the shared store. The manifest is compiled into a generated flake, so its text also reaches the store.
