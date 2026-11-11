@@ -152,7 +152,7 @@ failure-output = "immediate-final"
 # processes and 39% busy.
 #
 # The compile, not the tests, fills the CPUs: a recompile after an edit takes
-# about 2.3s and peaks at 92-97% busy. `build.jobs` is not set, because at
+# about 2.3s and peaks at 92-94% busy. `build.jobs` is not set, because at
 # `CARGO_BUILD_JOBS=8` the same recompile still peaked at 86-98% busy and took
 # 3.0-4.8s. A jobs cap stretches the burst and does not lower it.
 [profile.local]
