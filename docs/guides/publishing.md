@@ -1,6 +1,6 @@
 # Publish a vivarium release
 
-Use this guide to cut a vivarium release and attach binary artifacts to the corresponding GitHub release. vivarium does not publish to [crates.io](https://crates.io) while [`KI-0004`](../reference/known-issues/KI-0004/README.md) is open, so the crates.io steps below wait for its fix. This repository runs the release-kit convention, so the convention owns the procedure and this page owns what is specific to vivarium. Read `rk method operate` for the release itself and `rk guide release` for its commands. Helper scripts live under `scripts/` (`publish-dry`, `publish`, `release`). Their authentication checks confirm only that crates.io credentials are configured; they do not validate a token.
+Use this guide to cut a vivarium release, publish the crate to [crates.io](https://crates.io), and attach binary artifacts to the corresponding GitHub release. A crates.io install works only on Linux, like the binaries. This repository runs the release-kit convention, so the convention owns the procedure and this page owns what is specific to vivarium. Read `rk method operate` for the release itself and `rk guide release` for its commands. Helper scripts live under `scripts/` (`publish-dry`, `publish`, `release`). Their authentication checks confirm only that crates.io credentials are configured; they do not validate a token.
 
 ## The branch model
 
@@ -12,7 +12,9 @@ Because the changelog is built from the squash titles and bodies that land on `m
 
 release-plz runs under a GitHub App token (secrets `RELEASE_BOT_APP_ID` and `RELEASE_BOT_APP_PRIVATE_KEY`), because a tag pushed with the default `GITHUB_TOKEN` starts no further workflow. The App token is what makes the tag push trigger the cargo-dist build in `release.yml`.
 
-First-time crates.io setup — creating a scoped `publish-new` token, `cargo login`, the first manual `cargo publish`, then configuring Trusted Publishing and revoking the token — is a one-time manual requirement, not part of routine maintenance. See the crates.io Trusted Publishing docs: <https://crates.io/docs/trusted-publishing>.
+The crate `vivarium` publishes through crates.io Trusted Publishing. crates.io registers `gubasso/vivarium` with the workflow `release-plz.yml` and no environment, so the release job mints a short-lived token over OIDC, and the repository stores no crates.io secret. See the crates.io Trusted Publishing docs: <https://crates.io/docs/trusted-publishing>.
+
+release-plz reads the last release from crates.io. Every version that `Cargo.toml` states must be on crates.io before the next release request opens. If a version reaches a tag but not crates.io, release-plz stops and asks for a manual `cargo publish` of that version. v0.2.0 never reached crates.io, and v0.2.1 was published by hand from its tag, because of the resolved [`KI-0004`](../reference/known-issues/resolved/KI-0004.md). To publish a missing version, follow [Manual release if CI is down](#manual-release-if-ci-is-down) from a checkout of its tag.
 
 ## SemVer policy
 
@@ -25,7 +27,7 @@ You never hand-create the tag, and under the `trunk` style you never merge the r
 1. Land feature work on `master` through a squash-merged pull request, with a scoped Conventional Commit title.
 2. release-plz opens or updates the release request on `master`, bumping the version and the changelog.
 3. Every required check passes, and the request merges itself.
-4. release-plz tags the release (`vX.Y.Z`). It publishes nothing to crates.io, because `release-plz.toml` sets `publish = false` while [`KI-0004`](../reference/known-issues/KI-0004/README.md) is open.
+4. release-plz publishes the crate to crates.io over Trusted Publishing and tags the release (`vX.Y.Z`).
 5. The tag push, made with release-plz's GitHub App token, triggers the cargo-dist `release.yml`, which builds the binaries, attests them, and attaches them to the GitHub release — see [Binary distribution](#binary-distribution-cargo-dist).
 
 ## Local operator release

@@ -41,14 +41,13 @@ tracked:
     dependents:
       - docs/plan/slices/007-build-test-lanes/README.md
   - path: release-plz.toml
-    last_checked: 2026-11-02
-    cadence: on every change to build.rs, Cargo.toml, or crates/vivarium-guest-agent
-    why: release-plz.toml sets publish = false, because cargo package cannot include the nested crates/vivarium-guest-agent that build.rs embeds (KI-0004).
-    revalidate: Run cargo package --locked. When its verification build passes, set publish = true, resolve KI-0004, and amend Q-039 in docs/plan/open-questions.md. Otherwise advance last_checked.
+    last_checked: 2026-11-11
+    cadence: on every change to build.rs or Cargo.toml
+    why: release-plz.toml sets publish = true, which holds only while cargo package verifies with every file that build.rs embeds (KI-0004, resolved).
+    revalidate: Run cargo package --locked, or the package-check step of rk setup check. When it fails, read the recurrence signal of KI-0004 before changing the registry answer. Otherwise advance last_checked.
     dependents:
       - docs/guides/publishing.md
-      - docs/reference/known-issues/KI-0004/README.md
-      - docs/plan/open-questions.md
+      - docs/reference/known-issues/resolved/KI-0004.md
   - path: .github/workflows/release.yml
     last_checked: 2026-11-02
     cadence: 30d and on each cargo-dist release
