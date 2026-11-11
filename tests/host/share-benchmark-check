@@ -372,13 +372,18 @@ fi
 # launch-channel, so the guest system must be byte-identical across variants. If
 # it ever is not, the four boots measure four different guests and the comparison
 # is void — which would otherwise show up as an inexplicably noisy result.
+#
+# Both imports take the checkout as a quoted Nix string. A bare path literal
+# stops at a character such as the `@` of a linked worktree's folder, so
+# `import /x/vivarium@branch/nix` was a parse error, and this check then read
+# "the guest toplevel could not be evaluated".
 guest_drv_of() {
   nix eval --raw --impure --expr "
     let f = builtins.getFlake \"$FLAKE_REF\"; # nix-path-ok: FLAKE_REF holds the git+file reference
-        product = import $REPO_ROOT/nix {
+        product = import \"$REPO_ROOT/nix\" {
           nixpkgs = f.inputs.nixpkgs; microvm = f.inputs.microvm; system = \"$SYSTEM\";
         };
-        verification = import $REPO_ROOT/tests/nix { inherit product; };
+        verification = import \"$REPO_ROOT/tests/nix\" { inherit product; };
     in verification.images.bench.\"$1\".guest.config.system.build.toplevel.drvPath" 2>/dev/null
 }
 ref_drv=$(guest_drv_of "${POOL_SIZES[0]}")
