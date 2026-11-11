@@ -17,7 +17,7 @@ mode = "automatic" # P: automatic, external, or none
 driver = "rust" # P: the technology that states the version and takes the bot; automatic alone
 style = "trunk" # P: trunk or lines; automatic alone
 line_prefix = "release/" # P: release-line branch prefix, rendered into the release triggers; automatic alone
-registry = "none" # P: crates-io or none, where the crate publishes, rust driver alone
+registry = "crates-io" # P: crates-io or none, where the crate publishes, rust driver alone
 
 [git]
 trunk = "master" # P: the one permanent branch, rendered into every artifact naming it
