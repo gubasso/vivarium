@@ -60,8 +60,8 @@ REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
 # used to enter it, not by where its file sits. This form leaves the flake and
 # its lock at `nix/` while making the repository the tree, so `nix/default.nix`
 # can read the Rust crate at `../` in its default layout.
-FLAKE_REF="path:$REPO_ROOT?dir=nix"
-DEV_FLAKE_REF="path:$REPO_ROOT"
+FLAKE_REF="git+file://$REPO_ROOT?dir=nix"
+DEV_FLAKE_REF="git+file://$REPO_ROOT"
 # The trials this lane drives. Named exactly rather than by pattern: a pattern
 # fails open, and a trial it missed would simply not run rather than error.
 TRIALS='test(=workflow_06_exec_usage_surface) + test(=workflow_06_exec_exit_code_propagation) + test(=workflow_06_shell_interactive_session)'

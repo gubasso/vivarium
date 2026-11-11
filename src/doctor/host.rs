@@ -211,7 +211,7 @@ fn nix_reads_a_flake() -> Result<(), String> {
                 "metadata",
                 "--json",
                 "--no-write-lock-file",
-                &format!("path:{}", directory.display()),
+                &format!("path:{}", directory.display()), // nix-path-ok: a throwaway probe folder
             ])
             .output()
             .map_err(|error| format!("`nix flake metadata` is unavailable: {error}"))

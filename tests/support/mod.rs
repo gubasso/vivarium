@@ -371,7 +371,7 @@ pub struct VivOutput {
 fn baseline_inputs() -> &'static Vec<(OsString, OsString)> {
     static BASELINE: OnceLock<Vec<(OsString, OsString)>> = OnceLock::new();
     BASELINE.get_or_init(|| {
-        let flake = format!("path:{}?dir=nix", env!("CARGO_MANIFEST_DIR"));
+        let flake = format!("git+file://{}?dir=nix", env!("CARGO_MANIFEST_DIR"));
         let Ok(output) = Command::new("nix")
             .args([
                 "flake",
@@ -400,7 +400,7 @@ fn baseline_inputs() -> &'static Vec<(OsString, OsString)> {
             let path = archived.get("inputs")?.get(input)?.get("path")?.as_str()?;
             Some((
                 OsString::from(variable),
-                OsString::from(format!("path:{path}")),
+                OsString::from(format!("path:{path}")), // nix-path-ok: an archived store path
             ))
         })
         .collect()

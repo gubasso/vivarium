@@ -757,7 +757,7 @@ fn render_inputs(
         // pinned nodes (findings register, 2026-08-26). The name needs no escaping — it is
         // the image's own name, already held to the artifact grammar.
         text.push_str(&format!(
-            "    {name}.url = \"path:./images/{name}\";\n",
+            "    {name}.url = \"path:./images/{name}\";\n", // nix-path-ok: generated relative input
             name = base.input_name
         ));
         if base.declares_nixpkgs {
@@ -1192,7 +1192,7 @@ mod tests {
         fs::write(scratch.path().join("config/images/base/default.nix"), "{}")?;
         fs::write(
             scratch.path().join("config/images/base/inputs.toml"),
-            "[inputs.zed]\nurl = 'path:z'\nflake = false",
+            "[inputs.zed]\nurl = 'path:z'\nflake = false", // nix-path-ok: a test fixture input
         )?;
         fs::create_dir_all(scratch.path().join("config/pieces/one"))?;
         fs::write(scratch.path().join("config/pieces/one/default.nix"), "{}")?;
@@ -1690,13 +1690,14 @@ mod tests {
         assert!(absent.contains("microvm.inputs.nixpkgs.follows = \"nixpkgs\";"));
         assert!(!absent.contains("my-base"));
 
+        let base_input = "my-base.url = \"path:./images/my-base\";"; // nix-path-ok: generated
         let neither = super::render_inputs(&composition, &baseline, Some(&base(false, false)));
-        assert!(neither.contains("my-base.url = \"path:./images/my-base\";"));
+        assert!(neither.contains(base_input));
         assert!(neither.contains("nixpkgs.url = \""));
         assert!(neither.contains("microvm.inputs.nixpkgs.follows = \"nixpkgs\";"));
 
         let both = super::render_inputs(&composition, &baseline, Some(&base(true, true)));
-        assert!(both.contains("my-base.url = \"path:./images/my-base\";"));
+        assert!(both.contains(base_input));
         assert!(both.contains("nixpkgs.follows = \"my-base/nixpkgs\";"));
         assert!(both.contains("microvm.follows = \"my-base/microvm\";"));
         assert!(!both.contains("nixpkgs.url"));

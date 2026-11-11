@@ -166,7 +166,7 @@ pub fn agent_runner() -> Result<std::path::PathBuf, String> {
         return Ok(path);
     }
     let flake = format!(
-        "path:{}?dir=nix#base-image-agent-check",
+        "git+file://{}?dir=nix#base-image-agent-check",
         env!("CARGO_MANIFEST_DIR")
     );
     let built = Command::new("nix")

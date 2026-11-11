@@ -57,13 +57,13 @@ error[manifest.unknown-key]: unknown key `schema_version` in manifest `rust-web`
         vivarium reports its new keys exactly this way
 ```
 
-| Slot             | Carries                                                                                                                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `error[<id>]:`   | what — the specific thing that failed, never a category restatement ("config error", "operation failed")                                                                              |
-| `-->`            | where — `path:line:col` when the parser can supply a position, `path` when it cannot, and otherwise a named locus such as `control socket` or `check kvm-device-accessible`           |
-| `why:`           | the nearest useful cause, in the user's terms. Never an internal error chain — that belongs to the log file only ([`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md)) |
-| `accepted here:` | conditional — present only for an unknown key or an unknown value, listing what is accepted at that position                                                                          |
-| `hint:`          | fix — a runnable command or a concrete edit, never a restatement of `why`. Omitted when no honest local repair exists, rather than filled with advice that does not act               |
+| Slot             | Carries                                                                                                                                                                                                             |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `error[<id>]:`   | what — the specific thing that failed, never a category restatement ("config error", "operation failed")                                                                                                            |
+| `-->`            | where — `path:line:col` <!-- nix-path-ok: a source position --> when the parser can supply a position, `path` when it cannot, and otherwise a named locus such as `control socket` or `check kvm-device-accessible` |
+| `why:`           | the nearest useful cause, in the user's terms. Never an internal error chain — that belongs to the log file only ([`16-logging-and-diagnostics.md`](./16-logging-and-diagnostics.md))                               |
+| `accepted here:` | conditional — present only for an unknown key or an unknown value, listing what is accepted at that position                                                                                                        |
+| `hint:`          | fix — a runnable command or a concrete edit, never a restatement of `why`. Omitted when no honest local repair exists, rather than filled with advice that does not act                                             |
 
 Wording is uniform: messages start lowercase and end without punctuation, identifiers and paths are backticked, and the `what` line must stand alone if it is the only thing a consumer displays. Color is a stderr-only, TTY-only concern ([`01-command-surface.md`](./01-command-surface.md)) — the text is identical with and without it.
 

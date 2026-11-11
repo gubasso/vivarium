@@ -526,12 +526,12 @@ fn workflow_18_update_pin() -> Result<(), Failed> {
     // and never evaluates their outputs — and a local `path:` needs no network.
     let leaf = tp.root().join("fake-nixpkgs");
     write_file(&leaf.join("flake.nix"), "{ outputs = { self }: { }; }\n").map_err(io_failed)?;
+    let url = format!("path:{}", leaf.display()); // nix-path-ok: a throwaway fixture folder
     write_file(
         &images.join("flake.nix"),
         &format!(
-            "{{ inputs.nixpkgs.url = \"path:{}\";\n  \
-            outputs = {{ self, nixpkgs }}: {{ }}; }}\n",
-            leaf.display()
+            "{{ inputs.nixpkgs.url = \"{url}\";\n  \
+            outputs = {{ self, nixpkgs }}: {{ }}; }}\n"
         ),
     )
     .map_err(io_failed)?;
