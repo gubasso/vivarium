@@ -17,6 +17,7 @@ mode = "automatic" # P: automatic, external, or none
 driver = "rust" # P: the technology that states the version and takes the bot; automatic alone
 style = "trunk" # P: trunk or lines; automatic alone
 line_prefix = "release/" # P: release-line branch prefix, rendered into the release triggers; automatic alone
+registry = "none" # P: crates-io or none, where the crate publishes, rust driver alone
 
 [git]
 trunk = "master" # P: the one permanent branch, rendered into every artifact naming it
@@ -37,7 +38,7 @@ contact = "" # P: one line naming who receives a report when the forge channel i
 response = "best-effort" # P: the acknowledgment window the policy promises: best-effort, 1 day, <n> days, 1 business day, or <n> business days
 
 [setup]
-required_check = "" # P: the check the release gate believes, and the check the trunk ruleset requires under forge integration
+required_check = "gate" # P: the check the release gate believes, and the check the trunk ruleset requires under forge integration
 required_workflow = "" # P: the workflow name whose completion wakes the release gate under local integration; GitHub only
 retired_branches = ["main", "develop"] # N: long-lived branches retired by the trunk
 release_lines = false # N: true runs protect-release-lines in a full apply

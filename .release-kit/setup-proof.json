@@ -1,0 +1,194 @@
+{
+  "schema": "rk.setup-proof/1",
+  "rk_version": "0.9.8",
+  "verified_at": "2026-11-11T15:05:27Z",
+  "subject": {
+    "target": {
+      "bot_app_id": "",
+      "capabilities": "{\"nix_packaging\":false,\"reporting_policy\":false,\"scorecard\":false,\"workflow_guards\":true}",
+      "forge": "github",
+      "host": "github.com",
+      "integration": "\"forge\"",
+      "line_prefix": "release/",
+      "lines_ruleset": "release-lines",
+      "profile": "{\"technologies\":[\"rust\"],\"forge\":\"github\",\"release\":{\"mode\":\"automatic\",\"driver\":\"rust\",\"style\":\"trunk\",\"line_prefix\":\"release/\",\"registry\":\"none\"}}",
+      "protection": "{\"trunk_ruleset\":\"master-protection\",\"safety_ruleset\":\"master-safety\",\"tag_ruleset\":\"release-tags\",\"lines_ruleset\":\"release-lines\",\"title_check\":\"pr-title\",\"tag_pattern\":\"refs/tags/v*\",\"bypass_actors\":[],\"allowed_merge_methods\":[\"squash\"],\"strict_required_status_checks\":true,\"owned_trunk_rules\":[\"deletion\",\"non_fast_forward\",\"pull_request\",\"required_status_checks\"],\"required_approving_review_count\":0,\"dismiss_stale_reviews_on_push\":false,\"require_code_owner_review\":false,\"require_last_push_approval\":false,\"github\":{\"squash_title_source\":\"PR_TITLE\",\"squash_body_source\":\"PR_BODY\"},\"gitlab\":{\"merge_method\":\"ff\",\"squash_option\":\"always\",\"squash_commit_template\":\"%{title}\",\"push_access_level\":0,\"merge_access_level\":40}}",
+      "release_lines": "false",
+      "repo": "gubasso/vivarium",
+      "required_check": "gate",
+      "required_workflow": "",
+      "retired_branches": "[\"main\",\"develop\"]",
+      "safety_ruleset": "master-safety",
+      "tag_ruleset": "release-tags",
+      "title_check": "pr-title",
+      "trunk": "master",
+      "trunk_ruleset": "master-protection"
+    },
+    "steps": [
+      {
+        "name": "package-check",
+        "proves": "the package is publishable with no credentials, and carries the reporting policy and none of release-kit's own files where the binding can list it",
+        "prerequisites": [],
+        "stance": "not-applicable",
+        "reason": "the crate publishes to no registry, so nothing is packaged"
+      },
+      {
+        "name": "default-branch",
+        "proves": "the trunk is the default branch",
+        "prerequisites": [],
+        "stance": "applicable"
+      },
+      {
+        "name": "single-trunk",
+        "proves": "no long-lived branch besides the trunk remains",
+        "prerequisites": [
+          "default-branch"
+        ],
+        "stance": "applicable"
+      },
+      {
+        "name": "merge-cleanup",
+        "proves": "the forge deletes a branch when its merge lands",
+        "prerequisites": [
+          "default-branch"
+        ],
+        "stance": "applicable"
+      },
+      {
+        "name": "branch-reminder",
+        "proves": "a pull reminds the operator when a merged branch lingers locally",
+        "prerequisites": [],
+        "stance": "applicable"
+      },
+      {
+        "name": "ci-permissions",
+        "proves": "CI may write and open requests",
+        "prerequisites": [],
+        "stance": "applicable"
+      },
+      {
+        "name": "install-bot",
+        "proves": "the bot identity can act on this project",
+        "prerequisites": [],
+        "stance": "applicable"
+      },
+      {
+        "name": "bot-secrets",
+        "proves": "the bot credentials are stored on the project",
+        "prerequisites": [],
+        "stance": "applicable"
+      },
+      {
+        "name": "forge-version",
+        "proves": "the forge meets the convention's minimum version",
+        "prerequisites": [],
+        "stance": "applicable"
+      },
+      {
+        "name": "protect-trunk",
+        "proves": "the trunk takes no direct push, merges only by squash with the request's title and body as the message, and requires the named check",
+        "prerequisites": [
+          "default-branch",
+          "forge-version"
+        ],
+        "stance": "applicable"
+      },
+      {
+        "name": "protect-tags",
+        "proves": "v* is protected as far as the forge allows",
+        "prerequisites": [],
+        "stance": "applicable"
+      },
+      {
+        "name": "protect-release-lines",
+        "proves": "release/* cannot be force-pushed or deleted",
+        "prerequisites": [],
+        "stance": "applicable"
+      },
+      {
+        "name": "auto-merge",
+        "proves": "a request may merge itself once its required checks pass",
+        "prerequisites": [
+          "default-branch"
+        ],
+        "stance": "applicable"
+      },
+      {
+        "name": "protections-check",
+        "proves": "exactly the owned protections, with those rules",
+        "prerequisites": [],
+        "stance": "applicable"
+      },
+      {
+        "name": "private-vulnerability-reporting",
+        "proves": "a vulnerability report has a private intake path, with the forge's limits named",
+        "prerequisites": [],
+        "stance": "not-applicable",
+        "reason": "capabilities.reporting_policy is false"
+      }
+    ]
+  },
+  "subject_digest": "cfdb936bf19e8643d3e8acc625ebce8c57bad056c461fd37c5b0e14c6b4587e5",
+  "steps": [
+    {
+      "name": "package-check",
+      "state": "not-applicable"
+    },
+    {
+      "name": "default-branch",
+      "state": "satisfied"
+    },
+    {
+      "name": "single-trunk",
+      "state": "satisfied"
+    },
+    {
+      "name": "merge-cleanup",
+      "state": "satisfied"
+    },
+    {
+      "name": "branch-reminder",
+      "state": "satisfied"
+    },
+    {
+      "name": "ci-permissions",
+      "state": "satisfied"
+    },
+    {
+      "name": "install-bot",
+      "state": "satisfied"
+    },
+    {
+      "name": "bot-secrets",
+      "state": "satisfied"
+    },
+    {
+      "name": "forge-version",
+      "state": "satisfied"
+    },
+    {
+      "name": "protect-trunk",
+      "state": "satisfied"
+    },
+    {
+      "name": "protect-tags",
+      "state": "satisfied"
+    },
+    {
+      "name": "protect-release-lines",
+      "state": "skipped"
+    },
+    {
+      "name": "auto-merge",
+      "state": "satisfied"
+    },
+    {
+      "name": "protections-check",
+      "state": "satisfied"
+    },
+    {
+      "name": "private-vulnerability-reporting",
+      "state": "not-applicable"
+    }
+  ]
+}
