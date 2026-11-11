@@ -26,6 +26,20 @@ exclude = [
   "/justfile",
   "/.release-kit",
   "/GLOSSARY.md",
+  # Developer tooling and the slide deck: nothing builds from them, and a change to
+  # one must not change the package, because release-plz releases any package change.
+  "/.config",
+  "/.gitignore",
+  "/.editorconfig-checker.json",
+  "/.markdownlint",
+  "/.markdownlint-cli2.jsonc",
+  "/.taplo.toml",
+  "/_typos.toml",
+  "/committed.toml",
+  "/dprint.json",
+  "/dprint.markdown.json",
+  "/statix.toml",
+  "/slides",
 ]
 keywords = ["nix", "microvm", "isolation", "sandbox", "devenv"]
 categories = ["command-line-utilities", "virtualization", "development-tools"]
