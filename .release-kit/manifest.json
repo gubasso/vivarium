@@ -13,7 +13,7 @@
       "driver": "rust",
       "style": "trunk",
       "line_prefix": "release/",
-      "registry": "none"
+      "registry": "crates-io"
     }
   },
   "git": {
@@ -44,7 +44,7 @@
     {
       "destination": ".github/workflows/release-plz.yml",
       "kind": "rendered",
-      "sha256": "f8e96132e27b05407bccdd4d25705199589c10ceb57db33d4e66d34c840af38f"
+      "sha256": "aa53d1e12df6dec4e20fc61d24d269e66c149200297f2fc47f232edc5e681d49"
     },
     {
       "destination": ".pre-commit-config.yaml",
@@ -72,7 +72,7 @@
     {
       "destination": "release-plz.toml",
       "kind": "seeded",
-      "sha256": "37d91191b4681f537bf2e5b439d77ed50468008a485640c655d85a900e478fa7"
+      "sha256": "c6a691594f29ce34575d5b24ff91f97c10fd1068d6a53a37761e0c7afd688dda"
     }
   ],
   "pins": {

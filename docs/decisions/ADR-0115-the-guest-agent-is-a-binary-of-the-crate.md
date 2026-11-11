@@ -28,6 +28,8 @@ The `guest` feature holds the agent's own dependencies. `default` stays `host`, 
 
 ## Status
 
-Accepted
+Implemented
 
 Amends [`ADR-0102-the-installation-supplies-vivarium.md`](./ADR-0102-the-installation-supplies-vivarium.md): the embedded tree carries the agent as a binary of the crate rather than as a nested package, and the embedding itself stands. Answers [`Q-039`](../plan/open-questions.md).
+
+Enacted in [`../../Cargo.toml`](../../Cargo.toml), whose `vivarium-guest-agent` binary sits behind the `guest` feature, with its source under [`../../src/bin/vivarium-guest-agent/`](../../src/bin/vivarium-guest-agent/main.rs) and its derivation in [`../../nix/default.nix`](../../nix/default.nix). `cargo package --locked` verifies, and [`KI-0004`](../reference/known-issues/resolved/KI-0004.md) records the resolved case.
