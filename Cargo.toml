@@ -1,6 +1,6 @@
 [package]
 name = "vivarium"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Nix-native tool that boots each project inside its own microVM, composed from reusable images and config pieces unified by a single manifest."
 license = "MIT"
