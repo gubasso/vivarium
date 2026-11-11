@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/gubasso/vivarium/compare/v0.2.0...v0.2.1) - 2026-11-11
+
+### Fixed
+
+- *(release)* build release binaries only for the Linux targets ([#21](https://github.com/gubasso/vivarium/pull/21))
+
+### Other
+
+- *(flake)* read vivarium's flakes from their git tree ([#24](https://github.com/gubasso/vivarium/pull/24))
+- *(deps)* move hickory-proto and rustix past their advisories ([#23](https://github.com/gubasso/vivarium/pull/23))
+
 ## [0.2.0](https://github.com/gubasso/vivarium/compare/v0.1.0...v0.2.0) - 2026-11-11
 
 ### Added
