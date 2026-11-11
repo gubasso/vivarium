@@ -12,6 +12,11 @@ release_always = false
 # the case and the trigger that sets this back to true. cargo-dist's
 # installers and the Nix flake are the distribution channels meanwhile.
 publish = false
+# The crate publishes to no registry, so release-plz reads the last release
+# from the v* tags, tags each release, and publishes nothing. release-plz
+# refuses publish = true together with git_only = true, so the two change
+# together, with profile.release.registry in .release-kit/config.toml.
+git_only = true
 # cargo-dist owns the GitHub release, because it is the half that has the
 # installers to attach. release-plz creating it first leaves dist's host job
 # failing on "a release with the same tag name already exists" and every

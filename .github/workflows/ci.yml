@@ -228,6 +228,8 @@ jobs:
   # that output, so this job is also the drift check of the generated file.
   dist-plan:
     runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -247,7 +249,59 @@ jobs:
       - name: dist runs at the configured pin
         run: dist --version | grep -Fq "$DIST_PIN"
       - name: The configuration produces a viable release
-        run: dist plan
+        id: plan
+        # The plan's JSON feeds dist-build below, so the gate builds the same
+        # targets that release.yml builds on the tag.
+        run: |
+          set -euo pipefail
+          dist plan --output-format=json > plan-dist-manifest.json
+          echo "plan=$(jq -c . plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
+
+  # Every target of dist-workspace.toml, built before a merge. The matrix is
+  # the plan's own artifacts matrix, the one release.yml builds from on the
+  # tag, so a target the code cannot build fails this request instead of the
+  # release that already pushed its tag. A matrix job inherits nothing from
+  # dist-plan, so each one checks out, installs dist from the plan's install
+  # step, and proves the pin, the way release.yml's build-local-artifacts job
+  # does. This job builds with the runner's own toolchain, as release.yml does,
+  # not through the devshell.
+  dist-build:
+    needs: dist-plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.dist-plan.outputs.plan).ci.github.artifacts_matrix }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container && matrix.container.image || null }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install Rust where the container has none
+        if: ${{ matrix.container }}
+        run: |
+          if ! command -v cargo > /dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Install dist
+        run: ${{ matrix.install_dist.run }}
+      - name: dist runs at the configured pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin="$(grep -m1 '^cargo-dist-version' dist-workspace.toml | cut -d'"' -f2)"
+          dist --version | grep -Fq "$pin"
+      - name: Install the system packages the target needs
+        run: ${{ matrix.packages_install }}
+      - name: Build the matrix target
+        env:
+          DIST_ARGS: ${{ matrix.dist_args }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          dist build $DIST_ARGS
 
   # The one check the trunk's protection requires. `needs` resolves inside one
   # workflow file, so every proof a merge rests on is a job of this file and a
@@ -259,7 +313,7 @@ jobs:
   # a red pipeline.
   gate:
     if: always()
-    needs: [hooks, check, dist-plan]
+    needs: [hooks, check, dist-plan, dist-build]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

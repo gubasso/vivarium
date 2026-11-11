@@ -15,6 +15,8 @@ mask:
   state: active
   what:
     - release-plz.toml sets publish = false
+    - release-plz.toml sets git_only = true, so release-plz reads the version from the git tags
+    - .release-kit/config.toml sets profile.release.registry = "none", so rk setup check does not apply package-check
   revert_when: cargo package verifies, because the guest-agent source reaches the packaged tree.
 recheck:
   command: cargo package --locked

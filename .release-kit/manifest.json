@@ -1,6 +1,6 @@
 {
   "schema_version": 12,
-  "rk_version": "0.9.7",
+  "rk_version": "0.9.8",
   "origin": "init",
   "landed_at": "2026-09-08T16:59:21Z",
   "profile": {
@@ -12,7 +12,8 @@
       "mode": "automatic",
       "driver": "rust",
       "style": "trunk",
-      "line_prefix": "release/"
+      "line_prefix": "release/",
+      "registry": "none"
     }
   },
   "git": {
@@ -31,7 +32,7 @@
     "repo": "gubasso/vivarium",
     "security_contact": "",
     "security_response": "best-effort",
-    "required_check": "",
+    "required_check": "gate",
     "required_workflow": ""
   },
   "files": [
@@ -43,7 +44,7 @@
     {
       "destination": ".github/workflows/release-plz.yml",
       "kind": "rendered",
-      "sha256": "dae0bfc1282b30535df0a13562b0b3ea5b4ff59af63009301f5ee86a9406c968"
+      "sha256": "f8e96132e27b05407bccdd4d25705199589c10ceb57db33d4e66d34c840af38f"
     },
     {
       "destination": ".pre-commit-config.yaml",
@@ -66,12 +67,12 @@
     {
       "destination": "dist-workspace.toml",
       "kind": "seeded",
-      "sha256": "a63704b81653902ca5ade718775248baff061954fbc796fb9da8596d3008eabb"
+      "sha256": "29a2a64386d2bf34ef369a9e434f3ca4f806516141fbad5b08a5ebcb069d00be"
     },
     {
       "destination": "release-plz.toml",
       "kind": "seeded",
-      "sha256": "797a67290d666861204e974fab756da670d46c1e89200bd0d1df9efb089175fa"
+      "sha256": "37d91191b4681f537bf2e5b439d77ed50468008a485640c655d85a900e478fa7"
     }
   ],
   "pins": {
@@ -84,7 +85,7 @@
     "dist-download-artifact": "8",
     "dist-upload-artifact": "7",
     "pre-commit-hooks": "6.0.0",
-    "release-plz": "0.3.160",
+    "release-plz": "0.4.3",
     "rust-toolchain": "stable"
   }
 }
