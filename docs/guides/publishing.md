@@ -10,7 +10,7 @@ The release style is `trunk`, which means continuous release. release-plz keeps 
 
 Because the changelog is built from the squash titles and bodies that land on `master`, the quality of a release note is decided at merge time. The landed `pr-title` check and the `rk-message` hook are what hold that.
 
-release-plz runs under a GitHub App token (secrets `RELEASE_PLZ_APP_ID` and `RELEASE_PLZ_APP_PRIVATE_KEY`), because a tag pushed with the default `GITHUB_TOKEN` starts no further workflow. The App token is what makes the tag push trigger the cargo-dist build in `release.yml`.
+release-plz runs under a GitHub App token (secrets `RELEASE_BOT_APP_ID` and `RELEASE_BOT_APP_PRIVATE_KEY`), because a tag pushed with the default `GITHUB_TOKEN` starts no further workflow. The App token is what makes the tag push trigger the cargo-dist build in `release.yml`.
 
 First-time crates.io setup — creating a scoped `publish-new` token, `cargo login`, the first manual `cargo publish`, then configuring Trusted Publishing and revoking the token — is a one-time manual requirement, not part of routine maintenance. See the crates.io Trusted Publishing docs: <https://crates.io/docs/trusted-publishing>.
 
