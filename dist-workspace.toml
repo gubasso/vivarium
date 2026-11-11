@@ -8,17 +8,13 @@ cargo-dist-version = "0.34.0"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app. A homebrew installer would need
-# a tap repository plus a HOMEBREW_TAP_TOKEN secret; shell, powershell, and
-# cargo-binstall cover every platform without that infrastructure.
-installers = ["shell", "powershell"]
-# Target platforms to build apps for (Rust target-triple syntax)
-targets = [
-  "aarch64-apple-darwin",
-  "aarch64-unknown-linux-gnu",
-  "x86_64-apple-darwin",
-  "x86_64-unknown-linux-gnu",
-  "x86_64-pc-windows-msvc",
-]
+# a tap repository plus a HOMEBREW_TAP_TOKEN secret; the shell installer and
+# cargo-binstall cover every target without that infrastructure.
+installers = ["shell"]
+# Target platforms to build apps for (Rust target-triple syntax). vivarium
+# runs only on Linux: it boots its guests behind KVM, and the code uses
+# Linux-only interfaces, so a macOS or Windows target does not compile.
+targets = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]
 # Which actions to run on pull requests. Skip, because the forge resolves a
 # job's needs inside one workflow file: the trunk protection requires one
 # project-owned check beside the landed pr-title check, so a plan job here
@@ -53,11 +49,8 @@ github-release = "host"
 # features, so cargo never builds it here. dist still lists every binary target
 # the package declares, so the list is named per target.
 [dist.binaries]
-aarch64-apple-darwin = ["viv", "vivarium-supervisor"]
 aarch64-unknown-linux-gnu = ["viv", "vivarium-supervisor"]
-x86_64-apple-darwin = ["viv", "vivarium-supervisor"]
 x86_64-unknown-linux-gnu = ["viv", "vivarium-supervisor"]
-x86_64-pc-windows-msvc = ["viv", "vivarium-supervisor"]
 
 # The build that signs is itself pinned by digest: cargo-dist references
 # these actions by movable tag unless told otherwise, and the attest step
