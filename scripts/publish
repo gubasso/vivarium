@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Publish a cargo crate to crates.io. Auth-gated: checks that crates.io auth is
 # CONFIGURED (never that a token is valid) and prints remediation if it is not.
-# The auth check lives here, in the project's own helper script — never in a skill
-# or in the cog CLI. It never echoes, logs, or inspects a token value.
+# The auth check lives here, in the project's own helper script — never in a
+# skill. It never echoes, logs, or inspects a token value.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

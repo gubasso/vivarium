@@ -10,7 +10,7 @@
 /slides/.slidev/
 /slides/components.d.ts
 
-# --- cog gitignore (rust) ---
+# --- gitignore (rust) ---
 # Rust
 /target/
 **/*.rs.bk
@@ -23,6 +23,6 @@
 .direnv/
 /result
 
-# --- cog gitignore (rust) ---
+# --- gitignore (rust) ---
 rustc-ice-*.txt
 **/mutants.out*/
