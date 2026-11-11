@@ -1,7 +1,7 @@
 {
   "schema": "rk.setup-proof/1",
   "rk_version": "0.9.8",
-  "verified_at": "2026-11-11T15:05:27Z",
+  "verified_at": "2026-11-11T17:44:02Z",
   "subject": {
     "target": {
       "bot_app_id": "",
@@ -11,7 +11,7 @@
       "integration": "\"forge\"",
       "line_prefix": "release/",
       "lines_ruleset": "release-lines",
-      "profile": "{\"technologies\":[\"rust\"],\"forge\":\"github\",\"release\":{\"mode\":\"automatic\",\"driver\":\"rust\",\"style\":\"trunk\",\"line_prefix\":\"release/\",\"registry\":\"none\"}}",
+      "profile": "{\"technologies\":[\"rust\"],\"forge\":\"github\",\"release\":{\"mode\":\"automatic\",\"driver\":\"rust\",\"style\":\"trunk\",\"line_prefix\":\"release/\",\"registry\":\"crates-io\"}}",
       "protection": "{\"trunk_ruleset\":\"master-protection\",\"safety_ruleset\":\"master-safety\",\"tag_ruleset\":\"release-tags\",\"lines_ruleset\":\"release-lines\",\"title_check\":\"pr-title\",\"tag_pattern\":\"refs/tags/v*\",\"bypass_actors\":[],\"allowed_merge_methods\":[\"squash\"],\"strict_required_status_checks\":true,\"owned_trunk_rules\":[\"deletion\",\"non_fast_forward\",\"pull_request\",\"required_status_checks\"],\"required_approving_review_count\":0,\"dismiss_stale_reviews_on_push\":false,\"require_code_owner_review\":false,\"require_last_push_approval\":false,\"github\":{\"squash_title_source\":\"PR_TITLE\",\"squash_body_source\":\"PR_BODY\"},\"gitlab\":{\"merge_method\":\"ff\",\"squash_option\":\"always\",\"squash_commit_template\":\"%{title}\",\"push_access_level\":0,\"merge_access_level\":40}}",
       "release_lines": "false",
       "repo": "gubasso/vivarium",
@@ -29,8 +29,7 @@
         "name": "package-check",
         "proves": "the package is publishable with no credentials, and carries the reporting policy and none of release-kit's own files where the binding can list it",
         "prerequisites": [],
-        "stance": "not-applicable",
-        "reason": "the crate publishes to no registry, so nothing is packaged"
+        "stance": "applicable"
       },
       {
         "name": "default-branch",
@@ -128,11 +127,11 @@
       }
     ]
   },
-  "subject_digest": "cfdb936bf19e8643d3e8acc625ebce8c57bad056c461fd37c5b0e14c6b4587e5",
+  "subject_digest": "d47e05baa3dfd7d298c5123a3b3fd5ea76104ee28c98c219bbafdc0338f01d1b",
   "steps": [
     {
       "name": "package-check",
-      "state": "not-applicable"
+      "state": "satisfied"
     },
     {
       "name": "default-branch",

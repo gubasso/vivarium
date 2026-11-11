@@ -1,6 +1,6 @@
-# The release automation. The crate publishes to no registry: release-plz
-# tags each release and publishes nothing, and cargo-dist's release.yml
-# builds the binaries and the GitHub release on the tag push.
+# The release automation and the crates.io trusted publisher. This filename
+# is registered at crates.io; cargo-dist's release.yml builds binaries and
+# must never be registered there.
 #
 # Both halves run on every push to the trunk, and to a release/* line when a
 # project keeps older lines. The pull-request half maintains the one release
@@ -28,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
