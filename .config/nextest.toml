@@ -143,8 +143,21 @@ success-output = "never"
 failure-output = "immediate-final"
 
 # Needs the built `viv` and a filesystem.
+#
+# `test-threads = 4` keeps the lane from starting one test per logical CPU
+# beside the other hooks of a push. Measured 2026-11-11 on a 20-CPU host at a
+# quiet moment, with the compile run apart from the tests: the 34 tests take
+# 2.04s at 20 threads, 2.07s at 8, 2.11s at 4, and 2.20s at 2. One test sets
+# that floor, so 4 costs 0.07s. At 20 threads the run peaked at 28 runnable
+# processes and 39% busy.
+#
+# The compile, not the tests, fills the CPUs: a recompile after an edit takes
+# about 2.3s and peaks at 92-94% busy. `build.jobs` is not set, because at
+# `CARGO_BUILD_JOBS=8` the same recompile still peaked at 86-98% busy and took
+# 3.0-4.8s. A jobs cap stretches the burst and does not lower it.
 [profile.local]
 default-filter = "binary(local_*)"
+test-threads = 4
 fail-fast = false
 status-level = "fail"
 final-status-level = "fail"
