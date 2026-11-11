@@ -14,7 +14,7 @@ release-plz runs under a GitHub App token (secrets `RELEASE_BOT_APP_ID` and `REL
 
 The crate `vivarium` publishes through crates.io Trusted Publishing. crates.io registers `gubasso/vivarium` with the workflow `release-plz.yml` and no environment, so the release job mints a short-lived token over OIDC, and the repository stores no crates.io secret. See the crates.io Trusted Publishing docs: <https://crates.io/docs/trusted-publishing>.
 
-release-plz reads the last release from crates.io. Every version that `Cargo.toml` states must be on crates.io before the next release request opens. If a version reaches a tag but not crates.io, release-plz stops and asks for a manual `cargo publish` of that version. v0.2.0 never reached crates.io, and v0.2.1 was published by hand from its tag, because of the resolved [`KI-0004`](../reference/known-issues/resolved/KI-0004.md). To publish a missing version, follow [Manual release if CI is down](#manual-release-if-ci-is-down) from a checkout of its tag.
+release-plz reads the last release from crates.io. Every version that `Cargo.toml` states must be on crates.io before the next release request opens. If a version reaches a tag but not crates.io, release-plz stops and asks for a manual `cargo publish` of that version. v0.2.0 never reached crates.io, and v0.2.1 and v0.2.2 were published by hand from their tags, because of the resolved [`KI-0004`](../reference/known-issues/resolved/KI-0004.md). To publish a missing version, follow [Manual release if CI is down](#manual-release-if-ci-is-down) from a checkout of its tag.
 
 ## SemVer policy
 

@@ -61,7 +61,7 @@ tracked:
       - docs/guides/publishing.md
       - docs/reference/known-issues/KI-0003/README.md
   - path: docs/guides/publishing.md
-    last_checked: 2026-07-31
+    last_checked: 2026-11-11
     cadence: 90d
     why: Registry authentication, release automation, repository settings, and workflow names can drift.
     revalidate: Verify crates.io trusted publishing, release-plz and cargo-dist assumptions, repository settings, and current workflow filenames.
