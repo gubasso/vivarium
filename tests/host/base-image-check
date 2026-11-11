@@ -36,21 +36,22 @@ SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || un
 # The microVM is its own flake under `nix/`, not an output of the repository
 # root's. The root flake is the development environment — Rust toolchain,
 # pre-commit runtimes, the devShell direnv activates — and carries no product
-# input or output. `path:` form so the write-mode file set is included without
-# git operations.
+# input or output. `git+file:` form, so the evaluation reads the git tree:
+# tracked files with their uncommitted edits, and never an ignored file such as
+# `slides/node_modules`. A new file joins once it is staged.
 #
 # `?dir=nix` rather than `/nix`: a flake's source tree is fixed by the reference
 # used to enter it, not by where its file sits. This form leaves the flake and
 # its lock at `nix/` while making the repository the tree, so `nix/default.nix`
 # can read the Rust crate at `../` in its default layout. Entering as
-# `path:$REPO_ROOT/nix` pins the tree one level too deep, and the crate becomes
+# `git+file://$REPO_ROOT/nix` pins the tree one level too deep, and the crate becomes
 # unreachable under pure evaluation — which is the whole reason this form exists.
-FLAKE_REF="path:$REPO_ROOT?dir=nix"
+FLAKE_REF="git+file://$REPO_ROOT?dir=nix"
 # The lint tools come from the repository root's devShell, which is the *other*
 # flake and the only one that has one. Keeping the two references separate is
 # the point of the split: product artifacts resolve through `nix/`, developer
 # tooling through the root.
-DEV_FLAKE_REF="path:$REPO_ROOT"
+DEV_FLAKE_REF="git+file://$REPO_ROOT"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
@@ -319,7 +320,7 @@ printf 'system: %s\n' "$SYSTEM"
 printf 'kernel: %s\n' "$(uname -sr 2>/dev/null || echo unavailable)"
 printf 'nix: %s\n' "$(nix --version 2>/dev/null || echo unavailable)"
 if [[ -r $REPO_ROOT/.git/HEAD ]]; then printf 'HEAD: %s\n' "$(<"$REPO_ROOT/.git/HEAD")"; else printf 'HEAD: unavailable\n'; fi
-printf 'flake source: %s (path form includes this write-mode file set without git operations)\n' "$FLAKE_REF"
+printf 'flake source: %s (the git tree: tracked files with their uncommitted edits)\n' "$FLAKE_REF"
 printf 'NOTE: evaluation-tier results describe Nix artifacts only. They say nothing about\n'
 printf '      target-host behaviour, and a SKIPped host-tier check is unproven, not absent.\n\n'
 
@@ -345,9 +346,32 @@ else
     else fail "environment and cwd metamorphism" "$env_drv$(<"$TEMP_ROOT/env-eval.err")"; fi
   else skip "environment metamorphism: base drvPath unavailable"; fi
 
+  # The copy holds what a `git+file:` evaluation of this checkout reads, and
+  # nothing else: the files in the index, as they stand in the working tree, so
+  # no ignored `slides/node_modules` or `target/` is copied. One commit makes it
+  # a git tree of its own at another path, written with plumbing so that no
+  # commit hook a host configures runs on it. Unsetting a git hook's GIT_DIR
+  # and GIT_INDEX_FILE keeps the copy's git from writing to this checkout.
   copy_root=$TEMP_ROOT/location-copy
-  if cp -a "$REPO_ROOT" "$copy_root" 2>"$TEMP_ROOT/copy.err"; then
-    copy_drv=$(nix eval --raw "path:$copy_root?dir=nix#packages.$SYSTEM.base-image.drvPath" 2>"$TEMP_ROOT/copy-eval.err")
+  copy_git_tree() {
+    mkdir -p "$copy_root" || return 1
+    (cd "$REPO_ROOT" && git ls-files -z --cached \
+      | while IFS= read -r -d '' file; do
+        [[ -e $file || -L $file ]] && printf '%s\0' "$file"
+      done \
+      | tar --null --no-recursion -T - -cf -) | tar -xf - -C "$copy_root" || return 1
+    (
+      unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
+      cd "$copy_root" \
+        && git init -q \
+        && git add -A --force \
+        && commit=$(git -c user.name=vivarium -c user.email=vivarium@invalid \
+          commit-tree -m "test: location copy" "$(git write-tree)") \
+        && git update-ref HEAD "$commit"
+    )
+  }
+  if copy_git_tree 2>"$TEMP_ROOT/copy.err"; then
+    copy_drv=$(nix eval --raw "git+file://$copy_root?dir=nix#packages.$SYSTEM.base-image.drvPath" 2>"$TEMP_ROOT/copy-eval.err")
     copy_status=$?
     if ((eval_status == 0 && copy_status == 0)) && [[ $copy_drv == "$eval_output" ]]; then
       pass "location metamorphism preserves drvPath"
@@ -559,7 +583,7 @@ else
 
   cache_check() {
     local arch=$1 package=$2 out status query qstatus
-    out=$(nix eval --impure --raw --expr "let f = builtins.getFlake \"$FLAKE_REF\"; p = import f.inputs.nixpkgs { system = \"$arch-linux\"; }; in p.$package.outPath" 2>"$TEMP_ROOT/cache-$arch-$package.err")
+    out=$(nix eval --impure --raw --expr "let f = builtins.getFlake \"$FLAKE_REF\"; p = import f.inputs.nixpkgs { system = \"$arch-linux\"; }; in p.$package.outPath" 2>"$TEMP_ROOT/cache-$arch-$package.err") # nix-path-ok: FLAKE_REF holds the git+file reference
     status=$?
     if ((status != 0)); then
       fail "binary cache $arch $package evaluation" "$out"

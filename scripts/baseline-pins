@@ -20,9 +20,11 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 
 # `?dir=nix` and not `/nix`: the reference fixes the flake's source tree, and the
-# product build reads the Rust crate at the repository root through it. See the
-# header of `scripts/check-flake-boundary` for the whole of that argument.
-product_flake="path:$repo_root?dir=nix"
+# product build reads the Rust crate at the repository root through it. And
+# `git+file:`, not `path:`: `.envrc` runs this on every load, and `path:` would
+# copy the whole working tree, ignored files included, into the store each time.
+# See the header of `scripts/check-flake-boundary` for the whole of that argument.
+product_flake="git+file://$repo_root?dir=nix"
 
 note() { printf 'baseline-pins: %s\n' "$*" >&2; }
 
@@ -48,7 +50,7 @@ emit_store_pin() {
     note "the archive reported no path for input \`$input\`; leaving $variable unset"
     return 0
   fi
-  printf 'export %s=%s\n' "$variable" "path:$path"
+  printf 'export %s=%s\n' "$variable" "path:$path" # nix-path-ok: a /nix/store path the archive reported
 }
 
 if ! command -v jq >/dev/null 2>&1; then

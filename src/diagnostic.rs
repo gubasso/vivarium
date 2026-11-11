@@ -106,7 +106,7 @@ impl fmt::Display for DiagnosticId {
 /// The `where` slot, in the three forms spec/14 admits.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Locus {
-    /// A parser could supply a position: `path:line:column`.
+    /// A parser could supply a position: `path:line:column`. <!-- nix-path-ok: position -->
     Position {
         /// The file the position is inside.
         path: PathBuf,

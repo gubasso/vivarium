@@ -117,7 +117,7 @@ pin_baseline() {
   local archived
   archived=$(nix flake archive --json \
     --extra-experimental-features 'nix-command flakes' \
-    "path:$REPO_ROOT?dir=nix" 2>/dev/null) || return 1
+    "git+file://$REPO_ROOT?dir=nix" 2>/dev/null) || return 1
   BASELINE_NIXPKGS=$(python3 -c 'import json,sys; print("path:" + json.load(sys.stdin)["inputs"]["nixpkgs"]["path"])' <<<"$archived") || return 1
   BASELINE_MICROVM=$(python3 -c 'import json,sys; print("path:" + json.load(sys.stdin)["inputs"]["microvm"]["path"])' <<<"$archived") || return 1
 }

@@ -15,13 +15,16 @@
   # tidy: a backend pin moves on its own clock (ADR-0078), and coupling it to
   # whatever nixpkgs the Rust toolchain wants would drag one by the other.
   #
-  # Enter this flake as `path:$REPO_ROOT?dir=nix`, not `path:$REPO_ROOT/nix`. A
-  # flake's source tree is fixed by the reference used to enter it, not by where
-  # its file sits: `?dir=` keeps the flake and this lock here while making the
-  # repository the tree, which is what lets `default.nix` build the Rust crate
-  # from its default layout at `../` instead of a duplicated snapshot of it. The
-  # `/nix` form pins the tree one level too deep, and the crate then fails to
-  # resolve under pure evaluation.
+  # Enter this flake as `git+file://$REPO_ROOT?dir=nix`, not
+  # `git+file://$REPO_ROOT/nix`. A flake's source tree is fixed by the reference
+  # used to enter it, not by where its file sits: `?dir=` keeps the flake and
+  # this lock here while making the repository the tree, which is what lets
+  # `default.nix` build the Rust crate from its default layout at `../` instead
+  # of a duplicated snapshot of it. The `/nix` form pins the tree one level too
+  # deep, and the crate then fails to resolve under pure evaluation. `?dir=`
+  # does this under either scheme; `git+file:` is the one that reads the git
+  # tree, where `path:` would also copy every untracked and ignored file, such
+  # as `slides/node_modules`, into the store.
   #
   # These outputs exist as a *flake* rather than as bare `nix-build` targets for
   # one reason worth stating, because it looks like ceremony and is not:

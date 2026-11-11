@@ -56,12 +56,13 @@ SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || un
 # The microVM is its own flake under `nix/`, not an output of the repository
 # root's. The root flake is the development environment — Rust toolchain,
 # pre-commit runtimes, the devShell direnv activates — and carries no product
-# input or output. `path:` form so the write-mode file set is included without
-# git operations.
+# input or output. `git+file:` form, so the evaluation reads the git tree:
+# tracked files with their uncommitted edits, and never an ignored file such as
+# `slides/node_modules`. A new file joins once it is staged.
 # `?dir=nix` rather than `/nix` so the repository is the flake's source tree and
 # the product build can read the Rust crate in its default layout; see
 # docs/reference/microvm-verification-harness.md.
-FLAKE_REF="path:$REPO_ROOT?dir=nix"
+FLAKE_REF="git+file://$REPO_ROOT?dir=nix"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0

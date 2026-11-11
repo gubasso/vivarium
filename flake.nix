@@ -128,11 +128,13 @@
           # nativeBuildInputs = [ pkgs.pkg-config ];
           # Cargo's build directory is kept OUT of the working tree, and this is
           # load-bearing rather than tidiness. The product flake is entered as
-          # `path:$REPO_ROOT?dir=nix` so that the repository root is its source
-          # tree and the crate can be built from its default layout — no
-          # duplicate. `path:` fetches the whole working tree and does not honour
-          # `.gitignore`, so a multi-gigabyte `target/` would be copied into the
-          # store on every evaluation. Out of the tree, it costs nothing.
+          # `git+file://$REPO_ROOT?dir=nix` so that the repository root is its
+          # source tree and the crate can be built from its default layout — no
+          # duplicate. `git+file:` reads only the git tree and leaves an ignored
+          # `target/` out of the store, but a `path:` reference to the checkout
+          # copies the whole working tree, ignored files included, so an
+          # in-tree multi-gigabyte cache would ride along with every such
+          # evaluation. Out of the tree, it costs nothing.
           # And it is one cache rather than two (ADR-0106). Every gated hook binds
           # `<drive>/cargo-target`, so a shell that defaulted somewhere else would
           # fill a second cache with the same objects and pay for both. The shell

@@ -291,7 +291,10 @@ mod tests {
     #[test]
     fn parses_defaults_and_non_flake_inputs() -> Result<(), Box<dyn std::error::Error>> {
         let inputs = parse_inputs(
-            "[inputs.alpha]\nurl = 'github:one/a'\n[inputs.zed]\nurl = 'path:x'\nflake = false\n",
+            concat!(
+                "[inputs.alpha]\nurl = 'github:one/a'\n",
+                "[inputs.zed]\nurl = 'path:x'\nflake = false\n", // nix-path-ok: a test fixture
+            ),
             Path::new("inputs.toml"),
             &declarer("demo"),
         )?;

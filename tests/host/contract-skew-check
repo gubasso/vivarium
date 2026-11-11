@@ -21,7 +21,7 @@
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
-DEV_FLAKE_REF="path:$REPO_ROOT"
+DEV_FLAKE_REF="git+file://$REPO_ROOT"
 # Named exactly rather than by pattern: a pattern fails open, and a trial it
 # missed would simply not run rather than error.
 TRIALS='test(=workflow_15_contract_skew_refusal) + test(=workflow_15_contract_skew_live)'

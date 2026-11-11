@@ -27,7 +27,7 @@
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
-FLAKE_REF="path:$REPO_ROOT?dir=nix"
+FLAKE_REF="git+file://$REPO_ROOT?dir=nix"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
@@ -194,8 +194,8 @@ EOF
 cat >"$SCRATCH/config/vivarium/images/update-base/flake.nix" <<EOF
 {
   inputs = {
-    nixpkgs.url = "path:$NIXPKGS_PIN";
-    microvm.url = "path:$MICROVM_PIN";
+    nixpkgs.url = "path:$NIXPKGS_PIN"; # nix-path-ok: an archived store path
+    microvm.url = "path:$MICROVM_PIN"; # nix-path-ok: an archived store path
     microvm.inputs.nixpkgs.follows = "nixpkgs";
     dep.url = "git+file://$DEP";
   };

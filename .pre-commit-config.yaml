@@ -512,6 +512,18 @@ repos:
         entry: '^(?!\s*#).*(withPackages|python3[0-9]*Packages\.|pythonPackages\.|nodePackages\.|perlPackages\.)'
         files: '(^|/)flake\.nix$|(^|/)nix/.*\.nix$'
 
+  # A flake reference to this working tree reads its git tree, `git+file:`, and
+  # never a `path:` copy, which would also carry every untracked and ignored
+  # file into the store. A legitimate `path:` (a store path, a relative input
+  # inside a generated flake, a throwaway fixture) carries the marker
+  # `nix-path-ok: <reason>` on that same line. Accepted ADR bodies never
+  # change, so `docs/decisions/` is excluded rather than marked.
+  - repo: https://github.com/gubasso/exobrain-tech
+    rev: bffe325fd814bb8eea994af1fbe62ea82e58ba44
+    hooks:
+      - id: no-path-flake-reference
+        exclude: ^docs/decisions/
+
   # --- Spell check + commit-message linting ---
   # The crate-ci `language: python` hooks, pinned at the versions the devShell
   # carried. Their wheels hold prebuilt binaries that link the standard ELF
@@ -621,7 +633,7 @@ repos:
       # owner: host (no-hook-language) nix comes from the host; tests/host/heavy-run is a script of this repository.
       - id: product-flake-check
         name: product flake evaluates (checks instantiate, no build)
-        entry: tests/host/heavy-run --need 4 --label "the product flake check" -- nix flake check --no-build path:.?dir=nix
+        entry: tests/host/heavy-run --need 4 --label "the product flake check" -- nix flake check --no-build git+file:.?dir=nix
         language: system
         files: '^(nix/.*\.nix|nix/flake\.lock|tests/nix/.*\.nix)$'
         pass_filenames: false

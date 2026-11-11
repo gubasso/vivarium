@@ -10,8 +10,8 @@ let
 
   # The crate in its default Cargo layout at the tree root — read directly, with
   # no snapshot to keep in sync. Two trees satisfy this: the repository, entered
-  # as `path:$REPO_ROOT?dir=nix` (the `/nix` form pins the tree root one level
-  # too deep and `../` becomes unreachable), and the `vivarium/` subtree the
+  # as `git+file://$REPO_ROOT?dir=nix` (the `/nix` form pins the tree root one
+  # level too deep and `../` becomes unreachable), and the `vivarium/` subtree the
   # installed binary writes into every generated flake (ADR-0102), which mirrors
   # the repository layout for exactly this reason.
   crateRoot = ../.;

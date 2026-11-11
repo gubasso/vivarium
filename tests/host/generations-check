@@ -40,7 +40,7 @@
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
-FLAKE_REF="path:$REPO_ROOT?dir=nix"
+FLAKE_REF="git+file://$REPO_ROOT?dir=nix"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
@@ -183,6 +183,8 @@ if [[ -n $archive ]]; then
   MICROVM_PIN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["inputs"]["microvm"]["path"])' <<<"$archive" 2>/dev/null)
 fi
 [[ -n $NIXPKGS_PIN && -n $MICROVM_PIN ]] || missing+=("archived baseline inputs")
+NIXPKGS_REF="path:$NIXPKGS_PIN" # nix-path-ok: an archived store path
+MICROVM_REF="path:$MICROVM_PIN" # nix-path-ok: an archived store path
 
 if ((${#missing[@]})); then
   reason=$(
@@ -219,8 +221,8 @@ run_viv() {
       XDG_DATA_HOME="$SCRATCH/data" \
       XDG_CACHE_HOME="$SCRATCH/cache" \
       HOME="$SCRATCH/home" \
-      VIVARIUM_BASELINE_NIXPKGS="path:$NIXPKGS_PIN" \
-      VIVARIUM_BASELINE_MICROVM="path:$MICROVM_PIN" \
+      VIVARIUM_BASELINE_NIXPKGS="$NIXPKGS_REF" \
+      VIVARIUM_BASELINE_MICROVM="$MICROVM_REF" \
       "$VIV" "$@" 2>&1
   )
 }
