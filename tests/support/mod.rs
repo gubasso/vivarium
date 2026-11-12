@@ -16,7 +16,7 @@ pub mod preflight;
 use std::ffi::OsString;
 use std::fs::{self, File, TryLockError};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::OnceLock;
@@ -283,9 +283,9 @@ fn bridge_user_manager(runtime: &Path) -> io::Result<()> {
 impl Drop for TempProject {
     fn drop(&mut self) {
         let _result = stop_fixture_vms(Path::new("systemctl"), &self.runtime);
-        let _result = fs::remove_dir_all(&self.root);
+        let _result = remove_fixture_root(&self.root);
         // The runtime root is outside `root` on purpose (see above), so it is removed by name.
-        let _result = fs::remove_dir_all(&self.runtime);
+        let _result = remove_fixture_root(&self.runtime);
         // The lifetime locks are released after this body, when the fields drop, so a sweeper in
         // another process cannot claim a root this fixture is still removing.
     }
@@ -378,6 +378,37 @@ fn names_path(text: &str, path: &str) -> bool {
         matches!(before, None | Some(' ' | '\t' | '='))
             && matches!(after, None | Some('/' | ' ' | '\t' | ';'))
     })
+}
+
+/// Remove a fixture root, including directories a trial left without the owner write bit.
+///
+/// A trial can leave a directory read-only, as a tree copied out of the Nix store keeps its
+/// `r-x` modes, and `remove_dir_all` cannot remove the entries of a directory its owner may not
+/// write. So every real directory of the root first gets its owner bits back. The walk reads
+/// metadata without following links, and a symbolic link, the `systemd/private` bridge among them,
+/// is never entered and never changed. `remove_dir_all` then removes the links themselves and
+/// never follows them.
+fn remove_fixture_root(root: &Path) -> io::Result<()> {
+    restore_owner_access(root)?;
+    fs::remove_dir_all(root)
+}
+
+fn restore_owner_access(directory: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(directory)?;
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    let mode = metadata.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        fs::set_permissions(directory, fs::Permissions::from_mode(mode | 0o700))?;
+    }
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            restore_owner_access(&entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 /// The file in each fixture root whose advisory lock the live fixture holds.
@@ -579,9 +610,7 @@ pub fn sweep_root(root: &Path, systemctl: Option<&Path>) -> Sweep {
     {
         return Sweep::Kept(reason);
     }
-    // `remove_dir_all` removes a symbolic link inside the root, the `systemd/private` bridge
-    // among them, and never follows it.
-    match fs::remove_dir_all(root) {
+    match remove_fixture_root(root) {
         Ok(()) => Sweep::Removed,
         Err(error) => Sweep::Kept(format!("cannot remove it: {error}")),
     }

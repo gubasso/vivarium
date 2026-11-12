@@ -77,6 +77,10 @@ fn main() -> std::process::ExitCode {
             "fixture_sweep_keeps_a_durable_root_while_its_runtime_root_remains",
             fixture_sweep_keeps_a_durable_root_while_its_runtime_root_remains,
         ),
+        Trial::test(
+            "fixture_sweep_removes_a_root_with_read_only_directories",
+            fixture_sweep_removes_a_root_with_read_only_directories,
+        ),
     ];
     libtest_mimic::run(&args, trials).exit_code()
 }
@@ -1428,6 +1432,53 @@ fn fixture_sweep_keeps_a_durable_root_while_its_runtime_root_remains() -> Result
     }
     if !blocked.is_dir() || fs::symlink_metadata(&free).is_ok() {
         return fail("the durable roots were not kept and removed as judged");
+    }
+    Ok(())
+}
+
+fn fixture_sweep_removes_a_root_with_read_only_directories() -> Result<(), Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+    let parent = tp.root().join("sweep");
+    fs::create_dir_all(&parent).map_err(io_failed)?;
+    // The symlink target is a read-only directory outside the root, which the sweep must neither
+    // enter nor change.
+    let outside = tp.root().join("outside");
+    fs::create_dir_all(&outside).map_err(io_failed)?;
+    let root = abandoned_root(&parent, "viv-t4194303-9", &outside)?;
+    // A tree a trial left behind, as a copy out of the Nix store leaves it: read-only directories
+    // with entries inside, nested two deep.
+    let nested = root.join("wf17-main").join(".git").join("objects");
+    fs::create_dir_all(&nested).map_err(io_failed)?;
+    fs::write(nested.join("pack"), "").map_err(io_failed)?;
+    for directory in [
+        nested.clone(),
+        nested.parent().map(Path::to_path_buf).unwrap_or_default(),
+        root.join("wf17-main"),
+        outside.clone(),
+    ] {
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o555)).map_err(io_failed)?;
+    }
+    let stub = systemctl_stub(tp.root(), 0, &[], 0)?;
+    let outcomes = sweep_parent(&parent, "viv-t", Some(&stub));
+    let outside_mode = fs::metadata(&outside)
+        .map_err(io_failed)?
+        .permissions()
+        .mode()
+        & 0o777;
+    // Give the fixture's own teardown a writable tree again before judging.
+    fs::set_permissions(&outside, fs::Permissions::from_mode(0o755)).map_err(io_failed)?;
+    if outcomes != vec![(root.clone(), Sweep::Removed)] {
+        return fail(format!(
+            "expected the read-only root removed, got {outcomes:?}"
+        ));
+    }
+    if fs::symlink_metadata(&root).is_ok() {
+        return fail("the root with read-only directories is still there");
+    }
+    if outside_mode != 0o555 {
+        return fail(format!(
+            "the sweep changed the symlink target's mode to {outside_mode:o}"
+        ));
     }
     Ok(())
 }
