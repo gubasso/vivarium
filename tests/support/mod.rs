@@ -14,9 +14,9 @@ pub mod harness;
 pub mod preflight;
 
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, File, TryLockError};
 use std::io;
-use std::os::unix::fs::DirBuilderExt as _;
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::OnceLock;
@@ -99,6 +99,9 @@ pub struct TempProject {
     data: PathBuf,
     cache: PathBuf,
     runtime: PathBuf,
+    /// The lifetime locks of `root` and `runtime`, held until the fixture is dropped. See
+    /// `sweep_abandoned_fixtures` for what they prove.
+    lifetime: [File; 2],
 }
 
 impl TempProject {
@@ -107,6 +110,7 @@ impl TempProject {
     }
 
     pub fn with_project_name(name: &str) -> io::Result<Self> {
+        sweep_abandoned_fixtures();
         let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let root = fixture_base()?.join(format!(
             "vivarium-user-workflows-{}-{sequence}",
@@ -178,6 +182,7 @@ impl TempProject {
         // recursively. Both raised in review 2026-09-09, in successive rounds.
         create_private_directory(&runtime)?;
         bridge_user_manager(&runtime)?;
+        let lifetime = [hold_lifetime_lock(&root)?, hold_lifetime_lock(&runtime)?];
         let project = project.canonicalize()?;
         Ok(Self {
             root,
@@ -189,6 +194,7 @@ impl TempProject {
             data,
             cache,
             runtime,
+            lifetime,
         })
     }
 
@@ -276,10 +282,12 @@ fn bridge_user_manager(runtime: &Path) -> io::Result<()> {
 
 impl Drop for TempProject {
     fn drop(&mut self) {
-        stop_leaked_vms(&self.runtime);
-        let _result = fs::remove_dir_all(&self.root);
+        let _result = stop_fixture_vms(Path::new("systemctl"), &self.runtime);
+        let _result = remove_fixture_root(&self.root);
         // The runtime root is outside `root` on purpose (see above), so it is removed by name.
-        let _result = fs::remove_dir_all(&self.runtime);
+        let _result = remove_fixture_root(&self.runtime);
+        // The lifetime locks are released after this body, when the fields drop, so a sweeper in
+        // another process cannot claim a root this fixture is still removing.
     }
 }
 
@@ -298,9 +306,15 @@ impl Drop for TempProject {
 ///
 /// Units are selected by the runtime directory in their own command line, which is unique to this
 /// fixture. Matching on the `vivarium-` name prefix alone would also match a VM the person running
-/// the suite started for themselves.
-fn stop_leaked_vms(runtime: &Path) {
-    let Ok(listed) = Command::new("systemctl")
+/// the suite started for themselves. The match is by path component: a token of `ExecStart` that
+/// is the runtime root or lies under it. A substring match would also select a unit of an unrelated
+/// root whose name merely begins with this one, such as `viv-t123-1-personal` for `viv-t123-1`.
+///
+/// It reports rather than hides a failure to list, inspect, or stop. `Drop` ignores the report,
+/// because a fixture's teardown must not fail the trial it served. The sweep does not: a root whose
+/// units cannot be shown stopped is kept, so a running VM never loses its runtime directory.
+fn stop_fixture_vms(systemctl: &Path, runtime: &Path) -> Result<(), String> {
+    let listed = Command::new(systemctl)
         .args([
             "--user",
             "list-units",
@@ -311,29 +325,294 @@ fn stop_leaked_vms(runtime: &Path) {
             "vivarium-*",
         ])
         .output()
-    else {
-        return;
-    };
-    let Ok(units) = serde_json::from_slice::<Vec<serde_json::Value>>(&listed.stdout) else {
-        return;
-    };
-    let needle = runtime.to_string_lossy().into_owned();
+        .map_err(|error| format!("cannot list the user units: {error}"))?;
+    if !listed.status.success() {
+        return Err(format!("listing the user units exited {}", listed.status));
+    }
+    let units = serde_json::from_slice::<Vec<serde_json::Value>>(&listed.stdout)
+        .map_err(|error| format!("cannot read the listed user units: {error}"))?;
+    let root = runtime.to_string_lossy().into_owned();
     for unit in units {
         let Some(name) = unit.get("unit").and_then(serde_json::Value::as_str) else {
             continue;
         };
-        let owned = Command::new("systemctl")
+        let shown = Command::new(systemctl)
             .args(["--user", "show", "-p", "ExecStart", "--value", name])
             .output()
-            .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains(&needle));
-        if owned {
-            let _ = Command::new("systemctl")
-                .args(["--user", "stop", name])
-                .output();
-            let _ = Command::new("systemctl")
-                .args(["--user", "reset-failed", name])
-                .output();
+            .map_err(|error| format!("cannot inspect {name}: {error}"))?;
+        if !shown.status.success() {
+            return Err(format!("inspecting {name} exited {}", shown.status));
         }
+        let exec_start = String::from_utf8_lossy(&shown.stdout);
+        let owned = names_path(&exec_start, &root);
+        if !owned {
+            continue;
+        }
+        let stopped = Command::new(systemctl)
+            .args(["--user", "stop", name])
+            .output()
+            .map_err(|error| format!("cannot stop {name}: {error}"))?;
+        if !stopped.status.success() {
+            return Err(format!("stopping {name} exited {}", stopped.status));
+        }
+        let _ = Command::new(systemctl)
+            .args(["--user", "reset-failed", name])
+            .output();
+    }
+    Ok(())
+}
+
+/// Whether `text` names `path` or a path under it, as a whole path component.
+///
+/// The match is on the path's two ends rather than on whitespace tokens, so a fixture base that
+/// contains a space still matches: before the path stands the start of the text, a space, or `=`,
+/// and after it a `/`, a space, `;`, or the end. So `/run/user/1000/viv-t123-1-personal` is not
+/// taken for `/run/user/1000/viv-t123-1`.
+fn names_path(text: &str, path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    text.match_indices(path).any(|(start, _)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + path.len()..].chars().next();
+        matches!(before, None | Some(' ' | '\t' | '='))
+            && matches!(after, None | Some('/' | ' ' | '\t' | ';'))
+    })
+}
+
+/// Remove a fixture root, including directories a trial left without the owner write bit.
+///
+/// A trial can leave a directory read-only, as a tree copied out of the Nix store keeps its
+/// `r-x` modes, and `remove_dir_all` cannot remove the entries of a directory its owner may not
+/// write. So every real directory of the root first gets its owner bits back. The walk reads
+/// metadata without following links, and a symbolic link, the `systemd/private` bridge among them,
+/// is never entered and never changed. `remove_dir_all` then removes the links themselves and
+/// never follows them.
+fn remove_fixture_root(root: &Path) -> io::Result<()> {
+    restore_owner_access(root)?;
+    fs::remove_dir_all(root)
+}
+
+fn restore_owner_access(directory: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(directory)?;
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    let mode = metadata.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        fs::set_permissions(directory, fs::Permissions::from_mode(mode | 0o700))?;
+    }
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            restore_owner_access(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+/// The file in each fixture root whose advisory lock the live fixture holds.
+pub const LIFETIME_LOCK: &str = ".fixture-alive";
+
+/// Create the lifetime lock of one fixture root and hold it.
+///
+/// `flock` belongs to the open file, and the kernel releases it when the last descriptor closes,
+/// which a process does on exit by any path: a return, a panic, `SIGTERM`, or `SIGKILL`. So a lock
+/// that another process can take proves that the fixture which held it is gone, and it proves that
+/// across PID namespaces, where a bare process id cannot. Rust opens the file close-on-exec, so no
+/// `viv` or VM that the fixture starts inherits it.
+///
+/// The lock is taken before the file gets its name. A sweeper only looks at a file named
+/// `LIFETIME_LOCK`, so if the fixture created that name first and locked it after, a concurrent
+/// sweeper could take the lock in between and remove a fixture that is still being built. The
+/// file is created under a name no sweeper reads, locked, and then renamed into place, and a rename
+/// keeps both the file and its lock.
+fn hold_lifetime_lock(root: &Path) -> io::Result<File> {
+    let staging = root.join(format!(
+        "{LIFETIME_LOCK}.{}.{}",
+        std::process::id(),
+        NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(&staging)?;
+    file.try_lock().map_err(|error| {
+        io::Error::other(format!(
+            "cannot hold the lifetime lock of {}: {error}",
+            root.display()
+        ))
+    })?;
+    fs::rename(&staging, root.join(LIFETIME_LOCK))?;
+    Ok(file)
+}
+
+/// What the sweep did with one candidate root.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Sweep {
+    /// The root's fixture was gone, and the root is removed.
+    Removed,
+    /// A live fixture holds the root's lifetime lock.
+    Alive,
+    /// The root or its lock vanished first, which is what a concurrent sweeper leaves.
+    Gone,
+    /// The root stays, for the reason given. Nothing that cannot be shown abandoned is removed.
+    Kept(String),
+}
+
+/// Remove the roots that fixtures of earlier processes left behind.
+///
+/// `Drop` removes both roots of a fixture when its trial ends, and that covers a return and a
+/// panic. It cannot cover an end that never unwinds: nextest ends a trial at its `slow-timeout`
+/// with `SIGTERM` and then `SIGKILL`, and a killed or interrupted run ends the same way. Those
+/// ends left `viv-t<pid>-<n>` runtime roots under `/run/user/<uid>` and
+/// `vivarium-user-workflows-<pid>-<n>` roots on the drive. A process that is killed cannot clean
+/// up after itself, so the first fixture of each later process does it, and the guarantee is
+/// exactly that: an abandoned root goes when a later process builds its first fixture.
+///
+/// A root is abandoned when its lifetime lock can be taken. The sweeper holds the lock while it
+/// works, which claims the root against a concurrent sweeper, and it checks again after the claim
+/// that the path still names the file it locked, so a root that another sweeper removed and a new
+/// fixture recreated under the same name is never touched. A root with no lock, which is how a
+/// root from before this change looks, is kept, and `tests/host/leftovers` reports it.
+///
+/// It runs once per process, and it never fails a fixture: a root it cannot remove is reported on
+/// stderr and kept.
+fn sweep_abandoned_fixtures() {
+    static SWEPT: OnceLock<()> = OnceLock::new();
+    SWEPT.get_or_init(|| {
+        let systemctl = Path::new("systemctl");
+        let session = PathBuf::from(format!("/run/user/{}", vivarium::config::effective_uid()));
+        let mut outcomes = Vec::new();
+        let runtime_parents = [session.as_path(), Path::new("/tmp")];
+        for parent in runtime_parents {
+            outcomes.extend(sweep_parent(parent, "viv-t", Some(systemctl)));
+        }
+        if let Ok(base) = fixture_base() {
+            outcomes.extend(sweep_durable_parent(&base, &runtime_parents));
+        }
+        for (path, outcome) in outcomes {
+            if let Sweep::Kept(reason) = outcome {
+                eprintln!("fixture sweep kept {}: {reason}", path.display());
+            }
+        }
+    });
+}
+
+/// Sweep one parent directory for fixture roots named `<prefix><pid>-<sequence>`.
+///
+/// Only failures are returned as `Kept`. A name of another form, and a root with no lifetime lock,
+/// are skipped silently, because they are not this sweep's to judge.
+pub fn sweep_parent(
+    parent: &Path,
+    prefix: &str,
+    systemctl: Option<&Path>,
+) -> Vec<(PathBuf, Sweep)> {
+    sweep_matching(parent, prefix, |root, _| sweep_root(root, systemctl))
+}
+
+/// Sweep the durable fixture roots under `parent`, after the runtime roots are swept.
+///
+/// A durable root holds the workspace and the volume images of any VM its fixture started, and the
+/// VM's unit names only the runtime root. So a durable root goes only when no runtime root of the
+/// same `<pid>-<sequence>` remains in any of `runtime_parents`. A runtime root that the sweep kept,
+/// because a unit could not be shown stopped, keeps its durable root with it.
+pub fn sweep_durable_parent(parent: &Path, runtime_parents: &[&Path]) -> Vec<(PathBuf, Sweep)> {
+    sweep_matching(parent, "vivarium-user-workflows-", |root, suffix| {
+        let runtime = format!("viv-t{suffix}");
+        if runtime_parents
+            .iter()
+            .any(|runtime_parent| fs::symlink_metadata(runtime_parent.join(&runtime)).is_ok())
+        {
+            return Sweep::Kept(format!("its runtime root {runtime} remains"));
+        }
+        sweep_root(root, None)
+    })
+}
+
+/// Visit the fixture roots under `parent` that carry a lifetime lock, with their `<pid>-<n>`.
+fn sweep_matching(
+    parent: &Path,
+    prefix: &str,
+    mut visit: impl FnMut(&Path, &str) -> Sweep,
+) -> Vec<(PathBuf, Sweep)> {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let mut outcomes = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !is_fixture_name(name, prefix) {
+            continue;
+        }
+        let path = entry.path();
+        if !path.join(LIFETIME_LOCK).exists() {
+            continue;
+        }
+        let suffix = &name[prefix.len()..];
+        let outcome = visit(&path, suffix);
+        outcomes.push((path, outcome));
+    }
+    outcomes
+}
+
+/// Whether `name` is exactly `<prefix><digits>-<digits>`.
+fn is_fixture_name(name: &str, prefix: &str) -> bool {
+    let Some(rest) = name.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some((pid, sequence)) = rest.split_once('-') else {
+        return false;
+    };
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    digits(pid) && digits(sequence)
+}
+
+/// Claim one root through its lifetime lock, stop its VMs, and remove it.
+pub fn sweep_root(root: &Path, systemctl: Option<&Path>) -> Sweep {
+    let Ok(metadata) = fs::symlink_metadata(root) else {
+        return Sweep::Gone;
+    };
+    if !metadata.is_dir() || metadata.uid() != vivarium::config::effective_uid() {
+        return Sweep::Kept("it is not a directory this user owns".to_owned());
+    }
+    let lock_path = root.join(LIFETIME_LOCK);
+    let Ok(before) = fs::symlink_metadata(&lock_path) else {
+        return Sweep::Gone;
+    };
+    if !before.is_file() {
+        return Sweep::Kept("its lifetime lock is not a regular file".to_owned());
+    }
+    let lock = match File::open(&lock_path) {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Sweep::Gone,
+        Err(error) => return Sweep::Kept(format!("cannot open its lifetime lock: {error}")),
+    };
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => return Sweep::Alive,
+        Err(TryLockError::Error(error)) => {
+            return Sweep::Kept(format!("cannot take its lifetime lock: {error}"));
+        }
+    }
+    let Ok(held) = lock.metadata() else {
+        return Sweep::Kept("cannot read the lifetime lock it holds".to_owned());
+    };
+    let same = |other: &fs::Metadata| other.dev() == held.dev() && other.ino() == held.ino();
+    if !same(&before) || !fs::symlink_metadata(&lock_path).is_ok_and(|now| same(&now)) {
+        return Sweep::Kept("its lifetime lock was replaced during the claim".to_owned());
+    }
+    if let Some(systemctl) = systemctl
+        && let Err(reason) = stop_fixture_vms(systemctl, root)
+    {
+        return Sweep::Kept(reason);
+    }
+    match remove_fixture_root(root) {
+        Ok(()) => Sweep::Removed,
+        Err(error) => Sweep::Kept(format!("cannot remove it: {error}")),
     }
 }
 
