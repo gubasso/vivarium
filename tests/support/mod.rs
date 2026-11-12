@@ -377,18 +377,29 @@ pub const LIFETIME_LOCK: &str = ".fixture-alive";
 /// that another process can take proves that the fixture which held it is gone, and it proves that
 /// across PID namespaces, where a bare process id cannot. Rust opens the file close-on-exec, so no
 /// `viv` or VM that the fixture starts inherits it.
+///
+/// The lock is taken before the file gets its name. A sweeper only looks at a file named
+/// `LIFETIME_LOCK`, so if the fixture created that name first and locked it after, a concurrent
+/// sweeper could take the lock in between and remove a fixture that is still being built. The
+/// file is created under a name no sweeper reads, locked, and then renamed into place, and a rename
+/// keeps both the file and its lock.
 fn hold_lifetime_lock(root: &Path) -> io::Result<File> {
+    let staging = root.join(format!(
+        "{LIFETIME_LOCK}.{}.{}",
+        std::process::id(),
+        NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+    ));
     let file = File::options()
         .write(true)
-        .create(true)
-        .truncate(false)
-        .open(root.join(LIFETIME_LOCK))?;
+        .create_new(true)
+        .open(&staging)?;
     file.try_lock().map_err(|error| {
         io::Error::other(format!(
             "cannot hold the lifetime lock of {}: {error}",
             root.display()
         ))
     })?;
+    fs::rename(&staging, root.join(LIFETIME_LOCK))?;
     Ok(file)
 }
 
@@ -429,11 +440,12 @@ fn sweep_abandoned_fixtures() {
         let systemctl = Path::new("systemctl");
         let session = PathBuf::from(format!("/run/user/{}", vivarium::config::effective_uid()));
         let mut outcomes = Vec::new();
-        for parent in [session.as_path(), Path::new("/tmp")] {
+        let runtime_parents = [session.as_path(), Path::new("/tmp")];
+        for parent in runtime_parents {
             outcomes.extend(sweep_parent(parent, "viv-t", Some(systemctl)));
         }
         if let Ok(base) = fixture_base() {
-            outcomes.extend(sweep_parent(&base, "vivarium-user-workflows-", None));
+            outcomes.extend(sweep_durable_parent(&base, &runtime_parents));
         }
         for (path, outcome) in outcomes {
             if let Sweep::Kept(reason) = outcome {
@@ -452,6 +464,34 @@ pub fn sweep_parent(
     prefix: &str,
     systemctl: Option<&Path>,
 ) -> Vec<(PathBuf, Sweep)> {
+    sweep_matching(parent, prefix, |root, _| sweep_root(root, systemctl))
+}
+
+/// Sweep the durable fixture roots under `parent`, after the runtime roots are swept.
+///
+/// A durable root holds the workspace and the volume images of any VM its fixture started, and the
+/// VM's unit names only the runtime root. So a durable root goes only when no runtime root of the
+/// same `<pid>-<sequence>` remains in any of `runtime_parents`. A runtime root that the sweep kept,
+/// because a unit could not be shown stopped, keeps its durable root with it.
+pub fn sweep_durable_parent(parent: &Path, runtime_parents: &[&Path]) -> Vec<(PathBuf, Sweep)> {
+    sweep_matching(parent, "vivarium-user-workflows-", |root, suffix| {
+        let runtime = format!("viv-t{suffix}");
+        if runtime_parents
+            .iter()
+            .any(|runtime_parent| fs::symlink_metadata(runtime_parent.join(&runtime)).is_ok())
+        {
+            return Sweep::Kept(format!("its runtime root {runtime} remains"));
+        }
+        sweep_root(root, None)
+    })
+}
+
+/// Visit the fixture roots under `parent` that carry a lifetime lock, with their `<pid>-<n>`.
+fn sweep_matching(
+    parent: &Path,
+    prefix: &str,
+    mut visit: impl FnMut(&Path, &str) -> Sweep,
+) -> Vec<(PathBuf, Sweep)> {
     let Ok(entries) = fs::read_dir(parent) else {
         return Vec::new();
     };
@@ -468,7 +508,8 @@ pub fn sweep_parent(
         if !path.join(LIFETIME_LOCK).exists() {
             continue;
         }
-        let outcome = sweep_root(&path, systemctl);
+        let suffix = &name[prefix.len()..];
+        let outcome = visit(&path, suffix);
         outcomes.push((path, outcome));
     }
     outcomes

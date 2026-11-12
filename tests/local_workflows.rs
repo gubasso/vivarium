@@ -23,8 +23,8 @@ use support::{
     expect_derived_manifest_visible, expect_json_array_items, expect_json_array_nonempty,
     expect_json_fields_at, expect_json_keys, expect_stderr_mentions, expect_stdout_lacks,
     expect_stdout_mentions, expect_tree_unchanged, fail, io_failed, json, json_record,
-    project_rows, run_viv, snapshot_tree, sweep_parent, sweep_root, viv, viv_at, viv_with_env,
-    volume_image, write_file, write_piece,
+    project_rows, run_viv, snapshot_tree, sweep_durable_parent, sweep_parent, sweep_root, viv,
+    viv_at, viv_with_env, volume_image, write_file, write_piece,
 };
 
 fn main() -> std::process::ExitCode {
@@ -72,6 +72,10 @@ fn main() -> std::process::ExitCode {
         Trial::test(
             "a_live_fixture_is_never_swept",
             a_live_fixture_is_never_swept,
+        ),
+        Trial::test(
+            "fixture_sweep_keeps_a_durable_root_while_its_runtime_root_remains",
+            fixture_sweep_keeps_a_durable_root_while_its_runtime_root_remains,
         ),
     ];
     libtest_mimic::run(&args, trials).exit_code()
@@ -1203,6 +1207,11 @@ fn abandoned_root(parent: &Path, name: &str, link_target: &Path) -> Result<PathB
     Ok(root)
 }
 
+/// One shell word holding `value` exactly, whatever quotes or spaces it carries.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 /// A `systemctl` stand-in that answers `list-units`, `show`, and `stop`, and logs every call.
 fn systemctl_stub(
     dir: &Path,
@@ -1216,16 +1225,24 @@ fn systemctl_stub(
         .collect();
     let mut shown = String::new();
     for (name, exec_start) in units {
-        let _ = writeln!(shown, "    {name}) printf '%s' '{exec_start}' ;;");
+        let _ = writeln!(
+            shown,
+            "    {}) printf '%s' {} ;;",
+            shell_quote(name),
+            shell_quote(exec_start)
+        );
     }
     let log = dir.join("systemctl.log");
     let script = [
         "#!/usr/bin/env bash".to_owned(),
-        format!("printf '%s\\n' \"$*\" >>'{}'", log.display()),
+        format!(
+            "printf '%s\\n' \"$*\" >>{}",
+            shell_quote(&log.to_string_lossy())
+        ),
         "case \"$2\" in".to_owned(),
         format!(
-            "list-units) printf '%s' '[{}]'; exit {list_status} ;;",
-            listed.join(",")
+            "list-units) printf '%s' {}; exit {list_status} ;;",
+            shell_quote(&format!("[{}]", listed.join(",")))
         ),
         "show)".to_owned(),
         "case \"$6\" in".to_owned(),
@@ -1380,6 +1397,34 @@ fn a_live_fixture_is_never_swept() -> Result<(), Failed> {
                 root.display()
             ));
         }
+    }
+    Ok(())
+}
+
+fn fixture_sweep_keeps_a_durable_root_while_its_runtime_root_remains() -> Result<(), Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+    let durable = tp.root().join("durable");
+    let runtime = tp.root().join("runtime");
+    fs::create_dir_all(&durable).map_err(io_failed)?;
+    fs::create_dir_all(&runtime).map_err(io_failed)?;
+    let blocked = abandoned_root(&durable, "vivarium-user-workflows-4194303-7", tp.root())?;
+    let free = abandoned_root(&durable, "vivarium-user-workflows-4194303-8", tp.root())?;
+    // The runtime root of the first is still there, as a sweep that could not stop its VM keeps it.
+    fs::create_dir_all(runtime.join("viv-t4194303-7")).map_err(io_failed)?;
+    let mut outcomes = sweep_durable_parent(&durable, &[&runtime]);
+    outcomes.sort_by(|left, right| left.0.cmp(&right.0));
+    let expected = vec![
+        (
+            blocked.clone(),
+            Sweep::Kept("its runtime root viv-t4194303-7 remains".to_owned()),
+        ),
+        (free.clone(), Sweep::Removed),
+    ];
+    if outcomes != expected {
+        return fail(format!("expected {expected:?}, got {outcomes:?}"));
+    }
+    if !blocked.is_dir() || fs::symlink_metadata(&free).is_ok() {
+        return fail("the durable roots were not kept and removed as judged");
     }
     Ok(())
 }
