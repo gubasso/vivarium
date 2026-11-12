@@ -2,7 +2,7 @@
 # Local operator release helper for a cargo crate. CI (release-plz) is the normal
 # release path; this is the manual escape hatch. It performs no real publish by
 # default. Any future real-publish subcommand must reuse the script-local auth
-# gate in ./publish and must never move that logic into the cog CLI.
+# gate in ./publish.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
