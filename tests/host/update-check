@@ -172,10 +172,26 @@ fi
 
 # The movable component: a local git flake whose HEAD is the "upstream branch".
 DEP=$TEMP_ROOT/dep
-git init -q "$DEP"
+
+# Every git call on the fixture goes through this. The fixture is a throwaway
+# repository, so it reads no global or system git config: a commit-msg hook
+# there, such as one that demands Conventional Commits, rejected the commit
+# "one" and failed the lane on every branch. The location variables are
+# cleared for the reason `workflow_17_worktree` in `tests/boot_workflows.rs`
+# states: git exports them into every hook it runs, and they outrank `-C`.
+dep_git() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+    -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX \
+    -u GIT_NAMESPACE -u GIT_CEILING_DIRECTORIES \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git -C "$DEP" -c user.name=lane -c user.email=lane@check "$@"
+}
+
+mkdir -p "$DEP"
+dep_git init -q
 printf '{ outputs = { self }: { text = "one"; }; }\n' >"$DEP/flake.nix"
-git -C "$DEP" add -A
-git -C "$DEP" -c user.name=lane -c user.email=lane@check commit -qm one
+dep_git add -A
+dep_git commit -qm one
 
 # The scratch installation: its own XDG roots, a directory-form image carrying
 # the base flake the user owns, and the lane's directory as the workspace.
@@ -273,8 +289,8 @@ else
   # the guest still carries the pinned component — no ordinary build
   # re-resolves (N3), which is exactly why `viv update` has a job.
   printf '{ outputs = { self }: { text = "two"; }; }\n' >"$DEP/flake.nix"
-  git -C "$DEP" add -A
-  git -C "$DEP" -c user.name=lane -c user.email=lane@check commit -qm two
+  dep_git add -A
+  dep_git commit -qm two
   run_viv stop >/dev/null 2>&1
   out=$(run_viv start)
   status=$?
@@ -317,8 +333,8 @@ nixpkgs unchanged: $([[ $nixpkgs_after == "$NIXPKGS_LOCKED" ]] && echo yes || ec
   # One clean run is evidence of possibility, not reliability: the whole move
   # repeats with a third revision.
   printf '{ outputs = { self }: { text = "three"; }; }\n' >"$DEP/flake.nix"
-  git -C "$DEP" add -A
-  git -C "$DEP" -c user.name=lane -c user.email=lane@check commit -qm three
+  dep_git add -A
+  dep_git commit -qm three
   out=$(run_viv update update-base --json)
   status=$?
   run_viv stop >/dev/null 2>&1

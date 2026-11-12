@@ -31,8 +31,14 @@ pkgs.runCommand "vivarium-base-image-contract" {
   VIVARIUM_VIRTIOFSD_THREAD_POOL_SIZE = toString expect.virtiofsdThreadPoolSize;
   VIVARIUM_EXPECTED_UNITS = pkgs.lib.concatMapStrings (u: "${u} ") (
     pkgs.lib.sort (a: b: a < b) (
+      # Every image ships the agent's two root-owned bridges, so they belong
+      # in the fixed half: the poweroff pair (spec/10, spec/12) and the trim
+      # pair (spec/12, spec/17) in `nix/guest.nix`. Only the services count
+      # here, because the allowlist below reads `vivarium-*.service`.
       [
         "vivarium-agent.service"
+        "vivarium-fstrim.service"
+        "vivarium-poweroff.service"
         "vivarium-volume-prepare.service"
       ]
       # The bind unit exists exactly when a mount is declared — the trees a
