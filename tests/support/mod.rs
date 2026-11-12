@@ -331,9 +331,6 @@ fn stop_fixture_vms(systemctl: &Path, runtime: &Path) -> Result<(), String> {
     }
     let units = serde_json::from_slice::<Vec<serde_json::Value>>(&listed.stdout)
         .map_err(|error| format!("cannot read the listed user units: {error}"))?;
-    let mut prefix = runtime.as_os_str().to_owned();
-    prefix.push("/");
-    let prefix = prefix.to_string_lossy().into_owned();
     let root = runtime.to_string_lossy().into_owned();
     for unit in units {
         let Some(name) = unit.get("unit").and_then(serde_json::Value::as_str) else {
@@ -347,9 +344,7 @@ fn stop_fixture_vms(systemctl: &Path, runtime: &Path) -> Result<(), String> {
             return Err(format!("inspecting {name} exited {}", shown.status));
         }
         let exec_start = String::from_utf8_lossy(&shown.stdout);
-        let owned = exec_start
-            .split_whitespace()
-            .any(|token| token == root || token.starts_with(&prefix));
+        let owned = names_path(&exec_start, &root);
         if !owned {
             continue;
         }
@@ -365,6 +360,24 @@ fn stop_fixture_vms(systemctl: &Path, runtime: &Path) -> Result<(), String> {
             .output();
     }
     Ok(())
+}
+
+/// Whether `text` names `path` or a path under it, as a whole path component.
+///
+/// The match is on the path's two ends rather than on whitespace tokens, so a fixture base that
+/// contains a space still matches: before the path stands the start of the text, a space, or `=`,
+/// and after it a `/`, a space, `;`, or the end. So `/run/user/1000/viv-t123-1-personal` is not
+/// taken for `/run/user/1000/viv-t123-1`.
+fn names_path(text: &str, path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    text.match_indices(path).any(|(start, _)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + path.len()..].chars().next();
+        matches!(before, None | Some(' ' | '\t' | '='))
+            && matches!(after, None | Some('/' | ' ' | '\t' | ';'))
+    })
 }
 
 /// The file in each fixture root whose advisory lock the live fixture holds.

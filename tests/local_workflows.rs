@@ -1337,6 +1337,9 @@ fn fixture_sweep_stops_only_the_fixture_units() -> Result<(), Failed> {
     let tp = TempProject::new().map_err(io_failed)?;
     let parent = tp.root().join("sweep");
     fs::create_dir_all(&parent).map_err(io_failed)?;
+    // A space in the parent, as a fixture base on a drive named with one would carry.
+    let parent = parent.join("with space");
+    fs::create_dir_all(&parent).map_err(io_failed)?;
     let root = abandoned_root(&parent, "viv-t4194303-5", tp.root())?;
     let owned = format!(
         "{{ argv[]=/bin/supervisor --spec {}/vivarium/demo/default/launch.json ; }}",
