@@ -519,7 +519,7 @@ repos:
   # `nix-path-ok: <reason>` on that same line. Accepted ADR bodies never
   # change, so `docs/decisions/` is excluded rather than marked.
   - repo: https://github.com/gubasso/exobrain-tech
-    rev: bffe325fd814bb8eea994af1fbe62ea82e58ba44
+    rev: v1.0.0
     hooks:
       - id: no-path-flake-reference
         exclude: ^docs/decisions/
