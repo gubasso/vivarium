@@ -11,18 +11,20 @@
 
 mod support;
 
-use std::fs;
+use std::fmt::Write as _;
+use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use support::{
-    EX_CONFIG, EX_IOERR, EX_TEMPFAIL, EX_UNAVAILABLE, EX_USAGE, TempProject, VOLUME_TAIL,
-    VivOutput, arrange_manifest, check, doctor_check, expect_code, expect_derived_manifest_visible,
-    expect_json_array_items, expect_json_array_nonempty, expect_json_fields_at, expect_json_keys,
-    expect_stderr_mentions, expect_stdout_lacks, expect_stdout_mentions, expect_tree_unchanged,
-    fail, io_failed, json, json_record, project_rows, run_viv, snapshot_tree, viv, viv_at,
-    viv_with_env, volume_image, write_file, write_piece,
+    EX_CONFIG, EX_IOERR, EX_TEMPFAIL, EX_UNAVAILABLE, EX_USAGE, LIFETIME_LOCK, Sweep, TempProject,
+    VOLUME_TAIL, VivOutput, arrange_manifest, check, doctor_check, expect_code,
+    expect_derived_manifest_visible, expect_json_array_items, expect_json_array_nonempty,
+    expect_json_fields_at, expect_json_keys, expect_stderr_mentions, expect_stdout_lacks,
+    expect_stdout_mentions, expect_tree_unchanged, fail, io_failed, json, json_record,
+    project_rows, run_viv, snapshot_tree, sweep_parent, sweep_root, viv, viv_at, viv_with_env,
+    volume_image, write_file, write_piece,
 };
 
 fn main() -> std::process::ExitCode {
@@ -47,6 +49,30 @@ fn main() -> std::process::ExitCode {
         Trial::test("workflow_25_fleet_usage_surface", workflow_25_fleet_usage),
         Trial::test("workflow_27_stop_destroy_records", workflow_27_records),
         Trial::test("workflow_28_trim_usage_surface", workflow_28_usage),
+        Trial::test(
+            "fixture_sweep_removes_an_abandoned_root",
+            fixture_sweep_removes_an_abandoned_root,
+        ),
+        Trial::test(
+            "fixture_sweep_keeps_a_live_root",
+            fixture_sweep_keeps_a_live_root,
+        ),
+        Trial::test(
+            "fixture_sweep_leaves_what_it_cannot_judge",
+            fixture_sweep_leaves_what_it_cannot_judge,
+        ),
+        Trial::test(
+            "fixture_sweep_stops_only_the_fixture_units",
+            fixture_sweep_stops_only_the_fixture_units,
+        ),
+        Trial::test(
+            "fixture_sweep_keeps_a_root_whose_units_resist",
+            fixture_sweep_keeps_a_root_whose_units_resist,
+        ),
+        Trial::test(
+            "a_live_fixture_is_never_swept",
+            a_live_fixture_is_never_swept,
+        ),
     ];
     libtest_mimic::run(&args, trials).exit_code()
 }
@@ -1158,4 +1184,202 @@ fn expect_injected_vivarium_variables_only(out: &VivOutput) -> Result<(), String
         "the child saw vivarium variables the harness did not inject: {}",
         leaked.join(", ")
     ))
+}
+
+// --- The fixture sweep ---------------------------------------------------------------------------
+//
+// `TempProject` removes its roots in `Drop`, which a trial killed at its timeout never reaches, so
+// the first fixture of each later process sweeps the roots whose lifetime lock it can take. These
+// trials run the sweep against a parent inside a fixture of their own and a `systemctl` stub, so
+// they never touch the real `/run/user/<uid>` or a real user unit.
+
+/// A fixture root as a killed process leaves it: a lock file nobody holds, and the bridge symlink.
+fn abandoned_root(parent: &Path, name: &str, link_target: &Path) -> Result<PathBuf, Failed> {
+    let root = parent.join(name);
+    fs::create_dir_all(root.join("systemd")).map_err(io_failed)?;
+    File::create(root.join(LIFETIME_LOCK)).map_err(io_failed)?;
+    std::os::unix::fs::symlink(link_target, root.join("systemd").join("private"))
+        .map_err(io_failed)?;
+    Ok(root)
+}
+
+/// A `systemctl` stand-in that answers `list-units`, `show`, and `stop`, and logs every call.
+fn systemctl_stub(
+    dir: &Path,
+    list_status: i32,
+    units: &[(&str, String)],
+    stop_status: i32,
+) -> Result<PathBuf, Failed> {
+    let listed: Vec<String> = units
+        .iter()
+        .map(|(name, _)| format!("{{\"unit\":\"{name}\"}}"))
+        .collect();
+    let mut shown = String::new();
+    for (name, exec_start) in units {
+        let _ = writeln!(shown, "    {name}) printf '%s' '{exec_start}' ;;");
+    }
+    let log = dir.join("systemctl.log");
+    let script = [
+        "#!/usr/bin/env bash".to_owned(),
+        format!("printf '%s\\n' \"$*\" >>'{}'", log.display()),
+        "case \"$2\" in".to_owned(),
+        format!(
+            "list-units) printf '%s' '[{}]'; exit {list_status} ;;",
+            listed.join(",")
+        ),
+        "show)".to_owned(),
+        "case \"$6\" in".to_owned(),
+        shown,
+        "esac ;;".to_owned(),
+        format!("stop) exit {stop_status} ;;"),
+        "esac".to_owned(),
+    ]
+    .join("\n");
+    let stub = dir.join("systemctl");
+    fs::write(&stub, script).map_err(io_failed)?;
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).map_err(io_failed)?;
+    Ok(stub)
+}
+
+fn fixture_sweep_removes_an_abandoned_root() -> Result<(), Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+    let parent = tp.root().join("sweep");
+    let target = tp.root().join("manager-socket");
+    fs::create_dir_all(&parent).map_err(io_failed)?;
+    fs::write(&target, "").map_err(io_failed)?;
+    let root = abandoned_root(&parent, "viv-t4194303-1", &target)?;
+    let stub = systemctl_stub(tp.root(), 0, &[], 0)?;
+    let outcomes = sweep_parent(&parent, "viv-t", Some(&stub));
+    if outcomes != vec![(root.clone(), Sweep::Removed)] {
+        return fail(format!(
+            "expected the abandoned root removed, got {outcomes:?}"
+        ));
+    }
+    if fs::symlink_metadata(&root).is_ok() {
+        return fail("the abandoned root is still there");
+    }
+    if !target.exists() {
+        return fail("the sweep removed the target of the bridge symlink");
+    }
+    Ok(())
+}
+
+fn fixture_sweep_keeps_a_live_root() -> Result<(), Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+    let parent = tp.root().join("sweep");
+    fs::create_dir_all(&parent).map_err(io_failed)?;
+    let root = abandoned_root(&parent, "viv-t4194303-2", tp.root())?;
+    let held = File::open(root.join(LIFETIME_LOCK)).map_err(io_failed)?;
+    held.try_lock()
+        .map_err(|error| Failed::from(format!("cannot hold the test lock: {error}")))?;
+    let outcomes = sweep_parent(&parent, "viv-t", None);
+    if outcomes != vec![(root.clone(), Sweep::Alive)] || !root.is_dir() {
+        return fail(format!(
+            "expected the held root kept as alive, got {outcomes:?}"
+        ));
+    }
+    drop(held);
+    Ok(())
+}
+
+fn fixture_sweep_leaves_what_it_cannot_judge() -> Result<(), Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+    let parent = tp.root().join("sweep");
+    fs::create_dir_all(&parent).map_err(io_failed)?;
+    // A root from before the lifetime lock existed: no lock file, so no evidence either way.
+    let unlocked = parent.join("viv-t4194303-3");
+    fs::create_dir_all(&unlocked).map_err(io_failed)?;
+    // Names of another form, each with an unheld lock that would otherwise be claimable.
+    let mut others = Vec::new();
+    for name in ["vivarium", "viv-tx-1", "viv-t123", "viv-t1-2-personal"] {
+        others.push(abandoned_root(&parent, name, tp.root())?);
+    }
+    // A symbolic link named like a root, pointing at a claimable directory elsewhere.
+    let elsewhere = abandoned_root(tp.root(), "elsewhere", tp.root())?;
+    let link = parent.join("viv-t4194303-4");
+    std::os::unix::fs::symlink(&elsewhere, &link).map_err(io_failed)?;
+    let outcomes = sweep_parent(&parent, "viv-t", None);
+    let expected = vec![(
+        link,
+        Sweep::Kept("it is not a directory this user owns".to_owned()),
+    )];
+    if outcomes != expected {
+        return fail(format!(
+            "expected only the link reported and kept, got {outcomes:?}"
+        ));
+    }
+    for path in others.iter().chain([&unlocked, &elsewhere]) {
+        if !path.is_dir() {
+            return fail(format!("the sweep removed {}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+fn fixture_sweep_stops_only_the_fixture_units() -> Result<(), Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+    let parent = tp.root().join("sweep");
+    fs::create_dir_all(&parent).map_err(io_failed)?;
+    let root = abandoned_root(&parent, "viv-t4194303-5", tp.root())?;
+    let owned = format!(
+        "{{ argv[]=/bin/supervisor --spec {}/vivarium/demo/default/launch.json ; }}",
+        root.display()
+    );
+    let foreign = format!(
+        "{{ argv[]=/bin/supervisor --spec {}-personal/vivarium/demo/default/launch.json ; }}",
+        root.display()
+    );
+    let stub = systemctl_stub(
+        tp.root(),
+        0,
+        &[("vivarium-owned", owned), ("vivarium-foreign", foreign)],
+        0,
+    )?;
+    let outcomes = sweep_parent(&parent, "viv-t", Some(&stub));
+    if outcomes != vec![(root, Sweep::Removed)] {
+        return fail(format!("expected the root removed, got {outcomes:?}"));
+    }
+    let log = fs::read_to_string(tp.root().join("systemctl.log")).map_err(io_failed)?;
+    if !log.lines().any(|line| line == "--user stop vivarium-owned") {
+        return fail(format!("the fixture's own unit was not stopped:\n{log}"));
+    }
+    if log.contains("stop vivarium-foreign") {
+        return fail(format!("a unit of another root was stopped:\n{log}"));
+    }
+    Ok(())
+}
+
+fn fixture_sweep_keeps_a_root_whose_units_resist() -> Result<(), Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+    for (case, list_status, stop_status) in [("unlistable", 1, 0), ("unstoppable", 0, 1)] {
+        let dir = tp.root().join(case);
+        let parent = dir.join("sweep");
+        fs::create_dir_all(&parent).map_err(io_failed)?;
+        let root = abandoned_root(&parent, "viv-t4194303-6", tp.root())?;
+        let owned = format!(
+            "{{ argv[]=/bin/supervisor --spec {}/launch.json ; }}",
+            root.display()
+        );
+        let stub = systemctl_stub(&dir, list_status, &[("vivarium-owned", owned)], stop_status)?;
+        let outcomes = sweep_parent(&parent, "viv-t", Some(&stub));
+        let kept = matches!(outcomes.as_slice(), [(path, Sweep::Kept(_))] if *path == root);
+        if !kept || !root.is_dir() {
+            return fail(format!("{case}: expected the root kept, got {outcomes:?}"));
+        }
+    }
+    Ok(())
+}
+
+fn a_live_fixture_is_never_swept() -> Result<(), Failed> {
+    let tp = TempProject::new().map_err(io_failed)?;
+    for root in [tp.root(), tp.runtime()] {
+        let outcome = sweep_root(root, None);
+        if outcome != Sweep::Alive || !root.is_dir() {
+            return fail(format!(
+                "a live fixture root {} was judged {outcome:?}",
+                root.display()
+            ));
+        }
+    }
+    Ok(())
 }
