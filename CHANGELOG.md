@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/gubasso/vivarium/compare/v0.2.3...v0.2.4) - 2026-11-12
+
+### Fixed
+
+- *(harness)* remove the fixture roots that a killed trial leaves behind ([#36](https://github.com/gubasso/vivarium/pull/36))
+
 ## [0.2.3](https://github.com/gubasso/vivarium/compare/v0.2.2...v0.2.3) - 2026-11-11
 
 ### Fixed
