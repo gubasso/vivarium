@@ -21,7 +21,7 @@
     # this tag and the lock together and leaves a two-file diff to review. One
     # project runs one `rk`: this pin, never a host install beside it.
     release-kit = {
-      url = "github:gubasso/release-kit/v0.9.8";
+      url = "github:gubasso/release-kit/v0.10.3";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # The store guard of the canon (exobrain): `exobrain store-guard --daily`
