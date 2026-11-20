@@ -6,7 +6,7 @@ Use this guide to cut a vivarium release, publish the crate to [crates.io](https
 
 `master` is the one long-lived branch. It is the trunk, the GitHub default branch, and the only branch a release is cut from. It takes no direct push: every change reaches it as a squash-merged pull request from a short-lived branch that lives in its own linked worktree. `rk worktree add <type>/<slug>` creates that worktree, and `rk method worktrees` owns the reasoning.
 
-The release style is `trunk`, which means continuous release. release-plz keeps one release request open against `master`, and that request is armed from the moment it opens: it merges itself as soon as every required check passes, and the merge publishes. There is no separate human release decision. To hold a release, disarm the request before its last check goes green; a release held too late is withdrawn rather than abandoned.
+The release style is `trunk`. release-plz keeps one release request open against `master`, and a release happens only on the operator's order. The request opens only after a commit typed `feat`, `fix`, or `perf`, or a breaking change, that changed a file the crate ships lands on `master`. It then stays open and collects every later change until the operator merges it with `rk release merge`. Nothing arms the request or merges it automatically. To hold a release, leave the request open.
 
 Because the changelog is built from the squash titles and bodies that land on `master`, the quality of a release note is decided at merge time. The landed `pr-title` check and the `rk-message` hook are what hold that.
 
@@ -20,13 +20,13 @@ release-plz reads the last release from crates.io. Every version that `Cargo.tom
 
 `release-plz.toml` sets `semver_check = false`. vivarium ships two binaries and its lib target exists for this crate's own integration tests, so no external consumer holds the API. Run the check by hand with `./scripts/release semver-check` if that ever changes, and set the key to `true` in the same change. Releases still follow semantic versioning.
 
-## Routine automated release
+## Routine release on order
 
-You never hand-create the tag, and under the `trunk` style you never merge the release request either.
+You never hand-create the tag. The operator decides when a release happens, and `rk guide release` gives the commands.
 
-1. Land feature work on `master` through a squash-merged pull request, with a scoped Conventional Commit title.
-2. release-plz opens or updates the release request on `master`, bumping the version and the changelog.
-3. Every required check passes, and the request merges itself.
+1. Land work on `master` through a squash-merged pull request, with a scoped Conventional Commit title.
+2. release-plz opens or updates the release request on `master`, with the version bump and the changelog. It opens one only when a `feat`, `fix`, or `perf` commit, or a breaking change, that changed a file the crate ships landed since the last release.
+3. When the operator orders the release, the operator runs `rk release merge` to preview the request, then `rk release merge --apply`. That dispatches the merge job of `release-plz.yml`. The job confirms that the request head and the trunk tip are still the ones the preview named and that `gate` passed on that head, and then it merges the request. The job refuses a dispatch from anyone who does not hold the administrator role on the repository. It never arms the request to merge later.
 4. release-plz publishes the crate to crates.io over Trusted Publishing and tags the release (`vX.Y.Z`).
 5. The tag push, made with release-plz's GitHub App token, triggers the cargo-dist `release.yml`, which builds the binaries, attests them, and attaches them to the GitHub release — see [Binary distribution](#binary-distribution-cargo-dist).
 

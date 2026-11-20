@@ -6,8 +6,9 @@
 # The lane register is docs/reference/testing-lanes.md.
 #
 # Trigger: `master` and every pull request. The release convention writes the
-# trunk through squash-merged pull requests alone and arms the release request
-# from the moment it opens, so a merge that nothing gated would ship itself.
+# trunk through squash-merged pull requests alone, and the release request
+# merges only on the operator's order, through a merge job that first
+# confirms that `gate` passed on the request's head.
 # The pull-request trigger is what makes the `gate` job below reportable, and
 # `gate` is the one check the trunk's protection requires.
 #
