@@ -29,9 +29,17 @@ jobs:
       - name: the title is a scoped Conventional Commit
         env:
           TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
         # The second alternative is the bot's own release request, whose
         # title the release automation authors, not an operator.
         run: |
+          # A request that names a security advisory releases: its title takes
+          # feat, fix, or perf, or marks a breaking change, and a security update
+          # is fix(deps). The release bot's own request is exempt.
+          printf '%s\n%s\n' "$TITLE" "${BODY:-}" | grep -Eq '(^|[^A-Za-z0-9])(RUSTSEC-[0-9]{4}-[0-9]{4}|CVE-[0-9]{4}-[0-9]{4,}|GHSA(-[0-9a-z]{4}){3})' && advisory=yes
+          printf '%s' "$TITLE" | grep -Eq '^((feat|fix|perf)(\([^)]*\)){0,1}!{0,1}|[a-z]+(\([^)]*\)){0,1}!): |^chore(\((release|master|main)\))?: (release|v)' && advisory=
+          printf '%s\n' "${BODY:-}" | grep -Eq '^BREAKING[ -]CHANGE:' && advisory=
+          test -z "${advisory:-}" || { echo "the request names a security advisory, so its title takes a releasing type: feat, fix, or perf, or a breaking change; a security update is fix(deps)"; exit 1; }
           printf '%s' "$TITLE" | grep -Eq \
             '^((build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)\(([a-z0-9._/-]+)\)!?: .+|chore(\((release|master|main)\))?: (release|v).+)$' \
             && exit 0
