@@ -21,7 +21,7 @@ use support::{
     expect_code, expect_json_array_items, expect_json_array_nonempty, expect_json_fields_at,
     expect_json_keys, expect_json_map_entries, expect_no_volume_images, expect_soft_check,
     expect_stderr_mentions, expect_stdout_lacks, expect_stdout_mentions, fail, io_failed,
-    preflight, viv, viv_with_env, write_file, write_piece,
+    output_within, preflight, stderr_tail, viv, viv_with_env, write_file, write_piece,
 };
 
 fn main() -> std::process::ExitCode {
@@ -36,6 +36,7 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(69);
     }
     let trials = vec![
+        Trial::test("product_lock_resolves", product_lock_resolves),
         Trial::test(
             "eval_bound_manifest_evaluates",
             eval_bound_manifest_evaluates,
@@ -54,6 +55,48 @@ fn main() -> std::process::ExitCode {
         ),
     ];
     libtest_mimic::run(&args, trials).exit_code()
+}
+
+/// That every input of `nix/flake.lock` can be fetched, on whatever store this host has.
+///
+/// The baseline pins fetch only `nixpkgs` and `microvm` (KI-0006), and Nix fetches any other input
+/// only when an evaluation reads it. So without this trial nothing in the suite would fetch the
+/// lock whole, and an input whose source has gone, such as the `spectrum` input of microvm.nix
+/// whose git host stopped answering, would show only on the day an evaluation reads it. The
+/// recursive `nix flake archive` asks the question once, here, under a deadline that ends it
+/// before nextest does, so a stalled fetch fails with its reason.
+///
+/// A warm store answers from what it holds and proves nothing about the network. The trial says
+/// something about the upstream hosts only on a cold store, which is what a CI runner has.
+fn product_lock_resolves() -> Result<(), Failed> {
+    let flake = format!("git+file://{}?dir=nix", env!("CARGO_MANIFEST_DIR"));
+    let mut archive = std::process::Command::new("nix");
+    archive.args([
+        "flake",
+        "archive",
+        "--json",
+        "--extra-experimental-features",
+        "nix-command flakes",
+        &flake,
+    ]);
+    // Under the eval lane's 360 s termination, so the reason arrives before the kill.
+    let output = output_within(&mut archive, std::time::Duration::from_mins(5))
+        .map_err(|error| Failed::from(format!("nix/flake.lock does not resolve: {error}")))?;
+    if !output.status.success() {
+        return fail(format!(
+            "nix/flake.lock does not resolve: `nix flake archive` exited {}: {}",
+            output.status,
+            stderr_tail(&output.stderr)
+        ));
+    }
+    let archived = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .map_err(|error| Failed::from(format!("cannot read the archive report: {error}")))?;
+    for input in ["nixpkgs", "microvm"] {
+        if archived.pointer(&format!("/inputs/{input}/path")).is_none() {
+            return fail(format!("the archive reported no store path for `{input}`"));
+        }
+    }
+    Ok(())
 }
 
 /// That this host evaluates a bound manifest end to end, and that an unbound one

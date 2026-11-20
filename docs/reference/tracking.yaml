@@ -64,7 +64,7 @@ tracked:
     last_checked: 2026-11-20
     cadence: 7d
     why: The spectrum input of microvm.nix lives on a git host that stopped answering on 2026-11-20, and a cold fetch of it blocks with no timeout (KI-0006).
-    revalidate: Run git ls-remote https://spectrum-os.org/git/spectrum. When it answers, run nix flake archive of the product flake on a cold store and resolve KI-0006 when it completes. Otherwise advance last_checked.
+    revalidate: Run git ls-remote https://spectrum-os.org/git/spectrum. When it answers, run the product_lock_resolves trial on a cold store and resolve KI-0006 when it passes. Otherwise advance last_checked.
     dependents:
       - tests/support/mod.rs
       - nix/flake.lock
