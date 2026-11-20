@@ -40,6 +40,12 @@ exclude = [
   "/dprint.markdown.json",
   "/statix.toml",
   "/slides",
+  # The agent skills that release-kit lands. A landing rewrites them with
+  # each rk release, and that must not change the package.
+  "/.claude/skills/rk-setup",
+  "/.claude/skills/rk-release",
+  "/.agents/skills/rk-setup",
+  "/.agents/skills/rk-release",
 ]
 keywords = ["nix", "microvm", "isolation", "sandbox", "devenv"]
 categories = ["command-line-utilities", "virtualization", "development-tools"]

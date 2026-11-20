@@ -1,7 +1,7 @@
 {
   "schema": "rk.setup-proof/1",
-  "rk_version": "0.9.8",
-  "verified_at": "2026-11-11T17:44:02Z",
+  "rk_version": "0.10.3",
+  "verified_at": "2026-11-20T12:35:35Z",
   "subject": {
     "target": {
       "bot_app_id": "",
@@ -16,7 +16,6 @@
       "release_lines": "false",
       "repo": "gubasso/vivarium",
       "required_check": "gate",
-      "required_workflow": "",
       "retired_branches": "[\"main\",\"develop\"]",
       "safety_ruleset": "master-safety",
       "tag_ruleset": "release-tags",
@@ -105,11 +104,9 @@
         "stance": "applicable"
       },
       {
-        "name": "auto-merge",
-        "proves": "a request may merge itself once its required checks pass",
-        "prerequisites": [
-          "default-branch"
-        ],
+        "name": "merge-on-order",
+        "proves": "no release request stands armed to merge itself",
+        "prerequisites": [],
         "stance": "applicable"
       },
       {
@@ -127,7 +124,7 @@
       }
     ]
   },
-  "subject_digest": "d47e05baa3dfd7d298c5123a3b3fd5ea76104ee28c98c219bbafdc0338f01d1b",
+  "subject_digest": "4861f367aaffed2cb03e9beaea0e3dde7a67d762d6c768cee61a2445b429957e",
   "steps": [
     {
       "name": "package-check",
@@ -178,7 +175,7 @@
       "state": "skipped"
     },
     {
-      "name": "auto-merge",
+      "name": "merge-on-order",
       "state": "satisfied"
     },
     {
