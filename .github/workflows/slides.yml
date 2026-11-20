@@ -43,7 +43,14 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Cache Nix store
-        uses: DeterminateSystems/flakehub-cache-action@v3.21.5
+        # The Actions cache alone. flakehub-cache-action@v3.21.5 wraps this
+        # action at this commit with `use-flakehub: true` fixed, and this
+        # repository has no FlakeHub account, so every job logged "Unable to
+        # authenticate to FlakeHub". The commit carries no release tag.
+        uses: DeterminateSystems/magic-nix-cache-action@76aaf8814cdb385b86597c32b8c51b66b69b0839
+        with:
+          use-flakehub: false
+          use-gha-cache: true
       - name: Install deck dependencies
         run: nix develop --command just slides-install
       - name: Build deck
