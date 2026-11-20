@@ -1,0 +1,18 @@
+schema: vivarium-known-issue
+version: 1
+id: KI-0006
+slug: spectrum-git-host-unreachable
+status: mitigated
+severity: medium
+external_system:
+  name: spectrum-os.org git host, reached through the spectrum input of microvm.nix
+  pinned_version: spectrum 24c4346e30fdea8d8e80f34aec3554a15a667d24, microvm.nix 06544a68599a0e0721760af442000204e57e3937
+affected_checks:
+  - test-local
+  - test-eval
+upstream_issue: none
+mask:
+  state: none
+recheck:
+  command: git ls-remote https://spectrum-os.org/git/spectrum
+  condition: The host answers, and nix flake archive of the product flake completes on a cold store.
