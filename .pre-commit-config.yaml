@@ -54,12 +54,20 @@ default_stages: [pre-commit]
 # large-file and merge-conflict reads.
 repos:
 # BEGIN release-kit
-# The release convention's hooks. Install every stage they run at:
-# pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
-# A CI sweep commits nothing, so a job running pre-commit against a trunk
-# checkout sets SKIP=no-commit-to-branch,rk-worktree-location in its environment. Append the id of
-# every check this project classifies local-only: the value is a list the
-# project owns the tail of.
+# The release convention's hooks. Install every stage they run at with
+# the hook manager this project uses, for example:
+# prek install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push --hook-type pre-merge-commit
+# A hook that CI cannot run carries groups: [local-only], with its reason
+# above it, and a hook that only CI runs carries stages: [manual] and
+# groups: [ci-only]. Mark each hook of this project the same way. CI runs
+# each stage with its group filter, through the project's environment, and
+# no committed file sets SKIP. A group filter with no --stage also runs the
+# manual hooks, so each step names its stage:
+#   prek run --all-files --stage pre-commit --no-group local-only
+#   prek run --all-files --stage pre-push --no-group local-only
+#   prek run --all-files --stage manual --group ci-only
+# prek refuses a --group that matches no hook, so leave the third step out
+# where no hook carries ci-only.
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v4.5.0
     hooks:
@@ -76,7 +84,10 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # local-only: a CI job on a trunk push checks out the trunk, which
+      # this guard refuses.
       - id: no-commit-to-branch
+        groups: [local-only]
         args: [--branch, master]
   - repo: local
     hooks:
@@ -85,9 +96,12 @@ repos:
         language: system
         always_run: true
         pass_filenames: false
-        entry: sh -c 'branch=$(git symbolic-ref --quiet --short HEAD) || exit 0; [ "$branch" = master ] && exit 0; printf %s "$branch" | grep -Eq "^((build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)/[A-Za-z0-9._/-]+|([0-9]+|[A-Z][A-Z0-9]+-[0-9]+)-[A-Za-z0-9._-]+|release[-/].+)$" && exit 0; echo "branch $branch is neither <type>/<slug> nor <issue-id>-<slug>; gh issue develop <issue> --checkout or its glab counterpart mints the linked form" >&2; exit 1'
+        entry: sh -c 'branch=$(git symbolic-ref --quiet --short HEAD) || exit 0; [ "$branch" = master ] && exit 0; printf %s "$branch" | grep -Eq "^((build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)/[A-Za-z0-9._/-]+|([0-9]+|[A-Z][A-Z0-9]+-[0-9]+)-[A-Za-z0-9._-]+|release[-/].+|rk-release/.+)$" && exit 0; echo "branch $branch is neither <type>/<slug> nor <issue-id>-<slug>; gh issue develop <issue> --checkout or its glab counterpart mints the linked form" >&2; exit 1'
+      # local-only: a CI job checks out the main worktree, which this guard
+      # refuses when the checkout is detached.
       - id: rk-worktree-location
         name: rk worktree location
+        groups: [local-only]
         language: system
         always_run: true
         pass_filenames: false
@@ -111,7 +125,7 @@ repos:
         language: system
         pass_filenames: false
         entry: rk status --check --target .
-        files: '^(\.github/workflows/|\.gitlab-ci\.yml$|\.gitlab/ci/|AGENTS\.md$|\.release-kit/|\.pre-commit-config\.yaml$|release-plz\.toml$|dist-workspace\.toml$|release-please-config\.json$|cliff\.toml$|\.release-please-manifest\.json$|VERSION$)'
+        files: '^(\.github/workflows/|\.gitlab-ci\.yml$|\.gitlab/ci/|AGENTS\.md$|\.release-kit/|\.pre-commit-config\.yaml$|release-plz\.toml$|dist-workspace\.toml$|cliff\.toml$|VERSION$)'
 # END release-kit
   # --- Housekeeping (auto-fix where possible) ---
   - repo: https://github.com/pre-commit/pre-commit-hooks

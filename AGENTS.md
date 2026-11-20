@@ -65,7 +65,7 @@ The specification outranks tests, but silence does not. A shape a test deliberat
 
 ## Releases
 
-- This repository runs the release-kit convention. `rk method invariants` states what must stay true.
+- This repository runs the release-kit convention. `rk method invariants` states what must stay true. A release needs a commit typed `feat`, `fix`, or `perf`, or a breaking change, that changed a file the package ships. A dependency update that changes what ships is `fix(deps)`, and one for development only is `chore(deps-dev)` or `build(deps-dev)`. A security update is always `fix(deps)`, also where it changes only a shipped lock file. Its body names the advisory ID: `RUSTSEC-`, `GHSA-`, or `CVE-`.
 - An agent here guides and never drives. It reads this convention and tells the operator which step comes next. It takes no git or forge action unless the operator's request named that action. The bounded actions include the following. Create, switch, or delete a branch. Mint a branch at the forge from an issue. Create or remove a worktree. Commit, push, or tag. Integrate a branch onto the trunk, locally or through a request. Open, update, or merge a pull request. A request to change code authorizes the file changes alone.
 - The workflow terms live in `GLOSSARY.md` at this repository's root. The terms release-kit owns there are `implement-and-request`, `implement-and-merge`, and `full-implement`. A request that carries one of them names every action that term lists.
 - The title of every commit that reaches the trunk MUST be a scoped Conventional Commit, because the version and the changelog come from it.
@@ -74,6 +74,7 @@ The specification outranks tests, but silence does not. A shape a test deliberat
 - The scope names the area you changed, and reads as `area/subarea` where that is clearer. Prefer a scope this repository already uses, which `git log --format=%s | sed -n 's/^[a-z]*(\([^)]*\)).*/\1/p' | sort -u` lists. Coin a new scope only where no existing one names the area.
 - Never author a tag, and never hand-edit a generated artifact workflow.
 - Run `rk status` before changing anything under `.github/workflows/` or `.gitlab-ci.yml`, or any file `.release-kit/manifest.json` names. Before reading a gap in `rk setup check` as a setup defect, run `rk setup status`. A credential this runtime cannot reach leaves a step unknown, which is an observation boundary and not drift. Never ask the operator to mount, expose, recreate, or rotate a secret only so an agent check can pass.
+- After an rk pin move, run the upgrade through the rk-setup skill of the rk in the devshell (`rk skill show rk-setup` before `rk upgrade`), never a host copy.
 - The full method is `rk method --list`. The recovery paths are `rk method recovery`.
 
 <!-- END release-kit -->
