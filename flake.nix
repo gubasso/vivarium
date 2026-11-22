@@ -16,13 +16,20 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
-    # The release convention's own tool, pinned at a release tag. `.envrc` runs
-    # `rk self-depend sync` on directory entry, at most once a day, which moves
-    # this tag and the lock together and leaves a two-file diff to review. One
-    # project runs one `rk`: this pin, never a host install beside it.
+    # The release convention's own tool, pinned at a release tag. `.envrc`
+    # runs `rk self-depend check`, which reports a newer release and moves
+    # nothing. The operator moves this tag and the lock together from a
+    # shell. One project runs one `rk`: this pin, never a host install.
     release-kit = {
-      url = "github:gubasso/release-kit/v0.9.8";
-      inputs.nixpkgs.follows = "nixpkgs";
+      url = "github:gubasso/release-kit/v0.10.3";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        rust-overlay.follows = "rust-overlay";
+        # rk's own flake pins an earlier rk and sdd for its development. The
+        # empty string points each at nothing, so flake.lock holds no node.
+        release-kit.follows = "";
+        spec-driven-docs.follows = "";
+      };
     };
     # The store guard of the canon (exobrain): `exobrain store-guard --daily`
     # in .envrc warns about working-tree copies in the Nix store. Its rk serves

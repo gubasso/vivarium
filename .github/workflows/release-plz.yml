@@ -3,7 +3,9 @@
 # must never be registered there.
 #
 # Both halves run on every push to the trunk, and to a release/* line when a
-# project keeps older lines. The pull-request half maintains the one release
+# project keeps older lines. A third job, release-candidate, runs only when a
+# person dispatches it for a line, and mints or promotes that line's release
+# candidate. The pull-request half maintains the one release
 # pull request against the pushed branch; the release half publishes and tags
 # only on the push that lands the bot's own bump, which release_always = false
 # recognizes by its release-plz-* head branch. The publish half runs free of
@@ -11,12 +13,56 @@
 # pull-request half serializes per ref so racing pushes cannot fight over the
 # release pull request.
 name: release-plz
+# A merge run names itself by the correlation rk release merge waits on;
+# every other run keeps the forge's own name.
+run-name: ${{ inputs.action == 'merge' && format('rk release merge {0}', inputs.correlation) || '' }}
 
 permissions: {}
 
 on:
   push:
     branches: [master, 'release/**']
+  # A person dispatches one action on purpose, and nothing watches a push.
+  # candidate mints or promotes a line's release candidate: the line, and
+  # the tip they read, so a line that moved since then refuses. merge is
+  # what rk release merge sends: the trunk's release request, the trunk tip
+  # and the head it read, and the correlation the run's name carries.
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What this dispatch does, candidate or merge
+        required: true
+        type: choice
+        options: [candidate, merge]
+      line:
+        description: The release line, <major>.<minor>, as in 1.4 (candidate)
+        required: false
+        type: string
+      expect:
+        description: The line's tip you read, as a full commit SHA (candidate)
+        required: false
+        type: string
+      promote:
+        description: Promote the line's newest candidate to its stable version instead of minting a new one (candidate)
+        required: false
+        type: boolean
+        default: false
+      request:
+        description: The release request to merge, by number (merge)
+        required: false
+        type: string
+      base:
+        description: The trunk tip the merge expects, as a full commit SHA (merge)
+        required: false
+        type: string
+      head:
+        description: The request head the merge expects, as a full commit SHA (merge)
+        required: false
+        type: string
+      correlation:
+        description: The id rk release merge finds this run by (merge)
+        required: false
+        type: string
 
 jobs:
   # Merging the release pull request is the release: the bump push lands here,
@@ -24,7 +70,7 @@ jobs:
   # makes the tag trigger release.yml; a tag pushed with GITHUB_TOKEN starts no
   # further workflow. On a release/* line the same job tags the line's patch.
   release-plz-release:
-    if: github.repository_owner == 'gubasso'
+    if: github.repository_owner == 'gubasso' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -56,7 +102,7 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
   release-plz-pr:
-    if: github.repository_owner == 'gubasso'
+    if: github.repository_owner == 'gubasso' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -68,9 +114,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # This half opens and refreshes the release request and then arms it, so
-      # its token carries pull-requests beside contents. The release half above
-      # takes contents alone.
+      # This half opens and refreshes the release request, so its token
+      # carries pull-requests beside contents. It never arms or merges the
+      # request: a release waits for the operator's order. The release half
+      # above takes contents alone.
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         id: app-token
         with:
@@ -79,43 +126,282 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      # A line that carries a candidate's version keeps this half out of the
+      # candidate numbering: release-plz would propose the next rc in a
+      # request. The request returns once the promotion writes the stable
+      # version, and it then proposes that version with its changelog. Cargo
+      # reads the version, so any valid manifest form and an inherited
+      # workspace version count, and a version it cannot read fails the job.
+      - name: hold the request while the line carries a candidate
+        id: candidate
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          set -eu
+          case "$REF" in
+            release/*) ;;
+            *)
+              echo "held=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          metadata="$(cargo metadata --no-deps --format-version 1 --offline)"
+          version="$(printf '%s' "$metadata" | jq -r --arg manifest "$PWD/Cargo.toml" '.packages[] | select(.manifest_path == $manifest) | .version')"
+          if [ -z "$version" ]; then
+            echo "cargo names no package version for $PWD/Cargo.toml; no request opens past an unreadable manifest." >&2
+            exit 1
+          fi
+          case "$version" in
+            *-*)
+              echo "$REF carries the candidate $version; no release request until it is promoted."
+              echo "held=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "held=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+      - name: install rk
+        env:
+          RK_VERSION: "0.10.3"
+        run: |
+          set -eu
+          curl --proto '=https' --tlsv1.2 -LsSf "https://github.com/gubasso/release-kit/releases/download/v${RK_VERSION}/release-kit-installer.sh" | RELEASE_KIT_UNMANAGED_INSTALL="$RUNNER_TEMP/rk" sh
+          echo "$RUNNER_TEMP/rk" >> "$GITHUB_PATH"
+      # release-plz opens a request for any change to a file the crate ships.
+      # A release also needs a releasing commit among the commits that made
+      # that change: feat, fix, or perf, or a breaking change. Where none is,
+      # release-pr is skipped and the reason logged; the request opens on the
+      # first push that carries one, and its changelog keeps every commit.
+      - name: judge whether a releasing commit changed the package
+        id: eligible
+        if: steps.candidate.outputs.held != 'true'
+        run: |
+          set -eu
+          answer="$(rk release eligible)"
+          printf '%s\n' "$answer"
+          case "$answer" in
+            eligible:*)
+              echo "eligible=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "release-pr skipped: ${answer#not eligible: }"
+              echo "eligible=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
       - uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5
         id: release-pr
+        if: steps.candidate.outputs.held != 'true' && steps.eligible.outputs.eligible == 'true'
         with:
           command: release-pr
           version: "0.4.3"
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-      # Arm the request the moment it exists: the forge merges it once every
-      # required check is green, which is the trunk style's release decision,
-      # made once at landing rather than per release; the lines style leaves
-      # every request for a human and this step steps aside. Two things keep
-      # the arm correct. The app token is one: auto-merge enabled under
-      # GITHUB_TOKEN would merge a bump whose push starts no workflow,
-      # leaving it untagged and unpublished with nothing reporting a failure.
-      # Re-arming is the other: arming an armed request is a no-op, so every
-      # refresh re-arms and the arm cannot drift out of sync.
-      - name: arm the release request
+
+  # A release candidate, minted on purpose. The job checks out the requested
+  # line under the app token and persists it, because rk pushes the
+  # candidate's version before release-plz configures git; the push starts
+  # the push jobs above, which publish nothing for a commit no release
+  # request carries. release-plz then releases that commit under a config
+  # derived from release-plz.toml with release_always = true, the one key
+  # that releases a commit no request carries. It runs in this file because
+  # a registry binds its publishing to the workflow file, so a second file
+  # could not publish. A promotion writes the stable version alone, and the
+  # line's release request proposes it.
+  release-candidate:
+    if: >-
+      github.repository_owner == 'gubasso'
+      && github.event_name == 'workflow_dispatch'
+      && inputs.action == 'candidate'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: release-candidate-${{ inputs.line }}
+      cancel-in-progress: false
+    steps:
+      # A candidate's inputs are optional at the dispatch, because a merge
+      # dispatch carries none of them, so the job refuses here first.
+      - name: refuse a dispatch without its line and tip
         env:
-          RELEASE_STYLE: trunk
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          GH_REPO: ${{ github.repository }}
-          REF: ${{ github.ref_name }}
-          RELEASE_PR: ${{ steps.release-pr.outputs.pr }}
+          LINE: ${{ inputs.line }}
+          EXPECT: ${{ inputs.expect }}
         run: |
           set -eu
-          if [ "$RELEASE_STYLE" != "trunk" ]; then
-            echo "the lines style merges each release by hand; not arming."
-            exit 0
+          if [ -z "$LINE" ] || [ -z "$EXPECT" ]; then
+            echo "::error::a candidate dispatch names the line and the tip you read, as -f line=<major>.<minor> -f expect=<sha>; nothing minted."
+            exit 1
           fi
-          if [ "$REF" != "master" ]; then
-            echo "a line's request is never armed; its candidate is what a human validated."
-            exit 0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          # release-plz looks up the pull requests of the released commit
+          # before it reads release_always, and that lookup needs this read
+          # on a private repository.
+          permission-pull-requests: read
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: release/${{ inputs.line }}
+          fetch-depth: 0
+          # zizmor: ignore[artipacked] the persisted credential is what pushes
+          # the candidate's version and reads the line's remote tags below.
+          token: ${{ steps.app-token.outputs.token }}
+      - name: configure git as the release app
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -eu
+          uid="$(gh api "/users/${APP_SLUG}[bot]" -q .id)"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${uid}+${APP_SLUG}[bot]@users.noreply.github.com"
+      - name: derive the candidate's release config
+        if: ${{ !inputs.promote }}
+        run: |
+          set -eu
+          count="$(grep -c '^release_always = false$' release-plz.toml || true)"
+          if [ "$count" != "1" ]; then
+            echo "release-plz.toml carries 'release_always = false' $count times; the candidate's config flips exactly one." >&2
+            exit 1
           fi
-          number="$(printf '%s' "${RELEASE_PR:-}" | sed -n 's/.*"number":[[:space:]]*\([0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "$number" ]; then
-            echo "no release request to arm."
-            exit 0
+          sed 's/^release_always = false$/release_always = true/' release-plz.toml > "$RUNNER_TEMP/release-plz-rc.toml"
+      - name: install rk
+        env:
+          RK_VERSION: "0.10.3"
+        run: |
+          set -eu
+          curl --proto '=https' --tlsv1.2 -LsSf "https://github.com/gubasso/release-kit/releases/download/v${RK_VERSION}/release-kit-installer.sh" | RELEASE_KIT_UNMANAGED_INSTALL="$RUNNER_TEMP/rk" sh
+          echo "$RUNNER_TEMP/rk" >> "$GITHUB_PATH"
+      - name: mint
+        env:
+          LINE: ${{ inputs.line }}
+          EXPECT: ${{ inputs.expect }}
+          PROMOTE: ${{ inputs.promote }}
+        run: |
+          set -eu
+          if [ "$PROMOTE" = "true" ]; then
+            rk lines mint "$LINE" --promote --expect "$EXPECT" --apply
+          else
+            rk lines mint "$LINE" --expect "$EXPECT" --apply
           fi
-          gh pr merge "$number" --auto --squash --delete-branch
-          echo "armed pull request #$number."
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        if: ${{ !inputs.promote }}
+      - uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5
+        if: ${{ !inputs.promote }}
+        with:
+          command: release
+          version: "0.4.3"
+          config: ${{ runner.temp }}/release-plz-rc.toml
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+  # The operator's order to release, and nothing else. rk release merge
+  # dispatches this job with the request, the trunk tip, and the head it
+  # read; no push and no other event reaches it. It runs as the release
+  # app, which is no bypass actor of the trunk ruleset, so the ruleset's
+  # strict check still decides at the write whether the request carries the
+  # trunk it was tested against.
+  #
+  # It trusts no value the dispatch carries beyond what it compares. Every
+  # fact it acts on is read back from the forge: the caller holds the admin
+  # role, and the request is open, not a draft, based on the trunk, headed
+  # from this repository, authored by the release app, and still at the
+  # head and the base the operator read. The branch shape is a second,
+  # structural guard and never the proof of identity.
+  release-merge:
+    if: >-
+      github.repository_owner == 'gubasso'
+      && github.event_name == 'workflow_dispatch'
+      && inputs.action == 'merge'
+    runs-on: ubuntu-latest
+    permissions: {}
+    concurrency:
+      group: release-merge
+      cancel-in-progress: false
+    steps:
+      # The token is minted before the proofs, because the app's own slug
+      # and every read below come from it. Minting grants nothing on its
+      # own: the merge is the only write this job makes, and every proof
+      # precedes it. Reading the check run is what adds permission-checks.
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        id: app-token
+        with:
+          # client-id takes the client ID or the numeric App ID; GitHub accepts either as the JWT issuer: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
+          client-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
+      - name: merge the release request the operator ordered
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          APP_LOGIN: ${{ steps.app-token.outputs.app-slug }}[bot]
+          CALLER: ${{ github.triggering_actor }}
+          REQUEST: ${{ inputs.request }}
+          BASE: ${{ inputs.base }}
+          HEAD: ${{ inputs.head }}
+          TRUNK: master
+          GATE_CHECK: "gate"
+          BRANCH_SHAPE: release-plz-
+        run: |
+          set -eu
+          refuse() {
+            echo "::error::$1; nothing merged."
+            exit 1
+          }
+          # The dispatch's own inputs, each in its one exact shape.
+          case "$REQUEST" in
+            '' | *[!0-9]*) refuse "the dispatch names no request number" ;;
+          esac
+          for sha in "$BASE" "$HEAD"; do
+            if ! printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+              refuse "the dispatch names no full base and head commit"
+            fi
+          done
+          if [ -z "$GATE_CHECK" ]; then
+            refuse "the record names no required check for the trunk"
+          fi
+          # Any write collaborator can dispatch a workflow, so the caller's
+          # role is what makes this job serve the operator's order alone.
+          role="$(gh api "repos/{owner}/{repo}/collaborators/$CALLER/permission" --jq .permission)"
+          if [ "$role" != "admin" ]; then
+            refuse "$CALLER holds the $role role, and only an administrator orders a release"
+          fi
+          # The request, read back from the forge. The REST answer is what
+          # states the app's login as the app's own slug with the bot
+          # suffix; the forge CLI's list renders it as app/<slug>.
+          facts="$(gh api "repos/{owner}/{repo}/pulls/$REQUEST" \
+            --jq '"\(.state) \(.draft) \(.merged) \(.base.ref) \(.head.repo.full_name) \(.user.type) \(.user.login) \(.head.ref) \(.head.sha)"')"
+          read -r state draft merged base repo kind login ref sha <<EOF
+          $facts
+          EOF
+          [ "$merged" = "false" ] || refuse "#$REQUEST is already merged"
+          [ "$state" = "open" ] || refuse "#$REQUEST is $state"
+          [ "$draft" = "false" ] || refuse "#$REQUEST is a draft"
+          [ "$base" = "$TRUNK" ] || refuse "#$REQUEST is based on $base, not on $TRUNK"
+          [ "$repo" = "$GH_REPO" ] || refuse "#$REQUEST is headed from $repo, not from $GH_REPO"
+          if [ "$kind" != "Bot" ] || [ "$login" != "$APP_LOGIN" ]; then
+            refuse "#$REQUEST is authored by $login, not by $APP_LOGIN"
+          fi
+          case "$ref" in
+            "$BRANCH_SHAPE"*) ;;
+            *) refuse "#$REQUEST is headed from $ref, which is no release branch" ;;
+          esac
+          [ "$sha" = "$HEAD" ] || refuse "#$REQUEST moved to $sha after the operator read $HEAD"
+          tip="$(gh api "repos/{owner}/{repo}/branches/$TRUNK" --jq .commit.sha)"
+          [ "$tip" = "$BASE" ] || refuse "$TRUNK moved to $tip after the operator read $BASE"
+          # The named check for that exact head, latest result only.
+          verdict="$(gh api "repos/{owner}/{repo}/commits/$HEAD/check-runs" -X GET \
+            -f check_name="$GATE_CHECK" -f filter=latest \
+            --jq 'if (.check_runs | length) == 1
+                  then "\(.check_runs[0].status) \(.check_runs[0].conclusion)"
+                  else "\(.check_runs | length) results" end')"
+          [ "$verdict" = "completed success" ] || refuse "the check $GATE_CHECK at $HEAD reads: $verdict"
+          # The match moves the stale-head proof into the write itself, and
+          # the trunk's strict rule makes the base proof part of the same
+          # write. This job holds no bypass of either.
+          gh pr merge "$REQUEST" --match-head-commit "$HEAD" --squash --delete-branch
+          echo "merged pull request #$REQUEST at $HEAD."
