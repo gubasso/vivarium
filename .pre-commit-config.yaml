@@ -358,7 +358,7 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
-        stages: [pre-push, manual]
+        stages: [pre-push]
 
       # owner: devshell (no-hook-language) upstream taplo publishes no pre-commit hook.
       - id: taplo-format
@@ -390,7 +390,9 @@ repos:
   #
   # Every lane carries `manual`, which is what makes `prek run --hook-stage
   # manual <id> --all-files` the one way to run any lane anywhere — the form
-  # `just test <lane>` wraps and the form CI's matrix calls.
+  # `just test <lane>` wraps. CI's matrix runs each push hook it can serve at
+  # the push stage, `--stage pre-push --no-group local-only <id>`, and a lane
+  # that no runner can serve carries `groups: [local-only]` with its reason.
   #
   # `--all-features` on every one of them. The guest agent is a binary of this
   # package behind the `guest` feature, so without it the agent's unit tests
@@ -431,8 +433,14 @@ repos:
         pass_filenames: false
         stages: [pre-push, manual]
 
+      # local-only: CI cannot run it. The lane needs an unprivileged user and
+      # network namespace pair per VM, and Ubuntu's AppArmor policy refuses one
+      # on a runner: measured 2026-09-09, `unshare` reports "write failed
+      # /proc/self/uid_map: Operation not permitted". The `boot-experiment`
+      # job of ci.yml is what would notice that changing.
       # owner: devshell (project-environment) cargo nextest runs a test lane of the crate.
       - id: test-net
+        groups: [local-only]
         name: test net (needs unprivileged namespaces)
         entry: tests/host/heavy-run --need 4 --label "the net lane" -- cargo nextest run --profile net --all-features
         language: system
@@ -440,8 +448,14 @@ repos:
         pass_filenames: false
         stages: [pre-push, manual]
 
+      # local-only: CI cannot run it. The lane boots guests, and each needs an unprivileged user and
+      # network namespace pair per VM, and Ubuntu's AppArmor policy refuses one
+      # on a runner: measured 2026-09-09, `unshare` reports "write failed
+      # /proc/self/uid_map: Operation not permitted". The `boot-experiment`
+      # job of ci.yml is what would notice that changing.
       # owner: devshell (project-environment) cargo nextest runs a test lane of the crate.
       - id: test-boot
+        groups: [local-only]
         name: test boot (needs a virtualization-capable host)
         entry: tests/host/heavy-run --need 12 --label "the boot lane" -- cargo nextest run --profile boot --all-features
         language: system
@@ -663,12 +677,10 @@ repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
     hooks:
-      # project: `manual` too, because the CI matrix runs each push hook at
-      # the manual stage.
       - id: gitleaks
         entry: gitleaks git --redact --verbose --no-banner
         pass_filenames: false
-        stages: [pre-push, manual]
+        stages: [pre-push]
 
   # --- Link check, at push ---
   #
@@ -681,11 +693,9 @@ repos:
   - repo: https://github.com/lycheeverse/lychee
     rev: lychee-v0.24.2
     hooks:
-      # project: `manual` too, because the CI matrix runs each push hook at
-      # the manual stage.
       # owner: devshell (no-hook-language) upstream lychee offers only script, docker_image, and system ids.
       - id: lychee-system
-        stages: [pre-push, manual]
+        stages: [pre-push]
         types: [markdown]
         args: [--no-progress]
 
@@ -697,18 +707,14 @@ repos:
   - repo: https://github.com/bnjbvr/cargo-machete
     rev: v0.10.1
     hooks:
-      # project: `manual` too, because the CI matrix runs each push hook at
-      # the manual stage.
       - id: cargo-machete
-        stages: [pre-push, manual]
+        stages: [pre-push]
 
   - repo: local
     hooks:
       # cargo deny reads the RustSec database that cargo audit reads, and adds
       # the yanked crates, the bans, the sources, and the licenses, so one
       # policy file, deny.toml, owns all four, and cargo audit stays out.
-      # project: `manual` too, because the CI matrix runs each push hook at
-      # the manual stage.
       # owner: devshell (project-environment) cargo deny is a cargo subcommand that reads the lock file of the workspace.
       - id: cargo-deny
         name: cargo deny
@@ -716,7 +722,7 @@ repos:
         language: system
         files: '((^|/)Cargo\.(toml|lock)|^deny\.toml)$'
         pass_filenames: false
-        stages: [pre-push, manual]
+        stages: [pre-push]
 
   # --- Nix: format (auto-fix) + lint (gate) ---
   #
@@ -771,7 +777,7 @@ repos:
         language: system
         files: '^(nix/.*\.nix|nix/flake\.lock|tests/nix/.*\.nix)$'
         pass_filenames: false
-        stages: [pre-push, manual]
+        stages: [pre-push]
 
   # --- Markdown: canonical format (dprint) + style gate (markdownlint) ---
   #
@@ -1021,8 +1027,11 @@ repos:
   # than letting npm report it as a missing script.
   - repo: local
     hooks:
+      # local-only: CI runs the deck in its own lane, slides.yml, which
+      # installs the deck's dependencies; ci.yml never installs them.
       # owner: slides/package.json (project-environment) npm builds the deck from its own lock file.
       - id: slidev-build
+        groups: [local-only]
         name: slidev build (deck still compiles)
         # Gated like its neighbours at this stage, and the honest note is that
         # what moves for it is `TMPDIR` alone: a deck's dependencies and its
@@ -1060,8 +1069,11 @@ repos:
   # — and this one always passes. A push is never blocked by what is on a disk.
   - repo: local
     hooks:
+      # local-only: it reports what a round left on this developer's two
+      # disks, and a runner is discarded after its run.
       # owner: devshell (no-hook-language) a script of this repository under tests/host, which runs on the host.
       - id: leftovers
+        groups: [local-only]
         name: leftover sweep (report only)
         entry: tests/host/leftovers
         language: system

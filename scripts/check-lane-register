@@ -5,7 +5,7 @@ A lane is a claim spread across four places, and prose alone is enforced by
 whoever remembers it. `.pre-commit-config.yaml` writes each lane's command,
 `.config/nextest.toml` writes the filter that selects it, `Cargo.toml` names the
 binary that carries it, and `.github/workflows/ci.yml` names the lanes a runner
-runs. A change to one and not the others leaves a lane that is declared and never
+runs, while a `local-only` group in the hook file marks the ones it cannot. A change to one and not the others leaves a lane that is declared and never
 executed, which reads from the outside exactly like a lane that passes.
 
 This is the same guard `scripts/check-flake-boundary` is: it exists because a
@@ -18,10 +18,12 @@ Six rules:
 2. Every nextest lane profile has a `test-<lane>` hook, and the reverse.
 3. Every `tests/host/*-check` script has a `lane-<name>` manual hook, and the
    reverse.
-4. Every hook staged at `pre-push` is either in `ci.yml`'s matrix or named in its
-   `NOT_ON_A_RUNNER` declaration, so a check that gates a push and silently never runs
-   on a runner cannot exist unremarked.
-5. Nothing in `NOT_ON_A_RUNNER` is also in the matrix.
+4. Every hook staged at `pre-push` is in `ci.yml`'s matrix, carries
+   `groups: [local-only]`, or sits inside the rendered release-kit block, so a
+   check that gates a push and silently never runs on a runner cannot exist
+   unremarked.
+5. No `local-only` hook is also in the matrix, where its group filter would
+   select nothing.
 6. Every lane hook carries the `manual` stage, so one invocation form reaches
    every lane.
 """
@@ -113,6 +115,46 @@ def cargo_test_targets() -> dict[str, str]:
     }
 
 
+def local_only_hooks() -> set[str]:
+    """Every hook id that carries the `local-only` group, which CI never selects."""
+    found: set[str] = set()
+    current: str | None = None
+    for line in HOOKS.read_text().splitlines():
+        identifier = re.match(r"\s*- id: (\S+)", line)
+        if identifier:
+            current = identifier.group(1)
+            continue
+        groups = re.match(r"\s*groups: \[([^\]]*)\]", line)
+        names = groups.group(1).split(",") if groups else []
+        if current and "local-only" in (name.strip() for name in names):
+            found.add(current)
+    return found
+
+
+def release_kit_hooks() -> set[str]:
+    """Every hook id between the release-kit block's BEGIN and END lines.
+
+    release-kit renders that block and owns the scope of each hook in it: it
+    marks `local-only` the hooks a runner cannot run. The two push hooks it
+    leaves unmarked, `rk-no-push-to-trunk` and `rk-no-hand-authored-tag`, read
+    `PRE_COMMIT_REMOTE_BRANCH`, which no CI step sets, so a matrix job for
+    either would pass without judging anything, a check that passes vacuously.
+    The forge's own trunk and tag protection says the same thing to a runner.
+    """
+    found: set[str] = set()
+    inside = False
+    for line in HOOKS.read_text().splitlines():
+        if line.startswith("# BEGIN release-kit"):
+            inside = True
+        elif line.startswith("# END release-kit"):
+            inside = False
+        elif inside:
+            identifier = re.match(r"\s*- id: (\S+)", line)
+            if identifier:
+                found.add(identifier.group(1))
+    return found
+
+
 def hook_stages() -> dict[str, list[str]]:
     """Every hook id in the pre-commit file, with the stages it declares.
 
@@ -140,18 +182,14 @@ def nextest_profiles() -> set[str]:
     return set(re.findall(r"^\[profile\.(\w+)\]", NEXTEST.read_text(), re.M))
 
 
-def workflow_lists() -> tuple[set[str], set[str]]:
-    """The hook ids `ci.yml` runs, and the ones it declares a runner cannot."""
+def workflow_matrix() -> set[str]:
+    """The hook ids `ci.yml`'s matrix runs."""
     text = WORKFLOW.read_text()
     matrix: set[str] = set()
     block = re.search(r"hook:\s*\n((?:\s*- \S+\n)+)", text)
     if block:
         matrix = set(re.findall(r"- (\S+)", block.group(1)))
-    not_on_a_runner: set[str] = set()
-    declared = re.search(r"^\s*NOT_ON_A_RUNNER: ['\"]?([^'\"\n]+)", text, re.M)
-    if declared:
-        not_on_a_runner = set(declared.group(1).split())
-    return matrix, not_on_a_runner
+    return matrix
 
 
 def main() -> int:
@@ -269,25 +307,27 @@ def main() -> int:
                 f"tests/{name}.rs does not exist"
             )
 
-    # 7 and 8 — what gates a push is either run by a runner or declared this
-    # host's alone, and never both.
-    matrix, not_on_a_runner = workflow_lists()
+    # 7 and 8 — what gates a push is either run by a runner or marked this
+    # host's alone, and never both. The release-kit block's hooks are its tool's
+    # to scope; `release_kit_hooks` says why its two unmarked push hooks stay out.
+    matrix = workflow_matrix()
+    local_only = local_only_hooks()
+    rendered = release_kit_hooks()
     for name, stages in sorted(hooks.items()):
         if "pre-push" not in stages:
             continue
-        if name not in matrix and name not in not_on_a_runner:
+        if name not in matrix and name not in local_only and name not in rendered:
             complain(
-                f"the `{name}` hook gates a push and .github/workflows/ci.yml neither "
-                f"runs it nor names it in NOT_ON_A_RUNNER; say which"
+                f"the `{name}` hook gates a push and .github/workflows/ci.yml does not "
+                f"run it, and it carries no `groups: [local-only]`; say which"
             )
-    for name in sorted(matrix & not_on_a_runner):
-        complain(f"`{name}` is in both the ci.yml matrix and its NOT_ON_A_RUNNER list")
+    for name in sorted(matrix & local_only):
+        complain(
+            f"`{name}` is in the ci.yml matrix and carries `local-only`, so the "
+            f"matrix step's `--no-group local-only` selects nothing"
+        )
     for name in sorted(matrix - set(hooks)):
         complain(f"the ci.yml matrix names `{name}`, which is not a hook in this file")
-    for name in sorted(not_on_a_runner - set(hooks)):
-        complain(
-            f"ci.yml's NOT_ON_A_RUNNER names `{name}`, which is not a hook in this file"
-        )
 
     # 9 — every lane is reachable by one invocation form.
     for name, stages in sorted(hooks.items()):

@@ -38,31 +38,15 @@ permissions:
 # store, so a gate placed inside it measures a store the step has already
 # written to, and the refusal above would arrive after the write it exists to
 # prevent. Outside, the step needs only the runner's own `bash` and coreutils.
+#
+# Each step selects its hooks by stage and by group. A hook that no runner can
+# run carries `groups: [local-only]` in .pre-commit-config.yaml, with its
+# reason above it, and every step here passes `--no-group local-only` beside
+# the stage it names, so no committed file sets SKIP. A group filter with no
+# `--stage` also runs the manual hooks, which is why every step names one. No
+# hook carries `ci-only`, so no step runs the manual stage by group.
 env:
   VIVARIUM_HEAVY_ON_HOST: '1'
-  # The hooks that gate a push and that no runner runs, each with its reason.
-  # `scripts/check-lane-register` reads this list and fails a push-staged hook
-  # that appears neither here nor in the `check` matrix below, so a check that
-  # quietly stops running in CI cannot exist unremarked.
-  #
-  #   test-boot            needs an unprivileged user namespace per VM, which
-  #   test-net             Ubuntu's AppArmor policy refuses on a runner: measured
-  #                        2026-09-09, `unshare` reports "write failed
-  #                        /proc/self/uid_map: Operation not permitted". The
-  #                        runner's other premises do hold — /dev/kvm at mode
-  #                        0666, and a systemd user manager answering after
-  #                        `loginctl enable-linger` — so this one line is what
-  #                        keeps both lanes off it. The `boot-experiment` job
-  #                        below is what would notice it changing
-  #   slidev-build         slides.yml is the deck's own lane and installs the
-  #                        deck's dependencies, which this workflow never does
-  #   leftovers            reports what a round left on this developer's two
-  #                        disks; a runner is discarded after the run
-  #   rk-no-push-to-trunk  judges the push a developer is making; the forge's
-  #   rk-no-hand-authored-tag  own trunk and tag protection is what says the
-  #                        same thing to a runner, and it says it later and
-  #                        harder
-  NOT_ON_A_RUNNER: 'test-boot test-net slidev-build leftovers rk-no-push-to-trunk rk-no-hand-authored-tag'
 
 jobs:
   # The commit stage over the whole tree, which is what a contributor without
@@ -121,12 +105,10 @@ jobs:
           echo "$RUNNER_TEMP/exobrain" >> "$GITHUB_PATH"
       - name: Commit-stage hooks
         # A CI sweep commits nothing and checks out no worktree, so the two
-        # hooks that judge where a commit is being made have nothing true to
-        # say here. The release convention names this pair itself, in the
-        # comment at the top of the landed block.
-        env:
-          SKIP: no-commit-to-branch,rk-worktree-location
-        run: tests/host/heavy-run --need 8 --label "ci commit-stage hooks" -- nix develop --command prek run --all-files --hook-stage pre-commit
+        # hooks that judge where a commit is being made, no-commit-to-branch
+        # and rk-worktree-location, have nothing true to say here. The
+        # release-kit block marks both `local-only`.
+        run: tests/host/heavy-run --need 8 --label "ci commit-stage hooks" -- nix develop --command prek run --all-files --stage pre-commit --no-group local-only
       - name: Commit messages
         # The commit-msg stage is the one installed hook type `prek run
         # --all-files` cannot replay — it lints a message, not files — so the
@@ -160,7 +142,7 @@ jobs:
           for sha in $commits; do
             echo "commit message of $sha"
             git log -1 --format=%B "$sha" > "$msg"
-            nix develop --command prek run committed --hook-stage commit-msg --commit-msg-filename "$msg"
+            nix develop --command prek run --stage commit-msg --no-group local-only --commit-msg-filename "$msg" committed
           done
 
   # Every push-stage hook a runner can serve, one job each.
@@ -173,6 +155,11 @@ jobs:
   # Each entry invokes the hook by id, so the command a runner runs is the
   # command `git push` runs. The id crosses as an environment variable rather
   # than by interpolation, so a matrix value is data and not script.
+  #
+  # Every push hook is in this matrix, or carries `groups: [local-only]` with
+  # its reason, or sits in the release-kit block, whose tool marks its own.
+  # `scripts/check-lane-register` fails any other, so a check that quietly
+  # stops running in CI cannot exist unremarked.
   check:
     strategy:
       fail-fast: false
@@ -220,7 +207,7 @@ jobs:
       - name: Run the hook
         env:
           HOOK: ${{ matrix.hook }}
-        run: tests/host/heavy-run --need 12 --label "ci $HOOK" -- nix develop --command prek run --all-files --hook-stage manual "$HOOK"
+        run: tests/host/heavy-run --need 12 --label "ci $HOOK" -- nix develop --command prek run --all-files --stage pre-push --no-group local-only "$HOOK"
 
   # An experiment, and never a gate: `continue-on-error` and absent from `gate`'s
   # `needs`, so a red here holds no merge.
@@ -238,7 +225,7 @@ jobs:
   # a runner image that relaxes the policy, or a `sysctl` a step could set. What
   # would promote it into the gate: the namespace premise held, and two consecutive
   # green runs. One clean run is evidence of possibility, not of reliability. Until
-  # then `test-boot` stays in NOT_ON_A_RUNNER above, the developer\'s own `git push`
+  # then `test-boot` stays in the `local-only` group, the developer\'s own `git push`
   # is where the boot lane gates, and what this job found is recorded in
   # docs/reference/tracking.yaml.
   boot-experiment:
@@ -279,7 +266,9 @@ jobs:
             && echo "unprivileged user+net namespaces: available" \
             || echo "unprivileged user+net namespaces: refused"
       - name: The boot lane
-        run: tests/host/heavy-run --need 12 --label "ci test-boot" -- nix develop --command prek run --all-files --hook-stage manual test-boot
+        # test-boot is `local-only`, and this job runs it on a runner on
+        # purpose: `--group local-only` with the id selects that one hook.
+        run: tests/host/heavy-run --need 12 --label "ci test-boot" -- nix develop --command prek run --all-files --stage pre-push --group local-only test-boot
 
   # The artifact workflow's proof. release.yml is the unmodified output of
   # `dist generate`, and `dist plan` fails when the committed file drifts from
