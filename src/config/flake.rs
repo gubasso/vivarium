@@ -1591,16 +1591,18 @@ mod tests {
             declares_microvm: microvm,
         };
 
+        let (nixpkgs_url, microvm_url) = shipped_urls()?;
         let absent = super::render_inputs(&composition, None)?;
-        assert!(absent.contains("nixpkgs.url = \""));
-        assert!(absent.contains("microvm.url = \""));
+        assert!(absent.contains(&nixpkgs_url), "{absent}");
+        assert!(absent.contains(&microvm_url), "{absent}");
         assert!(absent.contains("microvm.inputs.nixpkgs.follows = \"nixpkgs\";"));
         assert!(!absent.contains("my-base"));
 
         let base_input = "my-base.url = \"path:./images/my-base\";"; // nix-path-ok: generated
         let neither = super::render_inputs(&composition, Some(&base(false, false)))?;
         assert!(neither.contains(base_input));
-        assert!(neither.contains("nixpkgs.url = \""));
+        assert!(neither.contains(&nixpkgs_url));
+        assert!(neither.contains(&microvm_url));
         assert!(neither.contains("microvm.inputs.nixpkgs.follows = \"nixpkgs\";"));
 
         let both = super::render_inputs(&composition, Some(&base(true, true)))?;
@@ -1613,14 +1615,37 @@ mod tests {
 
         let one = super::render_inputs(&composition, Some(&base(true, false)))?;
         assert!(one.contains("nixpkgs.follows = \"my-base/nixpkgs\";"));
-        assert!(one.contains("microvm.url = \""));
+        assert!(one.contains(&microvm_url));
         assert!(one.contains("microvm.inputs.nixpkgs.follows = \"nixpkgs\";"));
 
         let other = super::render_inputs(&composition, Some(&base(false, true)))?;
-        assert!(other.contains("nixpkgs.url = \""));
+        assert!(other.contains(&nixpkgs_url));
         assert!(other.contains("microvm.follows = \"my-base/microvm\";"));
         assert!(!other.contains("microvm.inputs.nixpkgs.follows"));
         Ok(())
+    }
+
+    /// The two `url` lines the renderer must write, derived by hand from the root originals of
+    /// the shipped pin rather than through the parser the renderer itself uses.
+    fn shipped_urls() -> Result<(String, String), Box<dyn std::error::Error>> {
+        let lock: serde_json::Value = serde_json::from_slice(crate::config::shipped_pin::LOCK)?;
+        let url = |input: &str| -> Result<String, Box<dyn std::error::Error>> {
+            let node = lock["nodes"]["root"]["inputs"][input]
+                .as_str()
+                .ok_or("the root input names no node")?;
+            let original = &lock["nodes"][node]["original"];
+            let field = |name: &str| original[name].as_str().map(str::to_owned);
+            let mut reference = format!(
+                "github:{}/{}",
+                field("owner").ok_or("no owner")?,
+                field("repo").ok_or("no repo")?
+            );
+            if let Some(branch) = field("ref") {
+                reference = format!("{reference}/{branch}");
+            }
+            Ok(format!("{input}.url = \"{reference}\";"))
+        };
+        Ok((url("nixpkgs")?, url("microvm")?))
     }
 
     fn fixture() -> Result<ScratchDirectory, Box<dyn std::error::Error>> {
