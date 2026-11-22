@@ -92,7 +92,7 @@ What the `krun` route rests on beyond flake-pilot itself, since at that route th
 | That libkrun's virtio-fs passthrough is unguarded against reaching wider                                                           | The security section of that README                                                        |
 | The complete `krun` annotation set, and that each member is a scalar                                                               | The `krun` manual page in `crun`, <https://github.com/containers/crun/blob/main/krun.1.md> |
 | That passt uses native host sockets, picks a source by the host routing tables, and takes its gateway from the first default route | The `passt` manual page, <https://passt.top/builds/latest/web/passt.1.html>                |
-| That two clients attached to one container do not both receive its output                                                          | podman issue `580`, <https://github.com/containers/podman/issues/580>                      |
+| That two clients attached to one container do not both receive its output                                                          | podman issue `580`, <https://github.com/podman-container-tools/podman/issues/580>          |
 
 One neighbouring report was checked and excluded rather than cited. Podman issue `28316` records bind mounts arriving read-only for non-root users under libkrun, which would weaken the mount rows at this route if it applied; it is reported against macOS with libkrun as the podman machine provider, not against Linux at `podman run --runtime krun`, and the reporter states it does not reproduce under the other machine provider. The setup this comparison reads is the Linux one, so the cell stands without the caveat.
 
