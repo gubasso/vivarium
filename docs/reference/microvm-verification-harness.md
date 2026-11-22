@@ -215,6 +215,16 @@ The method worth knowing before reading a result. The movable component is a loc
 
 Verified on a real host. Each entry names the version it applies to; nothing here is inferred from an agent's execution environment.
 
+### Two boot trials each failed once on the shipped pin and then passed, for no cause read
+
+Measured 2026-11-22 on a real host with `/dev/kvm` and a systemd user manager, at vivarium 0.2.4 on the shipped pin, during the `pre-push` stage of a change that touched only the dev shell and the hook revisions. Not diagnosed: this entry records what was observed, not a cause.
+
+- One full run of the acceptance binary ended 26 of 27. `workflow_24_generations_retention` failed after 68s: `viv start --generation 1` exited `69` with `error[vm.start-failed]: the VM did not come up`, and named the journal of its unit for the supervisor's diagnostic. That journal held no line from the supervisor. It held the network setup of `pasta` and the lines of systemd: the failed start ran 20.8s of wall clock and peaked at 802M of memory and 8K of swap, and at the stop systemd killed four `virtiofsd`, `passt`, and `cloud-hypervisor` with `SIGKILL`. The three starts of the same trial before it each ran about 9s, and the journal shows no error line for them.
+- A later full run ended 26 of 27. `workflow_28_memory_trim_reclaims` failed after 25s with `a trim over a cache-heavy guest reclaimed nothing`.
+- `workflow_24_generations_retention` alone then passed 3 of 3 runs, and the next two full runs of the stage passed.
+
+Other sessions ran heavy builds and boot lanes on the same host that day, so host load is a possible cause, as in the readiness failures that set the `boot` group's width to `1`. The evidence does not show it. A supervisor that names its journal and writes nothing there leaves a failed start with no cause to read.
+
 ### On current nixos-unstable the guest boots and answers, and `viv stop` leaves the runtime directory behind
 
 Measured 2026-11-22 on a real host with `/dev/kvm` and a systemd user manager, at vivarium 0.2.4 plus the guest change that sets `boot.initrd.systemd.enable` only where nixpkgs still declares it. Before that change, no guest built on this nixpkgs: it removed the scripted initrd and fails any definition of that option. Not diagnosed: this entry records what was observed, not a cause.
