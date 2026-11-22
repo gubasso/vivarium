@@ -7,15 +7,14 @@
 # The lane is a thin driver: the trial itself is `workflow_15_contract_skew_live`
 # in tests/boot_workflows.rs (plus its cheap sibling, which needs no build), run
 # through the same acceptance harness every other host lane uses, so isolation,
-# baseline pinning, and gating have one implementation. What this script adds is
+# the first lock, and gating have one implementation. What this script adds is
 # the host-lane contract: a disk preflight before anything writes, the tier gate
 # stated out loud, and a double run — one clean run is evidence of possibility,
 # not reliability, and this refusal must hold on the second Tuesday too.
 #
-# The harness pins the generated flake's two baseline inputs from this
-# repository's own lock before it runs anything (`baseline_inputs` in
-# tests/support/mod.rs), so the lane reaches the network only for what the store
-# does not already hold.
+# Each trial starts as a new user, from an empty data root, and the pre-flight
+# writes the shipped pin as the target's first lock (ADR-0116), so the lane
+# reaches the network only for what the store does not already hold.
 #
 # See docs/reference/testing-lanes.md for the lanes.
 
