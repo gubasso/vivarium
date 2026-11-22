@@ -111,6 +111,10 @@
             # dprint (the `dprint`/`dprint-markdown` hooks): upstream publishes
             # no hook, so the hooks run it off PATH from here.
             pkgs.dprint
+            # lychee (the `lychee-system` link-check hook): upstream offers
+            # only script, docker_image, and system ids, so the hook runs it
+            # off PATH from here.
+            pkgs.lychee
             # The host lanes base-image-check, exec-and-shell-check,
             # share-benchmark-check, store-density-check,
             # store-gc-interlock-check, and store-pressure-check parse JSON
