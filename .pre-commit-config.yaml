@@ -251,7 +251,7 @@ repos:
   # files (see the note above `repos:`) are excluded in
   # `.editorconfig-checker.json`, which a direct run reads too.
   - repo: https://github.com/editorconfig-checker/editorconfig-checker
-    rev: v3.9.0
+    rev: v4.0.2
     hooks:
       - id: editorconfig-checker
         alias: ec
@@ -291,7 +291,7 @@ repos:
         types: [shell]
         require_serial: true
   - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.13.1-1
+    rev: v3.14.1-1
     hooks:
       # project: --write -i 2 -ci -bn in place of the set's [--write] with the
       # layout in .editorconfig, because most shell programs here are
@@ -607,11 +607,19 @@ repos:
   # inside a generated flake, a throwaway fixture) carries the marker
   # `nix-path-ok: <reason>` on that same line. Accepted ADR bodies never
   # change, so `docs/decisions/` is excluded rather than marked.
+  #
+  # The other hooks of exobrain-tech: a flake holds no git hook runner,
+  # host-requirements.toml parses, and hook-revisions holds the `rev` of each
+  # repository of the named reference sets to the copy that this tag states.
   - repo: https://github.com/gubasso/exobrain-tech
-    rev: v1.0.0
+    rev: v1.2.0
     hooks:
       - id: no-path-flake-reference
         exclude: ^docs/decisions/
+      - id: no-hook-runner-in-flake
+      - id: host-requirements
+      - id: hook-revisions
+        args: [--set, common, --set, rust, --set, bash, --set, nix]
 
   # --- Spelling, report only ---
   #
@@ -626,7 +634,7 @@ repos:
   # excludes of _typos.toml for the files that prek passes. The manifest
   # declares pre-push too, so `stages:` is explicit.
   - repo: https://github.com/crate-ci/typos
-    rev: v1.47.2
+    rev: v1.52.2
     hooks:
       - id: typos
         args: [--force-exclude]
@@ -637,7 +645,7 @@ repos:
   # The upstream `language: python` hook, with its own args
   # (--fixup --wip --commit-file). committed.toml holds the rules.
   - repo: https://github.com/crate-ci/committed
-    rev: v1.1.11
+    rev: v1.1.12
     hooks:
       - id: committed
         stages: [commit-msg]
@@ -687,7 +695,7 @@ repos:
   # devshell. Its manifest passes no file names and runs the scan of the whole
   # workspace only when a manifest or the lock file changes.
   - repo: https://github.com/bnjbvr/cargo-machete
-    rev: v0.9.2
+    rev: v0.10.1
     hooks:
       # project: `manual` too, because the CI matrix runs each push hook at
       # the manual stage.
