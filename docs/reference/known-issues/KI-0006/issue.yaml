@@ -15,4 +15,4 @@ mask:
   state: none
 recheck:
   command: git ls-remote https://spectrum-os.org/git/spectrum
-  condition: The host answers, and the product_lock_resolves trial of the eval lane passes on a cold store.
+  condition: The host answers, and nix flake archive of the product flake completes on a cold store.

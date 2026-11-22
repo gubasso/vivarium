@@ -22,11 +22,10 @@ The last green run on 2026-11-12 possibly took the `spectrum` source from the Ac
 ## The guard
 
 - `baseline_inputs` in [`tests/support/mod.rs`](../../../../tests/support/mod.rs) prefetches only `nixpkgs` and `microvm`, each at the `narHash` that the lock records, and it gives up after 90 s. A failure fails the trial with the stderr of `nix`. It no longer falls back to a live evaluation.
-- `product_lock_resolves` in [`tests/eval_workflows.rs`](../../../../tests/eval_workflows.rs) runs the recursive `nix flake archive` once, under a 300 s deadline. It keeps the question of whether the whole lock resolves, and it fails while the host is down.
 - `output_within` kills the process group of a command at its deadline, so the `git` that `nix` started dies with it.
 
 Two cases stay exposed. A trial whose evaluation reads the overlay still fetches `spectrum`. A user evaluation that reads it on a cold store blocks the same way. The second case is inferred and not measured.
 
 ## Recheck condition
 
-Run `git ls-remote https://spectrum-os.org/git/spectrum`, as [`../../tracking.yaml`](../../tracking.yaml) schedules. When the host answers and `product_lock_resolves` passes on a cold store, collapse this dossier under `resolved/`. If the host stays down, the decision about the `spectrum` input belongs to the product and not to this case.
+Run `git ls-remote https://spectrum-os.org/git/spectrum`, as [`../../tracking.yaml`](../../tracking.yaml) schedules. When the host answers and `nix flake archive` of the product flake completes on a cold store, collapse this dossier under `resolved/`. If the host stays down, the decision about the `spectrum` input belongs to the product and not to this case.

@@ -652,8 +652,8 @@ pub struct VivOutput {
 /// once ran `nix flake archive` over the whole product flake, which fetches every input
 /// recursively, `microvm`'s `spectrum` among them, from a git host that stopped answering. A git
 /// fetch has no timeout of its own, so on a cold store every trial that ran `viv` hung until
-/// nextest killed it. Whether the whole lock still resolves is the `product_lock_resolves` trial's
-/// question, asked once in the eval lane, not every trial's.
+/// nextest killed it. Whether the whole lock still resolves is a separate question, and not every
+/// trial's to ask.
 ///
 /// Computed once per process. A host with no `nix` gets no pins and evaluates live, exactly as a
 /// user would, because the `local` lane declares no need for Nix. Every other failure is an `Err`
