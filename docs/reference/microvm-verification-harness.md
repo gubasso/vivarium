@@ -215,6 +215,29 @@ The method worth knowing before reading a result. The movable component is a loc
 
 Verified on a real host. Each entry names the version it applies to; nothing here is inferred from an agent's execution environment.
 
+### A cold first evaluation does not need spectrum, and a base flake that declares the baselines still resolves them live
+
+Measured 2026-11-22 on a real host with Nix 2.34.8, once by the owner's decision of 2026-11-21, for the shipped pin of [`ADR-0116`](../decisions/ADR-0116-the-binary-ships-the-first-pin.md) at vivarium 0.2.4 plus that change. The question was whether a cold user's first evaluation needs the `spectrum` input of microvm.nix, whose git host stopped answering on 2026-11-20 ([`KI-0006`](./known-issues/resolved/KI-0006.md)).
+
+The project is the one `tests/host/guest-system-check` evaluates: the shipped examples in a throwaway config root and `rust-web` bound to an empty project. A store root, a cache, and a data root started empty. From the project, with the dev environment of the checkout:
+
+```bash
+direnv exec <repository> <repository>/tests/host/heavy-run --need 4 \
+  --label "cold-store evaluation" -- env NIX_CONFIG='store = local?root=<store>' \
+  XDG_CONFIG_HOME=<config> XDG_CACHE_HOME=<cache> XDG_DATA_HOME=<data> \
+  <cargo-target>/debug/viv config eval --json
+```
+
+Two departures from the planned command, both needed for the run to measure what it asks. `XDG_CONFIG_HOME` names the throwaway config root, because `viv` resolves the manifest there. The binary is the built `viv` rather than the dev shell's `viv`, because that shim runs `scripts/baseline-pins`, whose `nix flake archive` fetches every input, `spectrum` included, into the same cold store.
+
+- `viv` exited `0`, printed the merged configuration, and reported `created the pin for this target` on stderr. The stderr carried nothing else from Nix.
+- `nix path-info --store 'local?root=<store>' --all` listed six paths: two GitHub API answers, the two generated trees, and the `nixpkgs` and `microvm` sources. None carries the `spectrum` `narHash` of [`nix/flake.lock`](../../nix/flake.lock), `sha256-xO8f7Qng+18FK2UlB9vcrkxCaQMCt5WjCH24aW/11eg=`, or the `narHash` of the `spectrum` node in the new lock. The cache holds no git fetch cache under `nix/`, only the tarball cache, the fetcher cache, and the evaluation cache.
+- Verdict, in the terms the run set itself: the evaluation exited `0` and the store holds no path with the `spectrum` `narHash`, so the evaluation does not need `spectrum`.
+
+The run also showed what the shipped pin does not reach. The example `base` image carries a base flake that declares `nixpkgs` and `microvm` itself and ships no `flake.lock`, and the reference lock holds no node under a base (`ADR-0112`). So the pre-flight resolved both branches live: the fetcher cache records the GitHub API queries for `nixos-unstable` and for the `microvm.nix` default branch, and the lock pins `nixpkgs` at `2786a2a7`, `microvm` at `430a46d0`, and `spectrum` at `77d23898` with `revCount` 1417, none of them the shipped revisions. A `spectrum` revision with a `revCount` comes from its git host, so that lock step reached spectrum-os.org, which answered on this day. The stderr shows no fetch line, because nothing ran Nix verbosely.
+
+A second probe isolated the shipped-pin path: an image with no base flake, the same empty roots, the same command. It exited `0`. Its lock's `nixpkgs`, `microvm`, and `spectrum` nodes equal the shipped ones, the store holds the `nixpkgs` and `microvm` sources at their shipped `narHash` and nothing at the `spectrum` one, and the fetcher cache records fetches by revision only, with no API query and no git fetch.
+
 ### Measured per-sandbox memory was null on a host whose doctor had said so all along
 
 Measured 2026-08-25 on a real host with `/dev/kvm` and a systemd user manager (systemd 261, openSUSE), while landing slice 025's fleet view. The two-sandbox acceptance trial failed its first run: every running row reported `mem_used_bytes` as `null`, because `systemctl --user show -p MemoryCurrent` answered `[not set]` for every transient unit. That is the degradation spec/17 specifies, working as written — and the `host-cgroup2-delegation` probe had been reporting the shortfall the whole time. The cause sat two layers above vivarium: upstream systemd's `user@.service` carries `Delegate=pids memory cpu`, but the distribution ships `DefaultMemoryAccounting=no`, so the memory controller was never enabled down the slice chain and only `pids` reached the user manager.
