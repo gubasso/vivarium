@@ -2,7 +2,7 @@
   description = "vivarium's development environment (toolchain from rust-toolchain.toml)";
 
   # This flake's single purpose is the **development environment** for working on
-  # vivarium: the Rust toolchain, the runtimes the pre-commit hooks resolve off
+  # vivarium: the Rust toolchain, the runtimes the git hooks resolve off
   # PATH, and the devShell direnv activates. That is all.
   #
   # It is **not part of what vivarium builds.** The microVM — the guest, its
@@ -31,14 +31,6 @@
         spec-driven-docs.follows = "";
       };
     };
-    # The store guard of the canon (exobrain): `exobrain store-guard --daily`
-    # in .envrc warns about working-tree copies in the Nix store. Its rk serves
-    # only its own devShell, so it takes this flake's.
-    exobrain-tech = {
-      url = "github:gubasso/exobrain-tech/v1.0.0";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.release-kit.follows = "release-kit";
-    };
   };
 
   outputs =
@@ -50,7 +42,6 @@
       rust-overlay,
       flake-utils,
       release-kit,
-      exobrain-tech,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -78,7 +69,7 @@
         };
       in
       {
-        # `nix fmt` uses the RFC 166 formatter (also on PATH for the pre-commit hook).
+        # `nix fmt` uses the RFC 166 formatter (also on PATH for the nixfmt hook).
         formatter = pkgs.nixfmt;
 
         devShells.default = pkgs.mkShell {
@@ -91,9 +82,9 @@
             # ssh-agent, ssh-add, and ssh-keygen come from here, not the host.
             pkgs.openssh
             pkgs.just
-            pkgs.pre-commit
-            # Nix owns runtimes; pre-commit owns hooks. markdownlint-cli2 uses
-            # this Node via language_version: system instead of nodeenv. The
+            # Nix owns runtimes; prek, which the host supplies, owns hooks.
+            # markdownlint-cli2 uses this Node via language_version: system
+            # instead of nodeenv. The
             # `slides/` deck is the second consumer: Nix supplies the runtime
             # and npm supplies Slidev, pinned by slides/package-lock.json, the
             # same division of labour (ADR-0104).
@@ -106,20 +97,24 @@
             # Nix tools of the system hooks: nixfmt, which `nix fmt` and the
             # base-image lane run too (the formatter above), and statix, which
             # has no upstream hook. deadnix, typos, committed, shfmt, ruff, and
-            # actionlint run as upstream hooks that pre-commit builds, so they
+            # actionlint run as upstream hooks that prek builds, so they
             # have no package here, and a language library never enters this
             # shell.
             pkgs.nixfmt
             pkgs.statix
-            # actionlint, a hook that pre-commit builds, runs shellcheck from
+            # actionlint, a hook that prek builds, runs shellcheck from
             # PATH on the `run:` scripts of the workflows it reads.
             pkgs.shellcheck
-            # rustup-init, which pre-commit runs to build the rust hooks
+            # rustup-init, which prek runs to build the rust hooks
             # (ripsecrets, deadnix), downloads with curl.
             pkgs.curl
             # dprint (the `dprint`/`dprint-markdown` hooks): upstream publishes
-            # no pre-commit hook, so the hooks run it off PATH from here.
+            # no hook, so the hooks run it off PATH from here.
             pkgs.dprint
+            # lychee (the `lychee-system` link-check hook): upstream offers
+            # only script, docker_image, and system ids, so the hook runs it
+            # off PATH from here.
+            pkgs.lychee
             # The host lanes base-image-check, exec-and-shell-check,
             # share-benchmark-check, store-density-check,
             # store-gc-interlock-check, and store-pressure-check parse JSON
@@ -140,11 +135,6 @@
             # it, so CI resolves it here rather than needing a host install on
             # the runner.
             release-kit.packages.${system}.default
-          ]
-          # exobrain, the store guard that .envrc runs once a day. exobrain-tech
-          # builds it for x86_64-linux only, so the other systems keep their shells.
-          ++ pkgs.lib.optionals (system == "x86_64-linux") [
-            exobrain-tech.packages.${system}.default
           ];
           # native deps for -sys crates, uncomment as needed:
           # buildInputs = [ pkgs.openssl ];

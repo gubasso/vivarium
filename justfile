@@ -2,13 +2,17 @@
 # Recipes route through the pinned Nix devShell so tasks run in the same
 # environment CI and direnv provide.
 
+# Every recipe enters the devshell through the host nix; `exobrain host-check`
+# names a host tool that is missing or too old (host-requirements.toml).
+_host := shell("exobrain host-check nix")
+
 # List available recipes.
 default:
     @just --list
 
 # --- Build & test ---------------------------------------------------------
 #
-# The test recipes take a lane name and run that lane's pre-commit hook. Neither
+# The test recipes take a lane name and run that lane's hook. Neither
 # the command nor its flags appear here: `.pre-commit-config.yaml` is the one
 # place a lane's command is written, and `just`, `git`, and CI all reach it by
 # hook id. The predecessor of this block copied each hook's command as a "twin"
@@ -32,7 +36,8 @@ build:
 # Run one test lane: unit, local, eval, net, boot, or doc.
 # `docs/reference/testing-lanes.md` says what each one needs and proves.
 test LANE="local":
-    tests/host/heavy-run --need 2 --label "just test {{LANE}}" -- nix develop --command pre-commit run --all-files --hook-stage manual test-{{LANE}}
+    exobrain host-check prek
+    tests/host/heavy-run --need 2 --label "just test {{LANE}}" -- nix develop --command prek run --all-files --hook-stage manual test-{{LANE}}
 
 # Run one host lane by name, e.g. `just lane base-image`.
 # These boot real guests and several take tens of minutes. Each script gates its
@@ -41,13 +46,15 @@ test LANE="local":
 # that entered the shell first would have written gigabytes before the script got
 # to ask.
 lane NAME:
-    tests/host/heavy-run --need 2 --label "just lane {{NAME}}" -- nix develop --command pre-commit run --hook-stage manual lane-{{NAME}}
+    exobrain host-check prek
+    tests/host/heavy-run --need 2 --label "just lane {{NAME}}" -- nix develop --command prek run --hook-stage manual lane-{{NAME}}
 
 # Exactly what `git push` runs. Not a copy of it: the same stage, the same hooks.
 # Gated for the same reason as the recipes above: the hooks gate themselves, and
 # `nix develop` runs before any of them.
 push-checks:
-    tests/host/heavy-run --need 2 --label "just push-checks" -- nix develop --command pre-commit run --all-files --hook-stage pre-push
+    exobrain host-check prek
+    tests/host/heavy-run --need 2 --label "just push-checks" -- nix develop --command prek run --all-files --hook-stage pre-push
 
 # Type-check without producing binaries.
 typecheck:
@@ -63,7 +70,8 @@ fmt:
 # so a contributor without hooks installed cannot pass CI without them. The push
 # stage is `just push-checks`, and each lane is `just test <lane>`.
 hooks:
-    tests/host/heavy-run --need 2 --label "just hooks" -- nix develop --command pre-commit run --all-files --hook-stage pre-commit
+    exobrain host-check prek
+    tests/host/heavy-run --need 2 --label "just hooks" -- nix develop --command prek run --all-files --hook-stage pre-commit
 
 # --- Slides ---------------------------------------------------------------
 # The Slidev deck under slides/. Nix supplies node through the devShell; npm

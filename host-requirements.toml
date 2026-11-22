@@ -1,0 +1,14 @@
+schema = 1
+
+# The host tools that the justfile, the git hooks, and scripts/ call. The
+# devshell of flake.nix owns every other tool.
+
+[tools.exobrain]
+version = ">=1.2.0"
+
+[tools.git]
+
+[tools.nix]
+
+[tools.prek]
+version = "*"

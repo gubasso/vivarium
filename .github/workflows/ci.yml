@@ -1,6 +1,6 @@
 # CI workflow — the lanes a runner can serve, plus the gate a merge rests on.
 #
-# Every job here invokes a pre-commit hook by id and never repeats its command.
+# Every job here invokes a hook by id and never repeats its command.
 # `.pre-commit-config.yaml` is where a lane's command is written, so this file,
 # the `just` recipes, and the git hooks cannot drift: they name the same thing.
 # The lane register is docs/reference/testing-lanes.md.
@@ -38,36 +38,20 @@ permissions:
 # store, so a gate placed inside it measures a store the step has already
 # written to, and the refusal above would arrive after the write it exists to
 # prevent. Outside, the step needs only the runner's own `bash` and coreutils.
+#
+# Each step selects its hooks by stage and by group. A hook that no runner can
+# run carries `groups: [local-only]` in .pre-commit-config.yaml, with its
+# reason above it, and every step here passes `--no-group local-only` beside
+# the stage it names, so no committed file sets SKIP. A group filter with no
+# `--stage` also runs the manual hooks, which is why every step names one. No
+# hook carries `ci-only`, so no step runs the manual stage by group.
 env:
   VIVARIUM_HEAVY_ON_HOST: '1'
-  # The hooks that gate a push and that no runner runs, each with its reason.
-  # `scripts/check-lane-register` reads this list and fails a push-staged hook
-  # that appears neither here nor in the `check` matrix below, so a check that
-  # quietly stops running in CI cannot exist unremarked.
-  #
-  #   test-boot            needs an unprivileged user namespace per VM, which
-  #   test-net             Ubuntu's AppArmor policy refuses on a runner: measured
-  #                        2026-09-09, `unshare` reports "write failed
-  #                        /proc/self/uid_map: Operation not permitted". The
-  #                        runner's other premises do hold — /dev/kvm at mode
-  #                        0666, and a systemd user manager answering after
-  #                        `loginctl enable-linger` — so this one line is what
-  #                        keeps both lanes off it. The `boot-experiment` job
-  #                        below is what would notice it changing
-  #   slidev-build         slides.yml is the deck's own lane and installs the
-  #                        deck's dependencies, which this workflow never does
-  #   leftovers            reports what a round left on this developer's two
-  #                        disks; a runner is discarded after the run
-  #   rk-no-push-to-trunk  judges the push a developer is making; the forge's
-  #   rk-no-hand-authored-tag  own trunk and tag protection is what says the
-  #                        same thing to a runner, and it says it later and
-  #                        harder
-  NOT_ON_A_RUNNER: 'test-boot test-net slidev-build leftovers rk-no-push-to-trunk rk-no-hand-authored-tag'
 
 jobs:
   # The commit stage over the whole tree, which is what a contributor without
   # hooks installed would otherwise bypass. The autofixing hooks are the real
-  # gate: pre-commit fails with "files were modified by this hook", which is
+  # gate: prek fails with "files were modified by this hook", which is
   # exactly the failure such a contributor should see. `fetch-depth: 0` is
   # load-bearing for gitleaks — a shallow clone would let it pass over history
   # it never fetched.
@@ -89,24 +73,47 @@ jobs:
         with:
           use-flakehub: false
           use-gha-cache: true
-      - name: Cache pre-commit environments
+      - name: Install prek
+        # The host tool that runs the hooks. The devshell holds no hook
+        # runner, so the runner gets prek the way a developer's host does.
+        # The `Cache prek environments` step below owns the cache.
+        uses: j178/prek-action@7b101f8338a08d2bd6fdb3625e4e7692428763a3 # v3.1.1
+        with:
+          install-only: true
+          cache: false
+      - name: Cache prek environments
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+          path: ~/.cache/prek
+          key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: Install the exobrain CLI of the pinned exobrain-tech tag
+        # hook-revisions and host-requirements call the exobrain CLI, which
+        # the host supplies and the devshell does not hold. The tag comes
+        # from the exobrain-tech entry of .pre-commit-config.yaml, so the pin
+        # has one owner, and the attestation proves the archive came from the
+        # release workflow of exobrain-tech.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(yq '.repos[] | select(.repo | test("/exobrain-tech(\.git)?/?$")) | .rev' .pre-commit-config.yaml)
+          asset=exobrain-x86_64-unknown-linux-gnu.tar.xz
+          gh release download "$tag" --repo gubasso/exobrain-tech --pattern "$asset" --dir "$RUNNER_TEMP"
+          gh attestation verify "$RUNNER_TEMP/$asset" --repo gubasso/exobrain-tech
+          mkdir -p "$RUNNER_TEMP/exobrain"
+          tar -xJf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/exobrain" --strip-components=1
+          echo "$RUNNER_TEMP/exobrain" >> "$GITHUB_PATH"
       - name: Commit-stage hooks
         # A CI sweep commits nothing and checks out no worktree, so the two
-        # hooks that judge where a commit is being made have nothing true to
-        # say here. The release convention names this pair itself, in the
-        # comment at the top of the landed block.
-        env:
-          SKIP: no-commit-to-branch,rk-worktree-location
-        run: tests/host/heavy-run --need 8 --label "ci commit-stage hooks" -- nix develop --command pre-commit run --all-files --hook-stage pre-commit
+        # hooks that judge where a commit is being made, no-commit-to-branch
+        # and rk-worktree-location, have nothing true to say here. The
+        # release-kit block marks both `local-only`.
+        run: tests/host/heavy-run --need 8 --label "ci commit-stage hooks" -- nix develop --command prek run --all-files --stage pre-commit --no-group local-only
       - name: Commit messages
-        # The commit-msg stage is the one installed hook type `pre-commit run
+        # The commit-msg stage is the one installed hook type `prek run
         # --all-files` cannot replay — it lints a message, not files — so the
         # `committed` gate gets its own lane over the commits each event
-        # proposes. pre-commit owns committed, so the lane hands each message
+        # proposes. prek owns committed, so the lane hands each message
         # to the same hook, with the leniency flags it carries. A merge commit
         # carries a message the forge writes, so the lane skips it. A
         # pull request anchors at its base branch; a push anchors at the
@@ -135,7 +142,7 @@ jobs:
           for sha in $commits; do
             echo "commit message of $sha"
             git log -1 --format=%B "$sha" > "$msg"
-            nix develop --command pre-commit run committed --hook-stage commit-msg --commit-msg-filename "$msg"
+            nix develop --command prek run --stage commit-msg --no-group local-only --commit-msg-filename "$msg" committed
           done
 
   # Every push-stage hook a runner can serve, one job each.
@@ -148,6 +155,11 @@ jobs:
   # Each entry invokes the hook by id, so the command a runner runs is the
   # command `git push` runs. The id crosses as an environment variable rather
   # than by interpolation, so a matrix value is data and not script.
+  #
+  # Every push hook is in this matrix, or carries `groups: [local-only]` with
+  # its reason, or sits in the release-kit block, whose tool marks its own.
+  # `scripts/check-lane-register` fails any other, so a check that quietly
+  # stops running in CI cannot exist unremarked.
   check:
     strategy:
       fail-fast: false
@@ -161,6 +173,7 @@ jobs:
           - cargo-deny
           - cargo-machete
           - gitleaks
+          - lychee-system
           - product-flake-check
     runs-on: ubuntu-latest
     steps:
@@ -178,15 +191,23 @@ jobs:
         with:
           use-flakehub: false
           use-gha-cache: true
-      - name: Cache pre-commit environments
+      - name: Install prek
+        # The host tool that runs the hooks. The devshell holds no hook
+        # runner, so the runner gets prek the way a developer's host does.
+        # The `Cache prek environments` step below owns the cache.
+        uses: j178/prek-action@7b101f8338a08d2bd6fdb3625e4e7692428763a3 # v3.1.1
+        with:
+          install-only: true
+          cache: false
+      - name: Cache prek environments
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+          path: ~/.cache/prek
+          key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Run the hook
         env:
           HOOK: ${{ matrix.hook }}
-        run: tests/host/heavy-run --need 12 --label "ci $HOOK" -- nix develop --command pre-commit run --all-files --hook-stage manual "$HOOK"
+        run: tests/host/heavy-run --need 12 --label "ci $HOOK" -- nix develop --command prek run --all-files --stage pre-push --no-group local-only "$HOOK"
 
   # An experiment, and never a gate: `continue-on-error` and absent from `gate`'s
   # `needs`, so a red here holds no merge.
@@ -204,7 +225,7 @@ jobs:
   # a runner image that relaxes the policy, or a `sysctl` a step could set. What
   # would promote it into the gate: the namespace premise held, and two consecutive
   # green runs. One clean run is evidence of possibility, not of reliability. Until
-  # then `test-boot` stays in NOT_ON_A_RUNNER above, the developer\'s own `git push`
+  # then `test-boot` stays in the `local-only` group, the developer\'s own `git push`
   # is where the boot lane gates, and what this job found is recorded in
   # docs/reference/tracking.yaml.
   boot-experiment:
@@ -222,6 +243,14 @@ jobs:
         with:
           use-flakehub: false
           use-gha-cache: true
+      - name: Install prek
+        # The host tool that runs the hooks. The devshell holds no hook
+        # runner, so the runner gets prek the way a developer's host does.
+        # The `Cache prek environments` step below owns the cache.
+        uses: j178/prek-action@7b101f8338a08d2bd6fdb3625e4e7692428763a3 # v3.1.1
+        with:
+          install-only: true
+          cache: false
       - name: What this runner offers a booting guest
         # Reported before the lane runs, so a failure below can be read against
         # what was actually available rather than against an assumption.
@@ -237,7 +266,9 @@ jobs:
             && echo "unprivileged user+net namespaces: available" \
             || echo "unprivileged user+net namespaces: refused"
       - name: The boot lane
-        run: tests/host/heavy-run --need 12 --label "ci test-boot" -- nix develop --command pre-commit run --all-files --hook-stage manual test-boot
+        # test-boot is `local-only`, and this job runs it on a runner on
+        # purpose: `--group local-only` with the id selects that one hook.
+        run: tests/host/heavy-run --need 12 --label "ci test-boot" -- nix develop --command prek run --all-files --stage pre-push --group local-only test-boot
 
   # The artifact workflow's proof. release.yml is the unmodified output of
   # `dist generate`, and `dist plan` fails when the committed file drifts from

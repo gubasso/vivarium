@@ -40,7 +40,7 @@ Start at the [documentation index](docs/README.md), which covers the five zones:
 
 ## Development shell
 
-vivarium provides a pinned Nix development shell.
+vivarium provides a pinned Nix development shell. The host supplies the few tools that the shell does not hold, which [`host-requirements.toml`](./host-requirements.toml) lists.
 
 ```bash
 # Interactive: allow direnv to load the shell on cd

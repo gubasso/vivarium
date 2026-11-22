@@ -36,10 +36,16 @@ $ just push-checks        # exactly what `git push` runs
 $ just lane base-image    # one host lane, by name
 ```
 
-Each of those invokes a hook. The long form works anywhere and is what CI's matrix calls:
+Each of those invokes a hook. The long form works anywhere:
 
 ```console
-$ pre-commit run --all-files --hook-stage manual test-eval
+$ prek run --all-files --hook-stage manual test-eval
+```
+
+CI's matrix runs each push hook it serves at the push stage, with the group filter that leaves out what no runner runs:
+
+```console
+$ prek run --all-files --stage pre-push --no-group local-only test-eval
 ```
 
 ## Where each lane runs, and why not elsewhere
@@ -50,7 +56,7 @@ No runner runs `boot` or `net` today, and the reason is the same one for both. M
 
 The `boot-experiment` job is what would notice that changing. It carries `continue-on-error` and is absent from the gate's `needs`, so it holds no merge, and its capability step reports each premise by name. Two consecutive green runs and the namespace premise held are what would promote it.
 
-The workflow declares every push-staged hook no runner runs, with a reason each, in its `NOT_ON_A_RUNNER` list. The register check fails a push-staged hook that appears neither there nor in the matrix, so a check that quietly stops running in CI cannot exist unremarked.
+Every push-staged hook that no runner runs carries `groups: [local-only]` in [`../../.pre-commit-config.yaml`](../../.pre-commit-config.yaml), with its reason in the comment above it, and every CI step passes `--no-group local-only`. The register check fails a push-staged hook that is neither in the matrix nor in that group, so a check that quietly stops running in CI cannot exist unremarked. The one exemption is the block that release-kit renders: that tool scopes its own hooks, and its two unmarked push hooks read a remote branch that no CI step sets, so a runner job for either would pass without judging anything.
 
 ## The host lanes
 

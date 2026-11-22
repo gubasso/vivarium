@@ -14,7 +14,7 @@
 
 Since ADR-0095, every probe unit lives in a measurement image rather than the shipped one. The lanes that boot build `nix#base-image-measurement` or a purpose-built variant; `packages.base-image` — the artifact a user gets — contains no probe, no upstream test hook, and no way to stop itself. That last point is deliberate: the harness stops it with `ch-remote power-button` over the API socket, which is the path a user's `stop` will take.
 
-The microVM is its own flake, at `nix/flake.nix`. The repository root's flake is the development environment — Rust toolchain, pre-commit runtimes, the devShell direnv activates — and carries no product input or output, which is why every lane resolves `git+file://$REPO_ROOT?dir=nix` and only the lint checks reach back to the root for their tools. The `?dir=` form addresses the same flake file at `nix/flake.nix` with the same lock, but makes the repository its source tree, which is what lets the product build read the Rust crate at its default layout instead of a duplicated snapshot; `git+file://$REPO_ROOT/nix` pins the tree one level too deep and the crate becomes unreachable under pure evaluation. The `git+file:` scheme reads the git tree, tracked files with their uncommitted edits, so a lane never copies an ignored file such as `slides/node_modules` into the store, and a new file joins once it is staged.
+The microVM is its own flake, at `nix/flake.nix`. The repository root's flake is the development environment — Rust toolchain, hook runtimes, the devShell direnv activates — and carries no product input or output, which is why every lane resolves `git+file://$REPO_ROOT?dir=nix` and only the lint checks reach back to the root for their tools. The `?dir=` form addresses the same flake file at `nix/flake.nix` with the same lock, but makes the repository its source tree, which is what lets the product build read the Rust crate at its default layout instead of a duplicated snapshot; `git+file://$REPO_ROOT/nix` pins the tree one level too deep and the crate becomes unreachable under pure evaluation. The `git+file:` scheme reads the git tree, tracked files with their uncommitted edits, so a lane never copies an ignored file such as `slides/node_modules` into the store, and a new file joins once it is staged.
 
 This page is the lookup material for all five: what each check proves, and the register of what has actually been verified. It holds no design rationale — that lives in the ADRs each section names.
 
@@ -28,7 +28,7 @@ $ tests/host/base-image-check
 
 The sibling lanes below are invoked the same way and are listed with what each proves. No arguments. It resolves the flake from its own location, so it works from any working directory.
 
-Every script here is also registered as a `manual` pre-commit hook named `lane-<name>`, so the same lane is reachable as `just lane base-image` or `pre-commit run --hook-stage manual lane-base-image`. That is the form [`testing-lanes.md`](./testing-lanes.md) registers, and it is what keeps a script from becoming a lane nobody remembers; the direct invocation above stays the shortest way to run one by hand. Output is one `[PASS]` / `[FAIL]` / `[SKIP]` / `[RECORD]` line per check plus a verdict, and the whole run is meant to be pasted into a review.
+Every script here is also registered as a `manual` hook named `lane-<name>`, so the same lane is reachable as `just lane base-image` or `prek run --hook-stage manual lane-base-image`. That is the form [`testing-lanes.md`](./testing-lanes.md) registers, and it is what keeps a script from becoming a lane nobody remembers; the direct invocation above stays the shortest way to run one by hand. Output is one `[PASS]` / `[FAIL]` / `[SKIP]` / `[RECORD]` line per check plus a verdict, and the whole run is meant to be pasted into a review.
 
 Artefacts are retained beside the diagnostic volume, under the drive when one is configured and under the state root otherwise: `console.log` (the raw guest console) and `memfd-series.txt` (the memory series described below). They are the reason to run it, so they outlive the run.
 
@@ -59,7 +59,7 @@ Every hook that compiles, evaluates a flake, or boots is invoked through [`../..
 
 Two roots are deliberately not in that list. `XDG_RUNTIME_DIR` holds control sockets against a 108-byte path limit that a drive's mount point does not leave room under, and `XDG_CONFIG_HOME` is the user's authored source of truth, which the tool only reads.
 
-The refusal is deterministic because it has to be: pre-commit runs every hook with standard input on `/dev/null`, so a gate at that stage cannot prompt. No usable drive means exit `69` and nothing ran.
+The refusal is deterministic because it has to be: prek runs every hook with standard input on `/dev/null`, so a gate at that stage cannot prompt. No usable drive means exit `69` and nothing ran.
 
 ```bash
 # run the gated checks on this disk anyway — the capacity check still applies
@@ -195,7 +195,7 @@ Every survival claim is demonstrated beside a canary: an unrooted path added for
 
 What a round left behind, on both disks, and the command that would clear each pile. It reports and never acts: telling a registered sandbox from an orphaned fixture root is exactly the judgement a person wants to make with their own eyes, and a volume holds user data. Groups are named with a size and a note — the shared compile cache, scratch, fixture roots, retained diagnostics, runtime roots a run did not tear down, vivarium user units still loaded, and the store's own free space, which no gate moves.
 
-It is also the round's verdict on the drive. Everything listed under `host` is something a gated run puts on the drive instead, so a size there means something ran outside the gate — surfaced while the round is still fresh rather than a week later from a full filesystem. The same report runs as the last `pre-push` hook, wired `verbose` because pre-commit prints a passing hook's output only when asked, and it always passes: a push is not blocked by what is on a disk.
+It is also the round's verdict on the drive. Everything listed under `host` is something a gated run puts on the drive instead, so a size there means something ran outside the gate — surfaced while the round is still fresh rather than a week later from a full filesystem. The same report runs as the last `pre-push` hook, wired `verbose` because prek prints a passing hook's output only when asked, and it always passes: a push is not blocked by what is on a disk.
 
 ```console
 $ tests/host/leftovers
