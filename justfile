@@ -92,11 +92,7 @@ slides-build:
 install:
     nix develop --command scripts/install-dev
 
-# Same, plus a `viv-dev` that resolves its baseline inputs against this tree.
-install-pinned:
-    nix develop --command scripts/install-dev --pinned
-
-# Remove `viv`, `vivarium-supervisor` and `viv-dev` again.
+# Remove `viv` and `vivarium-supervisor` again.
 uninstall:
     nix develop --command scripts/install-dev --uninstall
 
