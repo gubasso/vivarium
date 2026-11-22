@@ -707,7 +707,15 @@ repos:
   - repo: https://github.com/bnjbvr/cargo-machete
     rev: v0.10.1
     hooks:
+      # project: language_version '>=1.98'. cargo-machete v0.10.1 declares no
+      # rust-version and calls `Path::is_empty`, so on the 1.96.1 toolchain of
+      # the devshell `cargo install` fails with "error[E0658]: use of unstable
+      # library feature `path_is_empty`" (CI, 2026-11-22); 1.97.1 fails the
+      # same way and 1.98.0 builds it. With the floor, prek installs a
+      # toolchain that builds it on a clean machine, and a warm hook cache
+      # built by a newer toolchain elsewhere can no longer hide the gap.
       - id: cargo-machete
+        language_version: '>=1.98'
         stages: [pre-push]
 
   - repo: local
