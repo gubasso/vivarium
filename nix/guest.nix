@@ -1,5 +1,6 @@
 {
   config,
+  options,
   lib,
   pkgs,
   storeLayout,
@@ -263,7 +264,13 @@ in
     environment.etc."resolv.conf".text = "nameserver ${
       if egressMode == "allowlist" then networkLayout.gatewayAddress else networkLayout.dnsForwardAddress
     }\n";
-    boot.initrd.systemd.enable = true;
+    # Systemd stage 1 is load-bearing: the store overlay's shutdown ordering
+    # depends on it (ADR-0088). nixpkgs 26.11 removed the scripted initrd and
+    # left this option as a removed-option stub that fails the build on any
+    # definition, so systemd is then the only stage 1 and nothing is set. The
+    # stub declares no default and a live option does, which is what tells a
+    # tree that still has the scripted initrd apart from one that does not.
+    boot.initrd.systemd.enable = lib.mkIf (options.boot.initrd.systemd.enable ? default) true;
     # Naming these as required initrd modules makes evaluation/build fail if the
     # selected guest kernel ceases to provide AF_VSOCK or its virtio transport.
     boot.initrd.availableKernelModules = [
