@@ -51,6 +51,22 @@ jobs:
         with:
           use-flakehub: false
           use-gha-cache: true
+      - name: Install the exobrain CLI of the pinned exobrain-tech tag
+        # The justfile checks its host tools with `exobrain host-check` before
+        # any recipe runs, and the devshell holds no exobrain, so this job
+        # installs the CLI as ci.yml does. scripts/check-ci-host-tools fails a
+        # job that calls `just` without this step.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(yq '.repos[] | select(.repo | test("/exobrain-tech(\.git)?/?$")) | .rev' .pre-commit-config.yaml)
+          asset=exobrain-x86_64-unknown-linux-gnu.tar.xz
+          gh release download "$tag" --repo gubasso/exobrain-tech --pattern "$asset" --dir "$RUNNER_TEMP"
+          gh attestation verify "$RUNNER_TEMP/$asset" --repo gubasso/exobrain-tech
+          mkdir -p "$RUNNER_TEMP/exobrain"
+          tar -xJf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/exobrain" --strip-components=1
+          echo "$RUNNER_TEMP/exobrain" >> "$GITHUB_PATH"
       - name: Install deck dependencies
         run: nix develop --command just slides-install
       - name: Build deck

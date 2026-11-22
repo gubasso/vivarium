@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Every workflow job that calls `just` or `exobrain` installs the exobrain CLI.
+
+The justfile checks its host tools with `exobrain host-check` in a top-level
+assignment, so every recipe needs the exobrain CLI on the PATH. A developer's
+host always has it, which is why no local run of a recipe can notice a runner
+without it: the slides workflow once failed in CI with "call to function shell
+failed: process exited with status code 127" after a push whose hooks all
+passed. This check reads each job of `.github/workflows/*.yml` and fails a job
+that calls `just` or `exobrain` without the step that installs the CLI of the
+pinned exobrain-tech tag, the step that `.github/workflows/ci.yml` carries.
+
+Parsed by line rather than with a YAML reader, for the reason
+`scripts/check-lane-register` gives: the dev shell's `python3` carries no
+third-party modules, and the shape read here is the job keys at a fixed
+indentation.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+WORKFLOWS = ROOT / ".github/workflows"
+
+# A command position followed by a recipe or a subcommand name. Hyphenated
+# words such as `exobrain-tech` and paths such as `$RUNNER_TEMP/exobrain` do not
+# match.
+CALL = re.compile(r"(?:^|[\s;&|(])(just|exobrain)\s+[a-z][\w-]*")
+# What the install step runs: the release download of the exobrain CLI.
+INSTALL = re.compile(r"gh release download .*--repo gubasso/exobrain-tech")
+JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+
+
+def jobs(text: str) -> dict[str, list[str]]:
+    """Each job id under `jobs:`, with its lines, comments stripped."""
+    found: dict[str, list[str]] = {}
+    inside = False
+    current: str | None = None
+    for line in text.splitlines():
+        if re.match(r"^jobs:\s*$", line):
+            inside = True
+            continue
+        if inside and re.match(r"^\S", line):
+            inside = False
+        if not inside:
+            continue
+        job = JOB.match(line)
+        if job:
+            current = job.group(1)
+            found[current] = []
+            continue
+        if current and not line.lstrip().startswith("#"):
+            found[current].append(line)
+    return found
+
+
+def main() -> int:
+    problems: list[str] = []
+    for workflow in sorted(WORKFLOWS.glob("*.yml")):
+        for job, lines in jobs(workflow.read_text()).items():
+            calls = sorted({m.group(1) for line in lines for m in CALL.finditer(line)})
+            if calls and not any(INSTALL.search(line) for line in lines):
+                problems.append(
+                    f"{workflow.relative_to(ROOT)}: job `{job}` calls "
+                    f"{' and '.join(calls)} and never installs the exobrain CLI; "
+                    f"copy the install step of .github/workflows/ci.yml"
+                )
+    if problems:
+        print(
+            "a workflow job needs the exobrain CLI it does not install:",
+            file=sys.stderr,
+        )
+        for problem in problems:
+            print(f"  {problem}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

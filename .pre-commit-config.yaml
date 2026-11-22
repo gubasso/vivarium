@@ -850,6 +850,18 @@ repos:
         files: ^(\.pre-commit-config\.yaml|\.config/nextest\.toml|Cargo\.toml|\.github/workflows/ci\.yml|scripts/check-lane-register|tests/(host/[^/]+|[^/]+\.rs))$
         stages: [pre-commit]
 
+      # The justfile checks its host tools through `exobrain host-check`, and a
+      # developer's host always has exobrain, so no local run of a recipe sees
+      # a runner without it. This reads the workflows instead: a job that calls
+      # `just` or `exobrain` must install the CLI first.
+      # owner: devshell (no-hook-language) a script of this repository, run by the devShell python3.
+      - id: ci-host-tools
+        name: a workflow job that calls just or exobrain installs exobrain
+        entry: scripts/check-ci-host-tools
+        language: system
+        pass_filenames: false
+        files: ^(\.github/workflows/|justfile$|scripts/check-ci-host-tools$)
+
       # owner: host (no-hook-language) a script of this repository that calls bash and grep.
       - id: verification-boundary
         name: product imports verification only through its publication surface
