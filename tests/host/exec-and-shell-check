@@ -27,11 +27,9 @@
 # because a parked read on a terminal that never reaches end-of-file held the
 # async runtime open; that is the class of defect a second run guards.
 #
-# Unlike the guest-agent lane, this one does not pin the generated flake's
-# baseline inputs itself. The acceptance harness pins both from this
-# repository's own lock before it runs anything (`baseline_inputs` in
-# tests/support/mod.rs), which is the same convention reached from the other
-# side. The runtime directory and its sockets are the harness's too: it places
+# The baseline inputs need nothing here. Each trial of the acceptance harness
+# starts as a new user, from an empty data root, and the pre-flight writes the
+# shipped pin as the target's first lock (ADR-0116). The runtime directory and its sockets are the harness's too: it places
 # them under $XDG_RUNTIME_DIR rather than under the scratch root below, because a
 # drive-backed control socket path overruns the 108-byte limit and fails as an
 # unexplained child exit.

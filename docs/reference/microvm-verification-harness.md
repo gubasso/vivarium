@@ -156,7 +156,7 @@ Its evaluation tier is not a build check. It renders a launch specification thro
 
 It runs the trials twice for the reason every lane here does, and this one has a case to point at: the first version of the interactive trial found a `viv shell` that completed every assertion and then never exited, because a read parked on a terminal that never reaches end-of-file held the async runtime open past its own shutdown. That is a session-lifetime defect, which is exactly the class a single clean run cannot rule out.
 
-Unlike the other heavy lanes it pins nothing itself, and that is not an omission. The acceptance harness pins all three of the generated flake's baseline inputs from this repository's own lock before it runs anything, and places its runtime directory and sockets under `$XDG_RUNTIME_DIR` rather than under the configured drive, for the 108-byte reason below. Both conventions are reached from inside the harness; a second copy in the script would be a second thing to keep true.
+The baseline inputs need nothing in the script. Each trial of the acceptance harness starts as a new user, from an empty data root, and takes the shipped pin as its first lock ([`ADR-0116`](../decisions/ADR-0116-the-binary-ships-the-first-pin.md)). The harness also places its runtime directory and sockets under `$XDG_RUNTIME_DIR` rather than under the configured drive, for the 108-byte reason below. Both conventions are reached from inside the harness; a second copy in the script would be a second thing to keep true.
 
 ## The sibling script: `tests/host/guest-system-check`
 
@@ -209,11 +209,34 @@ The slice 018 acceptance: as the user, redirect the guest's build inputs through
 $ tests/host/update-check
 ```
 
-The method worth knowing before reading a result. The movable component is a local `git+file:` flake the base declares, so upstream movement is a commit and every reference resolves offline; the baselines are pinned from this repository's own lock through `nix flake archive` store paths, written into the base flake itself rather than into the environment, because the base owning the redirect is the claim under test. The component surfaces as `/etc/dep-text` through the base's own outputs, so "the guest carries the moved component" is read with `viv exec` from inside the guest, never inferred from the lock — and the negative is asserted first: after the upstream moves and before `viv update`, a stop and start still boot the old component, which is N3 doing its job. The whole move repeats with a third revision, and the unmoved `nixpkgs` node is asserted byte-identical across the named update. `--clean` removes retained scratch roots; `VIVARIUM_UPDATE_TEMP_BASE` overrides where they go.
+The method worth knowing before reading a result. The movable component is a local `git+file:` flake the base declares, so upstream movement is a commit and every reference resolves offline. The base declares only that component, so the baselines come from the shipped pin, which the pre-flight writes as the target's first lock, and the first `viv update` names the base so that it moves nothing else. The component surfaces as `/etc/dep-text` through the base's own outputs, so "the guest carries the moved component" is read with `viv exec` from inside the guest, never inferred from the lock — and the negative is asserted first: after the upstream moves and before `viv update`, a stop and start still boot the old component, which is N3 doing its job. The whole move repeats with a third revision, and the unmoved `nixpkgs` node is asserted byte-identical across the named update. `--clean` removes retained scratch roots; `VIVARIUM_UPDATE_TEMP_BASE` overrides where they go.
 
 ## Findings register
 
 Verified on a real host. Each entry names the version it applies to; nothing here is inferred from an agent's execution environment.
+
+### A cold first evaluation does not need spectrum, and a base flake that declares the baselines still resolves them live
+
+Measured 2026-11-22 on a real host with Nix 2.34.8, once by the owner's decision of 2026-11-21, for the shipped pin of [`ADR-0116`](../decisions/ADR-0116-the-binary-ships-the-first-pin.md) at vivarium 0.2.4 plus that change. The question was whether a cold user's first evaluation needs the `spectrum` input of microvm.nix, whose git host stopped answering on 2026-11-20 ([`KI-0006`](./known-issues/resolved/KI-0006.md)).
+
+The project is the one `tests/host/guest-system-check` evaluates: the shipped examples in a throwaway config root and `rust-web` bound to an empty project. A store root, a cache, and a data root started empty. From the project, with the dev environment of the checkout:
+
+```bash
+direnv exec <repository> <repository>/tests/host/heavy-run --need 4 \
+  --label "cold-store evaluation" -- env NIX_CONFIG='store = local?root=<store>' \
+  XDG_CONFIG_HOME=<config> XDG_CACHE_HOME=<cache> XDG_DATA_HOME=<data> \
+  <cargo-target>/debug/viv config eval --json
+```
+
+Two departures from the planned command, both needed for the run to measure what it asks. `XDG_CONFIG_HOME` names the throwaway config root, because `viv` resolves the manifest there. The binary is the built `viv` rather than the dev shell's `viv`, because that shim runs `scripts/baseline-pins`, whose `nix flake archive` fetches every input, `spectrum` included, into the same cold store.
+
+- `viv` exited `0`, printed the merged configuration, and reported `created the pin for this target` on stderr. The stderr carried nothing else from Nix.
+- `nix path-info --store 'local?root=<store>' --all` listed six paths: two GitHub API answers, the two generated trees, and the `nixpkgs` and `microvm` sources. None carries the `spectrum` `narHash` of [`nix/flake.lock`](../../nix/flake.lock), `sha256-xO8f7Qng+18FK2UlB9vcrkxCaQMCt5WjCH24aW/11eg=`, or the `narHash` of the `spectrum` node in the new lock. The cache holds no git fetch cache under `nix/`, only the tarball cache, the fetcher cache, and the evaluation cache.
+- Verdict, in the terms the run set itself: the evaluation exited `0` and the store holds no path with the `spectrum` `narHash`, so the evaluation does not need `spectrum`.
+
+The run also showed what the shipped pin does not reach. The example `base` image carries a base flake that declares `nixpkgs` and `microvm` itself and ships no `flake.lock`, and the reference lock holds no node under a base (`ADR-0112`). So the pre-flight resolved both branches live: the fetcher cache records the GitHub API queries for `nixos-unstable` and for the `microvm.nix` default branch, and the lock pins `nixpkgs` at `2786a2a7`, `microvm` at `430a46d0`, and `spectrum` at `77d23898` with `revCount` 1417, none of them the shipped revisions. A `spectrum` revision with a `revCount` comes from its git host, so that lock step reached spectrum-os.org, which answered on this day. The stderr shows no fetch line, because nothing ran Nix verbosely.
+
+A second probe isolated the shipped-pin path: an image with no base flake, the same empty roots, the same command. It exited `0`. Its lock's `nixpkgs`, `microvm`, and `spectrum` nodes equal the shipped ones, the store holds the `nixpkgs` and `microvm` sources at their shipped `narHash` and nothing at the `spectrum` one, and the fetcher cache records fetches by revision only, with no API query and no git fetch.
 
 ### Measured per-sandbox memory was null on a host whose doctor had said so all along
 
@@ -310,7 +333,7 @@ Measured 2026-08-11 by `tests/host/guest-system-check`, twice, both tiers green:
 
 Two things the run settles that were assumptions before it.
 
-- The generated flake's branch references cost a GitHub API request per fresh evaluation, and the anonymous limit is sixty an hour. A suite that evaluates from a clean data root in trial after trial reaches it: three consecutive `403`s closed the `ConfigEval` gate mid-session and the trials skipped green. With the baseline pinned to the product flake's own store paths, a full `cargo test --test user_workflows` makes zero API requests and runs in seven seconds rather than nineteen. The convention this produced is in [`../../AGENTS.md`](../../AGENTS.md): development pins, the shipped product resolves live.
+- The generated flake's branch references cost a GitHub API request per fresh evaluation, and the anonymous limit is sixty an hour. A suite that evaluates from a clean data root in trial after trial reaches it: three consecutive `403`s closed the `ConfigEval` gate mid-session and the trials skipped green. With the baseline pinned to the product flake's own store paths, a full `cargo test --test user_workflows` makes zero API requests and runs in seven seconds rather than nineteen. The binary now ships that pin as the first lock of every new target, as [`ADR-0116`](../decisions/ADR-0116-the-binary-ships-the-first-pin.md) records.
 - A `path:` pin has a visible cost worth recognising before it is mistaken for a defect. The built system is labelled `26.11.19700101.dirty`, because a store-path input carries no revision or timestamp for nixpkgs to derive a version label from. The closure is the pinned one; only the label is uninformative, and only under a development pin.
 
 ### Four assertions written for this lane had never executed, and three were wrong

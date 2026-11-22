@@ -10,14 +10,11 @@
 # is a script.
 #
 # METHOD: the movable component is a local `git+file:` flake the base declares, so
-# every reference this lane resolves offline is local; the baselines are pinned
-# from this repository's own lock through `nix flake archive` store paths. The
-# component surfaces into the guest as `/etc/dep-text` through the base's own
+# every reference this lane resolves offline is local; the baselines come from
+# the shipped pin, which the pre-flight writes as the first lock of the target
+# (ADR-0116). The component surfaces into the guest as `/etc/dep-text` through the base's own
 # outputs (`vivariumInputs.<image>`), so "the guest carries the moved component"
 # is read from inside the booted guest, never inferred from the lock.
-#
-# STATED GAP: the spectrum node microvm.nix declares is still fetched from its
-# upstream on first lock, exactly as the other host lanes accept.
 #
 # DUP: see docs/reference/microvm-verification-harness.md for the shared
 # conventions this lane repeats.
@@ -27,7 +24,6 @@
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
-FLAKE_REF="git+file://$REPO_ROOT?dir=nix"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
@@ -147,18 +143,6 @@ if [[ $(systemctl --user show vivarium-update-check-default.service -p LoadState
   missing+=("the unit name vivarium-update-check-default.service (already loaded)")
 fi
 
-# DUP: the two baseline inputs, pinned from this repository's own lock through
-# local store paths — a lane that must reach the forge to prove a local fact
-# reports on the network (AGENTS.md).
-NIXPKGS_PIN=
-MICROVM_PIN=
-archive=$(nix flake archive --json --extra-experimental-features 'nix-command flakes' "$FLAKE_REF" 2>"$TEMP_ROOT/archive.err")
-if [[ -n $archive ]]; then
-  NIXPKGS_PIN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["inputs"]["nixpkgs"]["path"])' <<<"$archive" 2>/dev/null)
-  MICROVM_PIN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["inputs"]["microvm"]["path"])' <<<"$archive" 2>/dev/null)
-fi
-[[ -n $NIXPKGS_PIN && -n $MICROVM_PIN ]] || missing+=("archived baseline inputs")
-
 if ((${#missing[@]})); then
   reason=$(
     IFS=', '
@@ -204,18 +188,12 @@ image = "update-base"
 [[workspaces]]
 source = '$WORKSPACE'
 EOF
-# The base the user owns: it redirects both baselines to this repository's own
-# pins and declares the movable component. The internal follows line is the
-# rule the composed-lock check enforces (lock.baseline-split).
+# The base the user owns: it declares only the movable component, so both
+# baselines keep vivarium's own references and the shipped pin locks them.
 cat >"$SCRATCH/config/vivarium/images/update-base/flake.nix" <<EOF
 {
-  inputs = {
-    nixpkgs.url = "path:$NIXPKGS_PIN"; # nix-path-ok: an archived store path
-    microvm.url = "path:$MICROVM_PIN"; # nix-path-ok: an archived store path
-    microvm.inputs.nixpkgs.follows = "nixpkgs";
-    dep.url = "git+file://$DEP";
-  };
-  outputs = { self, nixpkgs, microvm, dep }: { depText = dep.text; };
+  inputs.dep.url = "git+file://$DEP";
+  outputs = { self, dep }: { depText = dep.text; };
 }
 EOF
 cat >"$SCRATCH/config/vivarium/images/update-base/default.nix" <<'EOF'
@@ -226,8 +204,8 @@ cat >"$SCRATCH/config/vivarium/images/update-base/default.nix" <<'EOF'
 EOF
 
 # DUP: `viv` reads the invoking directory, so the wrapper runs from the
-# workspace. The baseline env pins are deliberately NOT set: the base flake owns
-# the redirect, which is the claim under test.
+# workspace. The data root starts empty, so the first call takes the
+# pre-flight a new user takes.
 run_viv() {
   (
     cd "$WORKSPACE" || exit 74
@@ -256,8 +234,11 @@ node_locked() { # node_locked <lock> <node>
 }
 
 # ---- update-first-run-creates-the-pin --------------------------------------
+# Named, because an update with no name would move the shipped baselines right
+# after the pre-flight wrote them, and resolve them live. `update-base` is a
+# hashless relative base with no display pin, so its row reports no `before`.
 started=$(date +%s)
-out=$(run_viv update --json)
+out=$(run_viv update update-base --json)
 status=$?
 if [[ $status -eq 0 && -f $OWNED_LOCK ]] && grep -q '"before":null' <<<"$out"; then
   pass "update-first-run-creates-the-pin: exit 0, lock at $OWNED_LOCK"

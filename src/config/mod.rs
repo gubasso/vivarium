@@ -25,6 +25,7 @@ pub mod merged;
 pub mod registry;
 mod resolve;
 mod roots;
+mod shipped_pin;
 // Public as a module because `volumes::read` says what it reads better than a flat re-export.
 pub mod volumes;
 
@@ -41,9 +42,8 @@ pub use error::{
 #[cfg(test)]
 pub use flake::embedded_file;
 pub use flake::{
-    BASELINE_MICROVM_VARIABLE, BASELINE_NIXPKGS_VARIABLE, BaselineInputs, EffectiveLock,
-    FlakeInput, GeneratedFlakePaths, GeneratedFlakePlan, PreparedFlake, ResolvedComposition,
-    target_paths,
+    EffectiveLock, FlakeInput, GeneratedFlakePaths, GeneratedFlakePlan, PreparedFlake,
+    ResolvedComposition, target_paths,
 };
 pub use lock::{RootPin, pins as lock_pins};
 pub use manifest::{
@@ -51,8 +51,8 @@ pub use manifest::{
     Workspace, parse_manifest,
 };
 pub use materialize::{
-    UpdatePreparation, composed_lock_failure, persist_created_lock, persist_updated_lock,
-    prepare_generated_flake, prepare_update_tree, resolve_update_inputs,
+    UpdatePreparation, composed_lock_failure, persist_updated_lock, prepare_generated_flake,
+    prepare_update_tree, resolve_update_inputs,
 };
 pub use registry::{INDEX_FILE, IndexedManifest, ManifestStamp, WorkspaceIndex, index_path};
 pub use resolve::{

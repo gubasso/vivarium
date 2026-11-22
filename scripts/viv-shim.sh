@@ -17,11 +17,6 @@ root="$(dirname "$(cargo locate-project --workspace --message-format plain)")"
 # stale one left by an earlier build.
 cargo build --quiet --manifest-path "$root/Cargo.toml" --bins
 
-# Pinned, because a `viv` run from this tree that built its guest from the
-# published branch would be measuring something other than the change under
-# test. `scripts/baseline-pins` owns the reasoning and fails open.
-eval "$("$root/scripts/baseline-pins")"
-
 # `exec`, so no process sits between the caller and the binary. `viv shell` puts
 # the local terminal in raw mode and hands it to a guest shell, so a supervising
 # parent — which is what `cargo run` would leave here — would change the signals,

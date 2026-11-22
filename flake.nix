@@ -120,8 +120,10 @@
             # dprint (the `dprint`/`dprint-markdown` hooks): upstream publishes
             # no pre-commit hook, so the hooks run it off PATH from here.
             pkgs.dprint
-            # `scripts/baseline-pins` reads `nix flake archive --json` with it,
-            # and `scripts/install-dev` reaches that script through this shell.
+            # The host lanes base-image-check, exec-and-shell-check,
+            # share-benchmark-check, store-density-check,
+            # store-gc-interlock-check, and store-pressure-check parse JSON
+            # with it.
             pkgs.jq
             # The `tests/net_namespaces` lane runs the four networking seams against
             # the real tools: `unshare`/`nsenter` for the namespace pair, `ip`
@@ -178,8 +180,8 @@
             fi
             # Both greetings go to standard error. `nix develop --command` shares
             # the command's stdout, so on stdout these lines are prepended to
-            # whatever it emits — and `scripts/baseline-pins` exists to have its
-            # stdout `eval`ed, which would then execute this text.
+            # whatever it emits, and a caller that reads or `eval`s that output
+            # would then receive this text.
             echo "rust dev shell ready (toolchain from rust-toolchain.toml; CARGO_TARGET_DIR=$CARGO_TARGET_DIR)" >&2
             echo "\`viv\` on PATH builds from this tree and shadows any installed one; \`just install\` for elsewhere" >&2
           '';

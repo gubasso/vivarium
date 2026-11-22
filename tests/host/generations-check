@@ -40,7 +40,6 @@
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
-FLAKE_REF="git+file://$REPO_ROOT?dir=nix"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
@@ -172,20 +171,6 @@ if [[ $(systemctl --user show vivarium-gens-check-default.service -p LoadState -
   missing+=("the unit name vivarium-gens-check-default.service (already loaded)")
 fi
 
-# The two baseline inputs, pinned from this repository's own lock through local
-# store paths — a lane that must reach the forge to prove a local fact reports
-# on the network (AGENTS.md).
-NIXPKGS_PIN=
-MICROVM_PIN=
-archive=$(nix flake archive --json --extra-experimental-features 'nix-command flakes' "$FLAKE_REF" 2>"$TEMP_ROOT/archive.err")
-if [[ -n $archive ]]; then
-  NIXPKGS_PIN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["inputs"]["nixpkgs"]["path"])' <<<"$archive" 2>/dev/null)
-  MICROVM_PIN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["inputs"]["microvm"]["path"])' <<<"$archive" 2>/dev/null)
-fi
-[[ -n $NIXPKGS_PIN && -n $MICROVM_PIN ]] || missing+=("archived baseline inputs")
-NIXPKGS_REF="path:$NIXPKGS_PIN" # nix-path-ok: an archived store path
-MICROVM_REF="path:$MICROVM_PIN" # nix-path-ok: an archived store path
-
 if ((${#missing[@]})); then
   reason=$(
     IFS=', '
@@ -221,8 +206,6 @@ run_viv() {
       XDG_DATA_HOME="$SCRATCH/data" \
       XDG_CACHE_HOME="$SCRATCH/cache" \
       HOME="$SCRATCH/home" \
-      VIVARIUM_BASELINE_NIXPKGS="$NIXPKGS_REF" \
-      VIVARIUM_BASELINE_MICROVM="$MICROVM_REF" \
       "$VIV" "$@" 2>&1
   )
 }

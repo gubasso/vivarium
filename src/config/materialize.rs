@@ -1,9 +1,10 @@
-//! Atomic filesystem publication for generated flakes and first pins.
+//! Atomic filesystem publication for generated flakes, and the pre-flight that writes a first pin.
 
 use std::fs::{self, File};
 use std::io::{self, Write as _};
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use rustix::fs::RenameFlags;
 
@@ -12,24 +13,29 @@ use super::base::ImageBase;
 use super::error::GeneratedFlakeErrorKind;
 use super::flake::GeneratedEntry;
 use super::{
-    BaselineInputs, EffectiveLock, GeneratedFlakeError, GeneratedFlakePlan, Manifest,
-    PreparedFlake, ResolvedArtifact, ResolvedComposition, XdgRoots,
+    EffectiveLock, GeneratedFlakeError, GeneratedFlakePlan, Manifest, PreparedFlake,
+    ResolvedArtifact, ResolvedComposition, XdgRoots,
 };
 use crate::diagnostic::{Locus, Namespace};
+use crate::ui::{Ui, watch};
 
 /// The mode a staged generated file takes. Unlike the state root's `0600`, a generated tree is
 /// ordinary cache a build reads, so it keeps the umask's default rather than being made private.
 const STAGED_FILE_MODE: u32 = 0o666;
 
-/// Resolves, plans, and atomically publishes one generated flake.
+/// Resolves, plans, and atomically publishes one generated flake, with a lock in force.
+///
+/// When the target has no lock, the pre-flight writes the first one after publication and
+/// before anything evaluates (ADR-0116).
 ///
 /// # Errors
 ///
-/// Returns [`GeneratedFlakeError`] when read-only resolution fails or the complete replacement
-/// cannot be prepared, flushed, published, or cleaned up safely.
+/// Returns [`GeneratedFlakeError`] when read-only resolution fails, the complete replacement
+/// cannot be prepared, flushed, published, or cleaned up safely, or the pre-flight fails.
 // Eight distinct nouns, none of which groups with another: the roots, the two path components
 // the target is keyed by, the selected artifact, its text, its parse, its resolved workspaces, and
-// the baseline. A struct here would be a bag named for this call rather than for anything.
+// the face the pre-flight speaks through. A struct here would be a bag named for this call rather
+// than for anything.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_generated_flake(
     roots: &XdgRoots,
@@ -41,7 +47,7 @@ pub fn prepare_generated_flake(
     // Expanded and canonical, resolved by the caller so the owner index and the build read one
     // derivation of the set (ADR-0110).
     workspaces: &[PathBuf],
-    baseline: &BaselineInputs,
+    ui: &Ui,
 ) -> Result<PreparedFlake, GeneratedFlakeError> {
     let composition = ResolvedComposition::resolve(
         roots,
@@ -65,59 +71,39 @@ pub fn prepare_generated_flake(
         manifest,
         workspaces,
         &composition,
-        baseline,
         base.as_ref(),
     )?;
-    publish(&plan)
+    publish(&plan)?;
+    let effective_lock = match &plan.effective_lock {
+        Some(lock) => lock.clone(),
+        None => write_shipped_pin(&plan.directory, &composition.paths.owned_lock, ui)?,
+    };
+    Ok(PreparedFlake {
+        directory: plan.directory,
+        effective_lock,
+        shed_vivarium: plan.migrated_lock.is_some(),
+        base: plan.base,
+    })
 }
 
-/// Persists a lock created by a successful first build with atomic no-replace semantics.
+/// The pre-flight: writes the pin the binary ships as the target's first lock (ADR-0116).
+///
+/// Nix's lock step runs on the generated tree with the shipped lock as its reference, so every
+/// node the reference holds is kept as it is and only an input it lacks is resolved. The result
+/// meets the composed check, is installed with no-replace semantics, and is copied into the tree,
+/// so the command continues exactly as for an existing owned lock. The temporary reference and
+/// the staged result are removed on every path, so nothing but the lock sits beside it.
 ///
 /// # Errors
 ///
-/// Returns [`GeneratedFlakeError`] if the preparation was not lock-creation eligible, the
-/// generated lock cannot be read, the owned pin cannot be installed, or a different concurrent
-/// first pin won.
-#[allow(clippy::too_many_lines)]
-pub fn persist_created_lock(
-    prepared: &PreparedFlake,
+/// Returns [`GeneratedFlakeError`] when Nix cannot run or fails, the result breaks the composed
+/// rule, the owned lock cannot be installed, or a different concurrent first pin won.
+fn write_shipped_pin(
+    directory: &Path,
+    owned_path: &Path,
+    ui: &Ui,
 ) -> Result<EffectiveLock, GeneratedFlakeError> {
-    let EffectiveLock::OwnedMissing { path: owned_path } = &prepared.effective_lock else {
-        return Err(GeneratedFlakeError::plain(
-            GeneratedFlakeErrorKind::Internal,
-            Namespace::Internal,
-            "lock-persist-contract",
-            Locus::Named("generated flake"),
-            "lock persistence requested for an ineligible preparation",
-            "only a successful build prepared without an owned or override lock may persist one",
-        ));
-    };
-    let generated_path = prepared.directory.join("flake.lock");
-    let bytes = fs::read(&generated_path).map_err(|source| {
-        GeneratedFlakeError::io(
-            Namespace::Lock,
-            "generated-read",
-            generated_path.clone(),
-            format!(
-                "could not read generated lock `{}`",
-                generated_path.display()
-            ),
-            source,
-        )
-    })?;
-    // The composed check, before anything durable exists: a defect refuses the install and
-    // leaves no owned lock behind, so the remedy (fix the base, re-run) starts clean.
-    composed_lock_failure(&bytes)?;
-    let parent = owned_path.parent().ok_or_else(|| {
-        GeneratedFlakeError::plain(
-            GeneratedFlakeErrorKind::Internal,
-            Namespace::Internal,
-            "lock-parent",
-            Locus::File(owned_path.clone()),
-            "owned lock has no parent directory",
-            "the generated lock path escaped its fixed data-root layout",
-        )
-    })?;
+    let parent = lock_parent(owned_path)?;
     fs::create_dir_all(parent).map_err(|source| {
         GeneratedFlakeError::io(
             Namespace::Lock,
@@ -127,69 +113,226 @@ pub fn persist_created_lock(
             source,
         )
     })?;
-    let (temporary, mut file) = create_temp_file(parent, "flake.lock")?;
+    let (reference, mut file) = create_temp_file(parent, "flake.lock.reference")?;
+    let staged = atomic::unique_path(parent, "flake.lock", "preflight");
     let result = (|| {
-        file.write_all(&bytes).map_err(|source| {
+        file.write_all(super::shipped_pin::LOCK).map_err(|source| {
             lock_io(
                 "persist-write",
-                &temporary,
-                "could not write staged lock",
-                source,
-            )
-        })?;
-        file.sync_all().map_err(|source| {
-            lock_io(
-                "persist-sync",
-                &temporary,
-                "could not flush staged lock",
+                &reference,
+                "could not write the shipped pin",
                 source,
             )
         })?;
         drop(file);
-        match rename_with(&temporary, owned_path, RenameFlags::NOREPLACE) {
-            Ok(()) => {
-                sync_directory(parent, Namespace::Lock, "persist-directory-sync")?;
-                Ok(EffectiveLock::OwnedExisting {
-                    path: owned_path.clone(),
-                })
-            }
-            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-                let winner = fs::read(owned_path).map_err(|source| {
-                    lock_io(
-                        "winner-read",
-                        owned_path,
-                        "could not read concurrently installed lock",
-                        source,
-                    )
-                })?;
-                remove_file_if_exists(&temporary);
-                if winner == bytes {
-                    Ok(EffectiveLock::OwnedExisting {
-                        path: owned_path.clone(),
-                    })
-                } else {
-                    Err(GeneratedFlakeError::plain(
-                        GeneratedFlakeErrorKind::Race,
-                        Namespace::Lock,
-                        "first-pin-race",
-                        Locus::File(owned_path.clone()),
-                        "a different first pin won concurrently",
-                        "discard this build and retry from the installed lock",
-                    ))
-                }
-            }
-            Err(source) => Err(lock_io(
-                "persist-publish",
-                owned_path,
-                "could not atomically install first pin",
-                source,
-            )),
+        lock_against_shipped_pin(directory, &reference, &staged, ui)?;
+        // Nix writes no output when the result equals the reference, so the reference is then
+        // the result.
+        if !staged.exists() {
+            fs::rename(&reference, &staged).map_err(|source| {
+                lock_io(
+                    "persist-write",
+                    &staged,
+                    "could not stage the shipped pin",
+                    source,
+                )
+            })?;
         }
+        let bytes = fs::read(&staged).map_err(|source| {
+            lock_io(
+                "generated-read",
+                &staged,
+                "could not read the lock the pre-flight staged",
+                source,
+            )
+        })?;
+        // The composed check, before anything durable exists: a defect refuses the install and
+        // leaves no owned lock behind, so the remedy (fix the base, re-run) starts clean.
+        composed_lock_failure(&bytes)?;
+        if install_first_pin(owned_path, &staged, &bytes)? {
+            // Announced the moment the lock is durable, so no later failure can suppress it:
+            // spec/04 requires the created pin reported, and a read-only command that quietly
+            // wrote one would be the surprise ADR-0011 exists to prevent.
+            ui.warn(&format!(
+                "created the pin for this target: {}",
+                owned_path.display()
+            ));
+        }
+        stage_lock_into_tree(directory, &bytes)?;
+        Ok(EffectiveLock::OwnedExisting {
+            path: owned_path.to_path_buf(),
+        })
     })();
+    remove_file_if_exists(&reference);
+    remove_file_if_exists(&staged);
+    result
+}
+
+/// Runs `nix flake lock` on the generated tree with the shipped pin as the reference lock.
+fn lock_against_shipped_pin(
+    directory: &Path,
+    reference: &Path,
+    staged: &Path,
+    ui: &Ui,
+) -> Result<(), GeneratedFlakeError> {
+    let mut command = Command::new("nix");
+    command.args(["flake", "lock"]);
+    command.args(super::evaluate::FEATURE_FLAGS);
+    command.arg(directory);
+    command.arg("--reference-lock-file");
+    command.arg(reference);
+    command.arg("--output-lock-file");
+    command.arg(staged);
+    let step = ui.step("pinning this target's inputs");
+    let output = watch::output(&mut command, &step).map_err(|source| {
+        // The three host answers a failed evaluation gives, so the pre-flight that now runs
+        // Nix first tells a user the same thing about the same host.
+        let (kind, condition, message) = match source.kind() {
+            io::ErrorKind::NotFound => (
+                GeneratedFlakeErrorKind::Unavailable,
+                "nix-missing",
+                "nix is not available on this host",
+            ),
+            io::ErrorKind::PermissionDenied => (
+                GeneratedFlakeErrorKind::Permission,
+                "nix-not-permitted",
+                "not permitted to run nix",
+            ),
+            _ => (
+                GeneratedFlakeErrorKind::Unavailable,
+                "nix-unusable",
+                "could not run nix",
+            ),
+        };
+        GeneratedFlakeError::plain(
+            kind,
+            Namespace::Host,
+            condition,
+            Locus::Named("host"),
+            message,
+            source.to_string(),
+        )
+    })?;
+    if !output.status.success() {
+        drop(step);
+        return Err(GeneratedFlakeError::nix_failed(
+            Namespace::Lock,
+            "preflight-failed",
+            Locus::Named("pre-flight"),
+            "the pre-flight could not write this target's first lock",
+            &output.stderr,
+        ));
+    }
+    step.done("pinned this target's inputs");
+    Ok(())
+}
+
+/// Installs the staged first pin with no-replace semantics, consuming the staged file.
+///
+/// Returns whether this process installed it. A concurrent winner with identical bytes
+/// coalesces into the same lock; one with different bytes is the `75` race.
+///
+/// # Errors
+///
+/// Returns [`GeneratedFlakeError`] when the staged pin cannot be flushed or installed, the
+/// winner cannot be read, or a different concurrent first pin won.
+fn install_first_pin(
+    owned_path: &Path,
+    staged: &Path,
+    bytes: &[u8],
+) -> Result<bool, GeneratedFlakeError> {
+    let parent = lock_parent(owned_path)?;
+    // Nix wrote the bytes; make them durable before the rename publishes them.
+    File::open(staged)
+        .and_then(|file| file.sync_all())
+        .map_err(|source| {
+            lock_io(
+                "persist-sync",
+                staged,
+                "could not flush staged lock",
+                source,
+            )
+        })?;
+    match rename_with(staged, owned_path, RenameFlags::NOREPLACE) {
+        Ok(()) => {
+            sync_directory(parent, Namespace::Lock, "persist-directory-sync")?;
+            Ok(true)
+        }
+        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+            let winner = fs::read(owned_path).map_err(|source| {
+                lock_io(
+                    "winner-read",
+                    owned_path,
+                    "could not read concurrently installed lock",
+                    source,
+                )
+            })?;
+            if winner == bytes {
+                Ok(false)
+            } else {
+                Err(GeneratedFlakeError::plain(
+                    GeneratedFlakeErrorKind::Race,
+                    Namespace::Lock,
+                    "first-pin-race",
+                    Locus::File(owned_path.to_path_buf()),
+                    "a different first pin won concurrently",
+                    "discard this build and retry from the installed lock",
+                ))
+            }
+        }
+        Err(source) => Err(lock_io(
+            "persist-publish",
+            owned_path,
+            "could not atomically install first pin",
+            source,
+        )),
+    }
+}
+
+/// Copies the installed first pin into the generated tree, replacing nothing partially.
+fn stage_lock_into_tree(directory: &Path, bytes: &[u8]) -> Result<(), GeneratedFlakeError> {
+    let destination = directory.join("flake.lock");
+    let (temporary, mut file) = atomic::create_temp_file(directory, "flake.lock", STAGED_FILE_MODE)
+        .map_err(|fault| {
+            staged(
+                fault,
+                Namespace::Store,
+                "write-file",
+                "temporary-collision",
+                "could not stage the lock into the generated tree",
+                "could not allocate a unique sibling in the generated tree",
+            )
+        })?;
+    let result = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| fs::rename(&temporary, &destination))
+        .map_err(|source| {
+            store_io(
+                "write-file",
+                &destination,
+                "could not stage the lock into the generated tree",
+                source,
+            )
+        });
     if result.is_err() {
         remove_file_if_exists(&temporary);
     }
     result
+}
+
+/// The directory the owned lock lives in.
+fn lock_parent(owned_path: &Path) -> Result<&Path, GeneratedFlakeError> {
+    owned_path.parent().ok_or_else(|| {
+        GeneratedFlakeError::plain(
+            GeneratedFlakeErrorKind::Internal,
+            Namespace::Internal,
+            "lock-parent",
+            Locus::File(owned_path.to_path_buf()),
+            "owned lock has no parent directory",
+            "the lock path escaped its fixed data-root layout",
+        )
+    })
 }
 
 /// The read-only half of an update's resolution: the declared input names and the base,
@@ -237,11 +380,11 @@ pub fn resolve_update_inputs(
 pub struct UpdatePreparation {
     /// The rendered private tree.
     pub directory: PathBuf,
-    /// The lock staged inside the tree when one was in force — the reference an update
-    /// re-resolves from. These are the shed bytes when the ADR-0102 migration applied, so
-    /// an update never writes the dead node back.
-    pub staged_reference: Option<PathBuf>,
-    /// The lock decision for this target.
+    /// The lock staged inside the tree — the reference an update re-resolves from. These are
+    /// the shed bytes when the ADR-0102 migration applied, so an update never writes the dead
+    /// node back, and the pre-flight's when the target had no lock.
+    pub staged_reference: PathBuf,
+    /// The lock in force for this target.
     pub effective_lock: EffectiveLock,
     /// The selected image's base flake, when it carries one (ADR-0112).
     pub base: Option<ImageBase>,
@@ -255,12 +398,15 @@ impl Drop for UpdatePreparation {
     }
 }
 
-/// Resolves and renders the private tree an update runs against; nothing durable is written.
+/// Resolves and renders the private tree an update runs against.
+///
+/// The one durable write is the pre-flight's, when the target has no lock yet (ADR-0116): the
+/// update then moves what it names from the pin the binary ships.
 ///
 /// # Errors
 ///
-/// Returns [`GeneratedFlakeError`] for the same resolution and rendering failures as
-/// [`prepare_generated_flake`], for a team override lock in force (the caller refuses that
+/// Returns [`GeneratedFlakeError`] for the same resolution, rendering, and pre-flight failures
+/// as [`prepare_generated_flake`], for a team override lock in force (the caller refuses that
 /// case first and this is the backstop), or for a tree that cannot be written.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_update_tree(
@@ -271,7 +417,7 @@ pub fn prepare_update_tree(
     manifest_source: &str,
     manifest: &Manifest,
     workspaces: &[PathBuf],
-    baseline: &BaselineInputs,
+    ui: &Ui,
 ) -> Result<UpdatePreparation, GeneratedFlakeError> {
     let composition = ResolvedComposition::resolve(
         roots,
@@ -281,7 +427,7 @@ pub fn prepare_update_tree(
         manifest_source,
         manifest,
     )?;
-    if let EffectiveLock::Override { path } = &composition.effective_lock {
+    if let Some(EffectiveLock::Override { path }) = &composition.effective_lock {
         // The caller refuses this case before preparing anything — but the config root is
         // deliberately unlocked, so a team override can appear between that check and this
         // resolution. A user condition either way, so it takes the same public refusal
@@ -312,7 +458,6 @@ pub fn prepare_update_tree(
         manifest,
         workspaces,
         &composition,
-        baseline,
         base.as_ref(),
     )?;
     let parent = plan.directory.parent().ok_or_else(|| {
@@ -340,21 +485,24 @@ pub fn prepare_update_tree(
             return Err(error);
         }
     }
-    let staged_reference = if matches!(plan.effective_lock, EffectiveLock::OwnedMissing { .. }) {
-        None
-    } else {
-        Some(temporary.join("flake.lock"))
+    let effective_lock = match plan.effective_lock {
+        Some(lock) => lock,
+        None => {
+            write_shipped_pin(&temporary, &composition.paths.owned_lock, ui).inspect_err(|_| {
+                let _ = fs::remove_dir_all(&temporary);
+            })?
+        }
     };
     Ok(UpdatePreparation {
+        staged_reference: temporary.join("flake.lock"),
         directory: temporary,
-        staged_reference,
-        effective_lock: plan.effective_lock,
+        effective_lock,
         base: plan.base,
         declared,
     })
 }
 
-/// Lifts a composed-lock defect into the refusal both persistence paths share.
+/// Lifts a composed-lock defect into the refusal every lock path shares.
 ///
 /// The check itself is permissive by design — unparsable bytes pass, because lock validity
 /// is Nix's to name — so a refusal here is exactly the split or gap nothing downstream
@@ -400,7 +548,7 @@ pub fn composed_lock_failure(bytes: &[u8]) -> Result<(), GeneratedFlakeError> {
 /// moves a pin, and this is that move).
 ///
 /// The candidate is the staged file Nix wrote via `--output-lock-file`, already beside the
-/// owned lock. Separate from [`persist_created_lock`] because that path's `RENAME_NOREPLACE`
+/// owned lock. Separate from the pre-flight's install because that path's `RENAME_NOREPLACE`
 /// is the first-pin contract and must not be relaxed into a flag; an update replaces by
 /// definition. The caller validates the candidate before this move and removes the staged
 /// file on every earlier failure; this function consumes it on success.
@@ -437,7 +585,7 @@ pub fn persist_updated_lock(owned_path: &Path, staged: &Path) -> Result<(), Gene
     sync_directory(parent, Namespace::Lock, "update-directory-sync")
 }
 
-fn publish(plan: &GeneratedFlakePlan) -> Result<PreparedFlake, GeneratedFlakeError> {
+fn publish(plan: &GeneratedFlakePlan) -> Result<(), GeneratedFlakeError> {
     let parent = plan.directory.parent().ok_or_else(|| {
         GeneratedFlakeError::plain(
             GeneratedFlakeErrorKind::Internal,
@@ -467,15 +615,10 @@ fn publish(plan: &GeneratedFlakePlan) -> Result<PreparedFlake, GeneratedFlakeErr
         // rewrite (ADR-0102) replaces the owned lock with bytes that differ only by the removed
         // subtree, and a concurrent preparation computes the identical bytes, so replacement is
         // race-benign in a way a first pin is not.
-        if let Some(bytes) = &plan.migrated_lock {
-            rewrite_owned_lock(plan.effective_lock.path(), bytes)?;
+        if let (Some(bytes), Some(lock)) = (&plan.migrated_lock, &plan.effective_lock) {
+            rewrite_owned_lock(lock.path(), bytes)?;
         }
-        Ok(PreparedFlake {
-            directory: plan.directory.clone(),
-            effective_lock: plan.effective_lock.clone(),
-            shed_vivarium: plan.migrated_lock.is_some(),
-            base: plan.base.clone(),
-        })
+        Ok(())
     })();
     if prepared.is_err() && temporary.exists() {
         let _ = fs::remove_dir_all(&temporary);
@@ -942,13 +1085,11 @@ mod tests {
     use std::os::unix::fs::symlink;
     use std::path::{Path, PathBuf};
 
-    use super::{persist_created_lock, prepare_generated_flake};
+    use super::{install_first_pin, prepare_generated_flake};
     use crate::config::test_support::ScratchDirectory;
-    use crate::config::{
-        ArtifactForm, ArtifactKind, BaselineInputs, EffectiveLock, Manifest, ResolvedArtifact,
-        XdgRoots,
-    };
+    use crate::config::{ArtifactForm, ArtifactKind, Manifest, ResolvedArtifact, XdgRoots};
     use crate::exit::ExitKind;
+    use crate::ui::Ui;
 
     #[test]
     fn publishes_replaces_and_preserves_symlinks_without_config_writes()
@@ -960,6 +1101,7 @@ mod tests {
             image: "base".to_owned(),
             ..Manifest::default()
         };
+        seed_lock(&roots, "project")?;
         fs::write(roots.config.join("images/helper.nix"), "helper")?;
         symlink("helper.nix", roots.config.join("images/link.nix"))?;
         let before = fs::read(&selected.path)?;
@@ -971,7 +1113,7 @@ mod tests {
             "image = 'base'",
             &manifest,
             &[],
-            &BaselineInputs::default(),
+            &Ui::silent(),
         )?;
         fs::write(first.directory.join("old-only"), "old")?;
         let second = prepare_generated_flake(
@@ -982,7 +1124,7 @@ mod tests {
             "image = 'base'",
             &manifest,
             &[],
-            &BaselineInputs::default(),
+            &Ui::silent(),
         )?;
         assert!(!second.directory.join("old-only").exists());
         assert_eq!(
@@ -997,6 +1139,7 @@ mod tests {
     fn copy_failure_leaves_existing_tree_intact() -> Result<(), Box<dyn std::error::Error>> {
         let scratch = fixture()?;
         let roots = roots(scratch.path());
+        seed_lock(&roots, "project")?;
         let selected = selected(scratch.path());
         let manifest = Manifest {
             image: "base".to_owned(),
@@ -1010,7 +1153,7 @@ mod tests {
             "image = 'base'",
             &manifest,
             &[],
-            &BaselineInputs::default(),
+            &Ui::silent(),
         )?;
         fs::write(prepared.directory.join("sentinel"), "old")?;
         // A file where a library directory belongs. An absent one would not do: that is the
@@ -1025,7 +1168,7 @@ mod tests {
             "image = 'base'",
             &manifest,
             &[],
-            &BaselineInputs::default(),
+            &Ui::silent(),
         )
         .err()
         .ok_or("missing wholesale tree unexpectedly published")?;
@@ -1056,74 +1199,40 @@ mod tests {
                 ..Manifest::default()
             },
             &[],
-            &BaselineInputs::default(),
+            &Ui::silent(),
         )?;
         assert_eq!(
             fs::read(prepared.directory.join("flake.lock"))?,
             b"owned bytes"
         );
         assert_eq!(fs::read(&owned)?, b"owned bytes");
-        assert!(persist_created_lock(&prepared).is_err());
         Ok(())
     }
 
+    /// The pre-flight's install: a fresh pin installs and consumes its staged file, an identical
+    /// concurrent winner coalesces, and a different one is the `75` race that leaves the winner.
     #[test]
     fn first_pin_install_coalesces_identical_and_rejects_different_winner()
     -> Result<(), Box<dyn std::error::Error>> {
         let scratch = fixture()?;
-        let roots = roots(scratch.path());
-        let selected = selected(scratch.path());
-        let manifest = Manifest {
-            image: "base".to_owned(),
-            ..Manifest::default()
-        };
-        let first = prepare_generated_flake(
-            &roots,
-            "one",
-            "default",
-            &selected,
-            "image = 'base'",
-            &manifest,
-            &[],
-            &BaselineInputs::default(),
-        )?;
-        fs::write(first.directory.join("flake.lock"), b"new pin")?;
-        assert!(matches!(
-            persist_created_lock(&first)?,
-            EffectiveLock::OwnedExisting { .. }
-        ));
+        let parent = scratch.path().join("data/projects/one/default");
+        fs::create_dir_all(&parent)?;
+        let owned = parent.join("flake.lock");
 
-        let second = prepare_generated_flake(
-            &roots,
-            "two",
-            "default",
-            &selected,
-            "image = 'base'",
-            &manifest,
-            &[],
-            &BaselineInputs::default(),
-        )?;
-        fs::write(second.directory.join("flake.lock"), b"new pin")?;
-        let winner = second.effective_lock.path().to_path_buf();
-        fs::create_dir_all(winner.parent().unwrap_or_else(|| Path::new(".")))?;
-        fs::write(&winner, b"new pin")?;
-        assert!(persist_created_lock(&second).is_ok());
+        let staged = parent.join(".first.preflight");
+        fs::write(&staged, b"new pin")?;
+        assert!(install_first_pin(&owned, &staged, b"new pin")?);
+        assert!(!staged.exists());
+        assert_eq!(fs::read(&owned)?, b"new pin");
 
-        let third = prepare_generated_flake(
-            &roots,
-            "three",
-            "default",
-            &selected,
-            "image = 'base'",
-            &manifest,
-            &[],
-            &BaselineInputs::default(),
-        )?;
-        fs::write(third.directory.join("flake.lock"), b"losing pin")?;
-        let winner = third.effective_lock.path().to_path_buf();
-        fs::create_dir_all(winner.parent().unwrap_or_else(|| Path::new(".")))?;
-        fs::write(&winner, b"winning pin")?;
-        let error = persist_created_lock(&third)
+        let identical = parent.join(".identical.preflight");
+        fs::write(&identical, b"new pin")?;
+        assert!(!install_first_pin(&owned, &identical, b"new pin")?);
+        assert_eq!(fs::read(&owned)?, b"new pin");
+
+        let losing = parent.join(".losing.preflight");
+        fs::write(&losing, b"losing pin")?;
+        let error = install_first_pin(&owned, &losing, b"losing pin")
             .err()
             .ok_or("different winner unexpectedly coalesced")?;
         assert_eq!(error.exit_code(), ExitKind::TempFail);
@@ -1133,6 +1242,7 @@ mod tests {
                 .to_string()
                 .contains("lock.first-pin-race")
         );
+        assert_eq!(fs::read(&owned)?, b"new pin");
         Ok(())
     }
 
@@ -1146,6 +1256,7 @@ mod tests {
         let mut roots = roots(scratch.path());
         roots.cache = PathBuf::from(cache);
         let selected = selected(scratch.path());
+        seed_lock(&roots, "syntax-project")?;
         let prepared = prepare_generated_flake(
             &roots,
             "syntax-project",
@@ -1157,9 +1268,21 @@ mod tests {
                 ..Manifest::default()
             },
             &[],
-            &BaselineInputs::default(),
+            &Ui::silent(),
         )?;
         assert!(prepared.directory.join("flake.nix").is_file());
+        Ok(())
+    }
+
+    /// An owned lock for `sandbox`, so a preparation publishes without running the pre-flight.
+    fn seed_lock(roots: &XdgRoots, sandbox: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let owned = roots
+            .data
+            .join("projects")
+            .join(sandbox)
+            .join("default/flake.lock");
+        fs::create_dir_all(owned.parent().unwrap_or_else(|| Path::new(".")))?;
+        fs::write(owned, crate::config::shipped_pin::LOCK)?;
         Ok(())
     }
 

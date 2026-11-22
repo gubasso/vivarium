@@ -140,7 +140,7 @@ viv config eval          # the merged view, with provenance
 viv config sources       # which layer set what
 ```
 
-The manifest plus the lockfile the first evaluation writes is the unit, and the [pure-build rule](../spec/08-invariants-and-guarantees.md) fixes that the same closure and lock evaluate to the same store output on any machine at any later time. Updating is a verb rather than a default.
+The manifest plus the lockfile the pre-flight writes before the first evaluation is the unit, and the [pure-build rule](../spec/08-invariants-and-guarantees.md) fixes that the same closure and lock evaluate to the same store output on any machine at any later time. Updating is a verb rather than a default.
 
 Getting an older environment back runs: `viv generations list` names what is retained, `viv generations rollback` moves the pointer, and `viv start --generation <n>` boots the earlier build without evaluating — what [`spec/11`](../spec/11-generations-and-build-history.md) fixes, each retained generation pinned by a GC root so an ordinary store collection cannot eat the history. No alternative in this set answers it at all: [every other column reads `❌`](./scenarios/rollback.md), and the nearest thing to a way back is an old archive that happens to still be on disk under its versioned filename.
 
