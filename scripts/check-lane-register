@@ -295,7 +295,7 @@ def main() -> int:
         if is_lane and "manual" not in stages:
             complain(
                 f"the `{name}` hook carries no `manual` stage; "
-                f"`pre-commit run --hook-stage manual {name}` is how every lane is reached"
+                f"`prek run --hook-stage manual {name}` is how every lane is reached"
             )
 
     if problems:

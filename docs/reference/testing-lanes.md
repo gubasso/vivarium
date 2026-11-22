@@ -39,7 +39,7 @@ $ just lane base-image    # one host lane, by name
 Each of those invokes a hook. The long form works anywhere and is what CI's matrix calls:
 
 ```console
-$ pre-commit run --all-files --hook-stage manual test-eval
+$ prek run --all-files --hook-stage manual test-eval
 ```
 
 ## Where each lane runs, and why not elsewhere

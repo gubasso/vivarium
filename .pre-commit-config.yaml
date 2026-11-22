@@ -1,7 +1,9 @@
-# Nix owns runtimes; pre-commit owns hooks.
+# Nix owns runtimes; prek, which the host supplies, owns hooks. The oldest
+# prek that reads this file; `repo: builtin` needs prek.
+minimum_prek_version: "0.5.7"
 default_install_hook_types: [pre-commit, commit-msg, pre-push]
 # The node hook runs on the devShell nodejs. Without this line an empty
-# pre-commit cache can pick `default`, and nodeenv then fails on a prerelease
+# hook cache can pick `default`, and nodeenv then fails on a prerelease
 # entry of the node index: "invalid literal for int() with base 10: '0-alpha'"
 # (2026-11-10).
 default_language_version:
@@ -23,7 +25,7 @@ default_stages: [pre-commit]
 # first report is a filesystem at 100% partway through — which is how this
 # repository learned it.
 #
-# The refusal is deterministic here because it has to be: pre-commit runs every
+# The refusal is deterministic here because it has to be: prek runs every
 # hook with standard input on `/dev/null`, so a gate at this stage cannot ask.
 # No drive means exit `69` and nothing ran, with the escape named. To run on the
 # host disk anyway, `VIVARIUM_HEAVY_ON_HOST=1 git push` — a variable rather than
@@ -182,7 +184,7 @@ repos:
       # owner: devshell (no-hook-language) upstream dprint publishes no pre-commit hook.
       - id: dprint
         name: dprint fmt (json/jsonc)
-        # --allow-no-files because pre-commit splits the matched paths into
+        # --allow-no-files because prek splits the matched paths into
         # batches and dprint.json excludes some of them (`**/*-lock.json`). A
         # batch that happens to hold only excluded paths makes `dprint fmt`
         # exit 14, so without this flag the hook passes or fails on how many
@@ -214,7 +216,7 @@ repos:
   #
   # shellcheck stays a devShell tool, because actionlint, a managed hook, runs
   # the shellcheck on PATH over the `run:` scripts of the workflows. shfmt and
-  # ruff take their upstream hooks, which pre-commit builds: scop/pre-commit-shfmt
+  # ruff take their upstream hooks, which prek builds: scop/pre-commit-shfmt
   # ships a static binary, and ruff-pre-commit ships ruff. The host supplies the
   # standard ELF loader for any dynamically linked wheel (nix-ld on a NixOS
   # host). Each keeps the selectors and the arguments the local hooks had; the
@@ -316,7 +318,7 @@ repos:
   #   boot   /dev/kvm, a systemd user manager, nix            push (product paths)
   #   doc    nothing (nextest cannot run doctests)            push, CI
   #
-  # Every lane carries `manual`, which is what makes `pre-commit run --hook-stage
+  # Every lane carries `manual`, which is what makes `prek run --hook-stage
   # manual <id> --all-files` the one way to run any lane anywhere — the form
   # `just test <lane>` wraps and the form CI's matrix calls.
   #
@@ -373,7 +375,7 @@ repos:
         # Scoped by path rather than by file type, and this is the one `files:`
         # in this block that is load-bearing. Twenty-six boots is roughly fifteen
         # minutes, which is a fair price for a change to the product and no price
-        # a documentation push should pay. At the push stage pre-commit matches
+        # a documentation push should pay. At the push stage prek matches
         # this against the pushed range; under `--all-files` it always runs.
         files: '^(src/|nix/|tests/(boot_|support/)|Cargo\.(toml|lock)$|rust-toolchain\.toml$)'
         stages: [pre-push, manual]
@@ -395,10 +397,10 @@ repos:
   # guest, measures a real store, or both, and several take tens of minutes; one
   # deletes from the invoking user's own store. None of that belongs at a git
   # stage or on a runner, so they are declared here and reached by name —
-  # `just lane <name>`, or `pre-commit run --hook-stage manual lane-<name>`.
+  # `just lane <name>`, or `prek run --hook-stage manual lane-<name>`.
   #
   # Declaring them earns two things over leaving them as bare scripts. They appear
-  # in `pre-commit run --hook-stage manual --all-files` alongside every other lane,
+  # in `prek run --hook-stage manual --all-files` alongside every other lane,
   # so the register is one list rather than two; and `scripts/check-lane-register`
   # can hold this list against the filesystem, so a script added without a hook is
   # a failure rather than a lane nobody remembers.
@@ -509,7 +511,7 @@ repos:
         verbose: true
         stages: [manual]
 
-  # deadnix publishes a rust hook, which pre-commit builds; its manifest
+  # deadnix publishes a rust hook, which prek builds; its manifest
   # carries --fail and the nix file type.
   - repo: https://github.com/astro/deadnix
     rev: v1.3.2
@@ -551,7 +553,7 @@ repos:
         # No pre-push: --write-changes makes this an autofixer, and a hook
         # that rewrites files never runs at push (see default_stages above).
         # --force-exclude makes `_typos.toml`'s exclusion of the generated
-        # files hold for the paths pre-commit passes, too.
+        # files hold for the paths prek passes, too.
         stages: [pre-commit, pre-merge-commit, manual]
   - repo: https://github.com/crate-ci/committed
     rev: v1.1.11
@@ -616,7 +618,7 @@ repos:
         language: system
         types: [nix]
         stages: [pre-commit]
-      # owner: devshell (no-hook-language) statix has no hook in a language that pre-commit builds.
+      # owner: devshell (no-hook-language) statix has no hook in a language that prek builds.
       - id: statix
         name: statix (nix anti-patterns)
         entry: statix check
@@ -809,7 +811,7 @@ repos:
   # which file is meant, and the link silently rots when a file moves. Require an
   # explicit prefix: ./name, ../dir/name, or a multi-segment path dir/name.
   # Fragment-only (#...), root-absolute (/...), and URL links pass. pygrep is
-  # built into pre-commit — no external dependency, no companion file.
+  # built into prek — no external dependency, no companion file.
   #
   # Both skip release-plz's `CHANGELOG.md`: a pygrep hook has no configuration
   # of its own, and the changelog's links are the generator's.
@@ -916,7 +918,7 @@ repos:
 
   # --- The round's own leftovers (report, never a gate) ---------------------
   #
-  # Last in this file, which is what makes it last at the push stage: pre-commit
+  # Last in this file, which is what makes it last at the push stage: prek
   # runs hooks in declaration order, so a writer declared below this one would
   # leave a pile the report had already finished counting. By the time it runs,
   # everything that writes has written: the compile cache, the fixture roots, the
@@ -931,7 +933,7 @@ repos:
   # evidence that something ran outside the gate while the round is still fresh.
   #
   # `always_run` because it reports on the machine rather than on the diff, and
-  # `verbose` because pre-commit prints a passing hook's output only when asked
+  # `verbose` because prek prints a passing hook's output only when asked
   # — and this one always passes. A push is never blocked by what is on a disk.
   - repo: local
     hooks:
