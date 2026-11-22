@@ -1,6 +1,6 @@
 # CI workflow — the lanes a runner can serve, plus the gate a merge rests on.
 #
-# Every job here invokes a pre-commit hook by id and never repeats its command.
+# Every job here invokes a hook by id and never repeats its command.
 # `.pre-commit-config.yaml` is where a lane's command is written, so this file,
 # the `just` recipes, and the git hooks cannot drift: they name the same thing.
 # The lane register is docs/reference/testing-lanes.md.
@@ -67,7 +67,7 @@ env:
 jobs:
   # The commit stage over the whole tree, which is what a contributor without
   # hooks installed would otherwise bypass. The autofixing hooks are the real
-  # gate: pre-commit fails with "files were modified by this hook", which is
+  # gate: prek fails with "files were modified by this hook", which is
   # exactly the failure such a contributor should see. `fetch-depth: 0` is
   # load-bearing for gitleaks — a shallow clone would let it pass over history
   # it never fetched.
@@ -89,11 +89,19 @@ jobs:
         with:
           use-flakehub: false
           use-gha-cache: true
-      - name: Cache pre-commit environments
+      - name: Install prek
+        # The host tool that runs the hooks. The devshell holds no hook
+        # runner, so the runner gets prek the way a developer's host does.
+        # The `Cache prek environments` step below owns the cache.
+        uses: j178/prek-action@7b101f8338a08d2bd6fdb3625e4e7692428763a3 # v3.1.1
+        with:
+          install-only: true
+          cache: false
+      - name: Cache prek environments
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+          path: ~/.cache/prek
+          key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Commit-stage hooks
         # A CI sweep commits nothing and checks out no worktree, so the two
         # hooks that judge where a commit is being made have nothing true to
@@ -101,12 +109,12 @@ jobs:
         # comment at the top of the landed block.
         env:
           SKIP: no-commit-to-branch,rk-worktree-location
-        run: tests/host/heavy-run --need 8 --label "ci commit-stage hooks" -- nix develop --command pre-commit run --all-files --hook-stage pre-commit
+        run: tests/host/heavy-run --need 8 --label "ci commit-stage hooks" -- nix develop --command prek run --all-files --hook-stage pre-commit
       - name: Commit messages
-        # The commit-msg stage is the one installed hook type `pre-commit run
+        # The commit-msg stage is the one installed hook type `prek run
         # --all-files` cannot replay — it lints a message, not files — so the
         # `committed` gate gets its own lane over the commits each event
-        # proposes. pre-commit owns committed, so the lane hands each message
+        # proposes. prek owns committed, so the lane hands each message
         # to the same hook, with the leniency flags it carries. A merge commit
         # carries a message the forge writes, so the lane skips it. A
         # pull request anchors at its base branch; a push anchors at the
@@ -135,7 +143,7 @@ jobs:
           for sha in $commits; do
             echo "commit message of $sha"
             git log -1 --format=%B "$sha" > "$msg"
-            nix develop --command pre-commit run committed --hook-stage commit-msg --commit-msg-filename "$msg"
+            nix develop --command prek run committed --hook-stage commit-msg --commit-msg-filename "$msg"
           done
 
   # Every push-stage hook a runner can serve, one job each.
@@ -178,15 +186,23 @@ jobs:
         with:
           use-flakehub: false
           use-gha-cache: true
-      - name: Cache pre-commit environments
+      - name: Install prek
+        # The host tool that runs the hooks. The devshell holds no hook
+        # runner, so the runner gets prek the way a developer's host does.
+        # The `Cache prek environments` step below owns the cache.
+        uses: j178/prek-action@7b101f8338a08d2bd6fdb3625e4e7692428763a3 # v3.1.1
+        with:
+          install-only: true
+          cache: false
+      - name: Cache prek environments
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+          path: ~/.cache/prek
+          key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Run the hook
         env:
           HOOK: ${{ matrix.hook }}
-        run: tests/host/heavy-run --need 12 --label "ci $HOOK" -- nix develop --command pre-commit run --all-files --hook-stage manual "$HOOK"
+        run: tests/host/heavy-run --need 12 --label "ci $HOOK" -- nix develop --command prek run --all-files --hook-stage manual "$HOOK"
 
   # An experiment, and never a gate: `continue-on-error` and absent from `gate`'s
   # `needs`, so a red here holds no merge.
@@ -222,6 +238,14 @@ jobs:
         with:
           use-flakehub: false
           use-gha-cache: true
+      - name: Install prek
+        # The host tool that runs the hooks. The devshell holds no hook
+        # runner, so the runner gets prek the way a developer's host does.
+        # The `Cache prek environments` step below owns the cache.
+        uses: j178/prek-action@7b101f8338a08d2bd6fdb3625e4e7692428763a3 # v3.1.1
+        with:
+          install-only: true
+          cache: false
       - name: What this runner offers a booting guest
         # Reported before the lane runs, so a failure below can be read against
         # what was actually available rather than against an assumption.
@@ -237,7 +261,7 @@ jobs:
             && echo "unprivileged user+net namespaces: available" \
             || echo "unprivileged user+net namespaces: refused"
       - name: The boot lane
-        run: tests/host/heavy-run --need 12 --label "ci test-boot" -- nix develop --command pre-commit run --all-files --hook-stage manual test-boot
+        run: tests/host/heavy-run --need 12 --label "ci test-boot" -- nix develop --command prek run --all-files --hook-stage manual test-boot
 
   # The artifact workflow's proof. release.yml is the unmodified output of
   # `dist generate`, and `dist plan` fails when the committed file drifts from
