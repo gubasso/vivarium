@@ -139,8 +139,17 @@ drive=$("$SCRIPT_DIR/disk-preflight" --locate --images --require-drive 2>/dev/nu
 
 if [[ -n $drive ]]; then
   heading "drive" "$drive — $(free_of "$drive") free"
-  group cargo-target "$drive/cargo-target" 'the shared compile cache; the dev shell uses this one' \
-    "rm -rf $(q "$drive/cargo-target")   # a full rebuild follows"
+  # One build folder per worktree, which `build-folder` names. Each hint cleans
+  # one folder, and only after the builds of that worktree end; the next build
+  # takes its dependencies from the kache cache of the host.
+  own_folder=$("$SCRIPT_DIR/build-folder" "$drive" 2>/dev/null) || own_folder=
+  for folder in "$drive"/targets/*; do
+    folder_note='the build folder of another worktree'
+    [[ $folder == "$own_folder" ]] && folder_note='the build folder of this worktree'
+    group "targets/${folder##*/}" "$folder" "$folder_note" "cargo clean --target-dir $(q "$folder")"
+  done
+  group cargo-target "$drive/cargo-target" 'the old shared build folder; no build uses it' \
+    "rm -rf $(q "$drive/cargo-target")"
   group tmp "$drive/tmp" 'scratch from gated runs' "rm -rf $(q "$drive/tmp")"
   group state "$drive/state" 'state a gated run wrote, sandbox volumes among it' \
     "rm -rf $(q "$drive/state")   # deletes any sandbox a gated run created"
@@ -176,11 +185,16 @@ fi
 stray_group "${STATE_HOME/#$HOME/\~}/vivarium/test-fixtures" "$STATE_HOME/vivarium/test-fixtures" \
   'fixture roots that belong on the drive' "rm -rf $(q "$STATE_HOME/vivarium/test-fixtures")"
 
-if [[ -n $drive && -d $CACHE_HOME/vivarium/target ]]; then
+if [[ -d $CACHE_HOME/vivarium/target ]]; then
   ((STRAY++))
   row "${CACHE_HOME/#$HOME/\~}/vivarium/target" "$(size_of "$CACHE_HOME/vivarium/target")" \
-    "${Y}a second compile cache; the drive already holds one$R"
+    "${Y}the old shared build folder; no build uses it$R"
   hint "rm -rf $(q "$CACHE_HOME/vivarium/target")"
+fi
+
+if [[ -n $drive ]]; then
+  stray_group "${CACHE_HOME/#$HOME/\~}/vivarium/targets" "$CACHE_HOME/vivarium/targets" \
+    'build folders that belong on the drive' "rm -rf $(q "$CACHE_HOME/vivarium/targets")"
 fi
 
 for temp in /tmp/vivarium-* /tmp/viv-* /var/tmp/vivarium-*; do

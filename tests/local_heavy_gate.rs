@@ -30,6 +30,49 @@ fn disk_preflight() -> PathBuf {
         .join("disk-preflight")
 }
 
+fn build_folder() -> PathBuf {
+    repo_root().join("tests").join("host").join("build-folder")
+}
+
+/// The folder `build-folder` names for this worktree under `root`, recomputed here so that the
+/// assertion holds the shape rather than echoing the script: `<root>/targets/<worktree directory
+/// name>-<12 hex digits>`, the digits a hash of the worktree's physical path.
+fn worktree_build_folder(root: &Path) -> PathBuf {
+    let output = run(
+        &build_folder(),
+        &[root.to_str().expect("root is not UTF-8")],
+        &[],
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let named = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+
+    let worktree = repo_root()
+        .canonicalize()
+        .expect("cannot resolve the worktree");
+    let worktree_name = worktree
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("the worktree has no UTF-8 directory name");
+    assert_eq!(
+        named.parent(),
+        Some(root.join("targets").as_path()),
+        "the build folder is not directly under <root>/targets"
+    );
+    let leaf = named
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("the build folder has no UTF-8 name");
+    let hash = leaf
+        .strip_prefix(worktree_name)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .unwrap_or_else(|| panic!("{leaf} does not begin with the worktree name {worktree_name}"));
+    assert!(
+        hash.len() == 12 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{leaf} does not end in a 12-digit hash"
+    );
+    named
+}
+
 /// Runs a program with stdin closed, which is the shape that matters.
 ///
 /// The gate decides between prompting and refusing on whether standard input is a terminal, and a
@@ -139,7 +182,7 @@ fn the_run_roots_are_bound_under_the_drive() {
     for (key, expected) in [
         ("VIVARIUM_HEAVY_DRIVE", drive.path.clone()),
         ("TMPDIR", drive.path.join("tmp")),
-        ("CARGO_TARGET_DIR", drive.path.join("cargo-target")),
+        ("CARGO_TARGET_DIR", worktree_build_folder(&drive.path)),
         ("XDG_STATE_HOME", drive.path.join("state")),
         ("XDG_DATA_HOME", drive.path.join("data")),
         ("XDG_CACHE_HOME", drive.path.join("cache")),
@@ -155,6 +198,33 @@ fn the_run_roots_are_bound_under_the_drive() {
             expected.display()
         );
     }
+}
+
+#[test]
+fn two_worktrees_never_share_a_build_folder() {
+    // Two copies of the script in two trees stand in for two worktrees, because the script finds
+    // its worktree from its own location. A shared folder can hand one worktree the build of the
+    // other and report it fresh, so the two answers must differ under the same root.
+    let drive = FabricatedDrive::new("two-trees");
+    let mut named = Vec::new();
+    for tree in ["first", "second"] {
+        let host = drive.path.join(tree).join("tests").join("host");
+        std::fs::create_dir_all(&host).expect("cannot create a stand-in worktree");
+        let copy = host.join("build-folder");
+        std::fs::copy(build_folder(), &copy).expect("cannot copy build-folder");
+        let output = run(&copy, &["/the/root"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let folder = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        assert!(
+            folder.starts_with(&format!("/the/root/targets/{tree}-")),
+            "{folder} does not name the {tree} worktree"
+        );
+        named.push(folder);
+    }
+    assert_ne!(
+        named[0], named[1],
+        "two worktrees were given one build folder"
+    );
 }
 
 #[test]
@@ -262,14 +332,14 @@ fn the_on_host_flag_waives_the_requirement() {
     );
     // The waiver hands the run the environment it already had, which is asserted as a value passing
     // through rather than as an absent key: this suite is itself run through the gate, so the
-    // variable is set in the parent either way. Rewriting it here would fill a second compile cache
-    // beside the dev shell's, which is the outcome sharing one exists to avoid.
+    // variable is set in the parent either way. Rewriting it here would fill a second build folder
+    // for this worktree beside the dev shell's.
     assert_eq!(
         bound_environment(&output)
             .get("CARGO_TARGET_DIR")
             .map(String::as_str),
         Some("/the/cache/this/shell/already/has"),
-        "the waived run was given a compile cache of its own"
+        "the waived run was given a build folder of its own"
     );
 }
 

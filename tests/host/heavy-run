@@ -22,8 +22,14 @@
 #                         started outside a direnv shell would otherwise hand it
 #                         nothing and get `~/.local/state` — the exact hole above.
 #   TMPDIR                build and fixture scratch.
-#   CARGO_TARGET_DIR      the workspace compile cache, so the devShell and every
-#                         gated run share one rather than filling two.
+#   CARGO_TARGET_DIR      the build folder of this worktree, which
+#                         `build-folder` names, so the dev shell and every gated
+#                         run of one worktree fill one folder, and two worktrees
+#                         never share one. The kache cache of the host lives
+#                         under ~/.cache/kache, and a copy-on-write clone shares
+#                         blocks only within one filesystem, so on a drive that
+#                         is another filesystem kache copies each cached crate
+#                         into this folder rather than cloning it.
 #   XDG_STATE_HOME        where a live `viv` writes its volumes and generations.
 #   XDG_DATA_HOME         pinned inputs.
 #   XDG_CACHE_HOME        generated flakes and built images (spec/02).
@@ -128,8 +134,8 @@ if ((ON_HOST == 1)); then
   scratch=$("$SCRIPT_DIR/disk-preflight" --need "$NEED_GIB" --label "$LABEL") || exit $?
   # Whatever the preflight settled on, which is the drive when one is configured
   # and usable and the current disk otherwise. Nothing else is redirected: the
-  # environment this run wants is the one it already has, or the two compile
-  # caches this exists to avoid would both be filled.
+  # environment this run wants is the one it already has, or the worktree would
+  # fill a second build folder beside the dev shell's.
   [[ -n $scratch ]] && export TMPDIR="$scratch"
   exec "$@"
 fi
@@ -146,7 +152,11 @@ root=$("$SCRIPT_DIR/disk-preflight" \
 
 export VIVARIUM_HEAVY_DRIVE="$root"
 export TMPDIR="$root/tmp"
-export CARGO_TARGET_DIR="$root/cargo-target"
+CARGO_TARGET_DIR=$("$SCRIPT_DIR/build-folder" "$root") || {
+  note "heavy-run: cannot name the build folder of this worktree; nothing ran"
+  exit 69
+}
+export CARGO_TARGET_DIR
 export XDG_STATE_HOME="$root/state"
 export XDG_DATA_HOME="$root/data"
 export XDG_CACHE_HOME="$root/cache"

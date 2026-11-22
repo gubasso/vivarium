@@ -8,6 +8,10 @@ version = ">=1.2.0"
 
 [tools.git]
 
+# kache, which .envrc sets as the rustc wrapper, is presence-only because the
+# host configuration owns its one version.
+[tools.kache]
+
 [tools.nix]
 
 [tools.prek]
