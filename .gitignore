@@ -26,3 +26,6 @@
 # --- gitignore (rust) ---
 rustc-ice-*.txt
 **/mutants.out*/
+
+# lychee link-check cache; see lychee.toml.
+.lycheecache

@@ -186,6 +186,7 @@ jobs:
           - cargo-deny
           - cargo-machete
           - gitleaks
+          - lychee-system
           - product-flake-check
     runs-on: ubuntu-latest
     steps:

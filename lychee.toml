@@ -1,0 +1,34 @@
+# lychee, the link checker of the `lychee-system` hook at the push stage.
+# The hook reads this file, and so does a direct `lychee` run.
+#
+# Relative links stay with markdownlint-cli2 and its relative-links rule, so
+# lychee checks only http(s).
+scheme = ["http", "https"]
+
+# 401 and 403 often mean an anti-bot challenge rather than a dead page, 429 and
+# 503 are transient, and 520 to 525 are Cloudflare errors of the origin.
+accept = ["200..=206", "401", "403", "429", "503", "520..=525"]
+
+max_concurrency = 32
+max_retries = 1
+timeout = 20
+retry_wait_time = 2
+max_redirects = 5
+
+# Each push runs the hook again, so a result stays valid for a day.
+cache = true
+max_cache_age = "1d"
+
+exclude_loopback = true
+
+exclude = [
+  # release-plz writes a compare link into the heading of the unreleased
+  # version, and the release workflow creates its tag. Until then the link
+  # answers 404.
+  "^https://github\\.com/gubasso/vivarium/compare/",
+]
+
+# The Slidev deck resolves root-relative links such as `/meme.png` against its
+# `public/` folder at build time, which a file walk cannot see. The deck's own
+# check is its build, the `slidev-build` hook.
+exclude_path = ["^slides/"]
