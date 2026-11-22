@@ -102,6 +102,23 @@ jobs:
         with:
           path: ~/.cache/prek
           key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: Install the exobrain CLI of the pinned exobrain-tech tag
+        # hook-revisions and host-requirements call the exobrain CLI, which
+        # the host supplies and the devshell does not hold. The tag comes
+        # from the exobrain-tech entry of .pre-commit-config.yaml, so the pin
+        # has one owner, and the attestation proves the archive came from the
+        # release workflow of exobrain-tech.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(yq '.repos[] | select(.repo | test("/exobrain-tech(\.git)?/?$")) | .rev' .pre-commit-config.yaml)
+          asset=exobrain-x86_64-unknown-linux-gnu.tar.xz
+          gh release download "$tag" --repo gubasso/exobrain-tech --pattern "$asset" --dir "$RUNNER_TEMP"
+          gh attestation verify "$RUNNER_TEMP/$asset" --repo gubasso/exobrain-tech
+          mkdir -p "$RUNNER_TEMP/exobrain"
+          tar -xJf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/exobrain" --strip-components=1
+          echo "$RUNNER_TEMP/exobrain" >> "$GITHUB_PATH"
       - name: Commit-stage hooks
         # A CI sweep commits nothing and checks out no worktree, so the two
         # hooks that judge where a commit is being made have nothing true to
