@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+
+# Print the cargo build folder of the worktree that holds this script, under the
+# root given as the one argument.
+#
+#   tests/host/build-folder /run/media/me/drive/vivarium
+#   # -> /run/media/me/drive/vivarium/targets/vivarium@main-3f9c0a1b2d4e
+#
+# Each worktree keeps its own build folder, and two worktrees never share one.
+# Cargo names the crates of a workspace by their path inside it and judges
+# freshness by file times, so a folder that two worktrees share can hand one of
+# them the build of the other and report it fresh. The dev shell and
+# `heavy-run` both ask this script, so a shell and a gated run of one worktree
+# fill the same folder, and the worktree beside it fills its own.
+#
+# The name is the worktree's directory name, which a person reading the drive
+# recognises, and a hash of its full physical path, which keeps two checkouts
+# with the same directory name apart. The worktree is found from this script's
+# own location rather than from the caller's working directory, so the answer is
+# the same from any subdirectory.
+
+set -u
+
+if (($# != 1)) || [[ -z $1 ]]; then
+  printf 'build-folder: usage: build-folder <root>\n' >&2
+  exit 64
+fi
+
+worktree=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P) || exit 69
+hash=$(printf '%s' "$worktree" | sha256sum | cut -c1-12)
+
+printf '%s/targets/%s-%s\n' "${1%/}" "${worktree##*/}" "$hash"

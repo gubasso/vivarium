@@ -29,13 +29,15 @@ export VIVARIUM_HEAVY_DRIVE=/run/media/you/external/vivarium
 
 The directory has to exist, and nothing creates it for you. That is what tells a mounted drive apart from an unplugged one, whose mountpoint is otherwise an empty directory on your boot disk that the checks would happily fill. Point the variable at a directory under the mount, as above, rather than at the mount itself — a subdirectory goes away when the drive does, which is what makes its absence mean something, while a mountpoint from `/etc/fstab` stays present unmounted and would pass the check against your boot disk.
 
-The development shell puts the compile cache there (`CARGO_TARGET_DIR`), and so does every check that compiles, evaluates a flake, or boots — one cache rather than two. Without a usable drive the shell says so and keeps the cache under `~/.cache`, but the checks refuse: `git push` exits with nothing run and names what it needed. To run them on this disk anyway:
+The development shell puts the build folder of the worktree there (`CARGO_TARGET_DIR`, at `targets/<worktree>-<hash>` under the drive), and so does every check that compiles, evaluates a flake, or boots — one folder per worktree rather than two, and never one that two worktrees share. Without a usable drive the shell says so and keeps the folder under `~/.cache/vivarium/targets`, but the checks refuse: `git push` exits with nothing run and names what it needed. To run them on this disk anyway:
 
 ```console
 $ VIVARIUM_HEAVY_ON_HOST=1 git push
 ```
 
 That waives the drive and not the capacity check: the store and the scratch filesystem are still measured, so a disk that is genuinely full still refuses rather than failing mid-write. Two things are worth knowing before you rely on it: unplugging the drive during a build surfaces as cargo errors that read like a corrupt cache, and the first build after pointing at a new drive is a full one. The reasoning is in [`../decisions/ADR-0106-gated-runs-put-their-bytes-on-the-heavy-drive.md`](../decisions/ADR-0106-gated-runs-put-their-bytes-on-the-heavy-drive.md), and the operator-facing detail in [`../reference/microvm-verification-harness.md`](../reference/microvm-verification-harness.md).
+
+Each `rustc` call goes through [kache](https://github.com/kunobi-ninja/kache), the compile cache of the host, because [`../../.envrc`](../../.envrc) sets `RUSTC_WRAPPER=kache`. A new worktree then takes the crates that another worktree compiled from that cache rather than compiling them again. kache must be installed on the host, as [`../../host-requirements.toml`](../../host-requirements.toml) lists. `KACHE_DISABLED=1` runs one command without it, and CI, which enters the shell without direnv, builds without it. kache shares disk blocks with a build folder only on one filesystem, so a build folder on a drive other than the one that holds `~/.cache/kache` receives full copies.
 
 ## Outside the repository: `just install`
 

@@ -197,6 +197,16 @@ unimplemented = "deny"
 panic = "deny"
 wildcard_imports = "deny"
 
+# The lean dev profile: line tables for the crates of this package, so a backtrace keeps its
+# files and lines, and no debug information for the dependencies. A debugger needs full debug
+# information for one command:
+#   cargo test --config 'profile.dev.debug="full"' --config 'profile.dev.package."*".debug="full"'
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"

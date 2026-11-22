@@ -55,7 +55,7 @@ Two modes, because the lanes need different answers. A lane that wants build scr
 
 ### The gate the commit and push stages run behind
 
-Every hook that compiles, evaluates a flake, or boots is invoked through [`../../tests/host/heavy-run`](../../tests/host/heavy-run), which asks the resolver above with `--require-drive` and then binds the answer into the command's environment: `VIVARIUM_HEAVY_DRIVE`, `TMPDIR`, `CARGO_TARGET_DIR`, and vivarium's own state, data and cache roots. The `just` recipes that are those hooks' twins go through the same wrapper, and the dev shell picks the same compile cache so one is filled rather than two ([`../decisions/ADR-0106-gated-runs-put-their-bytes-on-the-heavy-drive.md`](../decisions/ADR-0106-gated-runs-put-their-bytes-on-the-heavy-drive.md)).
+Every hook that compiles, evaluates a flake, or boots is invoked through [`../../tests/host/heavy-run`](../../tests/host/heavy-run), which asks the resolver above with `--require-drive` and then binds the answer into the command's environment: `VIVARIUM_HEAVY_DRIVE`, `TMPDIR`, vivarium's own state, data and cache roots, and `CARGO_TARGET_DIR`, the build folder of this worktree at `<drive>/targets/<worktree>-<hash>`. [`../../tests/host/build-folder`](../../tests/host/build-folder) names that folder. The `just` recipes that are those hooks' twins go through the same wrapper, and the dev shell asks the same script, so one worktree fills one folder rather than two, and two worktrees never share one ([`../decisions/ADR-0106-gated-runs-put-their-bytes-on-the-heavy-drive.md`](../decisions/ADR-0106-gated-runs-put-their-bytes-on-the-heavy-drive.md)).
 
 Two roots are deliberately not in that list. `XDG_RUNTIME_DIR` holds control sockets against a 108-byte path limit that a drive's mount point does not leave room under, and `XDG_CONFIG_HOME` is the user's authored source of truth, which the tool only reads.
 
@@ -193,7 +193,7 @@ Every survival claim is demonstrated beside a canary: an unrooted path added for
 
 ## The sibling script: `tests/host/leftovers`
 
-What a round left behind, on both disks, and the command that would clear each pile. It reports and never acts: telling a registered sandbox from an orphaned fixture root is exactly the judgement a person wants to make with their own eyes, and a volume holds user data. Groups are named with a size and a note — the shared compile cache, scratch, fixture roots, retained diagnostics, runtime roots a run did not tear down, vivarium user units still loaded, and the store's own free space, which no gate moves.
+What a round left behind, on both disks, and the command that would clear each pile. It reports and never acts: telling a registered sandbox from an orphaned fixture root is exactly the judgement a person wants to make with their own eyes, and a volume holds user data. Groups are named with a size and a note — the build folder of each worktree, with a `cargo clean --target-dir` for that one folder, the old shared build folders that no build uses any more, scratch, fixture roots, retained diagnostics, runtime roots a run did not tear down, vivarium user units still loaded, and the store's own free space, which no gate moves.
 
 It is also the round's verdict on the drive. Everything listed under `host` is something a gated run puts on the drive instead, so a size there means something ran outside the gate — surfaced while the round is still fresh rather than a week later from a full filesystem. The same report runs as the last `pre-push` hook, wired `verbose` because prek prints a passing hook's output only when asked, and it always passes: a push is not blocked by what is on a disk.
 
@@ -250,7 +250,7 @@ The project is the one `tests/host/guest-system-check` evaluates: the shipped ex
 direnv exec <repository> <repository>/tests/host/heavy-run --need 4 \
   --label "cold-store evaluation" -- env NIX_CONFIG='store = local?root=<store>' \
   XDG_CONFIG_HOME=<config> XDG_CACHE_HOME=<cache> XDG_DATA_HOME=<data> \
-  <cargo-target>/debug/viv config eval --json
+  <build-folder>/debug/viv config eval --json
 ```
 
 Two departures from the planned command, both needed for the run to measure what it asks. `XDG_CONFIG_HOME` names the throwaway config root, because `viv` resolves the manifest there. The binary is the built `viv` rather than the dev shell's `viv`, because that shim runs `scripts/baseline-pins`, whose `nix flake archive` fetches every input, `spectrum` included, into the same cold store.
