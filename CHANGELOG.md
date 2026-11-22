@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/gubasso/vivarium/compare/v0.2.4...v0.2.5) - 2026-11-22
+
+### Added
+
+- *(config)* ship the first lock from the binary ([#40](https://github.com/gubasso/vivarium/pull/40))
+
+### Fixed
+
+- *(deps)* move url past RUSTSEC-2026-0592 ([#43](https://github.com/gubasso/vivarium/pull/43))
+- *(guest)* build on nixpkgs without the scripted initrd ([#41](https://github.com/gubasso/vivarium/pull/41))
+
+### Other
+
+- *(dev-env)* warn about old pins with exobrain outdated ([#46](https://github.com/gubasso/vivarium/pull/46))
+- *(cargo)* build through kache in per-worktree folders ([#45](https://github.com/gubasso/vivarium/pull/45))
+- *(hooks)* adopt the exobrain-tech reference hook sets ([#44](https://github.com/gubasso/vivarium/pull/44))
+- *(release)* take release-kit 0.10.3 ([#38](https://github.com/gubasso/vivarium/pull/38))
+- *(harness)* bound the baseline fetch on a cold store ([#39](https://github.com/gubasso/vivarium/pull/39))
+
 ## [0.2.4](https://github.com/gubasso/vivarium/compare/v0.2.3...v0.2.4) - 2026-11-12
 
 ### Fixed
