@@ -626,7 +626,7 @@ repos:
   # host-requirements.toml parses, and hook-revisions holds the `rev` of each
   # repository of the named reference sets to the copy that this tag states.
   - repo: https://github.com/gubasso/exobrain-tech
-    rev: v1.2.0
+    rev: v2.0.0
     hooks:
       - id: no-path-flake-reference
         exclude: ^docs/decisions/

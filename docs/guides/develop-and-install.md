@@ -57,6 +57,8 @@ A generated project flake carries two baseline flake inputs, `nixpkgs` and `micr
 
 Every `viv` built from this tree, the shim and an installed one alike, ships the pin of the tree it was built from. No variable, wrapper, or script redirects a baseline input.
 
+When the `nixpkgs` pin of a lock is over 30 days old, the `exobrain outdated` line of [`../../.envrc`](../../.envrc) prints a warning on each shell load that names the age and the command that moves the pin. A move of `nix/flake.lock` changes what ships, so commit it as `fix(deps)`, and that commit opens a release request.
+
 ## Removing it
 
 ```console

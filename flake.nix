@@ -16,10 +16,11 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
-    # The release convention's own tool, pinned at a release tag. `.envrc`
-    # runs `rk self-depend check`, which reports a newer release and moves
-    # nothing. The operator moves this tag and the lock together from a
-    # shell. One project runs one `rk`: this pin, never a host install.
+    # The release convention's own tool, pinned at a release tag. The
+    # `exobrain outdated` line of `.envrc` reports a newer release and moves
+    # nothing, and it names the command that moves the tag and the lock. A
+    # person runs that command and commits this file and the lock together.
+    # One project runs one `rk`: this pin, never a host install.
     release-kit = {
       url = "github:gubasso/release-kit/v0.10.3";
       inputs = {
