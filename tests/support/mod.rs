@@ -15,12 +15,14 @@ pub mod preflight;
 
 use std::ffi::OsString;
 use std::fs::{self, File, TryLockError};
-use std::io;
+use std::io::{self, Read as _};
 use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use vivarium::exit::ExitKind;
 
 // The categories trials currently assert, taken from the product's own `ExitKind` rather than
@@ -639,51 +641,217 @@ pub struct VivOutput {
 /// the lock the first evaluation creates. That default is a trap for this suite, which evaluates
 /// from a fresh data root in trial after trial: each one queries the GitHub API, sixty of them
 /// exhaust the anonymous limit, and the `ConfigEval` gate then closes for a reason that is about
-/// GitHub rather than about vivarium. Worse, it closes silently — the trials skip and the run is
-/// green.
+/// GitHub rather than about vivarium.
 ///
-/// So the lanes pin. The references come from this repository's own product flake, which already
-/// locks the two, and `nix flake archive` reports where its inputs landed in the store: a `path:`
-/// reference needs no network and no API at all, and it is the same revision vivarium is developed
-/// against. Computed once per process and fails open — a host that cannot produce them evaluates
-/// live, exactly as a user would.
-fn baseline_inputs() -> &'static Vec<(OsString, OsString)> {
-    static BASELINE: OnceLock<Vec<(OsString, OsString)>> = OnceLock::new();
+/// So the lanes pin. The references come from this repository's own product lock,
+/// `nix/flake.lock`, which already locks the two, and `nix flake prefetch` puts each one in the
+/// store at the `narHash` the lock records: a `path:` reference needs no network and no API at
+/// all, and it is the same revision vivarium is developed against.
+///
+/// Only the two inputs are fetched, and that is the fix for KI-0006 rather than thrift. The lanes
+/// once ran `nix flake archive` over the whole product flake, which fetches every input
+/// recursively, `microvm`'s `spectrum` among them, from a git host that stopped answering. A git
+/// fetch has no timeout of its own, so on a cold store every trial that ran `viv` hung until
+/// nextest killed it. Whether the whole lock still resolves is a separate question, and not every
+/// trial's to ask.
+///
+/// Computed once per process. A host with no `nix` gets no pins and evaluates live, exactly as a
+/// user would, because the `local` lane declares no need for Nix. Every other failure is an `Err`
+/// that fails the trial with its reason: a lane that quietly evaluated live would report on the
+/// network instead of the change under test.
+fn baseline_inputs() -> &'static Result<Vec<(OsString, OsString)>, String> {
+    static BASELINE: OnceLock<Result<Vec<(OsString, OsString)>, String>> = OnceLock::new();
     BASELINE.get_or_init(|| {
-        let flake = format!("git+file://{}?dir=nix", env!("CARGO_MANIFEST_DIR"));
-        let Ok(output) = Command::new("nix")
-            .args([
+        let lock_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("nix/flake.lock");
+        let lock = fs::read(&lock_path)
+            .map_err(|error| format!("cannot read {}: {error}", lock_path.display()))?;
+        let lock = serde_json::from_slice::<serde_json::Value>(&lock)
+            .map_err(|error| format!("cannot parse {}: {error}", lock_path.display()))?;
+        let started = Instant::now();
+        let mut pins = Vec::new();
+        for (input, variable) in [
+            ("nixpkgs", "VIVARIUM_BASELINE_NIXPKGS"),
+            ("microvm", "VIVARIUM_BASELINE_MICROVM"),
+        ] {
+            let reference = locked_github_reference(&lock, input)?;
+            let mut prefetch = Command::new("nix");
+            prefetch.args([
                 "flake",
-                "archive",
+                "prefetch",
                 "--json",
                 "--extra-experimental-features",
                 "nix-command flakes",
-                &flake,
-            ])
-            .output()
-        else {
-            return Vec::new();
-        };
-        if !output.status.success() {
-            return Vec::new();
-        }
-        let Ok(archived) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
-            return Vec::new();
-        };
-        [
-            ("nixpkgs", "VIVARIUM_BASELINE_NIXPKGS"),
-            ("microvm", "VIVARIUM_BASELINE_MICROVM"),
-        ]
-        .into_iter()
-        .filter_map(|(input, variable)| {
-            let path = archived.get("inputs")?.get(input)?.get("path")?.as_str()?;
-            Some((
+                &reference,
+            ]);
+            let remaining = BASELINE_DEADLINE.saturating_sub(started.elapsed());
+            let output = match output_within(&mut prefetch, remaining) {
+                Ok(output) => output,
+                Err(DeadlineError::Spawn(error)) if error.kind() == io::ErrorKind::NotFound => {
+                    return Ok(Vec::new());
+                }
+                Err(error) => {
+                    return Err(format!("pinning the baseline input `{input}`: {error}"));
+                }
+            };
+            if !output.status.success() {
+                let status = output.status;
+                let stderr = stderr_tail(&output.stderr);
+                let command = format!("nix flake prefetch {reference}");
+                return Err(format!(
+                    "pinning the input `{input}`: `{command}` exited {status}: {stderr}"
+                ));
+            }
+            let path = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                .ok()
+                .and_then(|value| value.get("storePath")?.as_str().map(str::to_owned))
+                .ok_or_else(|| {
+                    format!("`nix flake prefetch {reference}` reported no `storePath`")
+                })?;
+            pins.push((
                 OsString::from(variable),
-                OsString::from(format!("path:{path}")), // nix-path-ok: an archived store path
-            ))
-        })
-        .collect()
+                OsString::from(format!("path:{path}")), // nix-path-ok: a prefetched store path
+            ));
+        }
+        Ok(pins)
     })
+}
+
+/// How long the baseline pins may take, both inputs together.
+///
+/// Measured 2026-11-20 on a cold store: `nixpkgs` in 12 s and `microvm` in 1 s. The bound sits
+/// under the `local` lane's 120 s `slow-timeout`, so a stalled fetch fails the trial with its own
+/// reason before nextest kills it with none.
+const BASELINE_DEADLINE: Duration = Duration::from_secs(90);
+
+/// The locked `github:` reference of one root input of `nix/flake.lock`, `narHash` included, so
+/// the fetch is checked against the hash the lock records.
+fn locked_github_reference(lock: &serde_json::Value, input: &str) -> Result<String, String> {
+    let locked = lock
+        .pointer(&format!("/nodes/{input}/locked"))
+        .ok_or_else(|| format!("nix/flake.lock has no locked node `{input}`"))?;
+    let field = |name: &str| {
+        locked
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("the locked node `{input}` has no `{name}`"))
+    };
+    if field("type")? != "github" {
+        return Err(format!("the locked node `{input}` is not a `github` input"));
+    }
+    // The hash is base64, so its `+`, `/` and `=` are escaped to stay one query value.
+    let nar_hash = field("narHash")?
+        .replace('+', "%2B")
+        .replace('/', "%2F")
+        .replace('=', "%3D");
+    Ok(format!(
+        "github:{}/{}/{}?narHash={nar_hash}",
+        field("owner")?,
+        field("repo")?,
+        field("rev")?
+    ))
+}
+
+/// Why [`output_within`] returned no output.
+#[derive(Debug)]
+pub enum DeadlineError {
+    /// The command could not start.
+    Spawn(io::Error),
+    /// Waiting on the command failed.
+    Wait(io::Error),
+    /// The deadline passed. The command's process group was killed.
+    Expired {
+        command: String,
+        deadline: Duration,
+        stderr: String,
+    },
+}
+
+impl std::fmt::Display for DeadlineError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Spawn(error) => write!(formatter, "cannot start: {error}"),
+            Self::Wait(error) => write!(formatter, "cannot wait: {error}"),
+            Self::Expired {
+                command,
+                deadline,
+                stderr,
+            } => write!(
+                formatter,
+                "`{command}` did not finish within {}s and was killed; its stderr ended: {stderr}",
+                deadline.as_secs()
+            ),
+        }
+    }
+}
+
+/// Run `command` to completion, or kill it when `deadline` passes.
+///
+/// A network fetch can block with no timeout of its own: a git host that accepts no connection
+/// holds `git fetch`, and the `nix` that waits on it, until something kills them. Left to nextest,
+/// that something is the `slow-timeout`, and the trial ends as `TIMEOUT` with no reason. This ends
+/// it first, with one.
+///
+/// The command runs in its own process group, and expiry kills the whole group, so a `git` that
+/// `nix` started dies with it rather than holding the output pipes open.
+pub fn output_within(command: &mut Command, deadline: Duration) -> Result<Output, DeadlineError> {
+    let command_line = format!("{command:?}");
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .map_err(DeadlineError::Spawn)?;
+    let drain = |pipe: Option<Box<dyn io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as _));
+    let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as _));
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(DeadlineError::Wait)? {
+            break Some(status);
+        }
+        if started.elapsed() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let Some(status) = status else {
+        if let Some(group) = rustix::process::Pid::from_raw(child.id().cast_signed()) {
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        }
+        let _ = child.wait();
+        let stderr = stderr.join().unwrap_or_default();
+        return Err(DeadlineError::Expired {
+            command: command_line,
+            deadline,
+            stderr: stderr_tail(&stderr),
+        });
+    };
+    Ok(Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
+/// The last few lines of a command's stderr, for a failure message.
+pub fn stderr_tail(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let lines: Vec<&str> = text.lines().collect();
+    let tail = lines[lines.len().saturating_sub(8)..].join("\n");
+    if tail.is_empty() {
+        "(empty)".to_owned()
+    } else {
+        tail
+    }
 }
 
 /// The only host variables re-injected after `env_clear`. Everything else is dropped,
@@ -697,7 +865,10 @@ const HOST_PASSTHROUGH: [&str; 6] = ["PATH", "TERM", "LANG", "LC_ALL", "SSL_CERT
 /// Returned rather than applied so the one trial that cannot use [`run_viv`] — `viv shell`, which
 /// needs a real pty and therefore a different spawner — configures its child from the same source
 /// rather than from a second reading of these rules.
-pub fn viv_environment(tp: &TempProject) -> Vec<(OsString, OsString)> {
+///
+/// It fails when the baseline pins cannot be made, so the trial fails with that reason rather
+/// than evaluating live (see [`baseline_inputs`]).
+pub fn viv_environment(tp: &TempProject) -> io::Result<Vec<(OsString, OsString)>> {
     let mut environment: Vec<(OsString, OsString)> = HOST_PASSTHROUGH
         .iter()
         .filter_map(|name| std::env::var_os(name).map(|value| (OsString::from(name), value)))
@@ -707,8 +878,13 @@ pub fn viv_environment(tp: &TempProject) -> Vec<(OsString, OsString)> {
     environment
         .extend(std::env::vars_os().filter(|(name, _)| name.to_string_lossy().starts_with("NIX_")));
     environment.extend(tp.env());
-    environment.extend(baseline_inputs().iter().cloned());
-    environment
+    let pins = baseline_inputs().as_ref().map_err(|reason| {
+        io::Error::other(format!(
+            "the baseline flake inputs could not be pinned: {reason}"
+        ))
+    })?;
+    environment.extend(pins.iter().cloned());
+    Ok(environment)
 }
 
 pub fn run_viv(bin: &Path, tp: &TempProject, cwd: &Path, args: &[&str]) -> io::Result<VivOutput> {
@@ -732,7 +908,7 @@ pub fn run_viv_with_env(
         .collect();
     let mut command = Command::new(bin);
     command.args(args).current_dir(cwd).env_clear();
-    command.envs(viv_environment(tp));
+    command.envs(viv_environment(tp)?);
     command.envs(extra.iter().map(|(name, value)| (*name, *value)));
     let output = command.output()?;
     Ok(VivOutput {

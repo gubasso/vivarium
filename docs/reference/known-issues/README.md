@@ -19,10 +19,11 @@ Expand the dossier while the issue is hot. When resolved, collapse it into one s
 
 ## Active
 
-| id                             | status | severity | affected tests                                                        | external system   | upstream reference                                                     | mask                                                        |
-| ------------------------------ | ------ | -------- | --------------------------------------------------------------------- | ----------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------- |
-| [KI-0001](./KI-0001/README.md) | open   | high     | `store-pressure-collector-freed`, `store-pressure-collector-per-path` | Nix 2.34.8        | [nix#16269](https://github.com/NixOS/nix/issues/16269)                 | none                                                        |
-| [KI-0003](./KI-0003/README.md) | masked | medium   | `zizmor`, `actionlint`                                                | cargo-dist 0.34.0 | [cargo-dist#2320](https://github.com/axodotdev/cargo-dist/issues/2320) | zizmor out, two actionlint rules accepted for `release.yml` |
+| id                             | status    | severity | affected tests                                                        | external system          | upstream reference                                                     | mask                                                        |
+| ------------------------------ | --------- | -------- | --------------------------------------------------------------------- | ------------------------ | ---------------------------------------------------------------------- | ----------------------------------------------------------- |
+| [KI-0001](./KI-0001/README.md) | open      | high     | `store-pressure-collector-freed`, `store-pressure-collector-per-path` | Nix 2.34.8               | [nix#16269](https://github.com/NixOS/nix/issues/16269)                 | none                                                        |
+| [KI-0003](./KI-0003/README.md) | masked    | medium   | `zizmor`, `actionlint`                                                | cargo-dist 0.34.0        | [cargo-dist#2320](https://github.com/axodotdev/cargo-dist/issues/2320) | zizmor out, two actionlint rules accepted for `release.yml` |
+| [KI-0006](./KI-0006/README.md) | mitigated | medium   | `test-local`, `test-eval`                                             | spectrum-os.org git host | none                                                                   | none                                                        |
 
 ## Resolved
 
