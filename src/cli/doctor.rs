@@ -147,7 +147,7 @@ fn gather_project<E: Environment>(
             config::parse_manifest(&source, &origin).map_err(|error| error.to_string())
         });
 
-    // The per-target lock in force, when this manifest has ever evaluated. The manifest name is
+    // The per-target lock in force, once a pre-flight wrote it. The manifest name is
     // the sandbox key, and `doctor` remains read-only.
     let lock_path: Option<PathBuf> = artifact
         .as_ref()

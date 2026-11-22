@@ -1657,8 +1657,8 @@ fn build_runner(flake_directory: &Path, ui: &Ui) -> Result<String, Failure> {
             "--print-out-paths",
             "--extra-experimental-features",
             "nix-command flakes",
-            // The pin the first evaluation installed is the one that decides this build. Letting
-            // `nix` update it here would be an unannounced input jump (N3).
+            // The lock in force decides this build, the pre-flight's when the target had none.
+            // Letting `nix` update it here would be an unannounced input jump (N3).
             "--no-update-lock-file",
             &attribute,
         ]),

@@ -97,7 +97,7 @@ pub(super) fn create_temp_file(
 
 /// The name a staged sibling takes: dot-prefixed so no library listing enumerates it, and carrying
 /// both the process id and a counter so two writers in one process cannot collide either.
-fn unique_path(parent: &Path, stem: &str, suffix: &str) -> PathBuf {
+pub(super) fn unique_path(parent: &Path, stem: &str, suffix: &str) -> PathBuf {
     let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
     parent.join(format!(
         ".{stem}.vivarium-{}-{id}.{suffix}",

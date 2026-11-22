@@ -18,13 +18,13 @@ use std::path::{Path, PathBuf};
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use support::{
-    DeadlineError, EX_CONFIG, EX_IOERR, EX_TEMPFAIL, EX_UNAVAILABLE, EX_USAGE, LIFETIME_LOCK,
-    Sweep, TempProject, VOLUME_TAIL, VivOutput, arrange_manifest, check, doctor_check, expect_code,
+    EX_CONFIG, EX_IOERR, EX_TEMPFAIL, EX_UNAVAILABLE, EX_USAGE, LIFETIME_LOCK, Sweep, TempProject,
+    VOLUME_TAIL, VivOutput, arrange_manifest, check, doctor_check, expect_code,
     expect_derived_manifest_visible, expect_json_array_items, expect_json_array_nonempty,
     expect_json_fields_at, expect_json_keys, expect_stderr_mentions, expect_stdout_lacks,
     expect_stdout_mentions, expect_tree_unchanged, fail, io_failed, json, json_record,
-    output_within, project_rows, run_viv, snapshot_tree, sweep_durable_parent, sweep_parent,
-    sweep_root, viv, viv_at, viv_with_env, volume_image, write_file, write_piece,
+    project_rows, run_viv, snapshot_tree, sweep_durable_parent, sweep_parent, sweep_root, viv,
+    viv_at, viv_with_env, volume_image, write_file, write_piece,
 };
 
 fn main() -> std::process::ExitCode {
@@ -80,10 +80,6 @@ fn main() -> std::process::ExitCode {
         Trial::test(
             "fixture_sweep_removes_a_root_with_read_only_directories",
             fixture_sweep_removes_a_root_with_read_only_directories,
-        ),
-        Trial::test(
-            "a_stalled_command_is_killed_at_its_deadline",
-            a_stalled_command_is_killed_at_its_deadline,
         ),
     ];
     libtest_mimic::run(&args, trials).exit_code()
@@ -159,12 +155,10 @@ fn harness_self_check() -> Result<(), Failed> {
     }
 
     // The isolation hole that would silently invalidate every fail-closed `78`
-    // assertion: an ambient VIVARIUM_MANIFEST reaching the child. The check is that
-    // every `VIVARIUM_` variable the child sees is one the harness put there on
-    // purpose — a bare prefix scan would have to be relaxed the moment the harness
-    // needed to inject anything, and relaxing it is how the hole reopens.
+    // assertion: an ambient VIVARIUM_MANIFEST reaching the child. The harness injects
+    // no `VIVARIUM_` variable at all, so the child must see none.
     let leak = run_viv(Path::new("sh"), &tp, tp.project(), &["-c", "env"]).map_err(io_failed)?;
-    check(expect_injected_vivarium_variables_only(&leak))?;
+    check(expect_no_vivarium_variables(&leak))?;
 
     // Fixture paths and tokens remain distinct for callers that create two trees in one trial.
     let sibling = TempProject::with_project_name("project").map_err(io_failed)?;
@@ -1171,23 +1165,12 @@ fn workflow_28_usage() -> Result<(), Failed> {
     Ok(())
 }
 
-/// The `VIVARIUM_` variables a child is allowed to see, and why each one is there.
-///
-/// `VIVARIUM_BASELINE_*` pin the generated flake's two baseline inputs — `nixpkgs` and `microvm`
-/// — to local store paths, which is what keeps this suite off the GitHub API. Neither
-/// participates in manifest resolution, so neither can turn an expected `78` into a success.
-const INJECTED_VARIABLES: [&str; 2] = ["VIVARIUM_BASELINE_NIXPKGS", "VIVARIUM_BASELINE_MICROVM"];
-
-fn expect_injected_vivarium_variables_only(out: &VivOutput) -> Result<(), String> {
+/// Every `VIVARIUM_` variable the child saw, as a failure: the harness injects none.
+fn expect_no_vivarium_variables(out: &VivOutput) -> Result<(), String> {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let leaked: Vec<&str> = stdout
         .lines()
         .filter(|line| line.starts_with("VIVARIUM_"))
-        .filter(|line| {
-            !INJECTED_VARIABLES
-                .iter()
-                .any(|name| line.starts_with(&format!("{name}=")))
-        })
         .collect();
     if leaked.is_empty() {
         return Ok(());
@@ -1483,42 +1466,6 @@ fn fixture_sweep_removes_a_root_with_read_only_directories() -> Result<(), Faile
         return fail(format!(
             "the sweep changed the symlink target's mode to {outside_mode:o}"
         ));
-    }
-    Ok(())
-}
-
-/// That `output_within` ends a command which never finishes, its children included, and says so.
-///
-/// The baseline pins depend on it: a fetch from a git host that accepts no connection blocks with
-/// no timeout of its own (KI-0006). The grandchild matters because that is the shape of the hang,
-/// `nix` waiting on a `git` it started. If the kill reached only the direct child, the grandchild
-/// would hold the output pipes open and the wait for them would hang in its place.
-fn a_stalled_command_is_killed_at_its_deadline() -> Result<(), Failed> {
-    let started = std::time::Instant::now();
-    let mut command = std::process::Command::new("sh");
-    command.args(["-c", "echo stalling >&2; sleep 60 & wait"]);
-    match output_within(&mut command, std::time::Duration::from_secs(1)) {
-        Err(DeadlineError::Expired { stderr, .. }) => {
-            if !stderr.contains("stalling") {
-                return fail(format!("the expiry did not carry the stderr: {stderr}"));
-            }
-        }
-        Ok(output) => return fail(format!("a stalled command finished: {}", output.status)),
-        Err(error) => return fail(format!("a stalled command failed otherwise: {error}")),
-    }
-    let elapsed = started.elapsed();
-    if elapsed > std::time::Duration::from_secs(10) {
-        return fail(format!(
-            "the deadline of 1s took {}s to end the command",
-            elapsed.as_secs()
-        ));
-    }
-    let mut finishing = std::process::Command::new("sh");
-    finishing.args(["-c", "printf done"]);
-    let output = output_within(&mut finishing, std::time::Duration::from_secs(30))
-        .map_err(|error| Failed::from(error.to_string()))?;
-    if !output.status.success() || output.stdout != b"done" {
-        return fail("a command that finishes did not return its output");
     }
     Ok(())
 }

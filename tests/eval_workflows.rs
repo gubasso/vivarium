@@ -14,11 +14,13 @@
 mod support;
 
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use libtest_mimic::{Arguments, Failed, Trial};
+use serde_json::Value;
 use support::{
-    EX_CONFIG, EX_DATAERR, TempProject, arrange_egress_fixture, arrange_manifest, check,
-    expect_code, expect_json_array_items, expect_json_array_nonempty, expect_json_fields_at,
+    EX_CONFIG, EX_DATAERR, EX_SOFTWARE, TempProject, arrange_egress_fixture, arrange_manifest,
+    check, expect_code, expect_json_array_items, expect_json_array_nonempty, expect_json_fields_at,
     expect_json_keys, expect_json_map_entries, expect_no_volume_images, expect_soft_check,
     expect_stderr_mentions, expect_stdout_lacks, expect_stdout_mentions, fail, io_failed,
     preflight, viv, viv_with_env, write_file, write_piece,
@@ -51,6 +53,23 @@ fn main() -> std::process::ExitCode {
         Trial::test(
             "workflow_23_agent_channel_config_surface",
             workflow_23_config,
+        ),
+        Trial::test(
+            "a_new_target_takes_the_shipped_pin",
+            a_new_target_takes_the_shipped_pin,
+        ),
+        Trial::test("a_base_keeps_its_own_nixpkgs", a_base_keeps_its_own_nixpkgs),
+        Trial::test(
+            "the_pre_flight_leaves_no_residue",
+            the_pre_flight_leaves_no_residue,
+        ),
+        Trial::test(
+            "a_failed_pre_flight_leaves_no_lock",
+            a_failed_pre_flight_leaves_no_lock,
+        ),
+        Trial::test(
+            "a_failed_evaluation_keeps_the_created_pin",
+            a_failed_evaluation_keeps_the_created_pin,
         ),
     ];
     libtest_mimic::run(&args, trials).exit_code()
@@ -547,49 +566,256 @@ fn workflow_18_update_pin() -> Result<(), Failed> {
     )
     .map_err(io_failed)?;
 
-    let first = viv(&tp, &["update", "--json"])?;
+    // Only the base is named. A first update with no names would move every input, and the
+    // shipped `microvm` reference would then resolve live from its branch.
+    let first = viv(&tp, &["update", "my-base", "--json"])?;
     check(expect_code(&first, 0))?;
     check(expect_json_keys(&first, &["manifest", "lock", "inputs"]))?;
-    check(expect_stdout_mentions(&first, "my-base"))?;
-    check(expect_stdout_mentions(&first, "nixpkgs"))?;
-    check(expect_stdout_mentions(&first, "\"before\":null"))?;
     check(expect_stderr_mentions(&first, "created the pin"))?;
-    let owned = tp
-        .data()
-        .join("vivarium")
-        .join("projects")
-        .join("update-pin")
-        .join("default")
-        .join("flake.lock");
+    // The pre-flight wrote the lock before the update ran, so `before` reads that lock. The
+    // base row stays `null` because a relative base node has no display pin (ADR-0112).
+    let base_row = update_row(&first, "my-base")?;
+    if !base_row["before"].is_null() {
+        return fail(format!("the base row has a display pin: {base_row}"));
+    }
+    let owned = owned_lock(&tp, "update-pin");
     if !owned.is_file() {
         return Err(Failed::from(
             "the first update did not create the owned lock",
         ));
     }
 
-    // The repeat: nothing upstream moved — the baselines are pinned `path:` references —
-    // so every row is `changed: false`, the requested row included, and the run is `0`.
+    // The repeat: the base's `nixpkgs` is a local leaf and nothing upstream moved, so every row
+    // is `changed: false`, the requested row included, and the run is `0`.
     let second = viv(&tp, &["update", "nixpkgs", "--json"])?;
     check(expect_code(&second, 0))?;
     check(expect_stdout_mentions(&second, "\"changed\":false"))?;
     check(expect_stdout_lacks(&second, "\"changed\":true"))?;
-    // The requested row carries the user's own string, translation or not (spec/01).
-    check(expect_stdout_mentions(&second, "\"name\":\"nixpkgs\""))?;
+    // The requested row carries the user's own string, translation or not (spec/01), and a
+    // node with a display pin reports one before as after.
+    let nixpkgs_row = update_row(&second, "nixpkgs")?;
+    if nixpkgs_row["before"].is_null() || nixpkgs_row["before"] != nixpkgs_row["after"] {
+        return fail(format!("the unchanged nixpkgs row reads: {nixpkgs_row}"));
+    }
 
     // No staged residue beside the owned lock: the update's temp file is consumed by the
     // rename or removed on failure, never left for the next reader to misread.
-    let residue: Vec<_> = std::fs::read_dir(owned.parent().ok_or("owned lock parent")?)
-        .map_err(io_failed)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name != "flake.lock")
-        .collect();
-    if !residue.is_empty() {
-        return Err(Failed::from(format!(
-            "staged residue beside the owned lock: {residue:?}"
-        )));
+    expect_lock_alone(&owned)
+}
+
+/// The row `name` of an update's JSON record.
+fn update_row(out: &support::VivOutput, name: &str) -> Result<Value, Failed> {
+    let record: Value = serde_json::from_slice(&out.stdout)
+        .map_err(|error| Failed::from(format!("the update printed no JSON: {error}")))?;
+    record["inputs"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == name))
+        .cloned()
+        .ok_or_else(|| Failed::from(format!("the update reported no `{name}` row: {record}")))
+}
+
+/// The tool-owned lock of the default target of manifest `name`.
+fn owned_lock(tp: &TempProject, name: &str) -> PathBuf {
+    tp.data()
+        .join("vivarium")
+        .join("projects")
+        .join(name)
+        .join("default")
+        .join("flake.lock")
+}
+
+/// That the owned lock's directory holds `flake.lock` and nothing else: the pre-flight's
+/// reference and staged result, and an update's staged output, are consumed or removed.
+fn expect_lock_alone(owned: &Path) -> Result<(), Failed> {
+    let entries = lock_directory_entries(owned)?;
+    if entries != ["flake.lock"] {
+        return fail(format!("the owned lock's directory holds: {entries:?}"));
     }
     Ok(())
+}
+
+/// Every name in the owned lock's directory, sorted; empty when the directory does not exist.
+fn lock_directory_entries(owned: &Path) -> Result<Vec<String>, Failed> {
+    let directory = owned.parent().ok_or("owned lock parent")?;
+    let mut entries: Vec<String> = match fs::read_dir(directory) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(io_failed(error)),
+    };
+    entries.sort();
+    Ok(entries)
+}
+
+/// Reads a lock file as JSON.
+fn read_lock(path: &Path) -> Result<Value, Failed> {
+    let bytes = fs::read(path).map_err(io_failed)?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| Failed::from(format!("{} is no JSON lock: {error}", path.display())))
+}
+
+/// The pin this repository ships, which the binary under test compiled in.
+fn shipped_lock() -> Result<Value, Failed> {
+    read_lock(&Path::new(env!("CARGO_MANIFEST_DIR")).join("nix/flake.lock"))
+}
+
+/// The node a path of input names reaches from the root, following `follows` edges.
+fn node_at(lock: &Value, path: &[&str]) -> Option<String> {
+    let mut current = lock["root"].as_str()?.to_owned();
+    for segment in path {
+        current = match &lock["nodes"][&current]["inputs"][*segment] {
+            Value::String(label) => label.clone(),
+            Value::Array(follows) => {
+                let follows: Vec<&str> =
+                    follows.iter().map(Value::as_str).collect::<Option<_>>()?;
+                node_at(lock, &follows)?
+            }
+            _ => return None,
+        };
+    }
+    Some(current)
+}
+
+/// The `locked` field of the node a path of input names reaches.
+fn locked_at(lock: &Value, path: &[&str]) -> Result<Value, Failed> {
+    let node = node_at(lock, path)
+        .ok_or_else(|| Failed::from(format!("the lock reaches no node at {path:?}")))?;
+    Ok(lock["nodes"][&node]["locked"].clone())
+}
+
+/// That `lock` pins the input at each path exactly as the shipped pin does.
+fn expect_shipped_nodes(lock: &Value, paths: &[&[&str]]) -> Result<(), Failed> {
+    let shipped = shipped_lock()?;
+    for path in paths {
+        let (ours, theirs) = (locked_at(lock, path)?, locked_at(&shipped, path)?);
+        if ours != theirs {
+            return fail(format!(
+                "the node at {path:?} is {ours}, and the shipped pin has {theirs}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// That a target with no lock gets the pin the binary ships as its first lock, announced.
+///
+/// The exact path of a new user: a fresh data root, no variable, and the pre-flight writing
+/// `nix/flake.lock` out through Nix's lock step (ADR-0116).
+fn a_new_target_takes_the_shipped_pin() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("shipped-pin").map_err(io_failed)?;
+    arrange_manifest(&tp, "shipped-pin", "", "")?;
+    let eval = viv(&tp, &["config", "eval", "--json"])?;
+    check(expect_code(&eval, 0))?;
+    check(expect_stderr_mentions(&eval, "created the pin"))?;
+    let lock = read_lock(&owned_lock(&tp, "shipped-pin"))?;
+    expect_shipped_nodes(
+        &lock,
+        &[&["nixpkgs"], &["microvm"], &["microvm", "spectrum"]],
+    )
+}
+
+/// That a base flake's own `nixpkgs` survives the shipped reference (ADR-0112).
+///
+/// The reference lock holds no node under the base, so the base's declaration decides its
+/// `nixpkgs`, while `microvm` and `spectrum` still come from the shipped pin. The leaf has no
+/// outputs, so the evaluation after the pre-flight fails; only the lock is read.
+fn a_base_keeps_its_own_nixpkgs() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("own-nixpkgs").map_err(io_failed)?;
+    let images = tp.config().join("vivarium").join("images").join("my-base");
+    write_file(&images.join("default.nix"), "{ ... }: { }\n").map_err(io_failed)?;
+    let leaf = tp.root().join("own-nixpkgs-leaf");
+    write_file(&leaf.join("flake.nix"), "{ outputs = { self }: { }; }\n").map_err(io_failed)?;
+    let url = format!("path:{}", leaf.display()); // nix-path-ok: a throwaway fixture folder
+    write_file(
+        &images.join("flake.nix"),
+        &format!(
+            "{{ inputs.nixpkgs.url = \"{url}\";\n  outputs = {{ self, nixpkgs }}: {{ }}; }}\n"
+        ),
+    )
+    .map_err(io_failed)?;
+    write_file(
+        &tp.config()
+            .join("vivarium")
+            .join("manifests")
+            .join("own-nixpkgs.toml"),
+        &format!(
+            "image = \"my-base\"\n\n[[workspaces]]\nsource = '{}'\n",
+            tp.project().display()
+        ),
+    )
+    .map_err(io_failed)?;
+    let eval = viv(&tp, &["config", "eval", "--json"])?;
+    check(expect_stderr_mentions(&eval, "created the pin"))?;
+    let lock = read_lock(&owned_lock(&tp, "own-nixpkgs"))?;
+    let nixpkgs = locked_at(&lock, &["nixpkgs"])?;
+    let leaf_path = leaf.display().to_string();
+    if nixpkgs["type"] != "path" || nixpkgs["path"].as_str() != Some(leaf_path.as_str()) {
+        return fail(format!("the base's nixpkgs is not its own leaf: {nixpkgs}"));
+    }
+    expect_shipped_nodes(&lock, &[&["microvm"], &["microvm", "spectrum"]])
+}
+
+/// That the pre-flight leaves nothing beside the lock it wrote.
+fn the_pre_flight_leaves_no_residue() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("no-residue").map_err(io_failed)?;
+    arrange_manifest(&tp, "no-residue", "", "")?;
+    let eval = viv(&tp, &["config", "eval", "--json"])?;
+    check(expect_code(&eval, 0))?;
+    expect_lock_alone(&owned_lock(&tp, "no-residue"))
+}
+
+/// That a pre-flight Nix cannot complete installs no lock and leaves no temporary file.
+fn a_failed_pre_flight_leaves_no_lock() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("failed-pre-flight").map_err(io_failed)?;
+    let images = tp.config().join("vivarium").join("images").join("my-base");
+    write_file(&images.join("default.nix"), "{ ... }: { }\n").map_err(io_failed)?;
+    let missing = tp.root().join("no-such-folder");
+    let url = format!("path:{}", missing.display()); // nix-path-ok: a missing fixture folder
+    write_file(
+        &images.join("flake.nix"),
+        &format!("{{ inputs.gone.url = \"{url}\";\n  outputs = {{ self, gone }}: {{ }}; }}\n"),
+    )
+    .map_err(io_failed)?;
+    write_file(
+        &tp.config()
+            .join("vivarium")
+            .join("manifests")
+            .join("failed-pre-flight.toml"),
+        &format!(
+            "image = \"my-base\"\n\n[[workspaces]]\nsource = '{}'\n",
+            tp.project().display()
+        ),
+    )
+    .map_err(io_failed)?;
+    let eval = viv(&tp, &["config", "eval", "--json"])?;
+    check(expect_code(&eval, EX_SOFTWARE))?;
+    check(expect_stderr_mentions(&eval, "lock.preflight-failed"))?;
+    let entries = lock_directory_entries(&owned_lock(&tp, "failed-pre-flight"))?;
+    if !entries.is_empty() {
+        return fail(format!("a failed pre-flight left: {entries:?}"));
+    }
+    Ok(())
+}
+
+/// That a lock which resolves but does not evaluate stays, announced once (ADR-0116).
+fn a_failed_evaluation_keeps_the_created_pin() -> Result<(), Failed> {
+    let tp = TempProject::with_project_name("kept-pin").map_err(io_failed)?;
+    // A parse error, which the lock step never reads and the evaluation cannot catch.
+    support::arrange_manifest_with_image(&tp, "kept-pin", "", "", "{ ... }: {\n")?;
+    let eval = viv(&tp, &["config", "eval", "--json"])?;
+    if expect_code(&eval, 0).is_ok() {
+        return fail("an image that does not parse evaluated");
+    }
+    let stderr = String::from_utf8_lossy(&eval.stderr);
+    let announced = stderr.matches("created the pin").count();
+    if announced != 1 {
+        return fail(format!(
+            "the created pin was announced {announced} times: {stderr}"
+        ));
+    }
+    expect_lock_alone(&owned_lock(&tp, "kept-pin"))
 }
 
 /// The declared channel is visible on both config surfaces: `config eval` renders the effective

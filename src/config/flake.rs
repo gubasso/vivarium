@@ -62,59 +62,6 @@ pub fn embedded_file(path: &str) -> Option<&'static [u8]> {
         .map(|(_, bytes)| *bytes)
 }
 
-/// The two inputs every generated flake carries whatever a manifest declares.
-///
-/// Their default resolves a branch, which is what a released vivarium should do: a user binding a
-/// project today gets today's upstream, pinned from then on by the lock the first evaluation
-/// creates. That is also a trap for this repository's own lanes, which evaluate from a fresh data
-/// root over and over: branch resolution queries the GitHub API every time and is answered `403`
-/// after sixty of them, closing the `ConfigEval` gate for a reason that is about GitHub.
-///
-/// So both are overridable by environment, and every development lane sets them to the store paths
-/// this repository's own product flake already pins — no network, no API, and the same revisions
-/// vivarium is developed against. Reached through the injected [`Environment`] rather than the
-/// process, so the renderer stays a function of its inputs.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BaselineInputs {
-    /// The `nixpkgs` flake reference.
-    pub nixpkgs: String,
-    /// The `microvm` flake reference.
-    pub microvm: String,
-}
-
-/// The variable a development lane sets to pin `nixpkgs`.
-pub const BASELINE_NIXPKGS_VARIABLE: &str = "VIVARIUM_BASELINE_NIXPKGS";
-
-/// The variable a development lane sets to pin `microvm`.
-pub const BASELINE_MICROVM_VARIABLE: &str = "VIVARIUM_BASELINE_MICROVM";
-
-impl Default for BaselineInputs {
-    fn default() -> Self {
-        Self {
-            nixpkgs: "github:NixOS/nixpkgs/nixos-unstable".to_owned(),
-            microvm: "github:astro/microvm.nix".to_owned(),
-        }
-    }
-}
-
-impl BaselineInputs {
-    /// Reads the overrides a development lane sets, falling back to the shipped references.
-    #[must_use]
-    pub fn from_environment(environment: &impl super::Environment) -> Self {
-        let read = |name| {
-            environment
-                .variable(name)
-                .and_then(|value| value.into_string().ok())
-                .filter(|value| !value.trim().is_empty())
-        };
-        let shipped = Self::default();
-        Self {
-            nixpkgs: read(BASELINE_NIXPKGS_VARIABLE).unwrap_or(shipped.nixpkgs),
-            microvm: read(BASELINE_MICROVM_VARIABLE).unwrap_or(shipped.microvm),
-        }
-    }
-}
-
 pub use super::input::FlakeInput;
 
 /// All durable paths involved in preparing one target.
@@ -128,32 +75,25 @@ pub struct GeneratedFlakePaths {
     pub override_lock: Option<PathBuf>,
 }
 
-/// The one lock selected for this preparation.
+/// The one lock in force for a preparation.
+///
+/// There is no missing case: when a target has no lock, the pre-flight writes the pin the binary
+/// ships before anything evaluates (ADR-0116), so every preparation that reaches Nix has one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EffectiveLock {
     /// A read-only team pin beside a directory-form manifest.
     Override { path: PathBuf },
-    /// A tool-owned pin already exists and ordinary build must not move it.
+    /// The tool-owned pin, which no ordinary build moves.
     OwnedExisting { path: PathBuf },
-    /// No pin exists yet; a successful first build may install exactly one.
-    OwnedMissing { path: PathBuf },
 }
 
 impl EffectiveLock {
-    /// The selected durable lock path, whether or not it exists yet.
+    /// The path of the lock in force.
     #[must_use]
     pub fn path(&self) -> &Path {
         match self {
-            Self::Override { path }
-            | Self::OwnedExisting { path }
-            | Self::OwnedMissing { path } => path,
+            Self::Override { path } | Self::OwnedExisting { path } => path,
         }
-    }
-
-    /// Whether a successful build may persist a newly created lock.
-    #[must_use]
-    pub const fn may_persist_created(&self) -> bool {
-        matches!(self, Self::OwnedMissing { .. })
     }
 }
 
@@ -178,8 +118,8 @@ pub struct ResolvedComposition {
     pub inputs: BTreeMap<String, FlakeInput>,
     /// Paths for generated and durable artifacts.
     pub paths: GeneratedFlakePaths,
-    /// The one effective lock decision.
-    pub effective_lock: EffectiveLock,
+    /// The lock in force, or `None` when the pre-flight must write the first one.
+    pub effective_lock: Option<EffectiveLock>,
 }
 
 /// One operation in the deterministic generated-tree plan.
@@ -219,8 +159,8 @@ pub struct GeneratedFlakePlan {
     pub directory: PathBuf,
     /// Ordered operations beneath that directory.
     pub entries: Vec<GeneratedEntry>,
-    /// The lock decision carried into publication and later persistence.
-    pub effective_lock: EffectiveLock,
+    /// The lock in force, or `None` when the pre-flight must write the first one.
+    pub effective_lock: Option<EffectiveLock>,
     /// The owned lock's migrated bytes when it carried a dead `vivarium` node (ADR-0102).
     ///
     /// The staged tree already gets these bytes through its `flake.lock` entry; this copy is for
@@ -236,7 +176,7 @@ pub struct GeneratedFlakePlan {
 pub struct PreparedFlake {
     /// The published flake directory.
     pub directory: PathBuf,
-    /// The lock selected before publication.
+    /// The lock in force, the pre-flight's when it wrote the first one.
     pub effective_lock: EffectiveLock,
     /// Whether this preparation shed a dead `vivarium` node from the owned lock.
     ///
@@ -396,25 +336,23 @@ pub fn target_paths(
 }
 
 impl GeneratedFlakePaths {
-    /// Chooses the lock in force: a present team override, else the tool-owned pin.
+    /// Chooses the lock in force: a present team override, else the tool-owned pin, else none.
     ///
     /// # Errors
     ///
     /// Returns [`GeneratedFlakeError`] when a candidate cannot be inspected.
-    pub fn select_lock(&self) -> Result<EffectiveLock, GeneratedFlakeError> {
+    pub fn select_lock(&self) -> Result<Option<EffectiveLock>, GeneratedFlakeError> {
         if let Some(path) = &self.override_lock
             && probe_lock(path)?
         {
-            return Ok(EffectiveLock::Override { path: path.clone() });
+            return Ok(Some(EffectiveLock::Override { path: path.clone() }));
         }
         if probe_lock(&self.owned_lock)? {
-            return Ok(EffectiveLock::OwnedExisting {
+            return Ok(Some(EffectiveLock::OwnedExisting {
                 path: self.owned_lock.clone(),
-            });
+            }));
         }
-        Ok(EffectiveLock::OwnedMissing {
-            path: self.owned_lock.clone(),
-        })
+        Ok(None)
     }
 }
 
@@ -432,13 +370,12 @@ impl GeneratedFlakePlan {
         manifest: &Manifest,
         workspaces: &[PathBuf],
         composition: &ResolvedComposition,
-        baseline: &BaselineInputs,
         base: Option<&ImageBase>,
     ) -> Result<Self, GeneratedFlakeError> {
         let mut entries = vec![
             GeneratedEntry::RenderedFile {
                 destination: PathBuf::from(FLAKE_FILE),
-                bytes: render_flake(selected_manifest, composition, baseline, base).into_bytes(),
+                bytes: render_flake(selected_manifest, composition, base)?.into_bytes(),
             },
             GeneratedEntry::RenderedFile {
                 destination: PathBuf::from(OPTIONS_MODULE_FILE),
@@ -484,7 +421,7 @@ impl GeneratedFlakePlan {
         match &composition.effective_lock {
             // A team override is read-only to the tool by contract, so one carrying the dead
             // node is refused with the remedy named rather than rewritten in place.
-            EffectiveLock::Override { path } => {
+            Some(EffectiveLock::Override { path }) => {
                 if super::lock::carries_vivarium(&read_lock(path)?) {
                     return Err(GeneratedFlakeError::plain(
                         GeneratedFlakeErrorKind::Config,
@@ -503,7 +440,7 @@ impl GeneratedFlakePlan {
                     destination: PathBuf::from(LOCK_FILE),
                 });
             }
-            EffectiveLock::OwnedExisting { path } => {
+            Some(EffectiveLock::OwnedExisting { path }) => {
                 // The one sanctioned lock rewrite (ADR-0102): shed the dead node, moving no
                 // surviving pin. The staged tree gets the migrated bytes so this very
                 // evaluation runs against them.
@@ -520,7 +457,8 @@ impl GeneratedFlakePlan {
                     });
                 }
             }
-            EffectiveLock::OwnedMissing { .. } => {}
+            // The pre-flight writes the first lock into the published tree.
+            None => {}
         }
         for entry in &entries {
             validate_relative(entry.destination())?;
@@ -743,12 +681,15 @@ fn validate_relative(path: &Path) -> Result<(), GeneratedFlakeError> {
 /// The `inputs` block: the two baseline inputs every generated flake carries — followed out of
 /// the selected image's base flake for whichever it declares (ADR-0112) — then whatever the
 /// composed artifacts declared.
+///
+/// The baselines name the branches of the shipped pin's root originals (ADR-0116). The lock the
+/// pre-flight writes pins them, so a branch here is never resolved live by an ordinary build.
 #[allow(clippy::format_push_string)]
 fn render_inputs(
     composition: &ResolvedComposition,
-    baseline: &BaselineInputs,
     base: Option<&ImageBase>,
-) -> String {
+) -> Result<String, GeneratedFlakeError> {
+    let baseline = super::shipped_pin::baseline()?;
     let mut text = String::from("  inputs = {\n");
     if let Some(base) = base {
         // The base input first, since the baselines below may follow into it. The URL is
@@ -809,21 +750,20 @@ fn render_inputs(
         ));
     }
     text.push_str("  };\n");
-    text
+    Ok(text)
 }
 
 #[allow(clippy::format_push_string)]
 fn render_flake(
     selected_manifest: &ResolvedArtifact,
     composition: &ResolvedComposition,
-    baseline: &BaselineInputs,
     base: Option<&ImageBase>,
-) -> String {
+) -> Result<String, GeneratedFlakeError> {
     let mut text = String::from(concat!(
         "{\n",
         "  description = \"vivarium generated project flake\";\n",
     ));
-    text.push_str(&render_inputs(composition, baseline, base));
+    text.push_str(&render_inputs(composition, base)?);
     text.push_str("  outputs = inputs@{ nixpkgs, microvm, ... }:\n    let\n");
     text.push_str(concat!(
         "      vivariumInputs = builtins.removeAttrs inputs ",
@@ -929,7 +869,7 @@ fn render_flake(
         "aarch64-linux = (launch \"aarch64-linux\").runner; };\n",
     ));
     text.push_str("    };\n}\n");
-    text
+    Ok(text)
 }
 
 /// One entry of the generated `layers` list.
@@ -1093,36 +1033,12 @@ mod tests {
     use std::os::unix::fs::symlink;
     use std::path::{Path, PathBuf};
 
-    use std::ffi::OsString;
-
     use super::{
-        BaselineInputs, EffectiveLock, GeneratedEntry, GeneratedFlakePlan, ResolvedComposition,
+        EffectiveLock, GeneratedEntry, GeneratedFlakePlan, ResolvedComposition,
         render_manifest_module,
     };
     use crate::config::test_support::ScratchDirectory;
     use crate::config::{ArtifactForm, ArtifactKind, Manifest, ResolvedArtifact, XdgRoots};
-
-    /// The seam AGENTS.md's pin-in-development rule runs through, in both directions.
-    #[test]
-    fn the_baseline_ships_branches_and_takes_a_development_pin() {
-        let shipped = BaselineInputs::from_environment(&(|_: &'static str| None));
-        assert_eq!(shipped, BaselineInputs::default());
-        assert!(shipped.nixpkgs.starts_with("github:"));
-
-        let pinned = BaselineInputs::from_environment(
-            &(|name: &'static str| match name {
-                super::BASELINE_NIXPKGS_VARIABLE => {
-                    Some(OsString::from("path:/nix/store/x-source"))
-                }
-                // An empty override is the shape a lane that failed to compute one would set,
-                // and it must fall back rather than render an empty input URL.
-                super::BASELINE_MICROVM_VARIABLE => Some(OsString::from("   ")),
-                _ => None,
-            }),
-        );
-        assert_eq!(pinned.nixpkgs, "path:/nix/store/x-source");
-        assert_eq!(pinned.microvm, BaselineInputs::default().microvm);
-    }
 
     /// A declared workspace reaches Nix as a mount that mirrors its own path, and the declared
     /// spelling never does.
@@ -1226,10 +1142,7 @@ mod tests {
             composition.paths.directory,
             scratch.path().join("cache/flakes/project/default")
         );
-        assert!(matches!(
-            composition.effective_lock,
-            EffectiveLock::OwnedMissing { .. }
-        ));
+        assert_eq!(composition.effective_lock, None);
         Ok(())
     }
 
@@ -1265,7 +1178,6 @@ mod tests {
             &manifest,
             &[],
             &composition,
-            &BaselineInputs::default(),
             None,
         )?;
         let second = GeneratedFlakePlan::build(
@@ -1275,7 +1187,6 @@ mod tests {
             &manifest,
             &[],
             &composition,
-            &BaselineInputs::default(),
             None,
         )?;
         assert_eq!(first, second);
@@ -1346,7 +1257,6 @@ mod tests {
                 &manifest,
                 &[],
                 &composition,
-                &BaselineInputs::default(),
                 None,
             )?)
         };
@@ -1417,7 +1327,6 @@ mod tests {
             &manifest,
             &[],
             &composition,
-            &BaselineInputs::default(),
             None,
         )?;
 
@@ -1513,7 +1422,7 @@ mod tests {
         )?;
         assert!(matches!(
             composition.effective_lock,
-            EffectiveLock::Override { .. }
+            Some(EffectiveLock::Override { .. })
         ));
 
         // A read-only team pin carrying the dead `vivarium` node is refused, never rewritten
@@ -1532,7 +1441,6 @@ mod tests {
             &manifest,
             &[],
             &composition,
-            &BaselineInputs::default(),
             None,
         ) else {
             return Err("an override lock pinning `vivarium` must refuse".into());
@@ -1676,7 +1584,6 @@ mod tests {
             "image = 'base'",
             &manifest,
         )?;
-        let baseline = BaselineInputs::default();
         let base = |nixpkgs: bool, microvm: bool| crate::config::ImageBase {
             input_name: "my-base".to_owned(),
             flake_path: scratch.path().join("config/images/my-base/flake.nix"),
@@ -1684,19 +1591,19 @@ mod tests {
             declares_microvm: microvm,
         };
 
-        let absent = super::render_inputs(&composition, &baseline, None);
+        let absent = super::render_inputs(&composition, None)?;
         assert!(absent.contains("nixpkgs.url = \""));
         assert!(absent.contains("microvm.url = \""));
         assert!(absent.contains("microvm.inputs.nixpkgs.follows = \"nixpkgs\";"));
         assert!(!absent.contains("my-base"));
 
         let base_input = "my-base.url = \"path:./images/my-base\";"; // nix-path-ok: generated
-        let neither = super::render_inputs(&composition, &baseline, Some(&base(false, false)));
+        let neither = super::render_inputs(&composition, Some(&base(false, false)))?;
         assert!(neither.contains(base_input));
         assert!(neither.contains("nixpkgs.url = \""));
         assert!(neither.contains("microvm.inputs.nixpkgs.follows = \"nixpkgs\";"));
 
-        let both = super::render_inputs(&composition, &baseline, Some(&base(true, true)));
+        let both = super::render_inputs(&composition, Some(&base(true, true)))?;
         assert!(both.contains(base_input));
         assert!(both.contains("nixpkgs.follows = \"my-base/nixpkgs\";"));
         assert!(both.contains("microvm.follows = \"my-base/microvm\";"));
@@ -1704,12 +1611,12 @@ mod tests {
         assert!(!both.contains("microvm.url"));
         assert!(!both.contains("microvm.inputs.nixpkgs.follows"));
 
-        let one = super::render_inputs(&composition, &baseline, Some(&base(true, false)));
+        let one = super::render_inputs(&composition, Some(&base(true, false)))?;
         assert!(one.contains("nixpkgs.follows = \"my-base/nixpkgs\";"));
         assert!(one.contains("microvm.url = \""));
         assert!(one.contains("microvm.inputs.nixpkgs.follows = \"nixpkgs\";"));
 
-        let other = super::render_inputs(&composition, &baseline, Some(&base(false, true)));
+        let other = super::render_inputs(&composition, Some(&base(false, true)))?;
         assert!(other.contains("nixpkgs.url = \""));
         assert!(other.contains("microvm.follows = \"my-base/microvm\";"));
         assert!(!other.contains("microvm.inputs.nixpkgs.follows"));

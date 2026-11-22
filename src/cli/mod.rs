@@ -66,10 +66,8 @@ pub struct Success {
     ///
     /// Two things need it. `config sources` marks an equal-priority tie with `[tie]` and still
     /// exits `0`, and spec/01 puts that marker on stderr so `… --json 2>/dev/null | jq` stays
-    /// clean. Both config readers announce the pin a first evaluation created, which spec/04
-    /// requires be reported and neither envelope has a field for. A note is not a failure, so it
-    /// cannot travel through [`Failure`], and it is not the result, so it must not travel through
-    /// stdout.
+    /// clean. A note is not a failure, so it cannot travel through [`Failure`], and it is not the
+    /// result, so it must not travel through stdout.
     pub notes: String,
 }
 
@@ -353,21 +351,25 @@ fn config_binding<E: Environment>(
     let sandbox_id = selected.name.clone();
     let paths = config::target_paths(&context.roots, &sandbox_id, DEFAULT_TARGET, selected)
         .map_err(|error| flake_failure(&error))?;
+    // With no lock yet, the owned path is where the pre-flight will write one.
     let lock = paths.select_lock().map_err(|error| flake_failure(&error))?;
+    let lock_path = lock
+        .as_ref()
+        .map_or(paths.owned_lock.as_path(), config::EffectiveLock::path);
 
     if output.is_json() {
         return Ok(Success::plain(render::binding_json(
             binding,
             &context.roots,
             &paths.directory,
-            lock.path(),
+            lock_path,
         )));
     }
     Ok(Success::plain(render::binding_human(
         binding,
         &context.roots,
         &paths.directory,
-        lock.path(),
+        lock_path,
         context.ui.palette_out(),
     )))
 }
@@ -389,7 +391,7 @@ fn config_eval<E: Environment>(
         } else {
             render::config_eval_human(&evaluated.analysis)
         },
-        notes: evaluated.notes,
+        notes: String::new(),
     })
 }
 
@@ -413,7 +415,7 @@ fn config_sources<E: Environment>(
         } else {
             render::config_sources_human(&evaluated.analysis)
         },
-        notes: evaluated.notes + &render::tie_notes(&evaluated.analysis),
+        notes: render::tie_notes(&evaluated.analysis),
     })
 }
 
@@ -421,8 +423,6 @@ fn config_sources<E: Environment>(
 struct Evaluated {
     binding: config::ResolvedBinding,
     manifest: config::Manifest,
-    /// What the evaluation has to say on stderr before the result reaches stdout.
-    notes: String,
     analysis: config::merged::Analysis,
     /// The generated tree this evaluation prepared, which is also what a launch builds from.
     flake_directory: PathBuf,
@@ -469,10 +469,10 @@ fn evaluate_resolved<E: Environment>(
         &source,
         &manifest,
         &workspace_paths,
-        &config::BaselineInputs::from_environment(context.environment),
+        context.ui,
     )
     .map_err(|error| flake_failure(&error))?;
-    // The one sanctioned lock rewrite, announced for the same reason the created pin below is: no
+    // The one sanctioned lock rewrite, announced for the same reason the created pin is: no
     // ordinary build moves a pin (ADR-0059), so the migration ADR-0102 sanctions must never
     // happen silently. Directly on stderr rather than through `notes`, deliberately: the shed
     // happens exactly once per retained lock, this seam is shared by verbs whose surface has no
@@ -486,32 +486,12 @@ fn evaluate_resolved<E: Environment>(
     }
     // Enforcement of the composed rule over the lock in force, before Nix runs against it:
     // a split baseline is legal Nix and a guest that fails at boot, so nothing downstream
-    // would name it (ADR-0112). A first evaluation has no lock yet; its created pin meets
-    // the same check inside `persist_created_lock` before anything durable exists.
-    if !prepared.effective_lock.may_persist_created() {
-        let staged = read_staged_lock(&prepared.directory)?;
-        config::composed_lock_failure(&staged).map_err(|error| flake_failure(&error))?;
-    }
+    // would name it (ADR-0112). A pin the pre-flight just wrote met the same check before it
+    // was installed, and meets it again here at the cost of one read.
+    let staged = read_staged_lock(&prepared.directory)?;
+    config::composed_lock_failure(&staged).map_err(|error| flake_failure(&error))?;
     let report = config::evaluate::report(&prepared, context.ui)
         .map_err(|error| evaluation_failure(&error))?;
-    // Only now, and only when this target had no pin: the lock is created by the first successful
-    // evaluation and thereafter moves only under `viv update` (spec/04, ADR-0059).
-    let created = prepared.effective_lock.may_persist_created();
-    let lock =
-        config::evaluate::persist_first_pin(&prepared).map_err(|error| flake_failure(&error))?;
-    // Announced, because spec/04 requires the created pin to be reported and a read-only command
-    // that quietly wrote one would be the surprise ADR-0011 exists to prevent. On stderr, since
-    // the pin is not the result the command was asked for. A first evaluation that then refuses a
-    // defect loses the note rather than the fact: `viv config` reports the lock in force at any
-    // time, so nothing here is the only chance to learn it.
-    let notes = if created {
-        format!(
-            "created the pin for this target: {}\n",
-            lock.path().display()
-        )
-    } else {
-        String::new()
-    };
     let mut analysis = config::merged::analyze(&report);
     // The one key the report cannot carry: since ADR-0110 a workspace compiles to a mount and Nix
     // never learns it was one, so the reader's view of ownership is put back here.
@@ -519,9 +499,8 @@ fn evaluate_resolved<E: Environment>(
     Ok(Evaluated {
         binding,
         manifest,
-        notes,
         analysis,
-        lock_snapshot: read_staged_lock(&prepared.directory)?,
+        lock_snapshot: staged,
         flake_directory: prepared.directory,
     })
 }
@@ -529,7 +508,7 @@ fn evaluate_resolved<E: Environment>(
 /// The staged lock's bytes, read the moment this process published the tree it evaluated.
 ///
 /// Present in every case by this point: an existing or override lock was staged into the tree,
-/// and a first evaluation created one there before `persist_first_pin` copied it out.
+/// or the pre-flight copied the first pin there.
 fn read_staged_lock(flake_directory: &Path) -> Result<Vec<u8>, Failure> {
     let path = flake_directory.join("flake.lock");
     std::fs::read(&path).map_err(|source| {

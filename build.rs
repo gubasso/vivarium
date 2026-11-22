@@ -3,7 +3,9 @@
 //! source the guest-agent derivation builds from. `nix/flake.nix` and `nix/flake.lock`
 //! stay out — the flake file is the repository-side publication surface (and the sole
 //! sanctioned edge to `tests/nix`), and the embedded tree is imported as a directory,
-//! never entered as a flake.
+//! never entered as a flake. The lock reaches the binary another way: the host-only
+//! `src/config/shipped_pin.rs` compiles it in as the first pin (ADR-0116), and keeping it
+//! out of this tree is what stops a lock move from rebuilding the guest agent.
 
 use std::env;
 use std::error::Error;

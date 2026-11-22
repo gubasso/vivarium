@@ -32,7 +32,9 @@ A data file can drift from its binary, and a fetch is live resolution again.
 
 Accepted
 
-Chooses the first exit of [`Q-009`](../plan/open-questions.md), a rendered baseline pin with a named update path, and awaits enactment.
+Enacted for the shipped pin: [`src/config/shipped_pin.rs`](../../src/config/shipped_pin.rs) compiles in the lock and reads the baseline branches from it, and the pre-flight in [`src/config/materialize.rs`](../../src/config/materialize.rs) writes a target's first lock. The suite takes a new user's path with no seam. Still to enact: the developer warning of `exobrain outdated` in `.envrc`.
+
+Closes `Q-009` through its first exit, a rendered baseline pin with a named update path, so the question left [`open-questions.md`](../plan/open-questions.md).
 
 Amends [`ADR-0059-lockfile-is-tool-owned-in-the-data-root.md`](./ADR-0059-lockfile-is-tool-owned-in-the-data-root.md) — the first lock comes from the pre-flight and the shipped pin, not from the first successful evaluation. The lock's home, its per-target scope, and that only `viv update` moves it survive.
 

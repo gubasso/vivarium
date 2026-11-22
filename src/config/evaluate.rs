@@ -5,11 +5,10 @@
 //! Nix source at the call site: a host-side expression string would be a second place where the
 //! option surface is spelled, and the two would drift.
 //!
-//! The lock is the other thing this module owns. A build never re-resolves inputs — that is the
-//! unannounced input jump N3 forbids — so a preparation that already has a pin runs with
-//! `--no-update-lock-file` and fails when a declared input has no node. Only the first evaluation
-//! of a target may create one, and the pin it created is then installed under the data root by
-//! `persist_created_lock`, which is where ADR-0059 puts it.
+//! A build never re-resolves inputs — that is the unannounced input jump N3 forbids — so every
+//! evaluation runs with `--no-update-lock-file` and fails when a declared input has no node. A
+//! lock is always in force by now: when a target had none, the pre-flight wrote the pin the binary
+//! ships before this module ran (ADR-0116).
 
 use std::path::Path;
 use std::process::Command;
@@ -20,7 +19,7 @@ use serde_json::Value;
 use crate::ui::{Ui, watch};
 
 use super::error::EvaluationError;
-use super::{EffectiveLock, PreparedFlake, flake, materialize};
+use super::{PreparedFlake, flake};
 
 /// The systems the generated flake publishes, which are the systems a microVM boots (N1).
 const SUPPORTED_SYSTEMS: [(&str, &str); 2] =
@@ -143,7 +142,6 @@ impl Definition {
 pub fn report(prepared: &PreparedFlake, ui: &Ui) -> Result<Report, EvaluationError> {
     let attribute = format!("{}.{}", flake::REPORT_ATTR, host_system());
     let output = run(
-        prepared,
         "eval",
         &[
             &format!("{}#{attribute}", display(&prepared.directory)),
@@ -156,27 +154,7 @@ pub fn report(prepared: &PreparedFlake, ui: &Ui) -> Result<Report, EvaluationErr
     })
 }
 
-/// Installs the pin a first evaluation created, when this preparation was eligible for one.
-///
-/// Separate from [`report`] because creating a pin is a write and evaluation is not: a caller that
-/// only reads must be able to do so without this, and a caller that does persist should be the one
-/// deciding to. Returns the lock in force afterwards.
-///
-/// # Errors
-///
-/// Returns [`super::GeneratedFlakeError`] when the created lock cannot be read or installed, or
-/// when a different concurrent first pin won.
-pub fn persist_first_pin(
-    prepared: &PreparedFlake,
-) -> Result<EffectiveLock, super::GeneratedFlakeError> {
-    if !prepared.effective_lock.may_persist_created() {
-        return Ok(prepared.effective_lock.clone());
-    }
-    materialize::persist_created_lock(prepared)
-}
-
 fn run(
-    prepared: &PreparedFlake,
     verb: &'static str,
     arguments: &[&str],
     ui: &Ui,
@@ -185,11 +163,8 @@ fn run(
     command.arg(verb);
     command.args(FEATURE_FLAGS);
     command.args(arguments);
-    // A preparation that already has a pin must not move it. Passing this unconditionally would
-    // make the very first evaluation of a target fail for want of the file it is allowed to create.
-    if !prepared.effective_lock.may_persist_created() {
-        command.arg("--no-update-lock-file");
-    }
+    // The lock in force must not move: the pre-flight already wrote it when the target had none.
+    command.arg("--no-update-lock-file");
     // Three answers, not two: absent is `69`, forbidden is `77`, and anything else stays the
     // unclassified `69`. Spec/14's `config` rows admit both codes for the Nix preflight, and
     // collapsing the middle case into "unavailable" would tell a user to install what they have.

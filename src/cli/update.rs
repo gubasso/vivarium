@@ -36,7 +36,7 @@ pub(super) fn run<E: Environment>(
     // The unknown-name refusal, from a read-only resolution and before anything else: a
     // usage answer (`64`) is owed deterministically, so it must precede the target lock —
     // a contended lock would turn a typo into `75` — and precede every write, including
-    // the runtime directory the lock lives in and the private tree.
+    // the runtime directory the lock lives in, the private tree, and the pre-flight's lock.
     let (declared, probed_base) = config::resolve_update_inputs(
         &context.roots,
         &sandbox_id,
@@ -50,18 +50,19 @@ pub(super) fn run<E: Environment>(
 
     // The per-target lock, before the effective lock is selected and its bytes staged into
     // the private tree: a snapshot taken outside it answers about a moment that is over
-    // (ADR-0053), and a copy taken before acquisition could be overwritten by a `start`
-    // persisting a first pin — or by another update — between the copy and the lock, after
-    // which this update would re-resolve from the stale bytes and replace the newer pin.
+    // (ADR-0053), and a copy taken before acquisition could be overwritten by another update
+    // between the copy and the lock, after which this update would re-resolve from the stale
+    // bytes and replace the newer pin.
     let runtime_root = config::resolve_runtime_root(context.environment, config::effective_uid())
         .map_err(|error| super::resolution_failure(&error))?;
     let runtime = lifecycle::Runtime::locate(&runtime_root, &sandbox_id, super::DEFAULT_TARGET)?;
     let _lock = lifecycle::TargetLock::acquire(&runtime)?;
 
-    // The private tree: resolution, the base probe, and rendering — no durable write, and
-    // not the shared cache tree the unlocked readers republish. It re-resolves and
-    // re-probes under the lock; the pre-lock resolution above answered only the usage
-    // question, and this one is the state the update acts on.
+    // The private tree: resolution, the base probe, and rendering — not the shared cache
+    // tree the unlocked readers republish. Its one durable write is the pre-flight's, when
+    // the target has no lock yet, so the update below always starts from a lock in force
+    // (ADR-0116). It re-resolves and re-probes under the lock; the pre-lock resolution above
+    // answered only the usage question, and this one is the state the update acts on.
     let prepared = config::prepare_update_tree(
         &context.roots,
         &sandbox_id,
@@ -70,7 +71,7 @@ pub(super) fn run<E: Environment>(
         &resolved.source,
         &resolved.manifest,
         &resolved.workspace_paths,
-        &config::BaselineInputs::from_environment(context.environment),
+        context.ui,
     )
     .map_err(|error| super::flake_failure(&error))?;
 
@@ -93,18 +94,9 @@ pub(super) fn run<E: Environment>(
         .with_hint("re-run the update against the configuration as it now is"));
     };
 
-    let before = prepared
-        .staged_reference
-        .as_deref()
-        .map(read_pins)
-        .transpose()?
-        .unwrap_or_default();
+    let before = read_pins(&prepared.staged_reference)?;
 
     let owned_path = prepared.effective_lock.path().to_path_buf();
-    let created = matches!(
-        prepared.effective_lock,
-        config::EffectiveLock::OwnedMissing { .. }
-    );
     let parent = owned_path.parent().ok_or_else(|| {
         diagnosed(
             Namespace::Lock,
@@ -143,7 +135,7 @@ pub(super) fn run<E: Environment>(
     }
     let (rows_json, rows_human) = result?;
 
-    let notes = notes_for(created, &owned_path, prepared.base.as_ref());
+    let notes = base_notes(prepared.base.as_ref());
     Ok(Success {
         stdout: if output.is_json() {
             render::update_json(&sandbox_id, &owned_path, &rows_json)
@@ -154,32 +146,17 @@ pub(super) fn run<E: Environment>(
     })
 }
 
-/// The stderr notes: the created pin (spec/04 requires it reported), and the base
-/// sub-lock's seeding rule (ADR-0112 requires the held pins explained).
-fn notes_for(created: bool, owned_path: &Path, base: Option<&config::ImageBase>) -> String {
-    let mut notes = String::new();
-    if created {
-        let _ = std::fmt::Write::write_fmt(
-            &mut notes,
-            format_args!(
-                "created the pin for this target: {}\n",
-                owned_path.display()
-            ),
-        );
+/// The stderr note on the base sub-lock's seeding rule (ADR-0112 requires the held pins
+/// explained). The created pin is the pre-flight's to announce.
+fn base_notes(base: Option<&config::ImageBase>) -> String {
+    match base {
+        Some(base) if base.flake_path.with_file_name("flake.lock").is_file() => format!(
+            "the base `{}` carries its own `flake.lock`; the pins it holds re-seed every \
+            re-resolution and move only when that file does\n",
+            base.input_name
+        ),
+        _ => String::new(),
     }
-    if let Some(base) = base
-        && base.flake_path.with_file_name("flake.lock").is_file()
-    {
-        let _ = std::fmt::Write::write_fmt(
-            &mut notes,
-            format_args!(
-                "the base `{}` carries its own `flake.lock`; the pins it holds re-seed \
-                every re-resolution and move only when that file does\n",
-                base.input_name
-            ),
-        );
-    }
-    notes
 }
 
 /// The ADR-0062 refusal, before any lock, any probe, and any write — not even the private
@@ -195,7 +172,7 @@ fn refuse_override<E: Environment>(
     let selected_lock = paths
         .select_lock()
         .map_err(|error| super::flake_failure(&error))?;
-    if let config::EffectiveLock::Override { path } = &selected_lock {
+    if let Some(config::EffectiveLock::Override { path }) = &selected_lock {
         return Err(diagnosed(
             Namespace::Lock,
             "override-in-force",
@@ -284,13 +261,11 @@ fn run_update<E: Environment>(
     command.arg(&prepared.directory);
     command.arg("--output-lock-file");
     command.arg(staged);
-    // Only when a lock is in force: the flag naming a missing file is silently treated as
-    // absent by Nix, and relying on that would make a typo in the path a full re-resolve
-    // (findings register, 2026-08-26).
-    if let Some(reference) = &prepared.staged_reference {
-        command.arg("--reference-lock-file");
-        command.arg(reference);
-    }
+    // Always a lock in force, the pre-flight's at the latest. Nix silently treats a reference
+    // that names a missing file as absent, which would make a typo in the path a full
+    // re-resolve (findings register, 2026-08-26), so the reference is the staged file itself.
+    command.arg("--reference-lock-file");
+    command.arg(&prepared.staged_reference);
     let captured = watch::output(&mut command, &step).map_err(|source| {
         let code = if source.kind() == std::io::ErrorKind::PermissionDenied {
             ExitKind::NoPerm
@@ -388,7 +363,7 @@ fn derive_rows(
     for (name, pin) in after {
         let previous = before.get(name);
         // Movement is the whole resolved subtree, not the row's own node: the pin a user
-        // moves can sit below a hashless base node, and a created pin is a change.
+        // moves can sit below a hashless base node, and a node new to the lock is a change.
         let changed =
             previous.map(|prior| prior.fingerprint.as_str()) != Some(pin.fingerprint.as_str());
         let previous = previous.and_then(|prior| prior.display.clone());

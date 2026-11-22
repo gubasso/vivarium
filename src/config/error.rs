@@ -164,6 +164,8 @@ pub(super) enum GeneratedFlakeErrorKind {
     /// A required external program is absent or unusable (`69`), the same boundary
     /// [`EvaluationError`] draws for the evaluation half.
     Unavailable,
+    /// Nix ran and failed (`70`), the exit a failed evaluation takes.
+    NixFailed,
 }
 
 impl GeneratedFlakeError {
@@ -220,6 +222,25 @@ impl GeneratedFlakeError {
         }))
     }
 
+    /// A Nix run that failed, with the tail of its stderr as the reason, as a failed
+    /// evaluation reports it.
+    pub(super) fn nix_failed(
+        namespace: Namespace,
+        condition: &'static str,
+        locus: Locus,
+        message: impl Into<String>,
+        stderr: &str,
+    ) -> Self {
+        Self::plain(
+            GeneratedFlakeErrorKind::NixFailed,
+            namespace,
+            condition,
+            locus,
+            message,
+            truncate_stderr(stderr),
+        )
+    }
+
     /// Classifies authored defects, permission failures, owned I/O, and first-pin races.
     #[must_use]
     pub const fn exit_code(&self) -> ExitKind {
@@ -228,7 +249,9 @@ impl GeneratedFlakeError {
             GeneratedFlakeErrorKind::Permission => ExitKind::NoPerm,
             GeneratedFlakeErrorKind::Io => ExitKind::IoErr,
             GeneratedFlakeErrorKind::Race => ExitKind::TempFail,
-            GeneratedFlakeErrorKind::Internal => ExitKind::Software,
+            GeneratedFlakeErrorKind::Internal | GeneratedFlakeErrorKind::NixFailed => {
+                ExitKind::Software
+            }
             GeneratedFlakeErrorKind::Unavailable => ExitKind::Unavailable,
         }
     }

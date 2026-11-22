@@ -425,7 +425,7 @@ fn spawn_viv(tp: &TempProject, args: &[&str]) -> Result<std::process::Child, Fai
         .args(args)
         .current_dir(tp.project())
         .env_clear()
-        .envs(support::viv_environment(tp).map_err(io_failed)?)
+        .envs(support::viv_environment(tp))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -469,7 +469,7 @@ fn workflow_06_shell() -> Result<(), Failed> {
         .arg("shell")
         .current_dir(tp.project())
         .env_clear()
-        .envs(support::viv_environment(&tp).map_err(io_failed)?)
+        .envs(support::viv_environment(&tp))
         .spawn(pts)
         .map_err(|error| pty_failed(&error))?;
 
@@ -1597,7 +1597,7 @@ fn shell_pwd_at(tp: &TempProject, cwd: &Path, expected: &Path) -> Result<(), Fai
         .arg("shell")
         .current_dir(cwd)
         .env_clear()
-        .envs(support::viv_environment(tp).map_err(io_failed)?)
+        .envs(support::viv_environment(tp))
         .spawn(pts)
         .map_err(|error| pty_failed(&error))?;
     settle(&mut pty)?;
@@ -2736,7 +2736,7 @@ fn workflow_26_admission_refusal() -> Result<(), Failed> {
         ])
         .current_dir(tp.project())
         .env_clear();
-    command.envs(viv_environment(&tp).map_err(io_failed)?);
+    command.envs(viv_environment(&tp));
     command.env("WF26_MEMINFO", &crafted);
     command.env("WF26_VIV", preflight::viv());
     let refused = command.output().map_err(io_failed)?;
@@ -2821,7 +2821,7 @@ fn workflow_26_attach_stream() -> Result<(), Failed> {
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
-            command.envs(viv_environment(&tp).map_err(io_failed)?);
+            command.envs(viv_environment(&tp));
             let mut termed = KillOnDrop(command.spawn().map_err(io_failed)?);
             // Past the watcher installation at entry, still well inside the evaluation the
             // running sandbox's pipeline performs before its short-circuit.
@@ -2858,7 +2858,7 @@ fn attach_boot_and_detach(tp: &TempProject, leg: u32) -> Result<(), Failed> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    command.envs(viv_environment(tp).map_err(io_failed)?);
+    command.envs(viv_environment(tp));
     let mut spawned = command.spawn().map_err(io_failed)?;
     let stdout = spawned
         .stdout
@@ -2999,7 +2999,7 @@ fn spawn_viv_session(tp: &TempProject) -> Result<std::process::Child, Failed> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    command.envs(support::viv_environment(tp).map_err(io_failed)?);
+    command.envs(support::viv_environment(tp));
     command.spawn().map_err(io_failed)
 }
 

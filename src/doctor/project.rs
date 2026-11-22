@@ -239,7 +239,7 @@ fn lock_covers_inputs<E: Environment>(
         return Finding::skipped(
             probe,
             "not-applicable",
-            "no lock exists yet; the first evaluation creates it",
+            "no lock exists yet; the pre-flight of the first evaluation writes it",
         );
     };
     let Ok(lock_text) = std::fs::read_to_string(lock_path) else {
