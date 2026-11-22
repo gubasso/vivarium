@@ -39,3 +39,5 @@ Amended by ADR-0079 — the owner role has no backup while vivarium has one main
 Specified in [`../../SECURITY.md`](../../SECURITY.md) and [`../reference/spec/02-config-and-xdg-layout.md`](../reference/spec/02-config-and-xdg-layout.md).
 
 Amended by [`ADR-0112-the-selected-image-carries-the-base-flake.md`](./ADR-0112-the-selected-image-carries-the-base-flake.md) — a backend fix already reachable from a reference the user owns needs no vivarium release, only the user's own `viv update`; the released pin move remains the vehicle for the shipped default, and the owner role, the two clocks, and the boundary trigger are unchanged.
+
+Amended by [`ADR-0116-the-binary-ships-the-first-pin.md`](./ADR-0116-the-binary-ships-the-first-pin.md) — no periodic job moves vivarium's pins. The routine clock becomes the 30-day warning of `exobrain outdated` in `.envrc` on the `nixpkgs` node of `nix/flake.lock`, and a person moves the lock. The released pin move is a move of `nix/flake.lock`, which the binary then ships as the first pin. The owner role, the advisory clock, the boundary trigger, and CI advisory scanning are unchanged.
