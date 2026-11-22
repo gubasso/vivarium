@@ -31,14 +31,6 @@
         spec-driven-docs.follows = "";
       };
     };
-    # The store guard of the canon (exobrain): `exobrain store-guard --daily`
-    # in .envrc warns about working-tree copies in the Nix store. Its rk serves
-    # only its own devShell, so it takes this flake's.
-    exobrain-tech = {
-      url = "github:gubasso/exobrain-tech/v1.0.0";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.release-kit.follows = "release-kit";
-    };
   };
 
   outputs =
@@ -50,7 +42,6 @@
       rust-overlay,
       flake-utils,
       release-kit,
-      exobrain-tech,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -140,11 +131,6 @@
             # it, so CI resolves it here rather than needing a host install on
             # the runner.
             release-kit.packages.${system}.default
-          ]
-          # exobrain, the store guard that .envrc runs once a day. exobrain-tech
-          # builds it for x86_64-linux only, so the other systems keep their shells.
-          ++ pkgs.lib.optionals (system == "x86_64-linux") [
-            exobrain-tech.packages.${system}.default
           ];
           # native deps for -sys crates, uncomment as needed:
           # buildInputs = [ pkgs.openssl ];
