@@ -18,9 +18,9 @@
     flake-utils.url = "github:numtide/flake-utils";
     # The release convention's own tool, pinned at a release tag. The
     # `exobrain outdated` line of `.envrc` reports a newer release and moves
-    # nothing. A person moves the pin: edit the tag below, run
-    # `nix flake update release-kit`, and commit this file and the lock
-    # together. One project runs one `rk`: this pin, never a host install.
+    # nothing, and it names the command that moves the tag and the lock. A
+    # person runs that command and commits this file and the lock together.
+    # One project runs one `rk`: this pin, never a host install.
     release-kit = {
       url = "github:gubasso/release-kit/v0.10.3";
       inputs = {
