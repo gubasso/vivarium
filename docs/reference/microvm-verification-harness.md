@@ -215,6 +215,31 @@ The method worth knowing before reading a result. The movable component is a loc
 
 Verified on a real host. Each entry names the version it applies to; nothing here is inferred from an agent's execution environment.
 
+### On current nixos-unstable the guest boots and answers, and `viv stop` leaves the runtime directory behind
+
+Measured 2026-11-22 on a real host with `/dev/kvm` and a systemd user manager, at vivarium 0.2.4 plus the guest change that sets `boot.initrd.systemd.enable` only where nixpkgs still declares it. Before that change, no guest built on this nixpkgs: it removed the scripted initrd and fails any definition of that option. Not diagnosed: this entry records what was observed, not a cause.
+
+The guest was the `rust-web` example with the `base` image, in a throwaway config, data, state, and cache root, bound to an empty project. The base flake carried a `flake.lock` that pinned `nixpkgs` at `2786a2a72088ecf32aea5b3ec52099e6a7cff78f`, `microvm` at `430a46d03ef15f1b8b715fafa85f21847960b783`, and `spectrum` at `77d2389874bb092b8dbf05ecc5b1030372e80e98`. The target lock that the pre-flight wrote pinned the same `nixpkgs`. Each run, through `tests/host/heavy-run`:
+
+```bash
+viv start
+viv exec -- sh -c 'uname -r; cat /run/current-system/nixos-version; systemctl is-system-running'
+viv stop
+viv destroy --yes
+```
+
+- `viv start` exited `0`. `viv exec` exited `0` and printed kernel `6.18.64`, system `26.11.20261121.2786a2a`, and state `running`.
+- `viv stop` exited `69` with `error[vm.teardown-incomplete]: the runtime directory still holds entries after a completed stop`, `why: 15 entries survived the allowlisted cleanup`. This happened on 4 of 4 runs.
+- After the stop, the runtime directory held `boot.json`, `console.log`, `console.sock`, `console.sock.lock`, `control.sock`, `launch.json`, `lock`, `mnt0.sock`, `mnt0.sock.pid`, `mnt1.sock`, `mnt1.sock.pid`, `ready.sock`, `store.sock`, `store.sock.pid`, `vm-create.json`, and `vm.pid`. No process held the PID in `vm.pid`.
+- The guest console ended with `Reached target System Power Off`, three lines of `virtio-fs: response too short (0)`, and `reboot: Power down`.
+- `viv destroy --yes` exited `0`. Afterward the runtime directory held only `lock`.
+
+The same probe on the shipped pin, with an image that has no base flake (`nixpkgs` `f13ff45afd1bb73e640eaa08a7066dbed07e3238`), stopped with exit `0` on 2 of 2 runs. On the same day, the `boot` lane passed on the shipped pin. [`Q-041`](../plan/open-questions.md) carries what this blocks.
+
+### The guest boots `degraded` on the shipped pin, because the logrotate configuration check fails
+
+Measured 2026-11-22 with the probe of the entry above, on the shipped pin: `nixpkgs` `f13ff45afd1bb73e640eaa08a7066dbed07e3238`, kernel `6.18.43`, system `26.11.20260807.f13ff45`. `systemctl is-system-running` inside the guest printed `degraded` on 2 of 2 boots. On the second boot, `systemctl --failed` listed exactly one unit: `logrotate-checkconf.service loaded failed failed Logrotate configuration check`. The agent answered and `viv stop` exited `0` both times. On `nixpkgs` `2786a2a7` the same probe printed `running`. The cause of the failure was not read. [`Q-042`](../plan/open-questions.md) carries the question.
+
 ### A cold first evaluation does not need spectrum, and a base flake that declares the baselines still resolves them live
 
 Measured 2026-11-22 on a real host with Nix 2.34.8, once by the owner's decision of 2026-11-21, for the shipped pin of [`ADR-0116`](../decisions/ADR-0116-the-binary-ships-the-first-pin.md) at vivarium 0.2.4 plus that change. The question was whether a cold user's first evaluation needs the `spectrum` input of microvm.nix, whose git host stopped answering on 2026-11-20 ([`KI-0006`](./known-issues/resolved/KI-0006.md)).
