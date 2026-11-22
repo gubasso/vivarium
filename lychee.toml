@@ -15,10 +15,9 @@ timeout = 20
 retry_wait_time = 2
 max_redirects = 5
 
-# Each push runs the hook again, so a result stays valid for a day.
-cache = true
-max_cache_age = "1d"
-
+# No cache: a cached success hides a link that died since, and CI, which
+# starts with no cache, then fails a push that passed here. A full run over
+# the tree takes seconds.
 exclude_loopback = true
 
 exclude = [
@@ -30,5 +29,6 @@ exclude = [
 
 # The Slidev deck resolves root-relative links such as `/meme.png` against its
 # `public/` folder at build time, which a file walk cannot see. The deck's own
-# check is its build, the `slidev-build` hook.
+# check is its build. The hook repeats this exclusion, so prek never passes a
+# deck file that lychee would then drop with a warning.
 exclude_path = ["^slides/"]

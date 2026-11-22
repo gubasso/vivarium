@@ -684,8 +684,8 @@ repos:
 
   # --- Link check, at push ---
   #
-  # A network check, so it runs at push. lychee.toml holds every setting, and
-  # git ignores the cache file .lycheecache. The default `lychee` id is a
+  # A network check, so it runs at push. lychee.toml holds every setting. The
+  # default `lychee` id is a
   # `script` hook that downloads a release binary through cargo-binstall
   # during the run, and fails in an offline or sandboxed shell. The devshell
   # supplies lychee, and the rev pins only the hook definition. `prek update`
@@ -694,9 +694,12 @@ repos:
     rev: lychee-v0.24.2
     hooks:
       # owner: devshell (no-hook-language) upstream lychee offers only script, docker_image, and system ids.
+      # project: `exclude: ^slides/`, the same exclusion as `exclude_path` in
+      # lychee.toml, so the deck files never reach lychee as inputs.
       - id: lychee-system
         stages: [pre-push]
         types: [markdown]
+        exclude: ^slides/
         args: [--no-progress]
 
   # --- Unused dependencies, at push ---
