@@ -36,10 +36,10 @@ Artefacts are retained beside the diagnostic volume, under the drive when one is
 
 Every lane here writes in gigabytes, and [`../../tests/host/disk-preflight`](../../tests/host/disk-preflight) is the one thing that decides where. Each lane calls it before its first write, naming what it needs; a refusal means nothing ran, which is the whole point of asking first.
 
-Point `VIVARIUM_HEAVY_DRIVE` at a directory on the drive that should absorb this. It is read from the environment, and failing that from `.envrc.local` — an untracked file of plain `export` lines beside [`../../.envrc`](../../.envrc), which is how a developer answers once per machine rather than once per shell. Reading the file directly rather than relying on direnv is deliberate: a lane run outside a direnv shell must find the same answer.
+Point `VIVARIUM_HEAVY_DRIVE` at a directory on the drive that should absorb this. It is read from the environment, and failing that from `$HOME/.config/project-env/vivarium.env` — a file of plain `export` lines outside the checkout that [`../../.envrc`](../../.envrc) also loads, which is how a developer answers once per machine rather than once per shell. Reading the file directly rather than relying on direnv is deliberate: a lane run outside a direnv shell must find the same answer.
 
 ```bash
-# .envrc.local — untracked, per machine
+# $HOME/.config/project-env/vivarium.env — per machine, outside the checkout
 export VIVARIUM_HEAVY_DRIVE=/run/media/you/external/vivarium
 ```
 

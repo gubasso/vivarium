@@ -144,9 +144,9 @@ impl Drop for FabricatedDrive {
 /// no-usable-drive branch.
 ///
 /// Set rather than unset on purpose. An unset variable makes `disk-preflight` read the developer's
-/// untracked `.envrc.local`, so on a machine that has answered the drive question once, an
-/// "unconfigured" trial would find the real drive and assert nothing. A path under `/proc` is
-/// unusable on every Linux host and needs no fixture.
+/// `$HOME/.config/project-env/vivarium.env`, so on a machine that has answered the drive question
+/// once, an "unconfigured" trial would find the real drive and assert nothing. A path under
+/// `/proc` is unusable on every Linux host and needs no fixture.
 const NO_USABLE_DRIVE: (&str, &str) = ("VIVARIUM_HEAVY_DRIVE", "/proc/vivarium-no-such-drive");
 
 /// `VIVARIUM_HEAVY_ON_HOST` is inherited like anything else, so a developer who exported it in the
