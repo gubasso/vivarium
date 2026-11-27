@@ -39,7 +39,7 @@
 # that already exists on the drive that should absorb this, and no prompt
 # appears. Already exists, because this never creates it — see the note above the
 # validation below for why creating it is what breaks the check. It is read from
-# the environment first and from the repository's untracked `.envrc.local`
+# the environment first and from `$HOME/.config/project-env/vivarium.env`
 # second, so a developer answers once per machine rather than once per shell —
 # and a lane invoked outside a direnv shell, which is how an agent runs one,
 # still gets the answer. Without a usable drive, a terminal is asked and a
@@ -66,9 +66,6 @@
 # fit in it.
 
 set -u
-
-SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
-REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd -P)
 
 NEED_GIB=0
 LABEL="this run"
@@ -170,10 +167,11 @@ REQUIRED=$((NEED_GIB + MARGIN_GIB))
 # dead run.
 drive=${VIVARIUM_HEAVY_DRIVE:-}
 drive_from_file=0
-if [[ -z $drive && -f $REPO_ROOT/.envrc.local ]]; then
+project_env=$HOME/.config/project-env/vivarium.env
+if [[ -z $drive && -f $project_env ]]; then
   drive=$(
-    # shellcheck disable=SC1091
-    . "$REPO_ROOT/.envrc.local" >/dev/null 2>&1 || exit 0
+    # shellcheck source=/dev/null
+    . "$project_env" >/dev/null 2>&1 || exit 0
     printf '%s' "${VIVARIUM_HEAVY_DRIVE:-}"
   )
   [[ -n $drive ]] && drive_from_file=1
@@ -213,7 +211,7 @@ note "  store   $STORE: ${store_free}G free"
 if ((IMAGES == 0)); then
   note "  scratch $SCRATCH: ${scratch_free}G free"
 fi
-((drive_from_file == 1)) && note "  drive named by .envrc.local"
+((drive_from_file == 1)) && note "  drive named by $project_env"
 
 # What a rejected drive costs, which is the one thing the two modes disagree
 # about. Ordinarily the run continues on the host disk, so the reason is a
@@ -295,7 +293,7 @@ if [[ -n $drive ]]; then
     fi
   fi
 elif ((REQUIRE_DRIVE == 1)); then
-  note 'disk-preflight: VIVARIUM_HEAVY_DRIVE names no drive, in the environment or in .envrc.local'
+  note "disk-preflight: VIVARIUM_HEAVY_DRIVE names no drive, in the environment or in $project_env"
 fi
 
 # The requirement, decided before either mode picks a directory so that both

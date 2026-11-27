@@ -20,10 +20,10 @@ The cost is a `cargo build` before every run. On an unchanged tree that is close
 
 Working on vivarium means compiling a workspace, realising guest closures, and booting microVMs, which together measure in gigabytes. Most of that goes to the drive named by `VIVARIUM_HEAVY_DRIVE` rather than to your boot disk: build scratch, the compile cache, sandbox images and volumes, and vivarium's own state, data and cache roots. The one exception is the Nix store, which stays at `/nix/store` because a booting guest has to read its closure there — the checks refuse to start a run that will not fit in it rather than moving it.
 
-Create the directory on the drive, then name it once per machine in the untracked `.envrc.local` beside [`../../.envrc`](../../.envrc):
+Create the directory on the drive, then name it once per machine in `$HOME/.config/project-env/vivarium.env`, outside the checkout, which [`../../.envrc`](../../.envrc) loads:
 
 ```bash
-# .envrc.local — untracked, per machine
+# $HOME/.config/project-env/vivarium.env — per machine, outside the checkout
 export VIVARIUM_HEAVY_DRIVE=/run/media/you/external/vivarium
 ```
 
